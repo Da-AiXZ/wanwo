@@ -1,0 +1,60 @@
+name: WanWo
+
+options:
+  bundleIdPrefix: com.wanwo
+  deploymentTarget:
+    iOS: "16.6"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "2"          # iPad only
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  WanWo:
+    type: application
+    platform: iOS
+    sources:
+      - path: WanWo
+      # 宿主桥（ObjC，链接 iSH 静态库）
+      - path: Platform
+        # 排除 rootfs.tar（由下方单文件资源引入，避免被当源码扫描）
+        excludes:
+          - "Resources/rootfs.tar"
+      # Alpine rootfs（fakefs tar：data/ + meta.db），单文件资源
+      - path: WanWo/Resources/rootfs.tar
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang
+        MARKETING_VERSION: "0.0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: WanWo/Bridge/WanWo-Bridging-Header.h
+        # 三根：Vendor/include/ish（生成头）+ Vendor/ish（源码内部互 include）+ Vendor/include（ish/ 前缀伞）
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
+        OTHER_LDFLAGS: "-lish -lish_emu -lfakefs"
+        CLANG_ENABLE_MODULES: YES
+        # iSH 头文件按 GUEST_ARM64 条件编译（对齐 Vendor/ish/app/GuestARM64.xcconfig）
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) GUEST_ARM64=1 ISH_INTERNAL=1"
+        # iSH 头里的 C 声明以 ObjC(.m) 编译；QCExecutor.m 需 ObjC++? 实为 .m 即可（纯 C API）
+    dependencies:
+      - sdk: libsqlite3.tbd
+      - sdk: libz.tbd
+      - sdk: libbz2.tbd
+      - sdk: libresolv.tbd
+    info:
+      path: WanWo/Info.plist
+      properties:
+        CFBundleDisplayName: 万我
+        CFBundleShortVersionString: "0.0.1"
+        CFBundleVersion: "2"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false

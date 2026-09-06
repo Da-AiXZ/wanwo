@@ -1,0 +1,63 @@
+name: iOS Build (unsigned IPA)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install toolchain
+        run: |
+          brew install xcodegen
+          brew install meson ninja
+          # llvm + lld：vdso 交叉构建需要（clang -target aarch64-linux-gnu -fuse-ld=lld）
+          brew install --quiet llvm || echo "WARN: llvm install failed"
+          brew install --quiet lld || echo "WARN: lld install failed, vdso will be skipped"
+
+      - name: Build iSH static libraries
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build_ish.sh release
+
+      - name: Prepare Alpine rootfs
+        run: ./scripts/fetch_rootfs.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned, iPad)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -scheme WanWo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee build.log
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R "build/Build/Products/Release-iphoneos/WanWo.app" Payload/
+          zip -qry "WanWo-${{ github.sha }}.ipa" Payload
+          ls -lh WanWo-*.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WanWo-ipa
+          path: WanWo-*.ipa
+          retention-days: 30
