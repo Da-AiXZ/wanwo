@@ -319,8 +319,18 @@ private final class StreamedUploadDelegate: NSObject, URLSessionDataDelegate, @u
     var bytes: AsyncThrowingStream<UInt8, Error> { byteStream }
 
     /// 消费侧停止（Task 取消 / 流终止 / 正常收尾）时触发。
+    /// 内部适配 AsyncThrowingStream 的 onTermination：标准库签名为
+    /// (@Sendable (Continuation.Termination) -> Void)?，其中
+    /// Termination = .finished | .cancelled(any Error)，此处统一折算为 Error?。
     func setOnTermination(_ handler: @escaping @Sendable (Error?) -> Void) {
-        byteContinuation.onTermination = handler
+        byteContinuation.onTermination = { termination in
+            switch termination {
+            case .finished:
+                handler(nil)
+            case .cancelled(let error):
+                handler(error)
+            }
+        }
     }
 
     /// 挂起等待响应头。didReceive response 必先于 didReceive data（delegate 串行
