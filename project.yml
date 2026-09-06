@@ -21,11 +21,9 @@ targets:
       - path: WanWo
       # 宿主桥（ObjC，链接 iSH 静态库）
       - path: Platform
-        # 排除 rootfs.tar（由下方单文件资源引入，避免被当源码扫描）
-        excludes:
-          - "Resources/rootfs.tar"
-      # Alpine rootfs（fakefs tar：data/ + meta.db），单文件资源
-      - path: WanWo/Resources/rootfs.tar
+      # Alpine rootfs（fakefs：data/ + meta.db 的 zip 包），单文件资源
+      # （10-design v2.2：RootfsInstaller 从 bundle 解压 alpine-rootfs.zip 安装）
+      - path: WanWo/Resources/alpine-rootfs.zip
         buildPhase: resources
     settings:
       base:

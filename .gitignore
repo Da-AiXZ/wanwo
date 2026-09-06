@@ -16,4 +16,4 @@ build.log
 
 # rootfs 下载缓存
 .cache/
-WanWo/Resources/rootfs.tar
+WanWo/Resources/alpine-rootfs.zip

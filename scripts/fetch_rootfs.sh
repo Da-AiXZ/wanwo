@@ -9,19 +9,23 @@ set -e
 #   2. 下载 Alpine minirootfs aarch64（版本固定 + sha256 可选校验）
 #   3. fakefsify 转换 → alpine-rootfs/{data/,meta.db}
 #   4. 基础配置（目录/resolv.conf/repositories/profile）
-#   5. 产出目录整体进 App bundle（folder reference）
+#   5. 整体打 alpine-rootfs.zip（zip -r alpine-rootfs alpine-rootfs，
+#      排除 *.db-shm/*.db-wal —— 与 OpenMinis create_zip_archive 一致）
 #
 # 关键认知：fakefs 的权限/属主存在 meta.db（SQLite），不在文件系统位上，
-# 所以 bundle 目录拷贝丢执行位无所谓 —— 这正是用 fakefsify 的原因。
+# 所以 zip 拷贝丢执行位无所谓 —— 这正是用 fakefsify 的原因。
 #
-# 产物: WanWo/Resources/rootfs/  （data/ + meta.db）
+# 产物: WanWo/Resources/alpine-rootfs.zip
+#   消费方: WanWo/ISHRuntime/RootfsInstaller.swift（bundle 解压安装，
+#   自带 "alpine-rootfs/" 前缀剥离 —— 故 zip 内条目须挂在 alpine-rootfs/ 下）
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ISH_DIR="$ROOT_DIR/Vendor/ish"
 RES_DIR="$ROOT_DIR/WanWo/Resources"
-OUT_DIR="$RES_DIR/rootfs"
+STAGE_DIR="$ROOT_DIR/.cache/rootfs-stage"
+OUT_ZIP="$RES_DIR/alpine-rootfs.zip"
 
 ALPINE_VERSION="3.21"
 ALPINE_MINOR="0"
@@ -63,8 +67,9 @@ download_rootfs() {
 
 convert_and_configure() {
     log_step "Converting to fakefs format"
-    rm -rf "$OUT_DIR"
-    mkdir -p "$RES_DIR"
+    rm -rf "$STAGE_DIR"
+    mkdir -p "$STAGE_DIR/alpine-rootfs"
+    OUT_DIR="$STAGE_DIR/alpine-rootfs"
     "$ISH_DIR/build-native/tools/fakefsify" "$CACHE_DIR/$ROOTFS_FILE" "$OUT_DIR" \
         || die "fakefsify conversion failed"
     [ -d "$OUT_DIR/data" ] && [ -f "$OUT_DIR/meta.db" ] || die "fakefs output incomplete"
@@ -97,20 +102,43 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd ~
 EOF
 
+    # /var/wanwo 预建目录（10-design §9.1 步骤 4；
+    # RootfsInstaller.installIfNeeded 也会在设备端补建 var/wanwo/* 桶）
+    mkdir -p "$DATA/var/wanwo" \
+             "$DATA/var/wanwo/workspace" \
+             "$DATA/var/wanwo/attachments" \
+             "$DATA/var/wanwo/offloads" \
+             "$DATA/var/wanwo/browser" \
+             "$DATA/var/wanwo/memory" \
+             "$DATA/var/wanwo/skills" \
+             "$DATA/var/wanwo/shared" \
+             "$DATA/var/wanwo/mcp-servers" \
+             "$DATA/var/wanwo/mounts"
+
     # Y9 兜底：bundle 拷贝会丢执行位，fakefs 权限在 meta.db 不受影响；
     # 但 data 内真实文件的 mode 位仍整理一遍，双保险
     chmod -R u+rw "$DATA" 2>/dev/null || true
 
-    # 打成单个 tar（ustar）：避免 folder reference 的逐文件资源冲突
-    # （apk keys 多架构同名文件会让 CpResource 冲突 exit 65）
-    cd "$OUT_DIR"
-    rm -f "$RES_DIR/rootfs.tar"
-    tar -cf "$RES_DIR/rootfs.tar" data meta.db
+    # 打 zip（照 OpenMinis deps/prepare_alpine_rootfs.sh create_zip_archive）：
+    # 条目挂 alpine-rootfs/ 前缀下；排除 SQLite WAL 临时文件
+    log_step "Packaging alpine-rootfs.zip"
+    mkdir -p "$RES_DIR"
+    rm -f "$OUT_ZIP"
+    cd "$STAGE_DIR"
+    zip -qry alpine-rootfs.zip alpine-rootfs \
+        -x "*.db-shm" \
+        -x "*.db-wal"
+    mv alpine-rootfs.zip "$OUT_ZIP"
     cd "$ROOT_DIR"
-    rm -rf "$OUT_DIR"
+    rm -rf "$STAGE_DIR"
 
-    log_ok "rootfs packaged at $RES_DIR/rootfs.tar"
-    ls -lh "$RES_DIR/rootfs.tar"
+    [ -s "$OUT_ZIP" ] || die "zip packaging produced empty file"
+    log_ok "rootfs packaged at $OUT_ZIP"
+    ls -lh "$OUT_ZIP"
+    # 防呆：确认 zip 内含 meta.db 与 data/（unzip -l 检查）
+    unzip -l "$OUT_ZIP" | grep -q "alpine-rootfs/meta.db" || die "zip missing meta.db"
+    unzip -l "$OUT_ZIP" | grep -q "alpine-rootfs/data/" || die "zip missing data/"
+    log_ok "zip contents verified"
 }
 
 main() {
