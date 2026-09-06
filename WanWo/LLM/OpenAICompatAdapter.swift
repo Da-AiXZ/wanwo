@@ -183,14 +183,16 @@ struct OpenAICompatAdapter {
             case .payload(let payload):
                 payloadCount += 1
                 lastPayload = payload
-                // [DONE] 是流终止哨兵，不是模型载荷——先判后喂（dsh parseSse 顺序），
-                // 绝不进入 translator（喂入会被当 JSON 解析并误抛 MALFORMED_RESPONSE）。
-                if payload == SSE.done {
-                    return true // dsh parseSse：[DONE] 即正常终止
-                }
+                // 全部载荷进 translator（dsh parseSse 顺序）：consume 首行识别 [DONE] 并
+                // 返回收尾序列（block-end × n + usage? + finish），不会当 JSON 解析。
+                // 此前的"先判后喂拦截"误杀收尾信号（blockEnd/usage/finish 永不发射，
+                // 消息内容空、usage 丢失）——2026-09-07 真机实证后回退。
                 let chunks = try translator.consume(payload: payload)
                 for chunk in chunks {
                     yield(chunk)
+                }
+                if payload == SSE.done {
+                    return true // dsh parseSse：[DONE] 后正常终止
                 }
             case .activity, .none:
                 break
