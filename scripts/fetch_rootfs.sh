@@ -67,9 +67,14 @@ download_rootfs() {
 
 convert_and_configure() {
     log_step "Converting to fakefs format"
+    # 照原件 create_fakefs：只清理 + 预建【父目录】，输出目录本身由
+    # fakefsify 创建（fakefs.c fakefs_import 首行即 mkdir(fs)，
+    # 目录已存在会 POSIX_ERR → "error!!1! 83 2 File exists"）
     rm -rf "$STAGE_DIR"
-    mkdir -p "$STAGE_DIR/alpine-rootfs"
+    mkdir -p "$STAGE_DIR"
     OUT_DIR="$STAGE_DIR/alpine-rootfs"
+    # 幂等兜底：重跑时保证输出目录不存在（正常路径 rm -rf "$STAGE_DIR" 已覆盖）
+    rm -rf "$OUT_DIR"
     "$ISH_DIR/build-native/tools/fakefsify" "$CACHE_DIR/$ROOTFS_FILE" "$OUT_DIR" \
         || die "fakefsify conversion failed"
     [ -d "$OUT_DIR/data" ] && [ -f "$OUT_DIR/meta.db" ] || die "fakefs output incomplete"
