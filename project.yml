@@ -13,6 +13,18 @@ settings:
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
 
+# M1 远程 SPM 依赖（10-design §十二已批准；§2.7"无本地 SPM 模块包"不受影响——
+# 远程包声明于本 packages: 节，非本地包）：
+#   - GRDB.swift ^7.0（MIT）：SQLite 投影索引
+#   - swift-collections ^1.1（Apache-2.0）：Deque（流缓冲）
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
+  swift-collections:
+    url: https://github.com/apple/swift-collections
+    from: "1.1.0"
+
 targets:
   WanWo:
     type: application
@@ -45,6 +57,10 @@ targets:
       - sdk: libz.tbd
       - sdk: libbz2.tbd
       - sdk: libresolv.tbd
+      # M1 远程 SPM 依赖（§十二）
+      - package: GRDB
+      - package: swift-collections
+        product: Collections
     info:
       path: WanWo/Info.plist
       properties:

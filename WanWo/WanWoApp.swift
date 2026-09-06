@@ -2,11 +2,15 @@ import SwiftUI
 
 @main
 struct WanWoApp: App {
+    // M1（10-design §7.1/§十一 M1）：根导航 RootView = 会话列表侧栏 + 聊天流 +
+    // 设置·Providers。M0 交付物不动：Shell 测试页从侧栏「诊断」进入（M0 真机
+    // 验收口径「手动输入 ls」仍可通过——回归入口保留）。
+    @StateObject private var environment = AppEnvironment()
+
     var body: some Scene {
         WindowGroup {
-            // M0.4：Shell 测试页（手动输入 `ls` 验收，10-design §十一 M0.4）。
-            // 根导航 RootView 按里程碑推进再引入（§七 UI 全部重做）。
-            ShellTestView()
+            RootView()
+                .environmentObject(environment)
         }
     }
 }

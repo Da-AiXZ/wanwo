@@ -1,0 +1,99 @@
+//
+//  SessionsSidebarView.swift
+//  WanWo
+//
+//  【按设计新写 · 非原件】出处：10-design §7.1（侧栏：会话列表 + 新建会话 + 设置）、
+//  §十一 M1.1（会话列表 UI：新建/列表/删除）、§7.4（视觉素净占位）。
+//  M0 回归入口（ShellTestView）保留在「诊断」段（M0 验收仍可过）。
+//
+
+import SwiftUI
+
+struct SessionsSidebarView: View {
+    @ObservedObject var environment: AppEnvironment
+    @Binding var selection: RootSelection
+
+    @State private var summaries: [SessionSummary] = []
+    @State private var creating = false
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    newSession()
+                } label: {
+                    Label("新建会话", systemImage: "plus.circle")
+                }
+                .disabled(creating)
+            }
+
+            Section("会话") {
+                if summaries.isEmpty {
+                    Text("暂无会话")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(summaries) { summary in
+                    Button {
+                        selection = .session(id: summary.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(summary.title ?? "新会话")
+                                .lineLimit(1)
+                            Text(summary.updatedAt.formatted(.dateTime.month().day().hour().minute()))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onDelete { indexSet in
+                    delete(at: indexSet)
+                }
+            }
+
+            Section("设置") {
+                Button {
+                    selection = .providers
+                } label: {
+                    Label("Providers", systemImage: "cpu")
+                }
+            }
+
+            Section("诊断") {
+                Button {
+                    selection = .shellTest
+                } label: {
+                    Label("Shell 测试（M0）", systemImage: "terminal")
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("万我")
+        .task { await reload() }
+        .onChange(of: environment.sessionsRevision) { _ in
+            Task { await reload() }
+        }
+    }
+
+    private func reload() async {
+        summaries = await environment.loadSessions()
+    }
+
+    private func newSession() {
+        creating = true
+        Task {
+            if let summary = await environment.createSession() {
+                selection = .session(id: summary.id)
+            }
+            creating = false
+        }
+    }
+
+    private func delete(at offsets: IndexSet) {
+        let ids = offsets.map { summaries[$0].id }
+        Task {
+            for id in ids {
+                await environment.deleteSession(id: id)
+            }
+        }
+    }
+}
