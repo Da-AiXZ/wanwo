@@ -57,7 +57,7 @@ struct RetryPolicy: Equatable, Sendable {
 
     /// dsh localDelay 1:1：min(initial * 2^(retry-1), max) × (1-r + 2r·rand)。
     func localDelayMs(retry: Int, random: (() -> Double)? = nil) -> Int {
-        let jitterSample = random?() ?? Double.random()
+        let jitterSample = random?() ?? Double.random(in: 0..<1)
         let exponent = min(retry - 1, 1024)
         let exponential = min(Int(Double(initialDelayMs) * pow(2.0, Double(exponent))), maxDelayMs)
         let jitter = 1 - jitterRatio + 2 * jitterRatio * jitterSample

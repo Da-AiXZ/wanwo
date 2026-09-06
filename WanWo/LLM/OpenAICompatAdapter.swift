@@ -115,7 +115,7 @@ struct OpenAICompatAdapter {
         if !(200..<300).contains(http.statusCode) {
             var body = ""
             for try await byteChunk in bytes {
-                body += String(decoding: byteChunk, as: UTF8.self)
+                body += String(decoding: [byteChunk], as: UTF8.self)
                 tracker.pulse()
             }
             var providerMessage = "API error (HTTP \(http.statusCode))"

@@ -43,7 +43,7 @@ actor JsonlEventLog {
         let data = try JSONEncoder().encode(line)
         FileManager.default.createFile(atPath: fileURL.path, contents: data + Data([0x0A]))
         let handle = try FileHandle(forWritingTo: fileURL)
-        handle.sync()
+        handle.synchronizeFile()
         return JsonlEventLog(fileURL: fileURL, header: header,
                              events: [], committedBytes: data.count + 1,
                              fileHandle: handle)
@@ -69,7 +69,7 @@ actor JsonlEventLog {
         if writeMode && data.count > scan.committedBytes {
             // 断电截断恢复：丢弃残缺尾行（中部损坏已由 scanner 抛出，不会走到这里）。
             try handle.truncate(atOffset: UInt64(scan.committedBytes))
-            handle.sync()
+            handle.synchronizeFile()
             truncatedTornTail = true
             logger.warning("session \(scan.header.id): truncated torn tail "
                 + "\(data.count - scan.committedBytes) bytes at open")
@@ -135,7 +135,7 @@ actor JsonlEventLog {
         lineData.append(0x0A)
         try handle.seekToEnd()
         try handle.write(contentsOf: lineData)
-        try handle.sync()
+        try handle.synchronizeFile()
         committedBytes += lineData.count
         events.append(event)
     }
@@ -143,7 +143,7 @@ actor JsonlEventLog {
     /// 关闭（释放文件句柄）。幂等。
     func close() {
         if let handle = fileHandle {
-            try? handle.sync()
+            try? handle.synchronizeFile()
             try? handle.close()
             fileHandle = nil
         }
