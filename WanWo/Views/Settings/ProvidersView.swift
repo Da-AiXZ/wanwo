@@ -100,7 +100,7 @@ struct EndpointEditSheet: View {
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("model（如 deepseek-chat）", text: $model)
+                    TextField("model（如 deepseek-v4-flash）", text: $model)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }

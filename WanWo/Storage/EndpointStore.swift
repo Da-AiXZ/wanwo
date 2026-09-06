@@ -15,6 +15,8 @@ struct EndpointConfig: Codable, Identifiable, Equatable, Sendable {
     var name: String
     /// 端点基址（如 https://api.deepseek.com，不含 /chat/completions）。
     var baseURL: String
+    /// 模型名。2026-09 有效线：deepseek-v4-flash / deepseek-v4-pro（04-ai-agent-knowledge §5.4）；
+    /// 旧 deepseek-chat / deepseek-reasoner 已于 2026-07-24 下线，禁止再作默认值/示例值。
     var model: String
     var isEnabled: Bool
     /// DeepSeek 扩展透传（09 #16）：thinking enabled|disabled，可选。
@@ -50,9 +52,11 @@ final class EndpointStore: ObservableObject {
             endpoints = loaded
         } else {
             // 出厂默认：DeepSeek OpenAI 兼容端点（09 #16 示例值，用户可在设置页修改）。
+            // 模型取当前有效线（04 §5.4）；仅影响无配置文件的全新安装——
+            // 已落盘的 endpoints JSON 原样加载，用户已配置的模型不被覆写。
             endpoints = [EndpointConfig(name: "DeepSeek",
                                         baseURL: "https://api.deepseek.com",
-                                        model: "deepseek-chat",
+                                        model: "deepseek-v4-flash",
                                         isEnabled: true)]
             persist()
         }

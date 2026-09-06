@@ -28,6 +28,9 @@ struct ChatView: View {
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewModel.open() }
+        // 会话切换/离场即释放写柄（bug1 第二层：SessionStore.openWriter 自动 close
+        // 之上的显式路径；dsh SessionLifecycle open/dispose 配对语义）。
+        .onDisappear { viewModel.close() }
     }
 
     // MARK: - 顶部状态条（§7.1：token 压力/模型；M1 显示模型 + 阶段）

@@ -87,6 +87,26 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // MARK: - 关闭（会话切换 / 视图离场）
+
+    /// 会话视图离场时的显式收尾（SessionStore.closeWriter 双层防泄漏的第二层）：
+    /// 先取消在途回合并等其落地（避免真实写入与修复收尾交错），再按 writer 实例
+    /// 身份释放写柄（openWriter 已自带自动 close，此处是 belt-and-braces 的显式路径）。
+    func close() {
+        let task = runningTask
+        runningTask = nil
+        task?.cancel()
+        guard let writer = writer else {
+            // 尚未拿到写柄（open 失败/未完成）：仅取消在途任务即可。
+            return
+        }
+        let store = environment.sessionStore
+        Task {
+            _ = await task?.value
+            await store.closeWriter(writer)
+        }
+    }
+
     // MARK: - 投影（UI = 事件流的只读视图）
 
     private func reproject() {

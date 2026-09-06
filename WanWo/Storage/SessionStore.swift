@@ -81,10 +81,11 @@ actor SessionStore {
 
     /// resume：open 排他写所有权 → replay → interruptedTurnClosers 修复。
     /// 返回写柄与本次修复的收尾事件数（UI 呈现「已恢复：N 个中断回合」）。
+    /// 单写者语义（dsh SessionLifecycle open/dispose）：若同 id 写柄仍开放（上次会话
+    /// 切走未显式释放），先走 closeWriter 修复收尾并释放，再正常打开——绝不以
+    /// alreadyOwned 拒绝重开（重开会话 = 释放上一个写柄 + 全量 replay）。
     func openWriter(id: String) async throws -> (writer: SessionWriter, repairedClosers: Int) {
-        if writers[id] != nil {
-            throw StoreError.sessionAlreadyOwned(id)
-        }
+        await closeWriter(id: id)
         let url = try fileURL(for: id)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw StoreError.sessionNotFound(id)
@@ -101,10 +102,31 @@ actor SessionStore {
         return (writer, closers.count)
     }
 
-    func closeWriter(id: String) {
-        if let writer = writers.removeValue(forKey: id) {
-            writer.close()
+    /// 关闭写柄（dsh dispose 语义）：释放前对该 writer 走 interruptedTurnClosers 修复
+    /// ——被中断的开放 turn/step 以合成收尾事件落盘（平衡日志返回空序列，无副作用），
+    /// 保证「切走会话」不留悬空回合；随后释放 JSONL 写柄。
+    func closeWriter(id: String) async {
+        guard let writer = writers.removeValue(forKey: id) else { return }
+        await release(writer)
+    }
+
+    /// 按 writer 实例身份关闭（会话视图释放自身写柄用）：仅当该 writer 仍是当前
+    /// 登记的活跃写柄时才释放——过期视图（会话已被快速切走又切回、写柄已被
+    /// openWriter 换新）的迟到 close 是 no-op，绝不误关新写柄。
+    func closeWriter(_ writer: SessionWriter) async {
+        guard let current = writers[writer.id], current === writer else { return }
+        writers.removeValue(forKey: writer.id)
+        await release(writer)
+    }
+
+    /// 释放前置收尾（openWriter 自动 close 与显式 closeWriter 共用）：
+    /// interruptedTurnClosers 修复 → 关闭底层日志。
+    private func release(_ writer: SessionWriter) async {
+        let closers = InterruptedTurnClosers.closers(for: writer.events)
+        for closer in closers {
+            try? await writer.appendSynthetic(closer)
         }
+        writer.close()
     }
 
     // MARK: - 索引对账（10-design §十一 M1.2：投影与 JSONL 一致性）

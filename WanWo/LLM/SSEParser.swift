@@ -27,6 +27,11 @@ struct SSEAssembler {
 
     mutating func consume(line rawLine: String) -> SSEConsumeResult {
         var line = rawLine
+        // CRLF 兜底（dsh 帧层的 BOM/CRLF 归一口径）：AsyncLineSequence 理论上已去
+        // \r\n，此处 belt-and-braces 再剥尾随 \r，防止残留 \r 污染 [DONE] 匹配。
+        if line.hasSuffix("\r") {
+            line.removeLast()
+        }
         // BOM（dsh：UTF-8/CRLF/BOM 处理交给帧层；行序列已去 \r\n，这里去 BOM）
         if line.hasPrefix("\u{FEFF}") {
             line.removeFirst()

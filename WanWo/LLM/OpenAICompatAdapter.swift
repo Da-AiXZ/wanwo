@@ -139,23 +139,39 @@ struct OpenAICompatAdapter {
         // 4. SSE 行装配 → wire chunk 翻译（translate.ts 全量语义）
         var assembler = SSEAssembler()
         var translator = ChunkTranslator()
+        // STREAM_CLOSED 诊断事实（一次性给足：行数 / 载荷数 / 最后载荷前 200 字符），
+        // 服务端「200 + 错误 JSON 载荷 + 关流」时用户下次重跑即可看到真实载荷。
+        var lineCount = 0
+        var payloadCount = 0
+        var lastPayload: String?
         for try await line in bytes.lines {
+            lineCount += 1
             tracker.pulse()
             switch assembler.consume(line: line) {
             case .payload(let payload):
+                payloadCount += 1
+                lastPayload = payload
+                // [DONE] 是流终止哨兵，不是模型载荷——先判后喂（dsh parseSse 顺序），
+                // 绝不进入 translator（喂入会被当 JSON 解析并误抛 MALFORMED_RESPONSE）。
+                if payload == SSE.done {
+                    return // dsh parseSse：[DONE] 即正常终止
+                }
                 let chunks = try translator.consume(payload: payload)
                 for chunk in chunks {
                     yield(chunk)
-                }
-                if payload == SSE.done {
-                    return // dsh parseSse：[DONE] 即正常终止
                 }
             case .activity, .none:
                 break
             }
         }
         // EOF 前未见 [DONE]：截断响应，不可信（dsh STREAM_CLOSED）。
-        throw LLMError(message: "SSE stream ended without [DONE]", code: "STREAM_CLOSED")
+        // 诊断载荷：last 为空说明服务端一个 data: 都没发（如对不存在模型直接关流）；
+        // last 非 JSON 说明服务端发了错误对象（典型：已下线模型名 / 鉴权失败）。
+        let lastSummary = lastPayload.map { String($0.prefix(200)) } ?? "∅"
+        throw LLMError(
+            message: "SSE stream ended without [DONE] "
+                + "(lines=\(lineCount), payloads=\(payloadCount), last=\(lastSummary))",
+            code: "STREAM_CLOSED")
     }
 
     // MARK: - wire 序列化（serialize.ts requestWithMessages 语义）
