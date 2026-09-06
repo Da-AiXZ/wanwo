@@ -11,7 +11,10 @@
 //      stream_options.include_usage + thinking/reasoning_effort 扩展字段）
 //    - 10-design §5.5 v2.1（09 #16：OpenAI 兼容格式接入，base URL/key/model 用户自填；
 //      DeepSeek 经此格式；M1 只做文本流，图片策略后置）
-//  传输：URLSession.bytes 逐行解析 SSE（不引第三方 HTTP 库，§2.4）。
+//  传输：URLSession uploadTask 显式上传 body + URLSessionDataDelegate 流式逐块接收
+//  （← OpenMinis OAuthHTTPClient.swift:1426-1454 同款模式；不引第三方 HTTP 库，§2.4）。
+//  注意：URLSession.upload(for:from:delegate:) async 版返回 (Data, URLResponse)，
+//  是非流式 API——SSE 场景必须走 delegate 回调逐块接收（Apple 文档核实口径）。
 //
 
 import Foundation
@@ -94,30 +97,49 @@ struct OpenAICompatAdapter {
                            tracker: ActivityTracker,
                            _ yield: (StreamChunk) -> Void) async throws {
         // 1. wire 请求序列化（serialize.ts 语义：可选字段缺省不发 null）
-        let urlRequest = try buildURLRequest(request)
+        let (urlRequest, bodyData) = try buildURLRequest(request)
 
-        // 2. 初始 fetch（dsh：初始 fetch 与 body 读共用一个信号；TRANSPORT 分类）
-        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        // 2. 传输层修法 ← OpenMinis OAuthHTTPClient.swift:1426-1454（dataTask can
+        //    lose httpBody + delegate 流式逐块接收）：
+        //    - uploadTask(with:from:) 显式上传 body（httpBody 已在 buildURLRequest 置空，
+        //      URLSession 按实际上传 body 重算 Content-Length）
+        //    - URLSessionDataDelegate.didReceive data 逐块喂 AsyncThrowingStream<UInt8>
+        //    - didReceive response 经 CheckedContinuation 交出 HTTPURLResponse，
+        //      状态码判定在消费侧进行（非 2xx 错误体透传逻辑保持 dsh 语义）
+        //    - didCompleteWithError 收尾（错误 → finish(throwing:)；EOF → finish()）
+        let delegate = StreamedUploadDelegate(tracker: tracker)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let uploadTask = session.uploadTask(with: urlRequest, from: bodyData)
+        // 取消桥接 ← OpenMinis stopLoading（OAuthHTTPClient.swift:1434-1438）：
+        // 消费侧停止（Task 取消 / 流终止 / 正常收尾）→ task.cancel() +
+        // session.invalidateAndCancel()，防 session/delegate 泄漏。
+        delegate.setOnTermination { _ in
+            uploadTask.cancel()
+            session.invalidateAndCancel()
+        }
+        uploadTask.resume()
+
+        // 3. 等响应头（可取消；响应头前传输失败 → TRANSPORT 分类，dsh 初始 fetch 口径）
+        let http: HTTPURLResponse
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
+            http = try await delegate.waitForResponse()
         } catch {
-            if Task.isCancelled {
+            if Task.isCancelled || error is CancellationError {
                 throw CancellationError()
             }
             throw LLMError(message: "request to \(endpoint.baseURL) failed: \(error.localizedDescription)",
                            code: "TRANSPORT", causeText: String(describing: error))
         }
-        guard let http = response as? HTTPURLResponse else {
-            throw LLMError(message: "non-HTTP response", code: "TRANSPORT")
-        }
 
-        // 3. 非 2xx：错误体透传（dsh：HTTP status 权威，body 原样带在 causeText）
+        // 非 2xx：错误体透传（dsh：HTTP status 权威，body 原样带在 causeText）。
+        // delegate 把剩余 body 逐块喂入字节流，此处读完再抛 LLMError（分类照旧）。
         if !(200..<300).contains(http.statusCode) {
-            var body = ""
-            for try await byteChunk in bytes {
-                body += String(decoding: [byteChunk], as: UTF8.self)
+            var bodyBytes: [UInt8] = []
+            for try await byte in delegate.bytes {
+                bodyBytes.append(byte)
                 tracker.pulse()
             }
+            let body = String(decoding: bodyBytes, as: UTF8.self)
             var providerMessage = "API error (HTTP \(http.statusCode))"
             var providerDetail: String?
             if let parsed = try? JSONDecoder().decode(WireErrorBody.self, from: Data(body.utf8)),
@@ -136,17 +158,27 @@ struct OpenAICompatAdapter {
                 causeText: body.isEmpty ? "HTTP \(http.statusCode)" : body)
         }
 
-        // 4. SSE 行装配 → wire chunk 翻译（translate.ts 全量语义）
+        // 4. SSE 行装配 → wire chunk 翻译（translate.ts 全量语义）。
+        //    字节流 → LineSplitter 按行切分（等价 AsyncBytes.lines：\n 分隔、
+        //    去行尾 \r、EOF 残段 flush）→ SSEAssembler 按行输入契约不变。
         var assembler = SSEAssembler()
         var translator = ChunkTranslator()
-        // STREAM_CLOSED 诊断事实（一次性给足：行数 / 载荷数 / 最后载荷前 200 字符），
-        // 服务端「200 + 错误 JSON 载荷 + 关流」时用户下次重跑即可看到真实载荷。
+        // STREAM_CLOSED 诊断事实（一次性给足：行数 / 载荷数 / 最后载荷前 200 字符 /
+        // Content-Type 响应头 / 最后 3 行原始行各前 200 字符），服务端「200 + 错误
+        // JSON 载荷 + 关流」或对空 body 请求直接关流时用户下次重跑即可看到真实返回。
         var lineCount = 0
         var payloadCount = 0
         var lastPayload: String?
-        for try await line in bytes.lines {
+        var lastRawLines: [String] = []
+
+        /// 消费一行 SSE：返回 true 表示 [DONE] 终止（dsh parseSse 顺序）。
+        func handleLine(_ line: String) throws -> Bool {
             lineCount += 1
             tracker.pulse()
+            lastRawLines.append(line)
+            if lastRawLines.count > 3 {
+                lastRawLines.removeFirst()
+            }
             switch assembler.consume(line: line) {
             case .payload(let payload):
                 payloadCount += 1
@@ -154,7 +186,7 @@ struct OpenAICompatAdapter {
                 // [DONE] 是流终止哨兵，不是模型载荷——先判后喂（dsh parseSse 顺序），
                 // 绝不进入 translator（喂入会被当 JSON 解析并误抛 MALFORMED_RESPONSE）。
                 if payload == SSE.done {
-                    return // dsh parseSse：[DONE] 即正常终止
+                    return true // dsh parseSse：[DONE] 即正常终止
                 }
                 let chunks = try translator.consume(payload: payload)
                 for chunk in chunks {
@@ -163,20 +195,42 @@ struct OpenAICompatAdapter {
             case .activity, .none:
                 break
             }
+            return false
+        }
+
+        var splitter = LineSplitter()
+        for try await byte in delegate.bytes {
+            if let line = splitter.feed(byte) {
+                if try handleLine(line) {
+                    return
+                }
+            }
+        }
+        if let line = splitter.flush() {
+            if try handleLine(line) {
+                return
+            }
         }
         // EOF 前未见 [DONE]：截断响应，不可信（dsh STREAM_CLOSED）。
         // 诊断载荷：last 为空说明服务端一个 data: 都没发（如对不存在模型直接关流）；
         // last 非 JSON 说明服务端发了错误对象（典型：已下线模型名 / 鉴权失败）。
         let lastSummary = lastPayload.map { String($0.prefix(200)) } ?? "∅"
+        let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "nil"
+        let rawLinesSummary = lastRawLines.isEmpty
+            ? "∅"
+            : lastRawLines.map { String($0.prefix(200)) }.joined(separator: " | ")
         throw LLMError(
             message: "SSE stream ended without [DONE] "
-                + "(lines=\(lineCount), payloads=\(payloadCount), last=\(lastSummary))",
+                + "(lines=\(lineCount), payloads=\(payloadCount), last=\(lastSummary), "
+                + "content-type=\(contentType), lastRawLines=[\(rawLinesSummary)])",
             code: "STREAM_CLOSED")
     }
 
     // MARK: - wire 序列化（serialize.ts requestWithMessages 语义）
 
-    private func buildURLRequest(_ request: LLMRequest) throws -> URLRequest {
+    /// 返回 (请求, body 数据)。body 不放进 httpBody——由调用方走 uploadTask 显式上传
+    /// （传输层修法 ← OpenMinis OAuthHTTPClient.swift:1426，dataTask can lose httpBody）。
+    private func buildURLRequest(_ request: LLMRequest) throws -> (URLRequest, Data) {
         var wireMessages: [WireMessage] = []
         if let system = request.system, !system.isEmpty {
             wireMessages.append(WireMessage(role: "system", content: system))
@@ -224,8 +278,178 @@ struct OpenAICompatAdapter {
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        urlRequest.httpBody = try JSONEncoder().encode(wire)
-        return urlRequest
+        // 清理旧 Content-Length —— URLSession 会按实际上传的 body 重算
+        // （← OpenMinis OAuthHTTPClient.swift:1405 同款）。
+        urlRequest.setValue(nil, forHTTPHeaderField: "Content-Length")
+        let bodyData = try JSONEncoder().encode(wire)
+        return (urlRequest, bodyData)
+    }
+}
+
+// MARK: - 传输层 delegate（← OpenMinis OAuthHTTPClient.swift:1426-1454 同款模式）
+
+/// uploadTask 流式响应 delegate：
+/// - didReceive response：经 CheckedContinuation 把 HTTPURLResponse 交给消费侧判
+///   状态码（delegate 回调非 async，不能直接抛错；非 2xx 的错误体读取与 LLMError
+///   分类保持在 async 消费侧，dsh 语义零改动）。
+/// - didReceive data：逐字节喂 AsyncThrowingStream<UInt8>（流式；同时喂 watchdog）。
+/// - didCompleteWithError：错误 → finish(throwing:)；EOF → finish()。
+///
+/// 线程模型：session 的 delegateQueue（nil → 内部串行队列）串行回调；
+/// 状态快照 + lock 保护，waitForResponse 可被消费侧 Task 取消。
+private final class StreamedUploadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let byteStream: AsyncThrowingStream<UInt8, Error>
+    private let byteContinuation: AsyncThrowingStream<UInt8, Error>.Continuation
+    private let tracker: ActivityTracker
+
+    private let lock = NSLock()
+    private var httpResponse: HTTPURLResponse?
+    private var responseFailure: Error?
+    private var responseContinuation: CheckedContinuation<HTTPURLResponse, Error>?
+
+    init(tracker: ActivityTracker) {
+        self.tracker = tracker
+        var continuation: AsyncThrowingStream<UInt8, Error>.Continuation!
+        self.byteStream = AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation = $0 }
+        self.byteContinuation = continuation
+        super.init()
+    }
+
+    /// 响应体字节流（单次消费；onTermination 由调用方设置取消桥接）。
+    var bytes: AsyncThrowingStream<UInt8, Error> { byteStream }
+
+    /// 消费侧停止（Task 取消 / 流终止 / 正常收尾）时触发。
+    func setOnTermination(_ handler: @escaping @Sendable (Error?) -> Void) {
+        byteContinuation.onTermination = handler
+    }
+
+    /// 挂起等待响应头。didReceive response 必先于 didReceive data（delegate 串行
+    /// 队列），但可能晚于 resume()——先查状态快照再登记 continuation，无竞态；
+    /// Task 取消时以 CancellationError 恢复。
+    func waitForResponse() async throws -> HTTPURLResponse {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (cont: CheckedContinuation<HTTPURLResponse, Error>) in
+                self.lock.lock()
+                if let http = self.httpResponse {
+                    self.lock.unlock()
+                    cont.resume(returning: http)
+                    return
+                }
+                if let failure = self.responseFailure {
+                    self.lock.unlock()
+                    cont.resume(throwing: failure)
+                    return
+                }
+                // 先登记再查取消：若取消发生在登记与检查之间，由 cancelWait 兜底。
+                self.responseContinuation = cont
+                let cancelled = Task.isCancelled
+                self.lock.unlock()
+                if cancelled {
+                    self.cancelWait()
+                }
+            }
+        } onCancel: {
+            self.cancelWait()
+        }
+    }
+
+    /// 取消挂起的响应等待（幂等：lock 下取出并置空，绝不二次 resume）。
+    private func cancelWait() {
+        lock.lock()
+        let pending = responseContinuation
+        responseContinuation = nil
+        lock.unlock()
+        pending?.resume(throwing: CancellationError())
+    }
+
+    // MARK: URLSessionDataDelegate
+
+    func urlSession(_ session: URLSession,
+                    dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        let pending = responseContinuation
+        responseContinuation = nil
+        lock.unlock()
+        guard let http = response as? HTTPURLResponse else {
+            let failure = LLMError(message: "non-HTTP response", code: "TRANSPORT")
+            lock.lock()
+            responseFailure = failure
+            lock.unlock()
+            pending?.resume(throwing: failure)
+            completionHandler(.cancel)
+            return
+        }
+        lock.lock()
+        httpResponse = http
+        lock.unlock()
+        pending?.resume(returning: http)
+        // 非 2xx 也放行：错误体经 didReceive data 读入，由消费侧抛 LLMError。
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        tracker.pulse()
+        for byte in data {
+            byteContinuation.yield(byte)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let pending = responseContinuation
+        responseContinuation = nil
+        lock.unlock()
+        if let error {
+            if pending != nil {
+                // 响应头未到即失败（连接失败 / 超时 / 被取消）——经 responseFailure
+                // 交给 waitForResponse（消费侧按 TRANSPORT / 取消分类）。
+                lock.lock()
+                responseFailure = error
+                lock.unlock()
+                pending?.resume(throwing: error)
+            }
+            byteContinuation.finish(throwing: error)
+        } else {
+            // EOF 而无响应头：理论不可达（didReceive response 必先于 didComplete），
+            // 兜底给 TRANSPORT 而非永久挂起。
+            pending?.resume(throwing: LLMError(message: "non-HTTP response", code: "TRANSPORT"))
+            byteContinuation.finish()
+        }
+    }
+}
+
+// MARK: - 行切分（等价 URLSession.AsyncBytes.lines）
+
+/// 字节流按行切分（等价 AsyncBytes.lines 行为：\n 分隔、去行尾 \r、EOF 残段
+/// flush 为末行）。SSEAssembler 的按行输入契约保持不变，管线其余零改动。
+/// 行只在 \n 处切分，UTF-8 多字节序列不会跨行截断——按行整体解码安全。
+private struct LineSplitter {
+    private var buffer: [UInt8] = []
+
+    /// 喂入一个字节；遇 \n 返回完成的行（可能为空行），否则返回 nil。
+    mutating func feed(_ byte: UInt8) -> String? {
+        guard byte == 0x0A else {
+            buffer.append(byte)
+            return nil
+        }
+        return takeLine()
+    }
+
+    /// EOF flush：残段非空时作为最后一行返回。
+    mutating func flush() -> String? {
+        buffer.isEmpty ? nil : takeLine()
+    }
+
+    private mutating func takeLine() -> String {
+        var line = buffer
+        buffer.removeAll(keepingCapacity: true)
+        if line.last == 0x0D {
+            line.removeLast()
+        }
+        return String(decoding: line, as: UTF8.self)
     }
 }
 
