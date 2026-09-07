@@ -68,6 +68,27 @@ struct DeriveFold {
                 break
             }
         }
-        self.messages = messages
+        // 4. 出口防御（ERR-017）：剔除孤立 tool 消息——其前面不存在带匹配
+        //    tool_call_id 的 assistant 时，OpenAI 兼容端点直接 400。正常序列
+        //    由 Compactor 的边界平衡保证；此处兜底历史遗留/异常切分。
+        var safe: [ChatMessage] = []
+        var openCallIds = Set<String>()
+        for message in messages {
+            if let calls = message.toolCalls, !calls.isEmpty {
+                for call in calls { openCallIds.insert(call.id) }
+                safe.append(message)
+                continue
+            }
+            if message.role == .tool {
+                guard let id = message.toolCallID, openCallIds.contains(id) else { continue }
+                safe.append(message)
+                continue
+            }
+            // 非 tool 结果的普通消息（user/assistant 无调用）关闭所有未决对——
+            // 中间隔了普通消息的 result 已不被 API 接受，同样按孤立处理。
+            openCallIds.removeAll()
+            safe.append(message)
+        }
+        self.messages = safe
     }
 }

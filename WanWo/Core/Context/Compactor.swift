@@ -211,22 +211,37 @@ final class Compactor: @unchecked Sendable {
     // MARK: - 范围选择 + tool-pairing 平衡（dsh selectCompactableRange / tool-pairing）
 
     /// 选择可压缩范围：模型可见节点按 seq 升序，保留尾部 ≤ retainTokens；
-    /// tool-pairing 平衡：call/result 对必须同进同出（任一在范围内则补齐另一个）。
+    /// tool-pairing 平衡（dsh tool-pairing.ts）：派生历史的 tool 对 =
+    /// assistantMessage（含 toolCalls blocks）↔ toolResult——边界不得把这对拆散，
+    /// 否则保留区出现孤立 tool 消息 → OpenAI 兼容端点 400
+    /// "Messages with role 'tool' must be a response to a preceding message with
+    /// 'tool_calls'"（ERR-017 真机实证）。原"M2 简化"注释的错误推理已删。
     static func selectCompactableRange(_ events: [SessionEvent],
                                        retainTokens: Int) -> (seqList: [Int], first: Int, last: Int)? {
         var visible: [(seq: Int, tokens: Int)] = []
-        var callSeqByCallId: [String: Int] = [:]
-        var resultSeqByCallId: [String: Int] = [:]
+        // callId → 承载该 call 的 assistantMessage 事件 seq（配对锚点的正确层级）。
+        var assistantSeqByCallId: [String: Int] = [:]
         for event in events {
             switch event.payload {
-            case .userMessage, .assistantMessage:
+            case .userMessage:
+                visible.append((event.seq, estimateNode(events: events, seq: event.seq)))
+            case .assistantMessage(_, _, let message, _, _):
+                for case .toolCall(let callId, _, _) in message.content {
+                    assistantSeqByCallId[callId] = event.seq
+                }
                 visible.append((event.seq, estimateNode(events: events, seq: event.seq)))
             case .toolResult(_, _, let callId, let content, _, _, _, _):
                 visible.append((event.seq, estimateText(content) + 4))
-                resultSeqByCallId[callId] = event.seq
-            case .toolCall(_, _, let callId, _, let arguments):
-                callSeqByCallId[callId] = event.seq
-                // toolCall 本身不是派生消息节点，但作为配对锚点参与范围平衡。
+                // 结果的配对 assistant 一定在它之前落盘（不变量），向前就近找。
+                if assistantSeqByCallId[callId] == nil {
+                    for previous in events.reversed() where previous.seq < event.seq {
+                        if case .assistantMessage(_, _, let message, _, _) = previous.payload,
+                           message.content.contains(where: { if case .toolCall(let id, _, _) = $0 { return id == callId }; return false }) {
+                            assistantSeqByCallId[callId] = previous.seq
+                            break
+                        }
+                    }
+                }
             default:
                 break
             }
@@ -243,20 +258,27 @@ final class Compactor: @unchecked Sendable {
             headEnd -= 1
         }
         guard headEnd > 0 else { return nil }
-        var startSeq = visible[0].seq
-        var endSeq = visible[headEnd - 1].seq
 
-        // tool-pairing 平衡：范围内的 result 补齐其 call；call 在范围内的 result 同理
-        // （call 不是面节点，故只需保证结果所在的 call 事件——通过把 result 挤出
-        // 范围无法做到（result 已在中间），改为扩展 start 到最早配对 call 之前的
-        // 第一个可见节点。M2 简化：只要 result 在范围内即认可（call 是 log-only，
-        // 派生历史不直接消费 toolCall 节点，拆散不会产生孤立 tool 消息）。
-        // —— 校验保留：范围内不得存在「有 result 无 call」的 callId（不可能，因
-        //   不变量已保证 result 后于 call 落盘）。
-        _ = callSeqByCallId
-        _ = resultSeqByCallId
-        let seqList = visible.prefix(headEnd).map { $0.seq }
-        return (seqList, startSeq, endSeq)
+        // tool-pairing 平衡：影子区 = visible.prefix(head)。若保留区中某
+        // toolResult 的配对 assistantMessage 已被影子化，边界向前收缩（把该
+        // assistant 挤回保留区），直至保留区不存在孤立 tool 消息。
+        var head = headEnd
+        while head > 0 {
+            let shadowSeqs = Set(visible.prefix(head).map { $0.seq })
+            var balanced = true
+            for node in visible[head...] {
+                guard case .toolResult(_, _, let callId, _, _, _, _, _) = events[node.seq].payload,
+                      let assistantSeq = assistantSeqByCallId[callId],
+                      shadowSeqs.contains(assistantSeq) else { continue }
+                balanced = false
+                break
+            }
+            if balanced { break }
+            head -= 1
+        }
+        guard head > 0 else { return nil }
+        let seqList = visible.prefix(head).map { $0.seq }
+        return (seqList, seqList.first ?? 0, seqList.last ?? 0)
     }
 
     /// 单节点估算（影子定价用）。

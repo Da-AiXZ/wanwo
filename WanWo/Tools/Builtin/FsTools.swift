@@ -96,7 +96,10 @@ struct FsWriteTool: AgentTool {
         let workspace = ctx.workspace
         let existed = workspace.exists(path)
         do {
-            _ = try workspace.mutate(path) { _ in content }
+            // dsh write 语义 =「创建或整体替换」：不走 mutate（read-match-write
+            // 是 edit 族语义，对不存在的文件会读打开失败 → NSCocoaErrorDomain
+            // 260，ERR-013 真根因）。原子性由 writeData 的 .atomic + 独占并发保证。
+            _ = try workspace.writeData(path, data: Data(content.utf8))
         } catch {
             return .failure(String(describing: error), code: "WRITE_FAILED")
         }
@@ -199,7 +202,13 @@ struct FsGlobTool: AgentTool {
         }
         let files = workspace.recursiveFiles()
             .filter { $0.path.hasPrefix(base.path) }
-            .filter { regex.firstMatch(in: $0.path, range: NSRange($0.path.startIndex..., in: $0.path)) != nil }
+            // ERR-018：dsh glob 模式相对搜索目录匹配——对绝对路径匹配 `*`
+            // （^[^/]*$）永远失败（真机实证：`*` 搜不到 hello.txt 而 `**/*` 能）。
+            .filter { url -> Bool in
+                var tail = String(url.path.dropFirst(base.path.count))
+                if tail.hasPrefix("/") { tail.removeFirst() }
+                return regex.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)) != nil
+            }
         func mtime(_ url: URL) -> TimeInterval {
             (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate?.timeIntervalSince1970) ?? nil ?? 0
