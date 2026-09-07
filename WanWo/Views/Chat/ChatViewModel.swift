@@ -118,7 +118,7 @@ final class ChatViewModel: ObservableObject {
                     // 原实现 agentLoop! 强制解包在此分支直接闪退（EXC_BREAKPOINT）。
                     // 降级：会话照常打开可浏览历史，发送时 send() 的 agentLoop guard 拦截。
                     self.registry = nil
-                    self.slashCommands = []
+                    self.slashCommands = nil
                     self.resumeBanner = "未配置模型：请到「设置 · Providers」补填 API Key 后发送"
                 }
                 self.reproject()
