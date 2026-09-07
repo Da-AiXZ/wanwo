@@ -517,8 +517,7 @@ struct EventStreamView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             if let exportURL = model.exportFileURL {
                 ShareLink(item: exportURL,
-                          preview: SharePreview(exportURL.lastPathComponent,
-                                                source: exportURL)) {
+                          preview: SharePreview(exportURL.lastPathComponent)) {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .accessibilityLabel("导出会话日志")
@@ -539,7 +538,7 @@ struct EventStreamView: View {
         }
     }
 
-    private func sessionLabel(_ summary: EventStreamViewModel.SessionSummary) -> String {
+    private func sessionLabel(_ summary: SessionSummary) -> String {
         let title = summary.title ?? "新会话"
         return title + " · " + String(summary.eventCount) + " 事件"
     }
@@ -547,7 +546,6 @@ struct EventStreamView: View {
     private func loadedLabel(_ date: Date) -> String {
         let time = date.formatted(.dateTime.hour().minute().second())
         return "刷新于 " + time
-    }
     }
 
     /// 空会话列表时以 "" 兜底（Picker 需要 stable tag）。
