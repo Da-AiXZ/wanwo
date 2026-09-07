@@ -37,6 +37,9 @@ targets:
       # （10-design v2.2：RootfsInstaller 从 bundle 解压 alpine-rootfs.zip 安装）
       - path: WanWo/Resources/alpine-rootfs.zip
         buildPhase: resources
+      # Bashism 规则（M2.4：BashismDetector 运行时加载；OpenMinis src/shared 共享 JSON）
+      - path: WanWo/Resources/bashism_rules.json
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang

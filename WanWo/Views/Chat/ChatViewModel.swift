@@ -2,11 +2,18 @@
 //  ChatViewModel.swift
 //  WanWo
 //
-//  【按设计新写】出处：10-design §2.1（UI 不持业务状态，只消费投影；交互意图收敛为
-//  对 SessionLifecycle/loop 的方法调用）、§7.3 交互流 1（发送→流式→卡片）、
-//  §5.2（SessionLifecycle resume）、复用 M0 OutputSanitizer/ShellTestView 的
-//  0.2s 节流 flush 模式。
-//  UI 投影 = 会话事件流的只读视图；发送/取消收敛为对 ChatTurnRunner 的调用。
+//  【按设计新写 · M2 重写】出处：10-design §2.1（UI 不持业务状态，只消费投影）、
+//  §7.3 交互流 1（发送→流式→工具卡流式输出→完成态卡片收敛→下一轮，顶部状态条
+//  实时显示 token 压力 F041）、§5.2（SessionLifecycle resume）。
+//  M1 → M2 变化：
+//    · 回合驱动从 ChatTurnRunner 切到 AgentLoop（submit/cancel/回调三缝）
+//    · 工具卡：tool/call → running 卡（presentCall 意图 + onShellLine 流式）→
+//      tool/result 收敛（presentResult 意图 + 结果文本）
+//    · 斜杠命令（/compact /new /model /help）：command/run + command/done 落盘
+//    · 标记消息过滤：<runtime-context> / <agents-md-update> / <compaction-summary>
+//      / <file> 开头的 user 消息不渲染气泡（注入通道，F038/F039/F040）
+//    · token 压力三档显示（F041 素净版）
+//  UI 投影 = 会话事件流的只读视图；0.2s 节流 flush 沿用 M1 模式。
 //
 
 import Foundation
@@ -19,21 +26,35 @@ final class ChatViewModel: ObservableObject {
         case loading
         case idle
         case streaming
-        case retrying(attempt: Int, delayMs: Int, message: String)
         case failed(String)
+    }
+
+    /// 工具卡状态（dsh 工具卡 M2 素净版；正式卡片族 = M9）。
+    struct ToolCard: Identifiable, Equatable {
+        let callId: String
+        var name: String
+        var title: String
+        var detail: String?
+        /// 流式输出（shell 行等）。
+        var liveOutput: String = ""
+        /// 结果文本（收敛后）。
+        var resultText: String?
+        var isError: Bool = false
+        var isRunning: Bool = true
     }
 
     struct Bubble: Identifiable, Equatable {
         enum Kind: Equatable {
-            case user
-            case assistant
-            case reasoning
-            case toolNote
+            case user(String)
+            case assistant(String)
+            case reasoning(String)
+            case tool(ToolCard)
+            case command(kind: String, text: String)
+            case note(String)
         }
 
         let id: String
         var kind: Kind
-        var text: String
     }
 
     @Published private(set) var bubbles: [Bubble] = []
@@ -42,15 +63,20 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var resumeBanner: String?
     @Published private(set) var modelLabel = ""
+    @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
 
     private let environment: AppEnvironment
     private let sessionID: String
     private var writer: SessionWriter?
-    private var adapter: OpenAICompatAdapter?
+    private var agentLoop: AgentLoop?
+    private var registry: ToolRegistry?
+    /// replay 投影用的调用参数缓存（callId → name/args，presentResult 复现用）。
+    private var callArgs: [String: (name: String, args: JSONValue)] = [:]
     private var runningTask: Task<Void, Never>?
+    private var slashCommands: SlashCommandRegistry?
 
-    // 0.2s 节流（复用 M0 ShellTestView 的 flush 模式；§5.4 OutputSanitizer 节流语义）
+    // 0.2s 节流（§5.4 OutputSanitizer 节流语义；M1 flush 模式复用）
     private var pendingTextChunks: Deque<String> = []
     private var pendingReasoningChunks: Deque<String> = []
     private var flushTimer: Timer?
@@ -60,7 +86,7 @@ final class ChatViewModel: ObservableObject {
         self.sessionID = sessionID
     }
 
-    // MARK: - 打开（resume）
+    // MARK: - 打开（resume + AgentLoop 装配）
 
     func open() {
         guard phase == .loading else { return }
@@ -69,16 +95,19 @@ final class ChatViewModel: ObservableObject {
             do {
                 let (writer, repaired) = try await self.environment.sessionStore.openWriter(id: self.sessionID)
                 self.writer = writer
-                self.adapter = (try? self.environment.makeAdapter())?.0
                 if repaired > 0 {
                     self.resumeBanner = "已恢复：\(repaired) 个中断收尾已修复"
                 }
-                let derived = writer.deriveMessages()
-                if let config = derived.config {
-                    self.modelLabel = "\(config.provider) · \(config.model)"
-                } else if let endpoint = (try? self.environment.makeAdapter())?.1 {
+                if let endpoint = (try? self.environment.makeAdapter())?.1 {
                     self.modelLabel = "\(endpoint.name) · \(endpoint.model)"
                 }
+                self.agentLoop = self.environment.makeAgentStack(
+                    sessionId: self.sessionID,
+                    writer: writer,
+                    callbacks: self.makeCallbacks())
+                self.registry = self.agentLoop?.deps.registry
+                self.slashCommands = SlashCommandRegistry.makeDefault(
+                    loop: self.agentLoop!, environment: self.environment)
                 self.reproject()
                 self.phase = .idle
             } catch {
@@ -89,17 +118,12 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 关闭（会话切换 / 视图离场）
 
-    /// 会话视图离场时的显式收尾（SessionStore.closeWriter 双层防泄漏的第二层）：
-    /// 先取消在途回合并等其落地（避免真实写入与修复收尾交错），再按 writer 实例
-    /// 身份释放写柄（openWriter 已自带自动 close，此处是 belt-and-braces 的显式路径）。
     func close() {
+        Task { [weak agentLoop] in await agentLoop?.cancel(cause: .disposed) }
         let task = runningTask
         runningTask = nil
         task?.cancel()
-        guard let writer = writer else {
-            // 尚未拿到写柄（open 失败/未完成）：仅取消在途任务即可。
-            return
-        }
+        guard let writer = writer else { return }
         let store = environment.sessionStore
         Task {
             _ = await task?.value
@@ -107,30 +131,208 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // MARK: - 发送 / 取消
+
+    func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, phase == .idle, let loop = agentLoop else { return }
+        draft = ""
+
+        if SlashCommandRegistry.isCommand(text) {
+            runningTask = Task { [weak self] in
+                await self?.runSlashCommand(text)
+                self?.runningTask = nil
+            }
+            return
+        }
+        phase = .streaming
+        loop.submit(text)
+    }
+
+    func cancel() {
+        agentLoop?.cancel(cause: .user)
+    }
+
+    // MARK: - 斜杠命令（command/run → 执行 → command/done）
+
+    private func runSlashCommand(_ text: String) async {
+        guard let writer = writer else { return }
+        let name = SlashCommandRegistry.commandName(text)
+        guard let command = slashCommands?.command(named: name) else {
+            let help = slashCommands?.helpText ?? "Unknown command."
+            try? await writer.append(.commandRun(commandId: UUID().uuidString,
+                                                 name: name, args: nil))
+            try? await writer.append(.commandDone(commandId: "", kind: "error",
+                                                  text: "Unknown command \"\(name)\".\n\n\(help)"))
+            reproject()
+            return
+        }
+        let commandId = UUID().uuidString
+        let args = text.count > name.count + 1
+            ? String(text.dropFirst(name.count + 2)) : nil
+        try? await writer.append(.commandRun(commandId: commandId, name: name, args: args))
+        let result = await command.run()
+        try? await writer.append(.commandDone(commandId: commandId, kind: "success", text: result))
+        reproject()
+    }
+
+    // MARK: - AgentLoop 回调（后台线程 → MainActor）
+
+    private func makeCallbacks() -> AgentLoop.Callbacks {
+        AgentLoop.Callbacks(
+            onLiveChunk: { [weak self] chunk in
+                Task { @MainActor [weak self] in self?.handleLiveChunk(chunk) }
+            },
+            onShellLine: { [weak self] callId, line in
+                Task { @MainActor [weak self] in
+                    self?.appendToCard(callId: callId, line: line)
+                }
+            },
+            onTokenPressure: { [weak self] info in
+                Task { @MainActor [weak self] in self?.pressure = info }
+            },
+            onTurnEnd: { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.flushNow()
+                    self.reproject()
+                    self.phase = .idle
+                    self.maybeGenerateTitle()
+                }
+            },
+            onPhaseChange: { [weak self] phase in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if case .running = phase { self.phase = .streaming }
+                }
+            },
+            onToolCallStarted: { [weak self] callId, name, detail in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let card = ToolCard(callId: callId, name: name,
+                                        title: name, detail: detail)
+                    self.bubbles.append(Bubble(id: "tc-live-\(callId)", kind: .tool(card)))
+                }
+            },
+            onToolCallFinished: { [weak self] callId, output, isError in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let index = self.bubbles.lastIndex(where: {
+                        if case .tool(let card) = $0.kind { return card.callId == callId }
+                        return false
+                    }), case .tool(var card) = self.bubbles[index].kind {
+                        card.resultText = output
+                        card.isError = isError
+                        card.isRunning = false
+                        self.bubbles[index].kind = .tool(card)
+                    }
+                }
+            })
+    }
+
+    private func appendToCard(callId: String, line: String) {
+        for index in bubbles.indices {
+            if case .tool(var card) = bubbles[index].kind, card.callId == callId {
+                card.liveOutput += (card.liveOutput.isEmpty ? "" : "\n") + line
+                bubbles[index].kind = .tool(card)
+                return
+            }
+        }
+    }
+
+    private func maybeGenerateTitle() {
+        guard let writer = writer else { return }
+        let firstTurnOfSession = writer.nextTurn <= 2
+        guard firstTurnOfSession,
+              let adapter = try? environment.makeAdapter().0 else { return }
+        let database = environment.database
+        let environment = self.environment
+        Task { [weak self] in
+            await TitleGenerator.generateAndStore(writer: writer, database: database,
+                                                  adapter: adapter)
+            await MainActor.run { self?.environment.sessionsRevision += 1 }
+            _ = environment
+        }
+    }
+
     // MARK: - 投影（UI = 事件流的只读视图）
+
+    /// 注入/标记消息前缀（F038/F039/F040 + 压缩摘要呈现；不渲染气泡）。
+    private static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
+                                         "<compaction-summary>", "<file>"]
+
+    private func isMarkerMessage(_ text: String) -> Bool {
+        Self.markerPrefixes.contains { text.hasPrefix($0) }
+    }
 
     private func reproject() {
         guard let writer = writer else { return }
         var result: [Bubble] = []
+        callArgs.removeAll()
         for event in writer.events {
             switch event.payload {
             case .userMessage(let text):
-                result.append(Bubble(id: "u\(event.seq)", kind: .user, text: text))
+                guard !isMarkerMessage(text) else { continue }
+                result.append(Bubble(id: "u\(event.seq)", kind: .user(text)))
+
             case .assistantMessage(_, _, let message, _, _):
                 for block in message.content {
                     switch block {
                     case .text(let t):
                         result.append(Bubble(id: "a\(event.seq)-t\(result.count)",
-                                             kind: .assistant, text: t))
+                                             kind: .assistant(t)))
                     case .reasoning(let t):
                         result.append(Bubble(id: "a\(event.seq)-r\(result.count)",
-                                             kind: .reasoning, text: t))
-                    case .toolCall(let id, let name, _):
-                        result.append(Bubble(id: "a\(event.seq)-c\(id)",
-                                             kind: .toolNote,
-                                             text: "工具调用 \(name)（M2 起执行；本次调用未产生结果）"))
+                                             kind: .reasoning(t)))
+                    case .toolCall:
+                        break // 工具卡由 tool/call 事件渲染
                     }
                 }
+
+            case .toolCall(let turn, let step, let callId, let name, let arguments):
+                let args = ToolCallScheduler.parseArgs(arguments)
+                callArgs[callId] = (name, args)
+                let intent = registry?.get(name)?.presentCall(args)
+                    ?? ToolCardIntent(title: name)
+                result.append(Bubble(id: "tc\(event.seq)", kind: .tool(ToolCard(
+                    callId: callId, name: name,
+                    title: intent.title,
+                    detail: intent.detail ?? "turn \(turn) · step \(step)"))))
+
+            case .toolResult(_, _, let callId, let content, let isError,
+                             let errorName, let errorCode, let meta):
+                // 收敛同名 running 卡（replay 投影顺序保证先 call 后 result）。
+                if let index = result.lastIndex(where: {
+                    if case .tool(let card) = $0.kind { return card.callId == callId }
+                    return false
+                }) {
+                    if case .tool(var card) = result[index].kind {
+                        let args = callArgs[callId]?.args ?? .null
+                        let output = ToolOutput(text: content, isError: isError,
+                                                errorName: errorName, errorCode: errorCode,
+                                                meta: meta)
+                        if let intent = registry?.get(card.name)?.presentResult(args, output) {
+                            card.title = intent.title
+                            card.detail = intent.detail
+                        }
+                        card.resultText = content
+                        card.isError = isError
+                        card.isRunning = false
+                        result[index].kind = .tool(card)
+                    }
+                }
+
+            case .commandRun(_, let name, _):
+                result.append(Bubble(id: "cr\(event.seq)", kind: .command(kind: "run", text: name)))
+
+            case .commandDone(_, let kind, let text):
+                result.append(Bubble(id: "cd\(event.seq)",
+                                     kind: .command(kind: kind, text: text ?? "")))
+
+            case .compactionSummary(let compactionId, _, _, _, _, _):
+                result.append(Bubble(id: "cs\(event.seq)",
+                                     kind: .note("上下文已压缩（\(compactionId.prefix(8))）")))
+
             default:
                 break
             }
@@ -138,96 +340,6 @@ final class ChatViewModel: ObservableObject {
         bubbles = result
         streamingText = ""
         streamingReasoning = ""
-    }
-
-    // MARK: - 发送 / 取消
-
-    func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        guard phase == .idle else { return }
-        guard runningTask == nil else { return }
-        draft = ""
-
-        runningTask = Task { [weak self] in
-            guard let self = self else { return }
-            await self.runTurn(userText: text)
-            self.runningTask = nil
-        }
-    }
-
-    func cancel() {
-        runningTask?.cancel()
-    }
-
-    private func runTurn(userText: String) async {
-        do {
-            let (adapter, endpoint) = try environment.makeAdapter()
-            self.adapter = adapter
-            guard let writer = writer else {
-                phase = .failed("会话未打开")
-                return
-            }
-            modelLabel = "\(endpoint.name) · \(endpoint.model)"
-            phase = .streaming
-            let firstTurnOfSession = (writer.eventCount == 0)
-
-            let outcome = try await ChatTurnRunner.runTurn(
-                writer: writer,
-                adapter: adapter,
-                userText: userText,
-                onLiveChunk: { [weak self] chunk in
-                    Task { @MainActor [weak self] in
-                        self?.handleLiveChunk(chunk)
-                    }
-                },
-                onRetry: { [weak self] attempt, delayMs, message in
-                    Task { @MainActor [weak self] in
-                        self?.phase = .retrying(attempt: attempt, delayMs: delayMs, message: message)
-                        self?.streamingText = ""
-                        self?.streamingReasoning = ""
-                    }
-                })
-
-            flushNow()
-            reproject()
-            switch outcome.endReason {
-            case .completed:
-                phase = .idle
-            case .maxTokens:
-                phase = .failed("回合达到输出上限")
-            case .error(let failure):
-                phase = .failed("模型错误 [\(failure.code)]：\(failure.message)")
-            case .aborted:
-                phase = .idle
-            case .blocked, .interrupted:
-                phase = .idle
-            }
-
-            // F004 标题生成（首轮后；后台执行，不阻塞下一轮）。
-            if firstTurnOfSession {
-                let environment = self.environment
-                let turnOutcome = outcome
-                if case .completed = turnOutcome.endReason {
-                    Task { [weak self] in
-                        await TitleGenerator.generateAndStore(
-                            writer: writer, database: environment.database,
-                            adapter: adapter)
-                        await MainActor.run { self?.environment.sessionsRevision += 1 }
-                    }
-                }
-            }
-        } catch {
-            flushNow()
-            reproject()
-            if Task.isCancelled {
-                phase = .idle
-            } else if let llmError = error as? LLMError {
-                phase = .failed("模型错误 [\(llmError.code)]：\(llmError.message)")
-            } else {
-                phase = .failed(String(describing: error))
-            }
-        }
     }
 
     // MARK: - 流式直通车（0.2s 节流 flush）

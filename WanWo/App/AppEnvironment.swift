@@ -99,4 +99,70 @@ final class AppEnvironment: ObservableObject {
         }
         return (OpenAICompatAdapter(endpoint: endpoint, apiKey: apiKey), endpoint)
     }
+
+    /// nonisolated adapter 工厂（AgentLoop/Compactor 的 @Sendable makeAdapter 缝用）。
+    nonisolated func makeAgentAdapter() throws -> OpenAICompatAdapter {
+        guard let endpoint = endpointStore.activeEndpoint() else {
+            throw LLMError(message: "没有已启用的模型端点，请到「设置 · Providers」配置。",
+                           code: "NO_ENDPOINT")
+        }
+        guard let apiKey = endpointStore.apiKey(for: endpoint), !apiKey.isEmpty else {
+            throw LLMError(message: "端点「\(endpoint.name)」未配置 API Key。",
+                           code: "MISSING_CREDENTIAL")
+        }
+        return OpenAICompatAdapter(endpoint: endpoint, apiKey: apiKey)
+    }
+
+    // MARK: - Agent 栈装配（M2）
+
+    /// 装配 AgentLoop 全家（§十一 M2：registry / pipeline / compactor / spill /
+    /// injector / loop；审批缝 = AutoApprovalSeam 仅 M2 占位，M3 换审批卡 answerer）。
+    /// - Returns: 失败（如无端点配置）返回 nil——UI 以「未配置模型」态降级。
+    func makeAgentStack(sessionId: String,
+                        writer: SessionWriter,
+                        callbacks: AgentLoop.Callbacks) -> AgentLoop? {
+        guard (try? makeAgentAdapter()) != nil else { return nil }
+
+        let registry = ToolRegistry()
+        registry.register(ShellTool(sessionId: sessionId))
+        FsTools.registerAll(into: registry, sessionId: sessionId)
+        WebTools.registerAll(into: registry)
+
+        let spill = SpillStore(
+            root: WanWoPaths.persistentBase
+                .appendingPathComponent("spill", isDirectory: true)
+                .appendingPathComponent(sessionId, isDirectory: true))
+        let repeatAdviser = RepeatCallAdviser()
+        let pipeline = ToolPipeline(
+            registry: registry,
+            // 【仅 M2 占位】自动批准 answerer（照记 approval 事件保审计）；M3 换真审批卡。
+            approvalSeam: AutoApprovalSeam(writer: writer),
+            repeatAdviser: repeatAdviser)
+        let compactor = Compactor(makeAdapter: { [weak self] in
+            guard let self else {
+                throw LLMError(message: "environment released", code: "UNKNOWN")
+            }
+            return try self.makeAgentAdapter()
+        })
+        let assembler = PromptAssembler()
+        let injector = ContextInjector()
+
+        let deps = AgentLoop.Dependencies(
+            sessionId: sessionId,
+            writer: writer,
+            assembler: assembler,
+            registry: registry,
+            pipeline: pipeline,
+            compactor: compactor,
+            spill: spill,
+            injector: injector,
+            makeAdapter: { [weak self] in
+                guard let self else {
+                    throw LLMError(message: "environment released", code: "UNKNOWN")
+                }
+                return try self.makeAgentAdapter()
+            },
+            callbacks: callbacks)
+        return AgentLoop(deps: deps)
+    }
 }

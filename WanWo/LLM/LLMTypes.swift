@@ -103,9 +103,38 @@ extension ContentBlock: Codable {
     }
 }
 
+// MARK: - ToolCallSpec / ToolSchemaEntry（M2 扩展）
+
+/// assistant 消息携带的工具调用（OpenAI wire assistant.tool_calls 单元；
+/// arguments 为模型原始 JSON 文本，与 tool/call 事件 1:1）。
+struct ToolCallSpec: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var arguments: String
+
+    init(id: String, name: String, arguments: String) {
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+    }
+}
+
+/// 发给模型的工具 schema（dsh ToolSchema 词汇：name/description/parameters）。
+struct ToolSchemaEntry: Codable, Equatable, Sendable {
+    var name: String
+    var description: String
+    var parameters: JSONValue
+
+    init(name: String, description: String, parameters: JSONValue) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    }
+}
+
 // MARK: - AssistantMessage
 
-/// 一条助手消息（dsh AssistantMessage 词汇子集；tool-result 块在 M2 随工具接入扩展）。
+/// 一条助手消息（dsh AssistantMessage 词汇；tool-call 块在 M2 由派生历史上映 wire）。
 struct AssistantMessage: Codable, Equatable, Sendable {
     var id: String
     var role: String
@@ -146,7 +175,8 @@ struct AssistantMessage: Codable, Equatable, Sendable {
 
 // MARK: - ChatMessage
 
-/// 派生历史消息（dsh Message 词汇的 M1 文本子集；tool-result 随 M2 扩展）。
+/// 派生历史消息（dsh Message 词汇；M2 扩展：assistant tool_calls + tool 结果消息，
+/// 对应 OpenAI wire 的 assistant.tool_calls / role:"tool" + tool_call_id）。
 struct ChatMessage: Equatable, Sendable {
     enum Role: String, Codable, Sendable {
         case system, user, assistant, tool
@@ -154,10 +184,19 @@ struct ChatMessage: Equatable, Sendable {
 
     var role: Role
     var content: String
+    /// assistant 角色携带的工具调用（随消息上 wire）。
+    var toolCalls: [ToolCallSpec]?
+    /// tool 角色消息对应的调用 id（wire tool_call_id）。
+    var toolCallID: String?
 
-    init(role: Role, content: String) {
+    init(role: Role,
+         content: String,
+         toolCalls: [ToolCallSpec]? = nil,
+         toolCallID: String? = nil) {
         self.role = role
         self.content = content
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
     }
 }
 
@@ -319,15 +358,18 @@ struct LlmCallConfig: Codable, Equatable, Sendable {
     }
 }
 
-/// 已记录的请求头快照（dsh EpochHeader：config + system + tools；M1 无 tools）。
-/// 「最新一份 request/header 快照可重建整个请求头」（dsh 语义）。
+/// 已记录的请求头快照（dsh EpochHeader：config + system + tools；
+/// 「最新一份 request/header 快照可重建整个请求头」（dsh 语义））。
 struct EpochHeader: Codable, Equatable, Sendable {
     var config: LlmCallConfig
     var system: String?
+    /// 本次请求暴露给模型的工具 schema（M2 起；无工具请求缺省不编码）。
+    var tools: [ToolSchemaEntry]?
 
-    init(config: LlmCallConfig, system: String? = nil) {
+    init(config: LlmCallConfig, system: String? = nil, tools: [ToolSchemaEntry]? = nil) {
         self.config = config
         self.system = system
+        self.tools = tools
     }
 }
 
@@ -348,6 +390,8 @@ struct LLMRequest: Sendable {
     var reasoningEffort: String?
     /// 请求用途标记（如 "session-title"，见 dsh serialize resolveThinking）。
     var purpose: String?
+    /// M2：随请求暴露的工具 schema（无工具请求缺省不发 tools 字段）。
+    var tools: [ToolSchemaEntry]?
 
     init(baseURL: String,
          apiKey: String,
@@ -358,7 +402,8 @@ struct LLMRequest: Sendable {
          temperature: Double? = nil,
          thinking: String? = nil,
          reasoningEffort: String? = nil,
-         purpose: String? = nil) {
+         purpose: String? = nil,
+         tools: [ToolSchemaEntry]? = nil) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
@@ -369,6 +414,7 @@ struct LLMRequest: Sendable {
         self.thinking = thinking
         self.reasoningEffort = reasoningEffort
         self.purpose = purpose
+        self.tools = tools
     }
 }
 

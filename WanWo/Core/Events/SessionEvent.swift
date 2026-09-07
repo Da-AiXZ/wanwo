@@ -12,6 +12,10 @@
 //  session/title、system。枚举留扩展位：未识别的 type 若带 ignorable 标记则以
 //  .ignored(kind) 透传；不带则拒绝重建（fail closed，dsh SessionEvent.ignorable 语义）。
 //
+//  M2 扩展（wire 名 1:1 dsh known-event-types）：tool/call、tool/result、
+//  compaction/start、compaction/summary、compaction/end、compaction/prune、
+//  command/run、command/done、approval/asked、approval/decided（dsh 审计事件对）。
+//
 
 import Foundation
 
@@ -110,6 +114,32 @@ struct SessionEvent: Equatable, Sendable {
         case sessionTitle(title: String, source: String)
         /// 信息性系统注记（dispatch 要求的 system 词汇；恒 ignorable）。
         case system(note: String)
+        // MARK: M2 词汇（wire 名 1:1 dsh）
+
+        /// 模型请求的一次工具调用（dsh tool/call：arguments 为模型原始 JSON 文本）。
+        case toolCall(turn: Int, step: Int, callId: String, name: String, arguments: String)
+        /// 工具调用的模型可见结果（dsh tool/result；error.* 为结构化失败身份；
+        /// meta 为工具私有呈现载荷，必须 lossless JSON）。
+        case toolResult(turn: Int, step: Int, callId: String, content: String, isError: Bool,
+                        errorName: String?, errorCode: String?, meta: JSONValue?)
+        /// 压缩开锁（log-only；持有锁直到 compaction/end；turn=nil 为回合外独立事务）。
+        case compactionStart(compactionId: String, turn: Int?)
+        /// 压缩摘要与影子定价（log-only；后随的 user/message 是面上的替换节点）。
+        case compactionSummary(compactionId: String, summary: String,
+                               shadowedRangeStart: Int, shadowedRangeEnd: Int,
+                               shadowedSeqs: [Int], shadowedTokenCount: Int)
+        /// 压缩解锁；error 记录未成功尝试。
+        case compactionEnd(compactionId: String, turn: Int?, error: String?)
+        /// 模型无关 prune 的影子定价（后随 tool/result 替换节点，协议与 dsh 一致）。
+        case compactionPrune(shadowedSeqs: [Int], shadowedTokenCount: Int)
+        /// 斜杠命令进入 handler（log-only；commandId 与 command/done 配对）。
+        case commandRun(commandId: String, name: String, args: String?)
+        /// 斜杠命令落定（kind: success | error）。
+        case commandDone(commandId: String, kind: String, text: String?)
+        /// 审批请求审计（M2 自动批准占位也记账；F018）。
+        case approvalAsked(requestId: String, tool: String, reason: String?)
+        /// 审批结论审计（verdict: allow | deny）。
+        case approvalDecided(requestId: String, verdict: String)
         /// 外来未来事件（带 ignorable 标记透传；本进程永不主动写入）。
         case ignored(kind: String)
     }
@@ -141,6 +171,16 @@ struct SessionEvent: Equatable, Sendable {
         case .llmRetryStarted: return "llm/retry-started"
         case .sessionTitle: return "session/title"
         case .system: return "system"
+        case .toolCall: return "tool/call"
+        case .toolResult: return "tool/result"
+        case .compactionStart: return "compaction/start"
+        case .compactionSummary: return "compaction/summary"
+        case .compactionEnd: return "compaction/end"
+        case .compactionPrune: return "compaction/prune"
+        case .commandRun: return "command/run"
+        case .commandDone: return "command/done"
+        case .approvalAsked: return "approval/asked"
+        case .approvalDecided: return "approval/decided"
         case .ignored(let kind): return kind
         }
     }
@@ -151,12 +191,21 @@ struct SessionEvent: Equatable, Sendable {
         "user/message", "assistant/chunk", "assistant/message",
         "request/header", "llm/retry", "llm/retry-started",
         "session/title", "system",
+        "tool/call", "tool/result",
+        "compaction/start", "compaction/summary", "compaction/end", "compaction/prune",
+        "command/run", "command/done",
+        "approval/asked", "approval/decided",
     ]
 
     /// 默认 ignorable 值（信息性记录可安全跳过；核心结构事件缺省 required）。
+    /// dsh 口径：command/*、approval/* 为呈现/审计记录（不影响重建）→ ignorable；
+    /// tool/*、compaction/* 参与重建 → required。
     static func defaultIgnorable(for wireType: String) -> Bool {
         switch wireType {
-        case "session/title", "system": return true
+        case "session/title", "system",
+             "command/run", "command/done",
+             "approval/asked", "approval/decided":
+            return true
         default: return false
         }
     }
@@ -210,6 +259,51 @@ extension SessionEvent: Codable {
     }
     private struct SessionTitleData: Codable { var title: String; var source: String }
     private struct SystemNoteData: Codable { var note: String }
+    // MARK: M2 载荷结构（wire 字段 1:1 dsh）
+    private struct ToolCallData: Codable {
+        var turn: Int; var step: Int; var callId: String; var name: String; var arguments: String
+    }
+    private struct ToolResultData: Codable {
+        var turn: Int; var step: Int; var callId: String
+        var content: String; var isError: Bool
+        var error: ToolResultError?
+        var meta: JSONValue?
+    }
+    private struct ToolResultError: Codable {
+        var name: String; var code: String
+    }
+    private struct CompactionStartData: Codable {
+        var compactionId: String; var turn: Int?
+    }
+    private struct CompactionSummaryData: Codable {
+        var compactionId: String; var summary: String
+        var shadowedRange: ShadowedRange
+        var shadowedSeqs: [Int]
+        var shadowedTokenCount: Int
+    }
+    private struct ShadowedRange: Codable {
+        var start: Int; var end: Int
+    }
+    private struct CompactionEndData: Codable {
+        var compactionId: String; var turn: Int?; var error: String?
+    }
+    private struct CompactionPruneData: Codable {
+        var shadowedRange: ShadowedRange
+        var shadowedSeqs: [Int]
+        var shadowedTokenCount: Int
+    }
+    private struct CommandRunData: Codable {
+        var commandId: String; var name: String; var args: String?
+    }
+    private struct CommandDoneData: Codable {
+        var commandId: String; var kind: String; var text: String?
+    }
+    private struct ApprovalAskedData: Codable {
+        var requestId: String; var tool: String; var reason: String?
+    }
+    private struct ApprovalDecidedData: Codable {
+        var requestId: String; var verdict: String
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Keys.self)
@@ -263,6 +357,45 @@ extension SessionEvent: Codable {
         case "system":
             let d = try decodePayload(SystemNoteData.self)
             payload = .system(note: d.note)
+        case "tool/call":
+            let d = try decodePayload(ToolCallData.self)
+            payload = .toolCall(turn: d.turn, step: d.step, callId: d.callId,
+                                name: d.name, arguments: d.arguments)
+        case "tool/result":
+            let d = try decodePayload(ToolResultData.self)
+            payload = .toolResult(turn: d.turn, step: d.step, callId: d.callId,
+                                  content: d.content, isError: d.isError,
+                                  errorName: d.error?.name, errorCode: d.error?.code,
+                                  meta: d.meta)
+        case "compaction/start":
+            let d = try decodePayload(CompactionStartData.self)
+            payload = .compactionStart(compactionId: d.compactionId, turn: d.turn)
+        case "compaction/summary":
+            let d = try decodePayload(CompactionSummaryData.self)
+            payload = .compactionSummary(compactionId: d.compactionId, summary: d.summary,
+                                         shadowedRangeStart: d.shadowedRange.start,
+                                         shadowedRangeEnd: d.shadowedRange.end,
+                                         shadowedSeqs: d.shadowedSeqs,
+                                         shadowedTokenCount: d.shadowedTokenCount)
+        case "compaction/end":
+            let d = try decodePayload(CompactionEndData.self)
+            payload = .compactionEnd(compactionId: d.compactionId, turn: d.turn, error: d.error)
+        case "compaction/prune":
+            let d = try decodePayload(CompactionPruneData.self)
+            payload = .compactionPrune(shadowedSeqs: d.shadowedSeqs,
+                                       shadowedTokenCount: d.shadowedTokenCount)
+        case "command/run":
+            let d = try decodePayload(CommandRunData.self)
+            payload = .commandRun(commandId: d.commandId, name: d.name, args: d.args)
+        case "command/done":
+            let d = try decodePayload(CommandDoneData.self)
+            payload = .commandDone(commandId: d.commandId, kind: d.kind, text: d.text)
+        case "approval/asked":
+            let d = try decodePayload(ApprovalAskedData.self)
+            payload = .approvalAsked(requestId: d.requestId, tool: d.tool, reason: d.reason)
+        case "approval/decided":
+            let d = try decodePayload(ApprovalDecidedData.self)
+            payload = .approvalDecided(requestId: d.requestId, verdict: d.verdict)
         default:
             // 未识别类型：ignorable → 透传；否则拒绝重建（dsh 语义：静默跳过
             // 必需事件可能把会话读错，宁可拒绝）。
@@ -318,6 +451,57 @@ extension SessionEvent: Codable {
             try container.encode(SessionTitleData(title: title, source: source), forKey: .data)
         case .system(let note):
             try container.encode(SystemNoteData(note: note), forKey: .data)
+        case .toolCall(let turn, let step, let callId, let name, let arguments):
+            try container.encode(
+                ToolCallData(turn: turn, step: step, callId: callId, name: name,
+                             arguments: arguments),
+                forKey: .data)
+        case .toolResult(let turn, let step, let callId, let content, let isError,
+                         let errorName, let errorCode, let meta):
+            let error: ToolResultError?
+            if let errorName, let errorCode {
+                error = ToolResultError(name: errorName, code: errorCode)
+            } else {
+                error = nil
+            }
+            try container.encode(
+                ToolResultData(turn: turn, step: step, callId: callId, content: content,
+                               isError: isError, error: error, meta: meta),
+                forKey: .data)
+        case .compactionStart(let compactionId, let turn):
+            try container.encode(CompactionStartData(compactionId: compactionId, turn: turn),
+                                 forKey: .data)
+        case .compactionSummary(let compactionId, let summary, let rangeStart, let rangeEnd,
+                                let seqs, let tokens):
+            try container.encode(
+                CompactionSummaryData(compactionId: compactionId, summary: summary,
+                                      shadowedRange: ShadowedRange(start: rangeStart, end: rangeEnd),
+                                      shadowedSeqs: seqs, shadowedTokenCount: tokens),
+                forKey: .data)
+        case .compactionEnd(let compactionId, let turn, let error):
+            try container.encode(
+                CompactionEndData(compactionId: compactionId, turn: turn, error: error),
+                forKey: .data)
+        case .compactionPrune(let seqs, let tokens):
+            // shadowedRange 单点语义照 dsh pruner（start==end 为单节点 prune）。
+            let range = ShadowedRange(start: seqs.first ?? 0, end: seqs.last ?? 0)
+            try container.encode(
+                CompactionPruneData(shadowedRange: range, shadowedSeqs: seqs,
+                                    shadowedTokenCount: tokens),
+                forKey: .data)
+        case .commandRun(let commandId, let name, let args):
+            try container.encode(CommandRunData(commandId: commandId, name: name, args: args),
+                                 forKey: .data)
+        case .commandDone(let commandId, let kind, let text):
+            try container.encode(CommandDoneData(commandId: commandId, kind: kind, text: text),
+                                 forKey: .data)
+        case .approvalAsked(let requestId, let tool, let reason):
+            try container.encode(
+                ApprovalAskedData(requestId: requestId, tool: tool, reason: reason),
+                forKey: .data)
+        case .approvalDecided(let requestId, let verdict):
+            try container.encode(ApprovalDecidedData(requestId: requestId, verdict: verdict),
+                                 forKey: .data)
         case .ignored:
             // 外来事件不回写；防御性编码为仅类型标记。
             try container.encode([String: String](), forKey: .data)

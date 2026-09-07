@@ -22,7 +22,8 @@ private actor SessionWriterGate {
 }
 
 /// 一个会话的写柄。同一会话同一时刻仅存在一个实例（SessionStore 保证）。
-final class SessionWriter {
+/// @unchecked Sendable：内部状态经 stateLock + gate actor 双层串行化（M2 Dependencies 约束）。
+final class SessionWriter: @unchecked Sendable {
     let id: String
     let header: SessionHeader
     private let log: JsonlEventLog
@@ -171,10 +172,12 @@ final class SessionWriter {
         }
     }
 
-    // MARK: - 派生历史（dsh deriveMessages 语义子集）
+    // MARK: - 派生历史（dsh deriveMessages 语义；M2 折叠升级）
 
     /// 从事件流派生模型可见消息：最新 request/header 提供 system + config；
-    /// user/message → user；assistant/message → assistant（仅文本块上 wire）。
+    /// 折叠规则（DeriveFold）：user/message → user；assistant/message → assistant
+    /// （含 tool_calls）；tool/result → tool（last-wins，prune 替换生效）；
+    /// 压缩影子范围跳过、summary 以 `<compaction-summary>` user 消息呈现。
     /// 不变量：返回内容全部来自已落盘事件（model-visible = logged）。
     func deriveMessages() -> (config: LlmCallConfig?, system: String?, messages: [ChatMessage]) {
         let snapshot = events
@@ -187,21 +190,7 @@ final class SessionWriter {
                 break
             }
         }
-        var messages: [ChatMessage] = []
-        for event in snapshot {
-            switch event.payload {
-            case .userMessage(let text):
-                messages.append(ChatMessage(role: .user, content: text))
-            case .assistantMessage(_, _, let message, _, _):
-                let text = message.content.compactMap { block -> String? in
-                    if case .text(let t) = block { return t }
-                    return nil
-                }.joined()
-                messages.append(ChatMessage(role: .assistant, content: text))
-            default:
-                break
-            }
-        }
+        let messages = DeriveFold(snapshot).messages
         return (config, system, messages)
     }
 

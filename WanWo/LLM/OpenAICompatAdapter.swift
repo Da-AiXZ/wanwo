@@ -238,9 +238,35 @@ struct OpenAICompatAdapter {
             wireMessages.append(WireMessage(role: "system", content: system))
         }
         for message in request.messages {
-            // M1 文本流：assistant/tool 内容拍平为字符串文本（tool 消息 M2 起扩展）。
-            wireMessages.append(WireMessage(role: message.role.rawValue, content: message.content))
+            switch message.role {
+            case .assistant:
+                // M2：assistant.tool_calls 随消息上 wire（内容可为空串）。
+                let toolCalls = message.toolCalls?.map { call in
+                    WireToolCall(id: call.id, type: "function",
+                                 function: WireFunctionCall(name: call.name,
+                                                            arguments: call.arguments))
+                }
+                wireMessages.append(WireMessage(role: "assistant", content: message.content,
+                                                toolCalls: toolCalls, toolCallID: nil))
+            case .tool:
+                // tool 结果消息：tool_call_id 配对；content 必为文本。
+                wireMessages.append(WireMessage(role: "tool", content: message.content,
+                                                toolCalls: nil,
+                                                toolCallID: message.toolCallID ?? ""))
+            case .system, .user:
+                wireMessages.append(WireMessage(role: message.role.rawValue,
+                                                content: message.content))
+            }
         }
+
+        // M2：工具 schema（dsh serialize：tools 随请求头；无工具不发字段）。
+        let wireTools: [WireTool]? = request.tools?.isEmpty == false
+            ? request.tools!.map { schema in
+                WireTool(type: "function", function: WireToolFunction(
+                    name: schema.name, description: schema.description,
+                    parameters: schema.parameters.anyValue))
+            }
+            : nil
 
         // resolveThinking（serialize.ts）：session-title 强制关闭思考；effort off → disabled。
         var thinkingType: String?
@@ -266,7 +292,8 @@ struct OpenAICompatAdapter {
             thinking: thinkingType.map { WireThinking(type: $0) },
             reasoning_effort: wireEffort,
             temperature: request.temperature,
-            max_tokens: request.maxTokens)
+            max_tokens: request.maxTokens,
+            tools: wireTools)
 
         var url = URL(string: endpoint.baseURL) ?? URL(string: "https://localhost")!
         if endpoint.baseURL.hasSuffix("/") {
@@ -472,6 +499,75 @@ private struct LineSplitter {
 struct WireMessage: Codable {
     var role: String
     var content: String
+    /// M2：assistant 消息携带的工具调用（OpenAI wire tool_calls）。
+    var tool_calls: [WireToolCall]?
+    /// M2：tool 结果消息的配对 id（OpenAI wire tool_call_id）。
+    var tool_call_id: String?
+
+    init(role: String, content: String,
+         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil) {
+        self.role = role
+        self.content = content
+        self.tool_calls = toolCalls
+        self.tool_call_id = toolCallID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role, content, tool_calls, tool_call_id
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(role, forKey: .role)
+        try container.encode(content, forKey: .content)
+        try container.encodeIfPresent(tool_calls, forKey: .tool_calls)
+        try container.encodeIfPresent(tool_call_id, forKey: .tool_call_id)
+    }
+}
+
+/// M2 wire：assistant.tool_calls 单元。
+struct WireToolCall: Codable {
+    var id: String
+    var type: String
+    var function: WireFunctionCall
+}
+
+struct WireFunctionCall: Codable {
+    var name: String
+    var arguments: String
+}
+
+/// M2 wire：请求携带的工具 schema（OpenAI tools 字段）。
+struct WireTool: Encodable {
+    var type: String
+    var function: WireToolFunction
+}
+
+struct WireToolFunction: Encodable {
+    var name: String
+    var description: String
+    /// JSON Schema（lossless Any 形态；编码时经 JSONValue 转换）。
+    var parameters: Any
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let dict = parameters as? [String: Any] {
+            let data = try JSONSerialization.data(withJSONObject: dict)
+            try container.encode(JSONValue(data: data) ?? .object([:]))
+        } else {
+            try container.encodeNil()
+        }
+    }
+}
+
+extension JSONValue {
+    /// 从 JSONSerialization 数据解码（失败返回 nil）。
+    init?(data: Data) {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return nil
+        }
+        self = value
+    }
 }
 
 struct WireThinking: Codable {
@@ -482,7 +578,7 @@ struct WireStreamOptions: Codable {
     var include_usage: Bool
 }
 
-struct WireRequest: Codable {
+struct WireRequest: Encodable {
     var model: String
     var messages: [WireMessage]
     var stream: Bool
@@ -491,6 +587,7 @@ struct WireRequest: Codable {
     var reasoning_effort: String?
     var temperature: Double?
     var max_tokens: Int?
+    var tools: [WireTool]?
 }
 
 /// 非 2xx 错误体（dsh WireError：{error: {message, code, type}}）。

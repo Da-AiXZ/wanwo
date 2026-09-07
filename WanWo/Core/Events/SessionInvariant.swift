@@ -13,12 +13,16 @@
 import Foundation
 
 /// 会话事件流关系不变量校验器（逐事件 validate；每会话一个实例）。
+/// M2：tool/call ↔ tool/result 按 callId 配对（dsh tool-pairing 语义）；prune 的
+/// tool/result 替换引用的是历史 callId（已见过）同样成立；tool 事件不要求 step
+/// 开放（prune 替换发生在回合外，带历史 turn/step 坐标）。
 struct SessionInvariant {
     private(set) var lastSeq: Int = -1
     private(set) var openTurn: Int?
     private(set) var openStep: Int?
     private(set) var nextTurn: Int = 1
     private(set) var nextStep: Int = 1
+    private var seenCallIds: Set<String> = []
 
     enum InvariantViolation: Error, Equatable {
         case seqNotIncreasing(event: Int, last: Int)
@@ -30,6 +34,7 @@ struct SessionInvariant {
         case stepOutsideTurn(event: Int, openTurn: Int?)
         case stepScopedEventOutsideStep(kind: String, turn: Int?, step: Int?)
         case requestHeaderOutsideTurn
+        case toolResultWithoutCall(event: Int, callId: String)
     }
 
     /// 校验一个候选事件（不通过即抛）。通过后由调用方 commit()。
@@ -79,7 +84,19 @@ struct SessionInvariant {
             guard openTurn != nil else {
                 throw InvariantViolation.requestHeaderOutsideTurn
             }
-        case .userMessage, .llmRetry, .llmRetryStarted, .sessionTitle, .system, .ignored:
+        case .toolCall(_, _, let callId, _, _):
+            // callId 必须唯一（重放替换不会重写 tool/call；dsh 配对语义）。
+            if seenCallIds.contains(callId) {
+                throw InvariantViolation.toolResultWithoutCall(event: event.seq, callId: callId)
+            }
+            seenCallIds.insert(callId)
+        case .toolResult(_, _, let callId, _, _, _, _, _):
+            guard seenCallIds.contains(callId) else {
+                throw InvariantViolation.toolResultWithoutCall(event: event.seq, callId: callId)
+            }
+        case .userMessage, .llmRetry, .llmRetryStarted, .sessionTitle, .system, .ignored,
+             .compactionStart, .compactionSummary, .compactionEnd, .compactionPrune,
+             .commandRun, .commandDone, .approvalAsked, .approvalDecided:
             // dsh invariant：user/message 无约束；log-only/插件类事件归其属主约束。
             break
         }
