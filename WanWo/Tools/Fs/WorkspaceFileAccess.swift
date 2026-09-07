@@ -143,7 +143,11 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         var out: [URL] = []
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
-            if name == ".git" || name == "node_modules" { enumerator.skipDescendants(); continue }
+            // dsh glob VCS 排除六件套 + node_modules（等价 rg 的 gitignore 行为）。
+            if name == ".git" || name == ".svn" || name == ".hg" || name == ".bzr"
+                || name == ".jj" || name == ".sl" || name == "node_modules" {
+                enumerator.skipDescendants(); continue
+            }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true else { continue }
             // ERR-014：enumerator 在 iOS 上常返回带 /private 符号链接前缀的路径，

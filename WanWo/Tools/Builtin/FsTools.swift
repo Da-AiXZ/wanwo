@@ -35,6 +35,8 @@ struct FsReadTool: AgentTool {
     static let defaultLimit = 2_000
     /// 单文件读取字符上限（§十三：16000 字符语义对齐）。
     static let maxChars = 16_000
+    /// 单行最大字符（dsh read maxLineLength 语义：防 minified 单行爆预算）。
+    static let maxLineLength = 2_000
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
@@ -61,9 +63,19 @@ struct FsReadTool: AgentTool {
         while total > Self.maxChars, slice.count > 1 {
             total -= slice.removeLast().count + 1
         }
+        // 单行截断（dsh maxLineLength 语义）：防 minified 单行文件爆预算。
+        var truncatedAny = false
+        slice = slice.map { line in
+            guard line.count > Self.maxLineLength else { return line }
+            truncatedAny = true
+            return String(line.prefix(Self.maxLineLength)) + "…[line truncated]"
+        }
         var out = slice.enumerated().map { (i, line) in
             "\(String(start + i + 1).padding(toLength: 6, withPad: " ", startingAt: 0))\t\(line)"
         }.joined(separator: "\n")
+        if truncatedAny {
+            out += "\n… (some lines exceeded \(Self.maxLineLength) chars and were truncated)"
+        }
         if start + slice.count < lines.count {
             out += "\n… (file has \(lines.count) lines; showing \(start + 1)–\(start + slice.count); "
                 + "continue with offset=\(start + slice.count + 1))"
@@ -442,7 +454,8 @@ struct FsStrReplaceEditorTool: AgentTool {
                 }
                 let lines = text.components(separatedBy: "\n")
                 return .success(lines.enumerated().prefix(FsReadTool.defaultLimit)
-                    .map { "\($0.offset + 1)\t\($0.element)" }.joined(separator: "\n"))
+                    .map { "\($0.offset + 1)\t\($0.element.count > FsReadTool.maxLineLength ? $0.element.prefix(FsReadTool.maxLineLength) + "…[line truncated]" : $0.element)" }
+                    .joined(separator: "\n"))
 
             case "create":
                 guard let fileText = args.objectValue?["file_text"]?.stringValue else {
