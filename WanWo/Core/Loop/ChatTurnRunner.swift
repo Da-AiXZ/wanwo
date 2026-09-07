@@ -157,13 +157,29 @@ struct ChatTurnRunner {
                 continue
             }
 
+            // ERR-023（分类丢失点）：消费方 Task 取消会让 AsyncThrowingStream
+            // **正常终止**——next() 返回 nil 而非抛错，上面的 catch 不触发，
+            // 部分/空响应被当作正常完成。此处显式识别：finalize interrupted
+            // 前缀（dsh 语义：用户取消恒为 aborted，哪怕流循环无异常退出）。
+            if Task.isCancelled {
+                return try await finalizeInterrupted(writer: writer, turn: turn,
+                                                     step: step, blocks: blocks,
+                                                     usage: usage, adapter: adapter)
+            }
+
             // 正常收尾：assistant/message（派生历史从此取用；usage 随消息同行）。
-            let message = AssistantMessage(id: UUID().uuidString,
-                                           provider: adapter.providerName,
-                                           model: adapter.endpoint.model,
-                                           content: blocks)
-            try await writer.append(.assistantMessage(
-                turn: turn, step: step, message: message, usage: usage, interrupted: false))
+            // ERR-023：空 blocks（无任何 content/toolCall）的 assistant/message
+            // 不落盘。
+            let persistable = blocks.persistableBlocks
+            if !persistable.isEmpty {
+                let message = AssistantMessage(id: UUID().uuidString,
+                                               provider: adapter.providerName,
+                                               model: adapter.endpoint.model,
+                                               content: persistable)
+                try await writer.append(.assistantMessage(
+                    turn: turn, step: step, message: message, usage: usage,
+                    interrupted: false))
+            }
             try await writer.append(.stepEnd(turn: turn, step: step))
 
             let endReason: TurnEndReason
@@ -185,17 +201,19 @@ struct ChatTurnRunner {
         }
     }
 
-    /// 取消收尾（dsh step() catch aborted 分支：有交付内容才落 interrupted 消息）。
+    /// 取消收尾（dsh step() catch aborted 分支：有可交付内容才落 interrupted 消息；
+    /// ERR-023：空 blocks 不落盘）。
     private static func finalizeInterrupted(writer: SessionWriter,
                                             turn: Int, step: Int,
                                             blocks: [ContentBlock],
                                             usage: TokenUsage?,
                                             adapter: OpenAICompatAdapter) async throws -> TurnOutcome {
-        if !blocks.isEmpty {
+        let persistable = blocks.persistableBlocks
+        if !persistable.isEmpty {
             let message = AssistantMessage(id: UUID().uuidString,
                                            provider: adapter.providerName,
                                            model: adapter.endpoint.model,
-                                           content: blocks)
+                                           content: persistable)
             try? await writer.append(.assistantMessage(
                 turn: turn, step: step, message: message, usage: usage, interrupted: true))
         }

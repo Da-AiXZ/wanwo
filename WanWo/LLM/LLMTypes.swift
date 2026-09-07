@@ -71,6 +71,23 @@ enum ContentBlock: Equatable, Sendable {
     case toolCall(id: String, name: String, arguments: String)
 }
 
+extension Array where Element == ContentBlock {
+    /// ERR-023：可落盘内容判定——无任何 content/toolCall（toolCall、或非空
+    /// text/reasoning 均无）的 assistant 消息不得落盘：对模型无信息量，且空
+    /// 消息进派生历史会污染消息流语义（真机实证：手动停止的回合以空
+    /// assistant/message 落盘后仍 completed 收尾）。
+    var persistableBlocks: [ContentBlock] {
+        filter { block in
+            switch block {
+            case .toolCall:
+                return true
+            case .text(let text), .reasoning(let text):
+                return !text.isEmpty
+            }
+        }
+    }
+}
+
 extension ContentBlock: Codable {
     private enum BlockType: String, Codable {
         case text

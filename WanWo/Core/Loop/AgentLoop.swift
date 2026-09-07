@@ -95,11 +95,99 @@ actor AgentLoop {
     private let toolCancelFlag = CancelFlag()
     private var driverTask: Task<Void, Never>?
     private var maxParallelToolCalls: Int
-    /// AGENTS.md 基线摘要（F039 增量 reconcile）。
-    private var agentsMdDigest: String = ""
-    private var runtimeContextInjected = false
+    /// runtime context 快照投影状态（F038' ERR-024；dsh RuntimeContextProjection
+    /// 语义移植，见 Core/Context/RuntimeContextProjection.swift）。
+    private var runtimeProjection = RuntimeContextProjection()
 
     private static let logger = AppLogger(category: "AgentLoop")
+
+    // MARK: - ERR-024 缓存取证（临时 · os_log，不落盘事件，事件词汇零新增）
+
+    /// 取证状态（线程安全；buildLLMRequest 为 static 上下文）。
+    private final class ForensicsState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastItems: [String]?
+        private var requestIndex = 0
+
+        /// 记录本次请求指纹，返回 (请求序号, 上一请求指纹)。
+        func advance(items: [String]) -> (index: Int, previous: [String]?) {
+            lock.lock()
+            defer { lock.unlock() }
+            requestIndex += 1
+            let previous = lastItems
+            lastItems = items
+            return (requestIndex, previous)
+        }
+    }
+
+    private static let forensics = ForensicsState()
+
+    /// 单条指纹（FNV-1a 64 哈希 + UTF-8 字节长度）。
+    private static func fingerprint(_ label: String, _ text: String) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_6037
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return "\(label)#\(String(hash, radix: 16))#\(text.utf8.count)"
+    }
+
+    /// 相邻两次请求逐项指纹对比（定位 provider 前缀缓存断点确切位置）。
+    /// 断点判读：firstDiff < 上一请求 item 数 = 前缀发散（缓存从该 item 起
+    /// 全 miss，取证目标）；firstDiff ≥ 上一请求 item 数 = 纯尾部追加（前缀
+    /// 稳定，缓存应命中至上一请求全长）。
+    private static func logCacheForensics(system: String?,
+                                          messages: [ChatMessage],
+                                          tools: [ToolSchemaEntry]?) {
+        var items: [String] = []
+        if let system, !system.isEmpty {
+            items.append(fingerprint("system", system))
+        }
+        if let tools, !tools.isEmpty {
+            for tool in tools {
+                let paramsJSON = (try? JSONEncoder().encode(tool.parameters))
+                    .map { String(decoding: $0, as: UTF8.self) } ?? "<encode-failed>"
+                items.append(fingerprint("tool:\(tool.name)",
+                                         tool.name + "\u{1}" + tool.description
+                                            + "\u{1}" + paramsJSON))
+            }
+        }
+        for (index, message) in messages.enumerated() {
+            var text = message.content
+            if let calls = message.toolCalls, !calls.isEmpty {
+                text += "\u{1}" + calls
+                    .map { "\($0.id)\u{2}\($0.name)\u{2}\($0.arguments)" }
+                    .joined(separator: "\u{3}")
+            }
+            items.append(fingerprint("m\(index):\(message.role.rawValue)", text))
+        }
+
+        let (requestIndex, previous) = forensics.advance(items: items)
+        var firstDiff = -1
+        if let previous {
+            let common = min(previous.count, items.count)
+            for index in 0..<common where previous[index] != items[index] {
+                firstDiff = index
+                break
+            }
+            if firstDiff < 0, items.count != previous.count {
+                firstDiff = min(previous.count, items.count)
+            }
+        }
+        let prefixStable = previous == nil || firstDiff < 0 || firstDiff >= previous.count
+        let summary = "cache-forensics req#\(requestIndex) items=\(items.count) "
+            + "system=\(system?.isEmpty == false ? 1 : 0) tools=\(tools?.count ?? 0) "
+            + "messages=\(messages.count) firstDiff=\(firstDiff) "
+            + "prefixStable=\(prefixStable)"
+        Self.logger.info(summary)
+        if let previous, firstDiff >= 0, firstDiff < previous.count {
+            let current = firstDiff < items.count ? items[firstDiff] : "<absent>"
+            Self.logger.info("cache-forensics req#\(requestIndex) PREFIX DIVERGENCE "
+                + "at item \(firstDiff): prev=\(previous[firstDiff]) cur=\(current)")
+        }
+        Self.logger.debug("cache-forensics req#\(requestIndex) dump: "
+            + items.joined(separator: " | "))
+    }
 
     init(deps: Dependencies, config: Config = Config()) {
         self.deps = deps
@@ -270,6 +358,14 @@ actor AgentLoop {
                 await ensureStepToolResultsPaired(turn: turn, step: step)
                 try await deps.writer.append(.stepEnd(turn: turn, step: step))
 
+                // ERR-023：step 收尾窗口的取消置位（step 边界竞态）——dsh 语义：
+                // 用户取消恒为 aborted，哪怕取消落在 step 边界（stream 已交付
+                // 完毕、事件收尾进行中），也不得以 completed 收尾。
+                if let cause = cancelCause {
+                    endReason = .aborted(cause: Self.causeKeyword(cause))
+                    break
+                }
+
                 switch outcome {
                 case .completed:
                     endReason = .completed
@@ -368,21 +464,19 @@ actor AgentLoop {
         let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
         var injected: [String] = []
 
-        // F038：会话首轮基线快照。
-        if !runtimeContextInjected {
-            runtimeContextInjected = true
-            injected.append(deps.injector.baselineSnapshot(
-                workspace: workspace, workspacePath: WanWoPaths.workspaceLinuxDir))
-            if let agentsMd = deps.injector.loadAgentsMd(workspace: workspace) {
-                agentsMdDigest = ContextInjector.digest(of: agentsMd)
-            }
-        } else {
-            // F039：增量 reconcile。
-            if let update = deps.injector.reconcileAgentsMd(workspace: workspace,
-                                                            baselineDigest: agentsMdDigest) {
-                agentsMdDigest = update.digest
-                injected.append(update.message)
-            }
+        // F038'：runtime context 快照投影（ERR-024；dsh RuntimeContextProjection
+        // 语义）。①每步刷新 retained（归属消息被压缩影子化 → 失效重注入）；
+        // ②渲染当前快照（time + workspace + AGENTS.md）；③内容没变就不注入
+        // （缓存前缀稳定的关键不变量）；④注入即追加——落盘为 user/message，
+        // 旧快照保留在历史。F039 AGENTS.md 增量 reconcile 并入本通道：AGENTS.md
+        // 变化即快照文本变化 → 自动重注入（ContextInjector.reconcileAgentsMd
+        // API 保留不再被 loop 调用）。
+        runtimeProjection.refresh(events: deps.writer.events)
+        let snapshot = deps.injector.baselineSnapshot(
+            workspace: workspace, workspacePath: WanWoPaths.workspaceLinuxDir)
+        if let pending = runtimeProjection.project(snapshot) {
+            let event = try await deps.writer.append(.userMessage(text: pending))
+            runtimeProjection.commit(text: pending, seq: event.seq)
         }
 
         // F040：@file 展开（首条用户消息）。
@@ -444,12 +538,16 @@ actor AgentLoop {
             turn: turn, step: step)
 
         // assistant/message（取消时 streamWithRetry 已 finalize interrupted 前缀）。
-        let message = AssistantMessage(id: UUID().uuidString,
-                                       provider: adapter.providerName,
-                                       model: adapter.endpoint.model,
-                                       content: blocks)
-        try await deps.writer.append(.assistantMessage(
-            turn: turn, step: step, message: message, usage: usage, interrupted: false))
+        // ERR-023：空 blocks（无任何 content/toolCall）的 assistant/message 不落盘。
+        let persistable = blocks.persistableBlocks
+        if !persistable.isEmpty {
+            let message = AssistantMessage(id: UUID().uuidString,
+                                           provider: adapter.providerName,
+                                           model: adapter.endpoint.model,
+                                           content: persistable)
+            try await deps.writer.append(.assistantMessage(
+                turn: turn, step: step, message: message, usage: usage, interrupted: false))
+        }
 
         // finish error → 回合错误（dsh LlmError 路径）。
         if case .error(let failure) = finish {
@@ -504,15 +602,9 @@ actor AgentLoop {
             } catch {
                 // 取消：finalize 已交付前缀为 interrupted 消息（dsh 语义）。
                 if Task.isCancelled || cancelCause != nil {
-                    if !blocks.isEmpty {
-                        let message = AssistantMessage(id: UUID().uuidString,
-                                                       provider: adapter.providerName,
-                                                       model: adapter.endpoint.model,
-                                                       content: blocks)
-                        try? await writer.append(.assistantMessage(
-                            turn: turn, step: step, message: message,
-                            usage: usage, interrupted: true))
-                    }
+                    await finalizeInterruptedPrefix(writer: writer, adapter: adapter,
+                                                    turn: turn, step: step,
+                                                    blocks: blocks, usage: usage)
                     throw CancellationError()
                 }
                 let llmError = (error as? LLMError)
@@ -538,34 +630,70 @@ actor AgentLoop {
                     retryId: retryId, turn: turn, step: step, retry: attempt))
                 continue
             }
+            // ERR-023（分类丢失点）：消费方 Task 取消会让 AsyncThrowingStream
+            // **正常终止**——next() 返回 nil 而非抛错，上面的 catch 不触发，
+            // 流循环带着空/部分 blocks 与默认 .stop 落到正常收尾，取消被当作
+            // 正常完成收拢（真机实证：手动停止 → 空 assistant/message +
+            // turn/end completed）。此处显式识别：按 dsh 语义 finalize
+            // interrupted 前缀并抛取消，让 turn 收尾分类为 aborted。
+            if Task.isCancelled || cancelCause != nil {
+                await finalizeInterruptedPrefix(writer: writer, adapter: adapter,
+                                                turn: turn, step: step,
+                                                blocks: blocks, usage: usage)
+                throw CancellationError()
+            }
             return (blocks, usage, finish)
         }
+    }
+
+    /// 已交付前缀的 interrupted finalize（dsh step() catch aborted 分支）：
+    /// 有可交付内容才落 interrupted assistant/message（空消息不落盘，ERR-023）。
+    /// append 失败静默（取消路径不掩盖 CancellationError 本身）。
+    private func finalizeInterruptedPrefix(writer: SessionWriter,
+                                           adapter: OpenAICompatAdapter,
+                                           turn: Int, step: Int,
+                                           blocks: [ContentBlock],
+                                           usage: TokenUsage?) {
+        let persistable = blocks.persistableBlocks
+        guard !persistable.isEmpty else { return }
+        let message = AssistantMessage(id: UUID().uuidString,
+                                       provider: adapter.providerName,
+                                       model: adapter.endpoint.model,
+                                       content: persistable)
+        try? await writer.append(.assistantMessage(
+            turn: turn, step: step, message: message, usage: usage, interrupted: true))
     }
 
     // MARK: - 请求构造（内容完全来自已落盘事件）
 
     /// 请求构造：消息完全来自已落盘事件（deriveMessages 线性折叠），
-    /// system 取组装结果（与 request/header 快照一致），末尾追加本步上下文快照，
-    /// tools 透传组装产物（dsh buildRequest 语义）。
+    /// system 取组装结果（与 request/header 快照一致），tools 透传组装产物
+    /// （dsh buildRequest 语义）。
+    /// ERR-024：runtime context 快照**不再随请求尾追**——快照以 user/message
+    /// 落盘进历史（见 injectContexts 的 RuntimeContextProjection 投影），请求
+    /// 消息流 append-only、前缀稳定，provider 前缀缓存才能命中（dsh
+    /// runtime-context.ts 语义：快照不进 system、不逐请求重发）。
     private static func buildLLMRequest(writer: SessionWriter,
                                         adapter: OpenAICompatAdapter,
                                         assembly: (system: String,
                                                    contextSnapshot: String,
                                                    tools: [ToolSchemaEntry])) -> LLMRequest {
         let derived = writer.deriveMessages()
-        var messages = derived.messages
-        if !assembly.contextSnapshot.isEmpty {
-            messages.append(ChatMessage(role: .user, content: assembly.contextSnapshot))
-        }
-        return LLMRequest(
+        let resolvedSystem = assembly.system.isEmpty ? derived.system : assembly.system
+        let request = LLMRequest(
             baseURL: adapter.endpoint.baseURL,
             apiKey: adapter.apiKey,
             model: adapter.endpoint.model,
-            system: assembly.system.isEmpty ? derived.system : assembly.system,
-            messages: messages,
+            system: resolvedSystem,
+            messages: derived.messages,
             thinking: adapter.endpoint.thinking,
             reasoningEffort: adapter.endpoint.reasoningEffort,
             tools: assembly.tools.isEmpty ? nil : assembly.tools)
+        // ERR-024 取证（临时）：相邻请求逐项指纹对比，定位缓存前缀断点。
+        logCacheForensics(system: resolvedSystem,
+                          messages: derived.messages,
+                          tools: assembly.tools.isEmpty ? nil : assembly.tools)
+        return request
     }
 
     // MARK: - 工作区访问
