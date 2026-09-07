@@ -174,7 +174,8 @@ actor AgentLoop {
                 firstDiff = min(previous.count, items.count)
             }
         }
-        let prefixStable = previous == nil || firstDiff < 0 || firstDiff >= previous.count
+        let prevCount = previous?.count ?? 0
+        let prefixStable = previous == nil || firstDiff < 0 || firstDiff >= prevCount
         let summary = "cache-forensics req#\(requestIndex) items=\(items.count) "
             + "system=\(system?.isEmpty == false ? 1 : 0) tools=\(tools?.count ?? 0) "
             + "messages=\(messages.count) firstDiff=\(firstDiff) "
@@ -653,7 +654,7 @@ actor AgentLoop {
                                            adapter: OpenAICompatAdapter,
                                            turn: Int, step: Int,
                                            blocks: [ContentBlock],
-                                           usage: TokenUsage?) {
+                                           usage: TokenUsage?) async {
         let persistable = blocks.persistableBlocks
         guard !persistable.isEmpty else { return }
         let message = AssistantMessage(id: UUID().uuidString,
