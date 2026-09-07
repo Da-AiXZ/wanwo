@@ -40,6 +40,10 @@ targets:
       # Bashism 规则（M2.4：BashismDetector 运行时加载；OpenMinis src/shared 共享 JSON）
       - path: WanWo/Resources/bashism_rules.json
         buildPhase: resources
+      # RootfsPatch.bundle（ERR-019：boot 时 FsApplyOverlay 从 mainBundle 加载，
+      # 对齐 OpenMinis pbxproj:33 Resources phase 集成方式）
+      - path: Vendor/resources/RootfsPatch.bundle
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang

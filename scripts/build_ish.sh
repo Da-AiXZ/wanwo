@@ -152,7 +152,9 @@ copy_outputs() {
     [ -f "$BUILD_DIR/cpu-offsets.h" ] && cp "$BUILD_DIR/cpu-offsets.h" "$H/"
     [ -f "$ISH_DIR/deps/config.h" ] && cp "$ISH_DIR/deps/config.h" "$H/deps/"
 
-    # RootfsPatch.bundle（boot overlay 补丁，boot 流程暂不使用，仅随包备用）
+    # RootfsPatch.bundle——boot 时由 CurrentRoot.FsApplyOverlay 应用 rootfs overlay 补丁
+    # （ERR-019：manifest.plist v3 → files/lib/{fetch,wasm}-polyfill.js 写入 guest /lib/，
+    # /ish/overlay-version 版本管理；Platform/CurrentRoot.m 在 ISHKernel boot 流程调用）
     [ -d "$ISH_DIR/app/RootfsPatch.bundle" ] && cp -r "$ISH_DIR/app/RootfsPatch.bundle" "$OUTPUT_RESOURCES/"
 
     log_ok "libs+headers copied"

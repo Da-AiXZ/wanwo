@@ -6,6 +6,9 @@
 //
 
 #import "ISHKernel.h"
+// [ERR-019] rootfs overlay 补丁链：FsApplyOverlay() 声明（vendored 自
+// ish-arm64 app/CurrentRoot，OpenMinis ISHKernel.m 同样 import 此头）。
+#import "CurrentRoot.h"
 // [GH#175] For sizeof(sockaddr_un.sun_path) — the Darwin HOST limit that
 // iSH's unchecked sprintf in fs/sock.c writes into. Safe to include here:
 // this file does not pull in ish/fs/sock.h, so there is no clash with iSH's
@@ -579,6 +582,11 @@ static void handle_process_exit(struct task *task, int code) {
     // 3. Create device nodes
     [self createDeviceNodes];
 
+    // 3.5. Apply rootfs overlay patches (e.g. fetch-polyfill.js)
+    // [ERR-019] 出处：OpenMinis ISHKernel.m:610-611 同位置——boot 时按
+    // RootfsPatch.bundle manifest 把 polyfill 写入 guest /lib/（fakefs
+    // 持久化，/ish/overlay-version 版本管理，跳过已安装）。
+    FsApplyOverlay();
 
     // 4. Mount proc and devpts filesystems
     do_mount(&procfs, "proc", "/proc", "", 0);
