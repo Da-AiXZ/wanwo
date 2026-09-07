@@ -104,11 +104,18 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         try data.write(to: tmp, options: .atomic)
         // 同名目录冲突先排除。
         var isDir: ObjCBool = false
-        if Self.fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+        let targetExists = Self.fileManager.fileExists(atPath: url.path, isDirectory: &isDir)
+        if targetExists && isDir.boolValue {
             try? Self.fileManager.removeItem(at: tmp)
             throw WorkspaceError.isDirectory(url.path)
         }
-        _ = try Self.fileManager.replaceItemAt(url, withItemAt: tmp)
+        // ERR-013：replaceItemAt 要求目标文件已存在，写新文件会抛
+        // NSCocoaErrorDomain 260 "no such file"——目标不存在时改走 moveItem。
+        if targetExists {
+            _ = try Self.fileManager.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            _ = try Self.fileManager.moveItem(at: tmp, to: url)
+        }
         return url
     }
 
@@ -139,9 +146,21 @@ final class WorkspaceFileAccess: @unchecked Sendable {
             if name == ".git" || name == "node_modules" { enumerator.skipDescendants(); continue }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true else { continue }
-            out.append(url)
+            // ERR-014：enumerator 在 iOS 上常返回带 /private 符号链接前缀的路径，
+            // 与 resolve()/rootURL 的口径不一致——glob 的 hasPrefix 过滤依赖
+            // 两侧同口径，统一在此归一（与 resolve() 的 /private 处理同源）。
+            out.append(Self.stripPrivatePrefix(url))
         }
         return out
+    }
+
+    /// 归一 enumerator 返回的路径：剥掉 iOS 符号链接惯例的 "/private" 前缀。
+    static func stripPrivatePrefix(_ url: URL) -> URL {
+        let p = url.path
+        if p.hasPrefix("/private/var/") {
+            return URL(fileURLWithPath: String(p.dropFirst("/private".count)))
+        }
+        return url
     }
 
     enum WorkspaceError: Error, CustomStringConvertible {
