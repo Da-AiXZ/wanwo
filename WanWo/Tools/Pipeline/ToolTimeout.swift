@@ -15,6 +15,8 @@ enum ToolTimeout {
 
     /// 以协作式 deadline 包住工具体。超时返回 TOOL_TIMEOUT 结构化失败结果；
     /// 工具任务不被取消（promise 不放弃），继续后台运行至自然收敛。
+    /// 竞速实现：TaskGroup 中「工具体 wrapper」与「deadline 睡眠」先完成者胜；
+    /// bodyTask 为独立 Task，group.cancelAll() 只取消输掉的 wrapper，工具体继续跑。
     /// - Parameters:
     ///   - timeoutMs: deadline 毫秒；nil = 无 deadline，直跑。
     ///   - body: 工具体。
@@ -28,48 +30,46 @@ enum ToolTimeout {
             }
         }
 
-        let bodyTask = Task { try await body() }
-        let deadlineTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+        // 调用方（回合）取消：按 ABORTED 合成；工具体仍后台收敛。
+        if Task.isCancelled {
+            return ToolOutput.failure("tool call aborted", code: "ABORTED", name: "AbortError")
         }
 
-        // 竞速：工具体先完成 → 用其结果；deadline 先到 → 返回结构化超时，
-        // 工具体保持运行（dsh 语义：不放弃 promise，不硬杀同进程代码）。
-        while true {
-            if bodyTask.isCancelled { break }
-            if deadlineTask.isCancelled { break }
-            if Task.isCancelled {
-                // 调用方（回合）取消：按 ABORTED 合成；工具体仍后台收敛。
-                deadlineTask.cancel()
-                return ToolOutput.failure("tool call aborted", code: "ABORTED", name: "AbortError")
+        let bodyTask = Task { try await body() }
+
+        // 竞速：true = 工具体先完成；false = deadline 先到。
+        // group.cancelAll() 只取消组内 wrapper（deadline 睡眠 / bodyTask 等待），
+        // bodyTask 是独立任务不被取消——dsh 语义：不放弃 promise，后台跑至收敛。
+        let bodyFinished: Bool = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                _ = try? await bodyTask.value   // 成功或抛错都算"完成"；取消被 try? 吞
+                return true
             }
-            if bodyTask.isFinished {
-                deadlineTask.cancel()
-                let output: ToolOutput
-                if let value = try? await bodyTask.value {
-                    output = value
-                } else if let error = bodyTask.error {
-                    output = Self.failure(from: error)
-                } else {
-                    output = ToolOutput.failure("tool failed", code: "TOOL_ERROR")
-                }
-                return output
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                return false                    // deadline 先到
             }
-            if deadlineTask.isFinished {
-                let seconds = Double(timeoutMs) / 1000
-                return ToolOutput.failure(
-                    "tool timed out after \(String(format: "%.1f", seconds))s",
-                    code: Self.timeoutCode, name: "ToolTimeoutError")
-            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+
+        if Task.isCancelled {
+            return ToolOutput.failure("tool call aborted", code: "ABORTED", name: "AbortError")
+        }
+
+        if bodyFinished {
             do {
-                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await bodyTask.value
             } catch {
-                deadlineTask.cancel()
-                return ToolOutput.failure("tool call aborted", code: "ABORTED", name: "AbortError")
+                return Self.failure(from: error)
             }
         }
-        deadlineTask.cancel()
-        return ToolOutput.failure("tool call aborted", code: "ABORTED", name: "AbortError")
+
+        let seconds = Double(timeoutMs) / 1000
+        return ToolOutput.failure(
+            "tool timed out after \(String(format: "%.1f", seconds))s",
+            code: Self.timeoutCode, name: "ToolTimeoutError")
     }
 
     /// 错误 → 结构化失败输出（LLMError / 其他一律拍平为 message + UNKNOWN 类码）。

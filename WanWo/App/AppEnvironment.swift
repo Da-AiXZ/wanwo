@@ -121,7 +121,7 @@ final class AppEnvironment: ObservableObject {
     /// - Returns: 失败（如无端点配置）返回 nil——UI 以「未配置模型」态降级。
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
-                        callbacks: AgentLoop.Callbacks) -> AgentLoop? {
+                        callbacks: AgentLoop.Callbacks) async -> AgentLoop? {
         guard (try? await makeAgentAdapter()) != nil else { return nil }
 
         let registry = ToolRegistry()

@@ -104,7 +104,7 @@ final class ChatViewModel: ObservableObject {
                 if let endpoint = (try? self.environment.makeAdapter())?.1 {
                     self.modelLabel = "\(endpoint.name) · \(endpoint.model)"
                 }
-                self.agentLoop = self.environment.makeAgentStack(
+                self.agentLoop = await self.environment.makeAgentStack(
                     sessionId: self.sessionID,
                     writer: writer,
                     callbacks: self.makeCallbacks())
