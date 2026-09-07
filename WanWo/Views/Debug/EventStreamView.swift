@@ -446,86 +446,108 @@ struct EventStreamView: View {
 
     var body: some View {
         List {
-            Section("会话") {
-                Picker("查看会话", selection: sessionBinding) {
-                    if model.sessions.isEmpty {
-                        Text("暂无会话").tag("")
-                    }
-                    ForEach(model.sessions) { summary in
-                        Text("\(summary.title ?? "新会话") · \(summary.eventCount) 事件")
-                            .tag(summary.id)
-                    }
-                }
-                HStack {
-                    Text("共 \(model.eventCount) 条事件")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if let loadedAt = model.lastLoadedAt {
-                        Text("刷新于 \(loadedAt.formatted(.dateTime.hour().minute().second()))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let issue = model.scanIssue {
-                    Label(issue, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if let error = model.errorMessage {
-                    Label(error, systemImage: "xmark.octagon")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Section("事件流（时间线）") {
-                if model.rows.isEmpty && !model.isLoading && model.errorMessage == nil {
-                    Text("该会话暂无事件")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(model.rows) { row in
-                    EventStreamRowView(row: row)
-                }
-            }
+            sessionSection
+            eventListSection
         }
         .listStyle(.insetGrouped)
         .navigationTitle("事件流")
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
-                // iOS 16+ ShareLink；源文件只读，副本在 tmp，不产生任何事件。
-                if let exportURL = model.exportFileURL {
-                    ShareLink(item: exportURL,
-                              preview: SharePreview(exportURL.lastPathComponent,
-                                                    source: exportURL)) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .accessibilityLabel("导出会话日志")
-                }
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    Task { await model.loadEvents() }
-                } label: {
-                    if model.isLoading {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .disabled(model.isLoading || model.selectedSessionID == nil)
-                .accessibilityLabel("刷新事件流")
-            }
-        }
-        .refreshable {
-            await model.loadEvents()
-        }
+        .toolbar { debugToolbar }
+        .refreshable { await model.loadEvents() }
         .task { await model.onAppear() }
         .onChange(of: model.selectedSessionID) { _ in
             Task { await model.loadEvents() }
         }
         // 只读诊断页不持写柄：本视图不触碰 SessionStore.openWriter，也不写任何事件/文件。
+    }
+
+    // MARK: - 子视图（拆分表达式，避免 SwiftUI type-check 超时）
+
+    @ViewBuilder
+    private var sessionSection: some View {
+        Section("会话") {
+            Picker("查看会话", selection: sessionBinding) {
+                if model.sessions.isEmpty {
+                    Text("暂无会话").tag("")
+                }
+                ForEach(model.sessions) { summary in
+                    Text(sessionLabel(summary)).tag(summary.id)
+                }
+            }
+            HStack {
+                Text("共 \(model.eventCount) 条事件")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let loadedAt = model.lastLoadedAt {
+                    Text(loadedLabel(loadedAt))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let issue = model.scanIssue {
+                Label(issue, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let error = model.errorMessage {
+                Label(error, systemImage: "xmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var eventListSection: some View {
+        Section("事件流（时间线）") {
+            if model.rows.isEmpty && !model.isLoading && model.errorMessage == nil {
+                Text("该会话暂无事件")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(model.rows) { row in
+                EventStreamRowView(row: row)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var debugToolbar: some View {
+        // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
+        // iOS 16+ ShareLink；源文件只读，副本在 tmp，不产生任何事件。
+        ToolbarItem(placement: .navigationBarTrailing) {
+            if let exportURL = model.exportFileURL {
+                ShareLink(item: exportURL,
+                          preview: SharePreview(exportURL.lastPathComponent,
+                                                source: exportURL)) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("导出会话日志")
+            }
+        }
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                Task { await model.loadEvents() }
+            } label: {
+                if model.isLoading {
+                    ProgressView()
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .disabled(model.isLoading || model.selectedSessionID == nil)
+            .accessibilityLabel("刷新事件流")
+        }
+    }
+
+    private func sessionLabel(_ summary: EventStreamViewModel.SessionSummary) -> String {
+        let title = summary.title ?? "新会话"
+        return title + " · " + String(summary.eventCount) + " 事件"
+    }
+
+    private func loadedLabel(_ date: Date) -> String {
+        let time = date.formatted(.dateTime.hour().minute().second())
+        return "刷新于 " + time
+    }
     }
 
     /// 空会话列表时以 "" 兜底（Picker 需要 stable tag）。

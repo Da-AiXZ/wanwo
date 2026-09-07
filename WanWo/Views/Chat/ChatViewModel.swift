@@ -136,12 +136,18 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 发送 / 取消
 
+    /// .failed(String) 带关联值不能直接 == 比较（隐式成员查找会落到系统类型）。
+    private var canSendFromPhase: Bool {
+        switch phase {
+        case .idle, .failed: return true
+        default: return false
+        }
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         // .failed 也允许重发（错误状态条不是死锁——用户改完可直接重试）。
-        guard !text.isEmpty,
-              phase == .idle || phase == .failed,
-              let loop = agentLoop else { return }
+        guard !text.isEmpty, canSendFromPhase, let loop = agentLoop else { return }
         draft = ""
 
         if SlashCommandRegistry.isCommand(text) {
