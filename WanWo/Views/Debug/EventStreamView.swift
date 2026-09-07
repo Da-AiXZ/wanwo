@@ -510,6 +510,7 @@ struct EventStreamView: View {
         }
     }
 
+    @ToolbarContentBuilder
     private var debugToolbar: some ToolbarContent {
         // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
         // iOS 16+ ShareLink；源文件只读，副本在 tmp，不产生任何事件。
