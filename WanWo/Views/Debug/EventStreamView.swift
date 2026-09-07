@@ -49,6 +49,8 @@ enum EventStreamLoader {
         var sessionID: String
         var createdAtMs: Int64
         var rows: [EventStreamRow]
+        /// M2.9：原始事件总数（与聚合后行数对照显示）。
+        var rawEventCount: Int
         /// 非致命扫描残记（torn tail 等；中部损坏走 failure）。
         var issue: String?
     }
@@ -138,7 +140,6 @@ enum EventStreamLoader {
             return nil
         }
     }
-}
 
     /// M2.9 剪贴板导出上限（2MB）：超过则截断复制，UI 提示用导出文件取全文。
     static let clipboardLimitBytes = 2 * 1_048_576
