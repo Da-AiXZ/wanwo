@@ -108,9 +108,19 @@ final class ChatViewModel: ObservableObject {
                     sessionId: self.sessionID,
                     writer: writer,
                     callbacks: self.makeCallbacks())
-                self.registry = self.agentLoop?.deps.registry
-                self.slashCommands = SlashCommandRegistry.makeDefault(
-                    loop: self.agentLoop!, environment: self.environment)
+                if let loop = self.agentLoop {
+                    self.registry = loop.deps.registry
+                    self.slashCommands = SlashCommandRegistry.makeDefault(
+                        loop: loop, environment: self.environment)
+                } else {
+                    // ERR-015：makeAgentStack 契约 = 失败返回 nil（无端点/Key 不可读，
+                    // 如覆盖安装后 Keychain 读不到），设计语义为「未配置模型」降级——
+                    // 原实现 agentLoop! 强制解包在此分支直接闪退（EXC_BREAKPOINT）。
+                    // 降级：会话照常打开可浏览历史，发送时 send() 的 agentLoop guard 拦截。
+                    self.registry = nil
+                    self.slashCommands = []
+                    self.resumeBanner = "未配置模型：请到「设置 · Providers」补填 API Key 后发送"
+                }
                 self.reproject()
                 self.phase = .idle
             } catch {
