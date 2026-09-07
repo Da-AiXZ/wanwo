@@ -120,11 +120,17 @@ final class AppEnvironment: ObservableObject {
 
     /// 装配 AgentLoop 全家（§十一 M2：registry / pipeline / compactor / spill /
     /// injector / loop；审批缝 = AutoApprovalSeam 仅 M2 占位，M3 换审批卡 answerer）。
-    /// - Returns: 失败（如无端点配置）返回 nil——UI 以「未配置模型」态降级。
+    /// - Returns: loop = nil 表示装配失败（无端点/凭据不可读），failureReason 带具体
+    ///   原因（ERR-016：原 try? 吞错导致降级横幅只有泛化提示，无法定位）。
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
-                        callbacks: AgentLoop.Callbacks) async -> AgentLoop? {
-        guard (try? await makeAgentAdapter()) != nil else { return nil }
+                        callbacks: AgentLoop.Callbacks) async -> (loop: AgentLoop?, failureReason: String?) {
+        do {
+            _ = try await makeAgentAdapter()
+        } catch {
+            let reason = (error as? LLMError)?.message ?? String(describing: error)
+            return (nil, reason)
+        }
 
         let registry = ToolRegistry()
         registry.register(ShellTool(sessionId: sessionId))
@@ -166,6 +172,6 @@ final class AppEnvironment: ObservableObject {
                 return try await self.makeAgentAdapter()
             },
             callbacks: callbacks)
-        return AgentLoop(deps: deps)
+        return (AgentLoop(deps: deps), nil)
     }
 }

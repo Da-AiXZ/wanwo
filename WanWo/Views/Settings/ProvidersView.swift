@@ -28,7 +28,7 @@ struct ProvidersView: View {
                 }
             } footer: {
                 Text("OpenAI 兼容格式接入（base URL + API Key + model 自填，09 #16）。"
-                    + "API Key 保存在 Keychain，不写入配置文件。")
+                    + "API Key 优先存 Keychain，侧载环境 Keychain 不可用时自动以沙箱文件兜底（ERR-016）；均不写入配置文件。")
             }
         }
         .navigationTitle("Providers")
@@ -90,6 +90,8 @@ struct EndpointEditSheet: View {
     @State private var thinkingEnabled = false
     @State private var reasoningEffort: String = ""
     @State private var loaded = false
+    /// ERR-016：凭据保存结果透出（存储层/失败原因）——失败时留在页面显示，不再静默。
+    @State private var credentialNotice: String?
 
     var body: some View {
         NavigationStack {
@@ -110,6 +112,12 @@ struct EndpointEditSheet: View {
                         Text("留空则保留已保存的 Key。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    // ERR-016：保存结果透出（Keychain/文件兜底/失败原因）。
+                    if let notice = credentialNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(notice.hasPrefix("Key 保存失败") ? .red : .secondary)
                     }
                 }
                 Section("DeepSeek 扩展（可选透传，09 #16）") {
@@ -170,7 +178,14 @@ struct EndpointEditSheet: View {
             store.update(config)
         }
         if !apiKey.isEmpty {
-            store.setApiKey(apiKey, for: config)
+            do {
+                // ERR-016：保存结果透出；失败留在页面显示具体原因（原实现静默吞错，
+                // 用户以为已保存、实际 Keychain 不可用）。
+                credentialNotice = try store.setApiKey(apiKey, for: config)
+            } catch {
+                credentialNotice = "Key 保存失败：\((error as NSError).localizedDescription)"
+                return
+            }
         }
         dismiss()
     }

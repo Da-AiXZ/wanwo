@@ -92,18 +92,59 @@ final class EndpointStore: ObservableObject {
         persist()
     }
 
-    // MARK: - 凭据（Keychain；配置文件永不存 key）
+    // MARK: - 凭据（Keychain 优先 + 沙箱文件兜底；配置文件永不存 key）
 
-    func apiKey(for endpoint: EndpointConfig) -> String? {
-        KeychainStore.load(account: endpoint.id.uuidString)
+    // ERR-016：TrollStore 等侧载环境的假签名可能缺 keychain-access-groups
+    // entitlement，Keychain 写/读会整体失败（errSecMissingEntitlement -34018 等），
+    // 而原实现 setApiKey 静默吞错 → 用户以为已保存、新建对话时读不到 → 降级横幅。
+    // 双层方案：Keychain 成功照用；失败/读不到时以 App 沙箱文件兜底
+    // （仅本设备本 App 可读；自用场景下权衡可接受，安全注记见 10-design §5.5）。
+    private var credentialFallbackDir: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return support.appendingPathComponent("credentials", isDirectory: true)
     }
 
-    func setApiKey(_ key: String, for endpoint: EndpointConfig) {
+    private func credentialFileURL(for endpoint: EndpointConfig) -> URL {
+        credentialFallbackDir.appendingPathComponent("endpoint-\(endpoint.id.uuidString).key")
+    }
+
+    private func writeCredentialFile(_ key: String, for endpoint: EndpointConfig) throws {
+        let dir = credentialFallbackDir
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try key.write(to: credentialFileURL(for: endpoint), atomically: true, encoding: .utf8)
+        var resources = URLResourceValues()
+        resources.isExcludedFromBackup = true
+        var url = credentialFileURL(for: endpoint)
+        try? url.setResourceValues(resources)
+    }
+
+    func apiKey(for endpoint: EndpointConfig) -> String? {
+        if let key = KeychainStore.load(account: endpoint.id.uuidString), !key.isEmpty {
+            return key
+        }
+        return try? String(contentsOf: credentialFileURL(for: endpoint), encoding: .utf8)
+    }
+
+    /// 保存凭据。Keychain 失败自动落文件兜底；两者都失败才抛错。
+    /// - Returns: 实际存储方式描述（供 UI 显示，让用户知道 Key 存到了哪一层）。
+    @discardableResult
+    func setApiKey(_ key: String, for endpoint: EndpointConfig) throws -> String {
+        var keychainError: Error?
         do {
             try KeychainStore.save(apiKey: key, account: endpoint.id.uuidString)
         } catch {
-            Self.logger.error("keychain save failed: \(String(describing: error))")
+            keychainError = error
         }
+        // 文件兜底始终写：Keychain 可能成功但日后读不出（重装/访问组变化），
+        // 双写保证读取侧任一通道可用即得。
+        try writeCredentialFile(key, for: endpoint)
+        if let kcError = keychainError {
+            let code = (kcError as NSError).code
+            Self.logger.error("keychain save failed (fell back to file): \(String(describing: kcError))")
+            return "已保存（文件兜底；Keychain 不可用 err \(code)）"
+        }
+        return "已保存（Keychain + 文件双写）"
     }
 
     // MARK: - 持久化
