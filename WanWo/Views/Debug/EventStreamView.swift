@@ -19,7 +19,7 @@
 //    - 工具栏 ShareLink 分享当前会话 .jsonl 原文件 = 设计 F070 会话导出的
 //      最小前置形态（M9.3 ZIP 完整版之前）：复制到临时目录直分享原始日志，
 //      不脱敏不加工（文件内无 API key，key 在 Keychain）。源文件只读；
-//      临时副本写 tmp 目录，不触碰事件流、不产生任何事件。
+//      导出副本写 Documents/WanWo-Exports/（Files App 可见），不触碰事件流。
 //    - M8.2 再升级：span 树 / 成本 / 过滤检索 / 实时订阅（本文件刻意不含）。
 //
 
@@ -85,7 +85,7 @@ enum EventStreamLoader {
     /// 把当前会话 .jsonl 原文件复制到临时目录（原样字节、不脱敏不加工），
     /// 供工具栏 ShareLink 直分享（存 Files / 隔空投送 / 发给自己）。
     /// 文件名带会话 id 前 8 位 + 时间戳，便于用户回传定位。
-    /// 只读源文件 + 写 tmp 副本；不触碰事件流、不产生任何事件。
+    /// 只读源文件 + 写 Documents/WanWo-Exports/ 副本；不触碰事件流、不产生任何事件。
     /// - Returns: 副本 URL；会话不存在或复制失败返回 nil（UI 隐藏分享入口）。
     static func makeExportCopy(sessionID: String) -> URL? {
         // id 路径安全校验（与 loadAndProject 同口径，fail closed）。
@@ -105,8 +105,14 @@ enum EventStreamLoader {
         stamp.locale = Locale(identifier: "en_US_POSIX")
         stamp.dateFormat = "yyyyMMdd-HHmm"
         let fileName = "wanwo-\(idPrefix)-\(stamp.string(from: Date())).jsonl"
-        let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent(fileName)
+        // 副本写 Documents/WanWo-Exports/（用户 Files App 可见——tmp 目录经部分
+        // 分享途径会被系统包装成 bookmark plist，用户拿到的是引用而非文件本体）。
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let exportDir = docs.appendingPathComponent("WanWo-Exports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
+        let destination = exportDir.appendingPathComponent(fileName)
         // 同名残留先清（同分钟内二次导出覆盖旧副本）。
         try? FileManager.default.removeItem(at: destination)
         do {
@@ -419,7 +425,7 @@ final class EventStreamViewModel: ObservableObject {
             eventCount = output.rows.count
             scanIssue = output.issue
             errorMessage = nil
-            // 导出副本（F070 最小前置）：只读源文件 + tmp 副本，随刷新同步更新。
+            // 导出副本（F070 最小前置）：只读源文件 + Documents 副本，随刷新同步更新。
             exportFileURL = await Task.detached(priority: .utility) {
                 EventStreamLoader.makeExportCopy(sessionID: id)
             }.value
@@ -513,7 +519,7 @@ struct EventStreamView: View {
     @ToolbarContentBuilder
     private var debugToolbar: some ToolbarContent {
         // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
-        // iOS 16+ ShareLink；源文件只读，副本在 tmp，不产生任何事件。
+        // iOS 16+ ShareLink；源文件只读，副本在 Documents/WanWo-Exports/。
         ToolbarItem(placement: .navigationBarTrailing) {
             if let exportURL = model.exportFileURL {
                 ShareLink(item: exportURL,

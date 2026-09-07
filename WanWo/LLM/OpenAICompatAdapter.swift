@@ -264,7 +264,7 @@ struct OpenAICompatAdapter {
             ? request.tools!.map { schema in
                 WireTool(type: "function", function: WireToolFunction(
                     name: schema.name, description: schema.description,
-                    parameters: schema.parameters.anyValue))
+                    parameters: schema.parameters))
             }
             : nil
 
@@ -546,18 +546,10 @@ struct WireTool: Encodable {
 struct WireToolFunction: Encodable {
     var name: String
     var description: String
-    /// JSON Schema（lossless Any 形态；编码时经 JSONValue 转换）。
-    var parameters: Any
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        if let dict = parameters as? [String: Any] {
-            let data = try JSONSerialization.data(withJSONObject: dict)
-            try container.encode(JSONValue(data: data) ?? .object([:]))
-        } else {
-            try container.encodeNil()
-        }
-    }
+    /// JSON Schema（JSONValue 直接参与合成编码—— ERR-012 教训：自定义
+    /// singleValueContainer encode 会把 name/description 整体丢弃，
+    /// DeepSeek 400 "tools[0].function: missing field 'name'"）。
+    var parameters: JSONValue
 }
 
 extension JSONValue {
