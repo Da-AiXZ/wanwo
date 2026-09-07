@@ -111,7 +111,7 @@ enum KernelBootCoordinator {
                 NSLocalizedDescriptionKey: "boot 失败 rc=\(bootResult)"
             ])
         }
-        logger.info("kernel booted (aarch64) at \(rootPath, privacy: .public)")
+        logger.info("kernel booted (aarch64) at \(rootPath)")
     }
 
     /// 3. fs_context 路径翻译钩子（boot 后、任何命令前，一次性）。
