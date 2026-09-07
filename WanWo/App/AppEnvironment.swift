@@ -63,6 +63,18 @@ final class AppEnvironment: ObservableObject {
             await self?.sessionStore.reconcileIndex()
             await MainActor.run { self?.sessionsRevision += 1 }
         }
+
+        // ERR-022：App 级内核 boot（OpenMinis 形态）——启动即后台预热，
+        // 聊天链路不再依赖诊断页（ShellTestView）手动 boot。失败仅记日志：
+        // 聊天执行链首次使用前 makeAgentStack 会再次幂等 ensure 并向用户
+        // 报告具体失败原因（与 ERR-016 的 failureReason 口径一致）。
+        Task {
+            do {
+                try await KernelBootCoordinator.ensureKernelBooted()
+            } catch {
+                Self.logger.fault("app-level kernel boot failed: \(String(describing: error))")
+            }
+        }
     }
 
     // MARK: - 会话
@@ -130,6 +142,14 @@ final class AppEnvironment: ObservableObject {
         } catch {
             let reason = (error as? LLMError)?.message ?? String(describing: error)
             return (nil, reason)
+        }
+
+        // ERR-022：聊天执行链首次使用前幂等确保内核已 boot（App 启动已后台
+        // 预热；此处兜底冷启动竞态——ensure 幂等，isBooted 已真直返）。
+        do {
+            try await KernelBootCoordinator.ensureKernelBooted()
+        } catch {
+            return (nil, "内核启动失败：\((error as NSError).localizedDescription)")
         }
 
         let registry = ToolRegistry()

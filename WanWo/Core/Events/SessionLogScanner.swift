@@ -26,6 +26,10 @@ enum SessionLogError: Error, Equatable {
     case corrupt(String)
     /// 头行 id 与期望不符。
     case idMismatch(expected: String, actual: String)
+    /// append 的 pre-write 守卫失败（seq 连续性 / 只读拒绝）——行尚未写入，
+    /// 重试不会产生重复行（ERR-021 防御①的重试判定依据；I/O 失败不用此错误，
+    /// 因为 seek/write/fsync 失败时行可能已部分或完整落盘，盲目重写会损坏 JSONL）。
+    case appendRetryable(String)
 }
 
 /// 一次日志扫描的结果：头 + 可提交事件前缀 + 安全截断字节偏移。

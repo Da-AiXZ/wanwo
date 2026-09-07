@@ -89,6 +89,32 @@ struct DeriveFold {
             openCallIds.removeAll()
             safe.append(message)
         }
-        self.messages = safe
+        // 5. 出口防御（ERR-021 反向）：assistant(tool_calls) 的某 callId 若无后续
+        //    匹配 tool 消息（丢 result / 执行中断截断），合成错误 tool 消息补齐
+        //    配对——与步骤 4 的孤立 tool 剔除方向对称，任何上游缺口都不会再产生
+        //    "insufficient tool messages" 400。
+        var paired: [ChatMessage] = []
+        var index = 0
+        while index < safe.count {
+            let message = safe[index]
+            paired.append(message)
+            index += 1
+            guard let calls = message.toolCalls, !calls.isEmpty else { continue }
+            // 紧随其后的连续 tool 消息已回答的 callId 集合。
+            var answered = Set<String>()
+            var cursor = index
+            while cursor < safe.count, safe[cursor].role == .tool,
+                  let id = safe[cursor].toolCallID {
+                answered.insert(id)
+                cursor += 1
+            }
+            for call in calls where !answered.contains(call.id) {
+                paired.append(ChatMessage(
+                    role: .tool,
+                    content: "tool execution was interrupted before completion",
+                    toolCallID: call.id))
+            }
+        }
+        self.messages = paired
     }
 }

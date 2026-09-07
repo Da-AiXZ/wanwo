@@ -5,9 +5,9 @@
 //  【按设计新写 · 非原件】出处：10-design §十一 M0.4 ——
 //  "最小执行链：Shell 测试页 → fork 执行 → 流式显示"，
 //  验收口径（v2.2 ⑦）：**手动输入 `ls` 看到目录列表**。
-//  薄层职责：boot 编排（RootfsInstaller → ISHKernel.boot → FsContextRouter
-//  装钩子）+ 手动命令输入框 + 经 IshExecutorBridge 的流式输出显示
-//  （OutputSanitizer 最小版 + 0.2s 节流 flush）。UI 形态全新，不复用
+//  薄层职责：boot 编排已提取为共享层 KernelBootCoordinator（ERR-022，本页
+//  改调共享层、行为不变）+ 手动命令输入框 + 经 IshExecutorBridge 的流式输出
+//  显示（OutputSanitizer 最小版 + 0.2s 节流 flush）。UI 形态全新，不复用
 //  OpenMinis Views/（附录 A.8）。
 //
 
@@ -37,35 +37,25 @@ final class ShellTestViewModel: ObservableObject {
     func bootIfNeeded() async {
         guard phase == .idle || phase == .installing else { return }
 
-        // 1. rootfs 安装（自带 .arch 标签 / move-aside / zip 解析器）
+        // ERR-022：boot 编排提取为共享层 KernelBootCoordinator（App 启动预热 +
+        // 聊天链路兜底共用）。本页行为不变：installing → booting → ready，
+        // 失败文案保持原文（"rootfs 安装失败：…" / "boot 失败 rc=…"）。
         phase = .installing
         do {
-            try RootfsInstaller.shared.installIfNeeded()
-        } catch {
-            phase = .failed("rootfs 安装失败：\((error as NSError).localizedDescription)")
-            return
-        }
-
-        // 2. 内核启动（bootWithRootPath 重量级，后台线程；轮询 isBooted 兜底）
-        phase = .booting
-        let rootPath = RootfsInstaller.shared.rootfsPath.path
-        let bootResult: Int32 = await Task.detached(priority: .userInitiated) { () -> Int32 in
-            let rc = ISHKernel.shared.boot(withRootPath: rootPath)
-            guard rc == 0 else { return rc }
-            for _ in 0..<300 {
-                if ISHKernel.shared.isBooted { return 0 }
-                Thread.sleep(forTimeInterval: 0.1)
+            try await KernelBootCoordinator.ensureKernelBooted { [weak self] bootPhase in
+                // 回调在任意线程；阶段映射跳 MainActor（与原编排等价）。
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    switch bootPhase {
+                    case .installing: self.phase = .installing
+                    case .booting: self.phase = .booting
+                    }
+                }
             }
-            return -99
-        }.value
-
-        guard bootResult == 0 else {
-            phase = .failed("boot 失败 rc=\(bootResult)")
+        } catch {
+            phase = .failed((error as NSError).localizedDescription)
             return
         }
-
-        // 3. fs_context 路径翻译钩子（boot 后、任何命令前，一次性）
-        FsContextRouter.shared.installHook()
 
         phase = .ready
         appendSanitized("=== 万我 M0.4 · 内核已启动，输入命令（如 ls）===\n")

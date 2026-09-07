@@ -125,6 +125,27 @@ enum ToolCallScheduler {
         }
     }
 
+    // MARK: 结果落盘（ERR-021：失败显式记日志，不再无声吞掉）
+
+    /// tool/result 落盘。SessionWriter 侧已有 pre-write 重试 + gate 串行化；
+    /// 此处剩余失败（如 I/O 级）记 error 日志——step 收尾配对校验
+    /// （AgentLoop.ensureStepToolResultsPaired）会兜底合成 TOOL_RESULT_LOST，
+    /// 配对不变量仍成立。
+    private static func appendResult(_ deps: AgentLoop.Dependencies,
+                                     turn: Int, step: Int, callId: String,
+                                     output: ToolOutput) async {
+        do {
+            try await deps.writer.append(.toolResult(
+                turn: turn, step: step, callId: callId,
+                content: output.text, isError: output.isError,
+                errorName: output.errorName, errorCode: output.errorCode,
+                meta: output.meta))
+        } catch {
+            logger.error("tool/result append failed for \(callId) "
+                + "(will be synthesized at step end): \(String(describing: error))")
+        }
+    }
+
     // MARK: 单笔（exclusive 屏障路径）
 
     private static func runSingle(_ deps: AgentLoop.Dependencies,
@@ -144,11 +165,7 @@ enum ToolCallScheduler {
         notifyStarted(deps, call: call, args: args)
         let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
         let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
-        _ = try? await writer.append(.toolResult(turn: turn, step: step, callId: call.id,
-                                                 content: output.text, isError: output.isError,
-                                                 errorName: output.errorName,
-                                                 errorCode: output.errorCode,
-                                                 meta: output.meta))
+        await appendResult(deps, turn: turn, step: step, callId: call.id, output: output)
         notifyFinished(deps, callId: call.id, output: output)
     }
 
@@ -176,21 +193,15 @@ enum ToolCallScheduler {
                     defer { semaphore.signal() }
                     if Task.isCancelled || cancelFlag.isCancelled {
                         let output = abortedBeforeDispatch()
-                        _ = try? await writer.append(.toolResult(
-                            turn: turn, step: step, callId: call.id,
-                            content: output.text, isError: output.isError,
-                            errorName: output.errorName, errorCode: output.errorCode,
-                            meta: output.meta))
+                        await appendResult(deps, turn: turn, step: step,
+                                           callId: call.id, output: output)
                         notifyFinished(deps, callId: call.id, output: output)
                         return
                     }
                     let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
                     let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
-                    _ = try? await writer.append(.toolResult(
-                        turn: turn, step: step, callId: call.id,
-                        content: output.text, isError: output.isError,
-                        errorName: output.errorName, errorCode: output.errorCode,
-                        meta: output.meta))
+                    await appendResult(deps, turn: turn, step: step,
+                                       callId: call.id, output: output)
                     notifyFinished(deps, callId: call.id, output: output)
                 }
             }
@@ -207,11 +218,7 @@ enum ToolCallScheduler {
         let output = abortedBeforeDispatch()
         for call in calls {
             logger.info("synthesizing aborted result for call \(call.id) (\(call.name))")
-            _ = try? await deps.writer.append(.toolResult(
-                turn: turn, step: step, callId: call.id,
-                content: output.text, isError: output.isError,
-                errorName: output.errorName, errorCode: output.errorCode,
-                meta: output.meta))
+            await appendResult(deps, turn: turn, step: step, callId: call.id, output: output)
         }
         _ = cancelFlag // 旗标只读；保留参数使调用点语义显式
     }

@@ -265,6 +265,9 @@ actor AgentLoop {
 
                 // 一步（模型请求 + 工具调度）。
                 let outcome = try await runStep(turn: turn, step: step)
+                // step 收尾配对校验（ERR-021 防御②）：step/end 落盘前补齐缺失
+                // 的 tool/result，结构性保证派生历史的 tool_calls↔tool 配对完整。
+                await ensureStepToolResultsPaired(turn: turn, step: step)
                 try await deps.writer.append(.stepEnd(turn: turn, step: step))
 
                 switch outcome {
@@ -292,6 +295,8 @@ actor AgentLoop {
             }
             // 收掉开放 step（不变量：turn/end 时 step 不得开放）。
             if let openStep = deps.writer.openStep, deps.writer.openTurn == turn {
+                // 同样先补配对（取消/错误路径的 tool/call 也可能有丢 result）。
+                await ensureStepToolResultsPaired(turn: turn, step: openStep)
                 try? await deps.writer.append(.stepEnd(turn: turn, step: openStep))
             }
         }
@@ -320,6 +325,41 @@ actor AgentLoop {
     private static func isAborted(_ reason: TurnEndReason) -> Bool {
         if case .aborted = reason { return true }
         return false
+    }
+
+    // MARK: - step 收尾配对校验（ERR-021 防御②）
+
+    /// step/end 落盘前校验：本 step 已落盘的全部 tool/call 必须有对应 tool/result。
+    /// callId 全局唯一（SessionInvariant），结果按 callId 全流匹配。缺失的立即补
+    /// 合成 isError result（TOOL_RESULT_LOST）——这是对一切丢 result 路径（并发
+    /// append 失败、I/O 故障、未预期异常）的结构性兜底，保证派生历史发给 API 的
+    /// tool_calls↔tool 配对永远完整（否则下轮请求 400）。
+    private func ensureStepToolResultsPaired(turn: Int, step: Int) async {
+        let events = deps.writer.events
+        var pending: [String] = []
+        for event in events {
+            switch event.payload {
+            case .toolCall(let t, let s, let callId, _, _) where t == turn && s == step:
+                pending.append(callId)
+            case .toolResult(_, _, let callId, _, _, _, _, _):
+                pending.removeAll { $0 == callId }
+            default:
+                break
+            }
+        }
+        guard !pending.isEmpty else { return }
+        let output = ToolOutput(text: "tool result was lost due to an internal error",
+                                isError: true, errorName: "ToolResultLostError",
+                                errorCode: "TOOL_RESULT_LOST", meta: nil)
+        for callId in pending {
+            Self.logger.error("turn \(turn) step \(step): tool result missing for "
+                + "\(callId); synthesizing TOOL_RESULT_LOST")
+            try? await deps.writer.append(.toolResult(
+                turn: turn, step: step, callId: callId,
+                content: output.text, isError: output.isError,
+                errorName: output.errorName, errorCode: output.errorCode,
+                meta: output.meta))
+        }
     }
 
     // MARK: - 上下文注入（F038/F039/F040）

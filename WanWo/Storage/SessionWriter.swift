@@ -14,10 +14,51 @@
 
 import Foundation
 
-/// 追加串行化门（dsh per-session append 串行语义的最小实现）。
-private actor SessionWriterGate {
+/// 追加串行化门（dsh per-session append 串行语义）。
+///
+/// ERR-021 并发缺陷本体：原实现为 actor 直接转发（`run` 内 `try await work()`），
+/// actor 在 work 挂起点（`log.append` 跨 actor await）会重入——两笔并发 append
+/// 都能进入 pipeline，且内存快照推进（eventsStorage.append）发生在 log.append
+/// 返回之后，于是两笔读到同一 eventsStorage.count、分配到同一 seq，后到的一笔
+/// 被 JsonlEventLog 连续性守卫拒绝 → 调用方 `try?` 静默吞掉 → tool/result 丢失。
+/// 改用 NSLock + CheckedContinuation 的异步互斥锁：挂起期间持续持锁，把整段
+/// pipeline（seq 分配 → log 落盘 → 内存快照推进）原子化，等价 dsh 的
+/// per-handle promise chain（链上严格串行，无重入缝）。
+private final class SessionWriterGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var locked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
     func run<T>(_ work: () async throws -> T) async throws -> T {
-        try await work()
+        await acquire()
+        defer { release() }
+        return try await work()
+    }
+
+    private func acquire() async {
+        lock.lock()
+        if !locked {
+            locked = true
+            lock.unlock()
+            return
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            waiters.append(cont)
+            lock.unlock()
+        }
+    }
+
+    private func release() {
+        lock.lock()
+        // 所有权转移给队首等待者（不清 locked）；无人等待才真正释放。
+        if let next = waiters.first {
+            waiters.removeFirst()
+            lock.unlock()
+            next.resume()
+        } else {
+            locked = false
+            lock.unlock()
+        }
     }
 }
 
@@ -96,23 +137,64 @@ final class SessionWriter: @unchecked Sendable {
     // MARK: - 追加（gate 串行；dsh Session.append 校验管线）
 
     /// 校验并 durable 追加一条事件。返回即已 fsync（model-visible=logged 的实现根基）。
+    ///
+    /// ERR-021 防御①：pre-write 失败（`.appendRetryable`——seq 连续性 / 只读拒绝，
+    /// 行必然未写入）自动重试一次；重试前回滚已提交的不变量状态（validate 与
+    /// 落盘非原子，失败时校验器可能已推进游标）。I/O 失败（`.corrupt`）不重试
+    /// ——行可能已部分/完整落盘，盲目重写会产生重复行损坏 JSONL。
     @discardableResult
     func append(_ payload: SessionEvent.Payload, ignorable: Bool = false) async throws -> SessionEvent {
         try await gate.run { [self] in
-            let event = try withState {
-                let event = SessionEvent(seq: eventsStorage.count,
-                                         timeMs: Int64(Date().timeIntervalSince1970 * 1000),
-                                         payload: payload,
-                                         ignorable: ignorable)
-                try invariant.validate(event)
-                return event
+            try await appendWithRetry(payload, ignorable: ignorable)
+        }
+    }
+
+    /// 带重试的追加管线（仅在 gate 内调用；`append` 与
+    /// `logRequestHeaderIfNeeded` 共用——后者已在 gate 内，不得再入 gate）。
+    private func appendWithRetry(_ payload: SessionEvent.Payload,
+                                 ignorable: Bool) async throws -> SessionEvent {
+        var attempt = 0
+        while true {
+            do {
+                return try await appendOnce(payload, ignorable: ignorable)
+            } catch let error as SessionLogError {
+                guard case .appendRetryable(let reason) = error else { throw error }
+                attempt += 1
+                guard attempt <= 1 else { throw error }
+                Self.logger.warning("session \(self.id): append pre-write failure, "
+                    + "retrying once: \(reason)")
             }
-            try await log.append(event)
-            withState { eventsStorage.append(event) }
-            // GRDB 投影同步（一致性：索引与事实源同步推进；失败仅记日志，不中断对话）。
-            database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1)
+        }
+    }
+
+    /// 单次追加尝试（seq 分配 → 不变量校验 → log 落盘 → 内存快照推进）。
+    /// 仅在 gate 内调用（串行语义的组成段）。
+    private func appendOnce(_ payload: SessionEvent.Payload, ignorable: Bool) async throws -> SessionEvent {
+        // 值语义快照：validate 通过即推进校验器状态，log 落盘失败时据此回滚。
+        var preValidateState: SessionInvariant?
+        let event = try withState { () -> SessionEvent in
+            let event = SessionEvent(seq: eventsStorage.count,
+                                     timeMs: Int64(Date().timeIntervalSince1970 * 1000),
+                                     payload: payload,
+                                     ignorable: ignorable)
+            preValidateState = invariant
+            try invariant.validate(event)
             return event
         }
+        do {
+            try await log.append(event)
+        } catch {
+            if let logError = error as? SessionLogError,
+               case .appendRetryable = logError,
+               let snapshot = preValidateState {
+                withState { invariant = snapshot }
+            }
+            throw error
+        }
+        withState { eventsStorage.append(event) }
+        // GRDB 投影同步（一致性：索引与事实源同步推进；失败仅记日志，不中断对话）。
+        database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1)
+        return event
     }
 
     /// resume 修复：追加合成收尾事件（seq/时间已在事件内确定）。
@@ -155,12 +237,14 @@ final class SessionWriter: @unchecked Sendable {
                     eventsStorage.contains { $0.wireType == "request/header" }
                 }
                 let reason = hadHeader ? "resume" : "initial"
-                _ = try await append(.requestHeader(header: header, reason: reason))
+                _ = try await appendWithRetry(.requestHeader(header: header, reason: reason),
+                                              ignorable: false)
                 withState { lastRunLoggedHeader = header }
                 return reason
             }
             if baseline != header {
-                _ = try await append(.requestHeader(header: header, reason: "change"))
+                _ = try await appendWithRetry(.requestHeader(header: header, reason: "change"),
+                                              ignorable: false)
                 withState { lastRunLoggedHeader = header }
                 return "change"
             }

@@ -123,19 +123,29 @@ actor JsonlEventLog {
 
     /// durable 追加一条事件：seq 必须等于当前事件数（连续性校验，dsh assertContiguous）。
     /// 返回即已 fsync——调用方此后才允许发起下游模型请求（checkpoint-policy 语义）。
+    /// ERR-021：写盘动作**之前**的守卫失败抛 `.appendRetryable`（行必然未写入，
+    /// 调用方重试安全）；写盘动作之后（seek/write/fsync）的 I/O 失败抛
+    /// `.corrupt`（行可能已部分/完整落盘，调用方不得盲目重写）。
     func append(_ event: SessionEvent) async throws {
         guard event.seq == events.count else {
-            throw SessionLogError.corrupt(
+            throw SessionLogError.appendRetryable(
                 "append seq \(event.seq) does not continue log at \(events.count)")
         }
         guard let handle = fileHandle else {
-            throw SessionLogError.corrupt("log opened read-only; append refused (fail closed)")
+            throw SessionLogError.appendRetryable(
+                "log opened read-only; append refused (fail closed)")
         }
         var lineData = try JSONEncoder().encode(event)
         lineData.append(0x0A)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: lineData)
-        try handle.synchronizeFile()
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: lineData)
+            try handle.synchronizeFile()
+        } catch {
+            // 写路径 I/O 失败：无法断定行是否已落盘（部分行=残尾，完整行=重复行），
+            // 归类为不可重试的 corrupt，交由 torn-tail/扫描器机制处置。
+            throw SessionLogError.corrupt("append I/O failed: \(error.localizedDescription)")
+        }
         committedBytes += lineData.count
         events.append(event)
     }
