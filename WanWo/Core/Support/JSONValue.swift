@@ -52,9 +52,27 @@ extension JSONValue: Codable {
         case .double(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         case .array(let value): try container.encode(value)
-        case .object(let value): try container.encode(value)
+        case .object(let value):
+            // ERR-026：Swift 字典的 JSONEncoder 键序不稳定——每轮请求的 tools
+            // schema 字节序随机翻转，DeepSeek 前缀缓存从 tools 就断（真机取证
+            // firstDiff=1，命中率崩到个位数）。object 按键排序做确定性编码，
+            // 嵌套值递归走本 encode（排序语义逐层生效）。
+            var keyed = encoder.container(keyedBy: AnyCodingKey.self)
+            for key in value.keys.sorted() {
+                try keyed.encode(value[key] ?? .null, forKey: AnyCodingKey(key))
+            }
         }
     }
+}
+
+/// 动态字符串键的 CodingKey（ERR-026 确定性 object 编码用）。
+struct AnyCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init(_ string: String) { self.stringValue = string; self.intValue = nil }
+    init(stringValue: String) { self.stringValue = stringValue; self.intValue = nil }
+    init(intValue: Int) { self.stringValue = String(intValue); self.intValue = intValue }
 }
 
 extension JSONValue {
