@@ -138,7 +138,10 @@ final class ChatViewModel: ObservableObject {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, phase == .idle, let loop = agentLoop else { return }
+        // .failed 也允许重发（错误状态条不是死锁——用户改完可直接重试）。
+        guard !text.isEmpty,
+              phase == .idle || phase == .failed,
+              let loop = agentLoop else { return }
         draft = ""
 
         if SlashCommandRegistry.isCommand(text) {
@@ -195,12 +198,19 @@ final class ChatViewModel: ObservableObject {
             onTokenPressure: { [weak self] info in
                 Task { @MainActor [weak self] in self?.pressure = info }
             },
-            onTurnEnd: { [weak self] _ in
+            onTurnEnd: { [weak self] reason in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.flushNow()
                     self.reproject()
-                    self.phase = .idle
+                    // F060 可观测性最小纪律：错误必须自解释——turn/end error
+                    // 把 failure.message 原文（DeepSeek providerMessage）带进
+                    // 状态条（截 200 防撑爆），不能只给 code。
+                    if case .error(let failure) = reason {
+                        self.phase = .failed(Self.failureBanner(failure))
+                    } else {
+                        self.phase = .idle
+                    }
                     self.maybeGenerateTitle()
                 }
             },
@@ -242,6 +252,16 @@ final class ChatViewModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// 状态条错误文案（F060）：code + message 原文（DeepSeek providerMessage，
+    /// 400 场景即其原始抱怨）；换行拍平，截 200 防撑爆状态条。
+    private static func failureBanner(_ failure: LlmFailure) -> String {
+        let flattened = failure.message.replacingOccurrences(of: "\n", with: " ")
+        let body = flattened.count > 200
+            ? String(flattened.prefix(200)) + "…"
+            : flattened
+        return "模型错误 [\(failure.code)] \(body)"
     }
 
     private func maybeGenerateTitle() {

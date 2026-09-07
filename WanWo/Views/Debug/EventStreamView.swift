@@ -12,6 +12,14 @@
 //      不写任何事件/文件（JsonlEventLog.open 读模式也会开写柄做 inode 校验，
 //      此处刻意不走它，做到字面意义的只读）。
 //    - 手动刷新全量 replay；List 惰性渲染 + 摘要预投影（长会话几千条不卡）。
+//  M2.8 排障增量（turn/end error 行显示 provider 抱怨原文 + 一键导出）：
+//    - 错误态行（turn/end error、llm/retry、finish error）摘要追加
+//      failure.message（截 300）与 causeText（provider 错误体原文，截 300）——
+//      DeepSeek 400 的原始抱怨全文只在 causeText 里，不显示 = 排障不闭环（F060）。
+//    - 工具栏 ShareLink 分享当前会话 .jsonl 原文件 = 设计 F070 会话导出的
+//      最小前置形态（M9.3 ZIP 完整版之前）：复制到临时目录直分享原始日志，
+//      不脱敏不加工（文件内无 API key，key 在 Keychain）。源文件只读；
+//      临时副本写 tmp 目录，不触碰事件流、不产生任何事件。
 //    - M8.2 再升级：span 树 / 成本 / 过滤检索 / 实时订阅（本文件刻意不含）。
 //
 
@@ -70,6 +78,42 @@ enum EventStreamLoader {
             return .failure(.unreadable("\(error)"))
         } catch {
             return .failure(.unreadable("\(error)"))
+        }
+    }
+
+    /// F070 会话导出的最小前置形态（M9.3 ZIP 完整版之前）：
+    /// 把当前会话 .jsonl 原文件复制到临时目录（原样字节、不脱敏不加工），
+    /// 供工具栏 ShareLink 直分享（存 Files / 隔空投送 / 发给自己）。
+    /// 文件名带会话 id 前 8 位 + 时间戳，便于用户回传定位。
+    /// 只读源文件 + 写 tmp 副本；不触碰事件流、不产生任何事件。
+    /// - Returns: 副本 URL；会话不存在或复制失败返回 nil（UI 隐藏分享入口）。
+    static func makeExportCopy(sessionID: String) -> URL? {
+        // id 路径安全校验（与 loadAndProject 同口径，fail closed）。
+        guard !sessionID.isEmpty,
+              sessionID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else {
+            return nil
+        }
+        let source = WanWoPaths.persistentBase
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl")
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return nil
+        }
+        let idPrefix = String(sessionID.prefix(8))
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyyMMdd-HHmm"
+        let fileName = "wanwo-\(idPrefix)-\(stamp.string(from: Date())).jsonl"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(fileName)
+        // 同名残留先清（同分钟内二次导出覆盖旧副本）。
+        try? FileManager.default.removeItem(at: destination)
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination
+        } catch {
+            return nil
         }
     }
 }
@@ -157,8 +201,12 @@ private enum EventStreamRowBuilder {
         case .turnStart(let turn):
             return ("turn \(turn)", false)
         case .turnEnd(let turn, let reason):
-            return ("turn \(turn) · \(turnReasonText(reason))",
-                    isTurnEndError(reason))
+            var text = "turn \(turn) · \(turnReasonText(reason))"
+            // 排障闭环：错误结局追加 provider 抱怨原文（message + 错误体 causeText）。
+            if case .error(let failure) = reason {
+                text += " · " + failureDetail(failure)
+            }
+            return (text, isTurnEndError(reason))
         case .stepStart(let turn, let step):
             return ("turn \(turn) · step \(step)", false)
         case .stepEnd(let turn, let step):
@@ -185,7 +233,8 @@ private enum EventStreamRowBuilder {
                        let delayMs, let failure):
             let maxText = maxRetries.map(String.init) ?? "-"
             return ("\(provider)/\(mode) retry \(retry)/\(maxText) "
-                    + "wait \(delayMs)ms · \(failure.code)", true)
+                    + "wait \(delayMs)ms · \(failure.code) · "
+                    + failureDetail(failure), true)
         case .llmRetryStarted(_, _, _, let retry):
             return ("retry \(retry) 重发请求", false)
         case .sessionTitle(let title, _):
@@ -237,6 +286,19 @@ private enum EventStreamRowBuilder {
         }
     }
 
+    /// 错误原文段（排障闭环 F060）：message 原文截 300 + status +
+    /// causeText（provider 错误体原文，DeepSeek 400 的完整 body 在此）截 300。
+    private static func failureDetail(_ failure: LlmFailure) -> String {
+        var parts = [prefix(failure.message, 300)]
+        if let status = failure.status {
+            parts.append("HTTP \(status)")
+        }
+        if let cause = failure.causeText, !cause.isEmpty {
+            parts.append("body: \(prefix(cause, 300))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private static func isTurnEndError(_ reason: TurnEndReason) -> Bool {
         if case .error = reason { return true }
         return false
@@ -267,7 +329,8 @@ private enum EventStreamRowBuilder {
             case .stop: return "finish stop"
             case .toolCalls: return "finish tool-calls"
             case .maxTokens: return "finish max-tokens"
-            case .error(let failure): return "finish error \(failure.code)"
+            case .error(let failure):
+                return "finish error \(failure.code) · \(failureDetail(failure))"
             }
         }
     }
@@ -309,6 +372,8 @@ final class EventStreamViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var scanIssue: String?
     @Published private(set) var lastLoadedAt: Date?
+    /// F070 最小前置：当前会话 .jsonl 临时副本（ShareLink 分享用；nil = 无可分享文件）。
+    @Published private(set) var exportFileURL: URL?
 
     private let environment: AppEnvironment
 
@@ -339,6 +404,7 @@ final class EventStreamViewModel: ObservableObject {
             eventCount = 0
             errorMessage = sessions.isEmpty ? "暂无会话" : nil
             scanIssue = nil
+            exportFileURL = nil
             lastLoadedAt = Date()
             return
         }
@@ -353,11 +419,16 @@ final class EventStreamViewModel: ObservableObject {
             eventCount = output.rows.count
             scanIssue = output.issue
             errorMessage = nil
+            // 导出副本（F070 最小前置）：只读源文件 + tmp 副本，随刷新同步更新。
+            exportFileURL = await Task.detached(priority: .utility) {
+                EventStreamLoader.makeExportCopy(sessionID: id)
+            }.value
         case .failure(let error):
             rows = []
             eventCount = 0
             scanIssue = nil
             errorMessage = "读取失败：\(error)"
+            exportFileURL = nil
         }
         lastLoadedAt = Date()
     }
@@ -421,6 +492,18 @@ struct EventStreamView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("事件流")
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
+                // iOS 16+ ShareLink；源文件只读，副本在 tmp，不产生任何事件。
+                if let exportURL = model.exportFileURL {
+                    ShareLink(item: exportURL,
+                              preview: SharePreview(exportURL.lastPathComponent,
+                                                    source: exportURL)) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("导出会话日志")
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     Task { await model.loadEvents() }

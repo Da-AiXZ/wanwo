@@ -40,13 +40,25 @@ struct TokenUsage: Codable, Equatable, Sendable {
 // MARK: - LlmFailure
 
 /// 结构化失败（dsh LlmFailure：message + 稳定 code；turn/end error 载荷）。
+/// M2.8 排障增量：补 status / causeText 可选字段（向后兼容：旧日志无此键时
+/// decodeIfPresent 落 nil）——causeText 携带 provider 错误体原文（如 DeepSeek 400
+/// 的完整 JSON body），是排障闭环（F060 可观测性）的关键事实，必须随事件落盘。
 struct LlmFailure: Codable, Equatable, Sendable {
     var message: String
     var code: String
+    /// HTTP 状态码（adapter 非 2xx 时；transport/超时类错误为 nil）。
+    var status: Int?
+    /// provider 错误体原文（dsh LlmError causeText 语义；HTTP body 逐字透传）。
+    var causeText: String?
 
-    init(message: String, code: String) {
+    init(message: String,
+         code: String,
+         status: Int? = nil,
+         causeText: String? = nil) {
         self.message = message
         self.code = code
+        self.status = status
+        self.causeText = causeText
     }
 }
 
@@ -441,8 +453,11 @@ struct LLMError: Error, Equatable, Sendable {
         self.causeText = causeText
     }
 
+    /// 转事件载荷（turn/end error / llm/retry）；status + causeText 随行落盘，
+    /// 保证诊断页与 .jsonl 导出都能拿到 provider 抱怨原文（排障闭环，F060）。
     var failure: LlmFailure {
-        LlmFailure(message: message, code: code)
+        LlmFailure(message: message, code: code,
+                   status: status, causeText: causeText)
     }
 }
 
