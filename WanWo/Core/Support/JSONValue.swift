@@ -134,6 +134,24 @@ extension JSONValue {
         return nil
     }
 
+    // MARK: 取值便捷器（谓词命名族——工具实现按 JSON 形态解参用）
+
+    var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    var doubleValue: Double? {
+        if case .double(let value) = self { return value }
+        if case .int(let value) = self { return Double(value) }
+        return nil
+    }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
     /// object 字段取值（非 object 或缺字段返回 nil）。
     func field(_ key: String) -> JSONValue? {
         objectFields?[key]

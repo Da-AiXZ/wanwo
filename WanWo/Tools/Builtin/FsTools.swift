@@ -351,14 +351,15 @@ struct FsReadImageTool: AgentTool {
         }
         let (format, dimension) = Self.probe(data)
         let sizeKB = data.count / 1024
-        var output = ToolOutput.success(
-            "[image: \(path), \(format)\(dimension), \(max(1, sizeKB)) KB] "
-                + "Image is presented to the user in the tool card.")
-        output.meta = .object([
+        let imageMeta: [String: JSONValue] = [
             "path": .string(path),
             "format": .string(format),
             "bytes": .int(data.count),
-        ])
+        ]
+        var output = ToolOutput.success(
+            "[image: \(path), \(format)\(dimension), \(max(1, sizeKB)) KB] "
+                + "Image is presented to the user in the tool card.")
+        output.meta = .object(imageMeta)
         return output
     }
 

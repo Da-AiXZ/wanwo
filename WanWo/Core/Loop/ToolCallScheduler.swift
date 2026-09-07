@@ -216,6 +216,23 @@ enum ToolCallScheduler {
         _ = cancelFlag // 旗标只读；保留参数使调用点语义显式
     }
 
+    // MARK: 工具卡回调（Callbacks 缝：started 在 tool/call 落盘后、finished 在 tool/result 落盘后）
+
+    /// 工具卡活投影（callId, name, presentCall detail）。
+    private static func notifyStarted(_ deps: AgentLoop.Dependencies,
+                                      call: ToolCallSpec,
+                                      args: JSONValue) {
+        let detail = deps.registry.get(call.name)?.presentCall(args)?.detail
+        deps.callbacks.onToolCallStarted(call.id, call.name, detail)
+    }
+
+    /// 工具卡收敛（callId, 结果文本, isError）。
+    private static func notifyFinished(_ deps: AgentLoop.Dependencies,
+                                       callId: String,
+                                       output: ToolOutput) {
+        deps.callbacks.onToolCallFinished(callId, output.text, output.isError)
+    }
+
     // MARK: 上下文构造
 
     /// 参数解析（畸形 JSON → .null；管线按 unknown 参数处理，不抛穿）。
@@ -237,7 +254,7 @@ enum ToolCallScheduler {
             spill: deps.spill,
             onShellLine: deps.callbacks.onShellLine,
             completeLLM: { prompt, system in
-                let adapter = try deps.makeAdapter()
+                let adapter = try await deps.makeAdapter()
                 return try await Self.complete(adapter: adapter,
                                                prompt: prompt, system: system)
             })

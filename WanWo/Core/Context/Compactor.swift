@@ -46,7 +46,7 @@ final class Compactor: @unchecked Sendable {
     }
 
     let policy: Policy
-    private let makeAdapter: @Sendable () throws -> OpenAICompatAdapter
+    private let makeAdapter: @Sendable () async throws -> OpenAICompatAdapter
     private let lock = NSLock()
     /// 压缩锁（dsh compaction/start~end 持久锁的进程内映像：同一会话不并发压缩）。
     private var compacting = false
@@ -54,7 +54,7 @@ final class Compactor: @unchecked Sendable {
     private static let logger = AppLogger(category: "Compactor")
 
     init(policy: Policy = Policy(),
-         makeAdapter: @escaping @Sendable () throws -> OpenAICompatAdapter) {
+         makeAdapter: @escaping @Sendable () async throws -> OpenAICompatAdapter) {
         self.policy = policy
         self.makeAdapter = makeAdapter
     }
@@ -310,7 +310,7 @@ final class Compactor: @unchecked Sendable {
 
     /// LLM 摘要（dsh summarizeWithLlm 的 M2 形态：一次性直调，maxTokens 上限）。
     private func summarize(transcript: String) async throws -> String {
-        let adapter = try makeAdapter()
+        let adapter = try await makeAdapter()
         let system = """
         You are a conversation summarizer. Condense the following agent conversation \
         transcript into a compact summary that preserves: the user's goals and constraints, \

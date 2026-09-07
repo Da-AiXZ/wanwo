@@ -31,6 +31,9 @@ final class ChatViewModel: ObservableObject {
 
     /// 工具卡状态（dsh 工具卡 M2 素净版；正式卡片族 = M9）。
     struct ToolCard: Identifiable, Equatable {
+        /// Identifiable（ForEach/差分用；callId 全局唯一即 id）。
+        var id: String { callId }
+
         let callId: String
         var name: String
         var title: String
@@ -146,11 +149,12 @@ final class ChatViewModel: ObservableObject {
             return
         }
         phase = .streaming
-        loop.submit(text)
+        // AgentLoop 是 actor：submit 需 await（MainActor 上下文经 Task 跳转）。
+        Task { await loop.submit(text) }
     }
 
     func cancel() {
-        agentLoop?.cancel(cause: .user)
+        Task { await agentLoop?.cancel(cause: .user) }
     }
 
     // MARK: - 斜杠命令（command/run → 执行 → command/done）

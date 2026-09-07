@@ -101,12 +101,13 @@ final class AppEnvironment: ObservableObject {
     }
 
     /// nonisolated adapter 工厂（AgentLoop/Compactor 的 @Sendable makeAdapter 缝用）。
-    nonisolated func makeAgentAdapter() throws -> OpenAICompatAdapter {
-        guard let endpoint = endpointStore.activeEndpoint() else {
+    /// async：EndpointStore 为 MainActor 隔离，activeEndpoint/apiKey 需 await 跳主线程取用。
+    nonisolated func makeAgentAdapter() async throws -> OpenAICompatAdapter {
+        guard let endpoint = await endpointStore.activeEndpoint() else {
             throw LLMError(message: "没有已启用的模型端点，请到「设置 · Providers」配置。",
                            code: "NO_ENDPOINT")
         }
-        guard let apiKey = endpointStore.apiKey(for: endpoint), !apiKey.isEmpty else {
+        guard let apiKey = await endpointStore.apiKey(for: endpoint), !apiKey.isEmpty else {
             throw LLMError(message: "端点「\(endpoint.name)」未配置 API Key。",
                            code: "MISSING_CREDENTIAL")
         }
@@ -121,7 +122,7 @@ final class AppEnvironment: ObservableObject {
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
                         callbacks: AgentLoop.Callbacks) -> AgentLoop? {
-        guard (try? makeAgentAdapter()) != nil else { return nil }
+        guard (try? await makeAgentAdapter()) != nil else { return nil }
 
         let registry = ToolRegistry()
         registry.register(ShellTool(sessionId: sessionId))
@@ -142,7 +143,7 @@ final class AppEnvironment: ObservableObject {
             guard let self else {
                 throw LLMError(message: "environment released", code: "UNKNOWN")
             }
-            return try self.makeAgentAdapter()
+            return try await self.makeAgentAdapter()
         })
         let assembler = PromptAssembler()
         let injector = ContextInjector()
@@ -160,7 +161,7 @@ final class AppEnvironment: ObservableObject {
                 guard let self else {
                     throw LLMError(message: "environment released", code: "UNKNOWN")
                 }
-                return try self.makeAgentAdapter()
+                return try await self.makeAgentAdapter()
             },
             callbacks: callbacks)
         return AgentLoop(deps: deps)

@@ -78,7 +78,7 @@ actor AgentLoop {
         let compactor: Compactor
         let spill: SpillStore
         let injector: ContextInjector
-        let makeAdapter: @Sendable () throws -> OpenAICompatAdapter
+        let makeAdapter: @Sendable () async throws -> OpenAICompatAdapter
         let callbacks: Callbacks
     }
 
@@ -90,6 +90,9 @@ actor AgentLoop {
     private var nextStepInbox: [String] = []    // steer/inject（本回合内消费）
     private var nextTurnInbox: [String] = []    // followup（独立回合）
     private var cancelCause: CancelCause?
+    /// 工具调度取消旗标（cancel 三源融合时置位；调度器子任务只读——
+    /// 驱动器唤醒即复位，避免上一轮回合的残留置位污染新回合）。
+    private let toolCancelFlag = CancelFlag()
     private var driverTask: Task<Void, Never>?
     private var maxParallelToolCalls: Int
     /// AGENTS.md 基线摘要（F039 增量 reconcile）。
@@ -142,6 +145,7 @@ actor AgentLoop {
     /// guest 进程走 nonisolated 快路杀（防内核 pids_lock 卡死 actor，§5.4）。
     func cancel(cause: CancelCause = .user) {
         cancelCause = cause
+        toolCancelFlag.set()
         driverTask?.cancel()
         IshExecutorBridge.stopAllNonisolated(sessionId: deps.sessionId)
     }
@@ -177,6 +181,7 @@ actor AgentLoop {
         guard case .idle = phase else { return }
         phase = .running(turn: deps.writer.nextTurn - 1, step: 0)
         deps.callbacks.onPhaseChange(phase)
+        toolCancelFlag.reset()
         driverTask = Task { [weak self] in
             await self?.kick()
         }
@@ -221,7 +226,7 @@ actor AgentLoop {
                 if stepIndex >= config.maxTurns {
                     try? await deps.writer.append(
                         .system(note: "max turns reached (\(config.maxTurns)); "
-                            + "send a message to continue"), true)
+                            + "send a message to continue"), ignorable: true)
                     endReason = .blocked
                     break
                 }
@@ -320,7 +325,7 @@ actor AgentLoop {
     // MARK: - 上下文注入（F038/F039/F040）
 
     private func injectContexts(messages: [String]) async throws -> [String] {
-        let workspace = AgentLoop.workspaceAccess()
+        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
         var injected: [String] = []
 
         // F038：会话首轮基线快照。
@@ -371,7 +376,7 @@ actor AgentLoop {
     // MARK: - 一步（dsh step()：模型请求 + 工具执行）
 
     private func runStep(turn: Int, step: Int) async throws -> StepOutcome {
-        let adapter = try deps.makeAdapter()
+        let adapter = try await deps.makeAdapter()
 
         // prompt 组装（严格插值；组装失败按回合错误处理）。
         let assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
@@ -422,7 +427,7 @@ actor AgentLoop {
         if toolCalls.isEmpty { return .completed }
 
         await ToolCallScheduler.executeToolCalls(
-            deps: deps, cancelFlag: cancelFlag, turn: turn, step: step,
+            deps: deps, cancelFlag: toolCancelFlag, turn: turn, step: step,
             toolCalls: toolCalls, maxParallel: maxParallelToolCalls)
         return .hasToolCalls
     }

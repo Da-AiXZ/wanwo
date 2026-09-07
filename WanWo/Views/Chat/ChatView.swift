@@ -60,7 +60,7 @@ struct ChatView: View {
                 case .streaming:
                     Button("停止") { viewModel.cancel() }
                         .controlSize(.small)
-                case .retrying, .failed, .idle:
+                case .failed, .idle:
                     EmptyView()
                 }
             }
