@@ -24,6 +24,11 @@
 //      复制到 UIPasteboard.general.string；超 2MB 截断复制并提示用导出文件
 //      取全文。与 ShareLink 并存（Files App 取 WanWo-Exports 文件本体亦有效）。
 //      复制动作纯读文件，不产生任何事件。
+//  ERR-025② 取证复制（独立的「复制取证」按钮，与「复制日志」分开）：
+//    AgentLoop.logCacheForensics 的相邻请求逐项指纹对比输出进内存环形缓冲
+//    （CacheForensicsBuffer，纯内存不落盘事件——事件词汇零新增），按钮整段
+//    复制到剪贴板。与「复制日志」分开的原因：取证数据不在 .jsonl 事件流里
+//    （os_log + 内存缓冲），语义、数据源、生命周期（App 进程内）均不同。
 //  M2.8 排障增量（turn/end error 行显示 provider 抱怨原文 + 一键导出）：
 //    - 错误态行（turn/end error、llm/retry、finish error）摘要追加
 //      failure.message（截 300）与 causeText（provider 错误体原文，截 300）——
@@ -634,6 +639,24 @@ final class EventStreamViewModel: ObservableObject {
         }
     }
 
+    /// ERR-025②「复制取证」：cache-forensics 环形缓冲整段复制到剪贴板。
+    /// 与「复制日志」分开的独立入口：取证输出在 os_log + 内存环形缓冲
+    /// （CacheForensicsBuffer），不在 .jsonl 事件流里。纯内存读，不产生事件。
+    func copyForensicsToClipboard() {
+        guard let text = CacheForensicsBuffer.shared.exportText() else {
+            showToast("暂无取证记录（至少发起两次模型请求后才有相邻请求对比）")
+            return
+        }
+        UIPasteboard.general.string = text
+        let byteCount = text.utf8.count
+        if byteCount > EventStreamLoader.clipboardLimitBytes {
+            let fullMB = String(format: "%.1f", Double(byteCount) / 1_048_576)
+            showToast("已复制取证（\(fullMB) MB，含 512 行环形缓冲上限内的记录）")
+        } else {
+            showToast("已复制取证（\(byteCount) 字节）")
+        }
+    }
+
     /// toast 显示 2.5s 后自动消失；连续触发时重置计时。
     private func showToast(_ message: String) {
         toastTask?.cancel()
@@ -725,6 +748,16 @@ struct EventStreamView: View {
 
     @ToolbarContentBuilder
     private var debugToolbar: some ToolbarContent {
+        // ERR-025②「复制取证」：cache-forensics 环形缓冲整段复制（与
+        // 「复制日志」分开——取证数据在内存缓冲，不在 .jsonl 事件流里）。
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                model.copyForensicsToClipboard()
+            } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+            }
+            .accessibilityLabel("复制缓存取证到剪贴板")
+        }
         // M2.9 剪贴板导出：.jsonl 全文（UTF-8）复制到 UIPasteboard，与 ShareLink 并存；
         // 纯读文件不产生事件；> 2MB 截断复制并 toast 提示用导出文件。
         ToolbarItem(placement: .navigationBarTrailing) {

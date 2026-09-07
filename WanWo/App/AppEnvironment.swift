@@ -174,6 +174,9 @@ final class AppEnvironment: ObservableObject {
             return try await self.makeAgentAdapter()
         })
         let assembler = PromptAssembler()
+        // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
+        // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
+        PromptSections.registerAll(into: assembler)
         let injector = ContextInjector()
 
         let deps = AgentLoop.Dependencies(

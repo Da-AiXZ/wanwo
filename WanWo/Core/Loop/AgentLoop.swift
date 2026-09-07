@@ -101,7 +101,11 @@ actor AgentLoop {
 
     private static let logger = AppLogger(category: "AgentLoop")
 
-    // MARK: - ERR-024 缓存取证（临时 · os_log，不落盘事件，事件词汇零新增）
+    // MARK: - ERR-024 缓存取证（临时 · os_log + 内存环形缓冲，不落盘事件，事件词汇零新增）
+
+    // ERR-025②：取证行同步进 CacheForensicsBuffer（诊断页「复制取证」按钮
+    // 的数据源）——os_log 在真机上不连 Console 不可见，取证链路不闭环；
+    // 缓冲纯内存不落盘事件，事件词汇零新增口径不变。
 
     /// 取证状态（线程安全；buildLLMRequest 为 static 上下文）。
     private final class ForensicsState: @unchecked Sendable {
@@ -181,13 +185,18 @@ actor AgentLoop {
             + "messages=\(messages.count) firstDiff=\(firstDiff) "
             + "prefixStable=\(prefixStable)"
         Self.logger.info(summary)
+        CacheForensicsBuffer.shared.append(summary)
         if let previous, firstDiff >= 0, firstDiff < previous.count {
             let current = firstDiff < items.count ? items[firstDiff] : "<absent>"
-            Self.logger.info("cache-forensics req#\(requestIndex) PREFIX DIVERGENCE "
-                + "at item \(firstDiff): prev=\(previous[firstDiff]) cur=\(current)")
+            let divergence = "cache-forensics req#\(requestIndex) PREFIX DIVERGENCE "
+                + "at item \(firstDiff): prev=\(previous[firstDiff]) cur=\(current)"
+            Self.logger.info(divergence)
+            CacheForensicsBuffer.shared.append(divergence)
         }
-        Self.logger.debug("cache-forensics req#\(requestIndex) dump: "
-            + items.joined(separator: " | "))
+        let dump = "cache-forensics req#\(requestIndex) dump: "
+            + items.joined(separator: " | ")
+        Self.logger.debug(dump)
+        CacheForensicsBuffer.shared.append(dump)
     }
 
     init(deps: Dependencies, config: Config = Config()) {
@@ -467,7 +476,9 @@ actor AgentLoop {
 
         // F038'：runtime context 快照投影（ERR-024；dsh RuntimeContextProjection
         // 语义）。①每步刷新 retained（归属消息被压缩影子化 → 失效重注入）；
-        // ②渲染当前快照（time + workspace + AGENTS.md）；③内容没变就不注入
+        // ②渲染当前快照（workspace + AGENTS.md；ERR-025① 时间戳已移出——
+        // 以 dsh 源码为准：快照只由注册的动态上下文位组成，时间在 dsh 是
+        // 独立的 opt-in time-context 通道，与快照无关）；③内容没变就不注入
         // （缓存前缀稳定的关键不变量）；④注入即追加——落盘为 user/message，
         // 旧快照保留在历史。F039 AGENTS.md 增量 reconcile 并入本通道：AGENTS.md
         // 变化即快照文本变化 → 自动重注入（ContextInjector.reconcileAgentsMd
