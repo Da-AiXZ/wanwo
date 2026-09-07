@@ -12,6 +12,18 @@
 //      不写任何事件/文件（JsonlEventLog.open 读模式也会开写柄做 inode 校验，
 //      此处刻意不走它，做到字面意义的只读）。
 //    - 手动刷新全量 replay；List 惰性渲染 + 摘要预投影（长会话几千条不卡）。
+//  M2.9 显示层聚合 + 剪贴板导出（数据层/JSONL 落盘零动）：
+//    - chunk 聚合（语义出处：dsh apps/web ui-trajectory，09 #19 口径）：
+//      相邻且同属一个块生命周期（block-start → deltas → block-end，或未配对
+//      delta 按 块 index/类型 变化切组）的 assistant/chunk 事件合并为一行：
+//      `assistant/chunk · reasoning · 47 段增量 · 1024 字符 · "首 30…尾 30"`；
+//      usage/finish chunk 与 turn/step/user/tool/compaction 等其他事件行不变；
+//      合并行 seq/时间取块生命周期首事件（原事件时间范围口径）。
+//      页面顶部同时显示原始事件总数与聚合后行数，量级一眼可见。
+//    - 剪贴板导出：工具栏「复制日志」把当前会话 .jsonl 全文（UTF-8 文本）
+//      复制到 UIPasteboard.general.string；超 2MB 截断复制并提示用导出文件
+//      取全文。与 ShareLink 并存（Files App 取 WanWo-Exports 文件本体亦有效）。
+//      复制动作纯读文件，不产生任何事件。
 //  M2.8 排障增量（turn/end error 行显示 provider 抱怨原文 + 一键导出）：
 //    - 错误态行（turn/end error、llm/retry、finish error）摘要追加
 //      failure.message（截 300）与 causeText（provider 错误体原文，截 300）——
@@ -24,6 +36,7 @@
 //
 
 import SwiftUI
+import UIKit   // UIPasteboard（M2.9 剪贴板导出）
 
 // MARK: - 只读加载器
 
@@ -68,10 +81,13 @@ enum EventStreamLoader {
             // 摘要字符串在本任务内一次建成，行渲染只拼现成字段（长会话惰性不卡的关键）。
             let timeFormatter = DateFormatter()
             timeFormatter.dateFormat = "HH:mm:ss.SSS"
-            let rows = scan.events.map { EventStreamRowBuilder.build(event: $0, timeFormatter: timeFormatter) }
+            // M2.9 显示层聚合：块生命周期内相邻 assistant/chunk 合并为一行，其余原样。
+            let rows = EventStreamAggregator.buildRows(events: scan.events,
+                                                       timeFormatter: timeFormatter)
             let output = Output(sessionID: scan.header.id,
                                 createdAtMs: scan.header.createdAtMs,
                                 rows: rows,
+                                rawEventCount: scan.events.count,
                                 issue: scan.issue)
             return .success(output)
         } catch let error as SessionLogError {
@@ -121,6 +137,159 @@ enum EventStreamLoader {
         } catch {
             return nil
         }
+    }
+}
+
+    /// M2.9 剪贴板导出上限（2MB）：超过则截断复制，UI 提示用导出文件取全文。
+    static let clipboardLimitBytes = 2 * 1_048_576
+
+    /// M2.9 剪贴板导出的只读读取：当前会话 .jsonl 全文（UTF-8 文本）。
+    /// 纯读文件，不写任何句柄/事件；超 2MB 取前 2MB。
+    /// - Returns: (剪贴板文本, 文件全文字节数)；会话不存在或读取失败返回 nil。
+    static func readLogText(sessionID: String) -> (text: String, fullByteCount: Int)? {
+        // id 路径安全校验（与 loadAndProject 同口径，fail closed）。
+        guard !sessionID.isEmpty,
+              sessionID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else {
+            return nil
+        }
+        let url = WanWoPaths.persistentBase
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl")
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        let fullByteCount = data.count
+        let clipped = data.count > clipboardLimitBytes
+            ? data.prefix(clipboardLimitBytes)
+            : data[...]
+        // 容错解码：截断点可能落在多字节 UTF-8 字符中间，lossy 替换而非失败。
+        let text = String(decoding: clipped, as: UTF8.self)
+        return (text, fullByteCount)
+    }
+}
+
+// MARK: - chunk 聚合（M2.9 显示层）
+
+/// assistant/chunk 显示层聚合（语义出处：dsh apps/web ui-trajectory，09 #19 口径）。
+/// 数据层零动：只改诊断页行投影——相邻且同属一个块生命周期的 chunk 事件合并为一行。
+/// 块生命周期边界信号：block-start / block-end 事件，或 delta 内 块 index/类型 变化。
+private enum EventStreamAggregator {
+
+    /// 一个待合并的块生命周期（block-start 起或首个未配对 delta 起，
+    /// 至 block-end / 块 index·类型 变化 / 非块事件止）。
+    private struct PendingGroup {
+        let index: Int
+        let kind: String                       // 显示名：reasoning / text / tool-call(name)
+        var deltaCount = 0                     // 增量段数（仅 delta 类 chunk 计入）
+        var text = ""                          // 累积正文（tool-call 块为参数 JSON 增量拼接）
+        let firstEvent: SessionEvent           // 行 seq/时间取块生命周期首事件
+    }
+
+    /// 全事件流 → 聚合后行序列（其余事件行逐条原样）。
+    static func buildRows(events: [SessionEvent], timeFormatter: DateFormatter) -> [EventStreamRow] {
+        var rows: [EventStreamRow] = []
+        rows.reserveCapacity(events.count)
+        var pending: PendingGroup?
+
+        // 落袋当前组为一行（合并行）；无组为空操作。
+        func flush() {
+            guard let group = pending else { return }
+            pending = nil
+            rows.append(mergedRow(from: group, timeFormatter: timeFormatter))
+        }
+
+        for event in events {
+            guard case .assistantChunk(_, _, let chunk) = event.payload else {
+                // turn/step/user/tool/compaction 等：先封组，再原样成行。
+                flush()
+                rows.append(EventStreamRowBuilder.build(event: event, timeFormatter: timeFormatter))
+                continue
+            }
+            switch chunk {
+            case .blockStart(let index, let blockType):
+                flush()
+                pending = PendingGroup(index: index, kind: blockType, firstEvent: event)
+            case .textDelta(let index, let text):
+                if var group = pending, group.index == index, group.kind == "text" {
+                    group.deltaCount += 1
+                    group.text += text
+                    pending = group
+                } else {
+                    // 无 block-start 的未配对 delta，或块 index/类型变化：切新组。
+                    flush()
+                    pending = PendingGroup(index: index, kind: "text",
+                                           deltaCount: 1, text: text, firstEvent: event)
+                }
+            case .reasoningDelta(let index, let text):
+                if var group = pending, group.index == index, group.kind == "reasoning" {
+                    group.deltaCount += 1
+                    group.text += text
+                    pending = group
+                } else {
+                    flush()
+                    pending = PendingGroup(index: index, kind: "reasoning",
+                                           deltaCount: 1, text: text, firstEvent: event)
+                }
+            case .toolCallDelta(let index, _, let name, let argumentsDelta):
+                if var group = pending, group.index == index, group.kind.hasPrefix("tool-call") {
+                    group.deltaCount += 1
+                    group.text += argumentsDelta
+                    pending = group
+                } else {
+                    flush()
+                    pending = PendingGroup(index: index, kind: "tool-call(\(name ?? "?"))",
+                                           deltaCount: 1, text: argumentsDelta, firstEvent: event)
+                }
+            case .blockEnd(let index, _):
+                // 闭合同 id 块生命周期：block-end 并入该组（不额外成行）。
+                if let group = pending, group.index == index {
+                    pending = nil
+                    rows.append(mergedRow(from: group, timeFormatter: timeFormatter))
+                } else {
+                    // 未配对的 block-end：封组后原样成行（torn tail 兜底）。
+                    flush()
+                    rows.append(EventStreamRowBuilder.build(event: event, timeFormatter: timeFormatter))
+                }
+            case .usage, .finish:
+                // 非块生命周期 chunk：不合并，各自成行（finish error 红显在行构建器）。
+                flush()
+                rows.append(EventStreamRowBuilder.build(event: event, timeFormatter: timeFormatter))
+            }
+        }
+        // 尾部未闭合（torn tail / 中断）：把残余组落为一行。
+        flush()
+        return rows
+    }
+
+    /// 合并行摘要：`reasoning · 47 段增量 · 1024 字符 · "首 30…尾 30"`。
+    /// seq/时间取块生命周期首事件（原事件时间范围口径）；assistant 紫色分类不变。
+    private static func mergedRow(from group: PendingGroup,
+                                  timeFormatter: DateFormatter) -> EventStreamRow {
+        let excerpt = excerptMiddle(group.text, limit: 30)
+        var summary = "\(group.kind) · \(group.deltaCount) 段增量 · \(group.text.count) 字符"
+        if !excerpt.isEmpty {
+            summary += " · \"\(excerpt)\""
+        }
+        let category = EventStreamCategory.classify(wireType: "assistant/chunk")
+        return EventStreamRow(id: group.firstEvent.seq,
+                              seq: group.firstEvent.seq,
+                              timeText: timeFormatter.string(from: Date(timeIntervalSince1970:
+                                  TimeInterval(group.firstEvent.timeMs) / 1000.0)),
+                              wireType: "assistant/chunk",
+                              iconName: category.iconName,
+                              tint: category.tint,
+                              summary: summary,
+                              isAlert: false)
+    }
+
+    /// 首 30 + 尾 30 摘录（换行折叠为空格；全文 ≤ 2×limit 时原样返回）。
+    private static func excerptMiddle(_ text: String, limit: Int) -> String {
+        let flattened = text.replacingOccurrences(of: "\n", with: " ")
+        guard flattened.count > limit * 2 else { return flattened }
+        let head = String(flattened.prefix(limit))
+        let tail = String(flattened.suffix(limit))
+        return head + "…" + tail
     }
 }
 
@@ -373,14 +542,18 @@ final class EventStreamViewModel: ObservableObject {
     @Published private(set) var sessions: [SessionSummary] = []
     @Published var selectedSessionID: String?
     @Published private(set) var rows: [EventStreamRow] = []
-    @Published private(set) var eventCount = 0
+    /// 原始事件总数（replay 全量；M2.9 与聚合后行数对照显示）。
+    @Published private(set) var rawEventCount = 0
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var scanIssue: String?
     @Published private(set) var lastLoadedAt: Date?
     /// F070 最小前置：当前会话 .jsonl 临时副本（ShareLink 分享用；nil = 无可分享文件）。
     @Published private(set) var exportFileURL: URL?
+    /// M2.9 复制/加载结果提示（toast 文案；nil = 不显示，2.5s 自动消失）。
+    @Published private(set) var toastMessage: String?
 
+    private var toastTask: Task<Void, Never>?
     private let environment: AppEnvironment
 
     init(environment: AppEnvironment) {
@@ -403,11 +576,11 @@ final class EventStreamViewModel: ObservableObject {
         selectedSessionID = sessions.first?.id
     }
 
-    /// 手动刷新：全量 replay + 行投影（扫描/投影放后台，主线程只收结果）。
+    /// 手动刷新：全量 replay + 聚合投影（扫描/聚合放后台，主线程只收结果）。
     func loadEvents() async {
         guard let id = selectedSessionID else {
             rows = []
-            eventCount = 0
+            rawEventCount = 0
             errorMessage = sessions.isEmpty ? "暂无会话" : nil
             scanIssue = nil
             exportFileURL = nil
@@ -422,7 +595,7 @@ final class EventStreamViewModel: ObservableObject {
         switch result {
         case .success(let output):
             rows = output.rows
-            eventCount = output.rows.count
+            rawEventCount = output.rawEventCount
             scanIssue = output.issue
             errorMessage = nil
             // 导出副本（F070 最小前置）：只读源文件 + Documents 副本，随刷新同步更新。
@@ -431,12 +604,44 @@ final class EventStreamViewModel: ObservableObject {
             }.value
         case .failure(let error):
             rows = []
-            eventCount = 0
+            rawEventCount = 0
             scanIssue = nil
             errorMessage = "读取失败：\(error)"
             exportFileURL = nil
         }
         lastLoadedAt = Date()
+    }
+
+    /// M2.9 剪贴板导出：当前会话 .jsonl 全文（UTF-8 文本）复制到系统剪贴板。
+    /// 纯读文件，不产生任何事件；超 2MB 截断复制并提示用导出文件取全文。
+    /// （UIPasteboard 仅主线程访问：读文件放后台，落剪贴板在 MainActor。）
+    func copyLogToClipboard() async {
+        guard let id = selectedSessionID, !isLoading else { return }
+        let outcome = await Task.detached(priority: .userInitiated) {
+            EventStreamLoader.readLogText(sessionID: id)
+        }.value
+        guard let outcome else {
+            showToast("读取日志失败")
+            return
+        }
+        UIPasteboard.general.string = outcome.text
+        if outcome.fullByteCount > EventStreamLoader.clipboardLimitBytes {
+            let fullMB = String(format: "%.1f", Double(outcome.fullByteCount) / 1_048_576)
+            showToast("已复制前 2MB（全文 \(fullMB) MB），请用导出文件")
+        } else {
+            showToast("已复制全文（\(outcome.fullByteCount) 字节）")
+        }
+    }
+
+    /// toast 显示 2.5s 后自动消失；连续触发时重置计时。
+    private func showToast(_ message: String) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.toastMessage = nil
+        }
     }
 }
 
@@ -480,7 +685,8 @@ struct EventStreamView: View {
                 }
             }
             HStack {
-                Text("共 \(model.eventCount) 条事件")
+                // M2.9：原始事件总数 + 聚合后行数对照（如「1894 事件 · 聚合后 37 行」）。
+                Text("共 \(model.rawEventCount) 事件 · 聚合后 \(model.rows.count) 行")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -518,6 +724,17 @@ struct EventStreamView: View {
 
     @ToolbarContentBuilder
     private var debugToolbar: some ToolbarContent {
+        // M2.9 剪贴板导出：.jsonl 全文（UTF-8）复制到 UIPasteboard，与 ShareLink 并存；
+        // 纯读文件不产生事件；> 2MB 截断复制并 toast 提示用导出文件。
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                Task { await model.copyLogToClipboard() }
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .disabled(model.selectedSessionID == nil || model.isLoading)
+            .accessibilityLabel("复制日志到剪贴板")
+        }
         // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
         // iOS 16+ ShareLink；源文件只读，副本在 Documents/WanWo-Exports/。
         ToolbarItem(placement: .navigationBarTrailing) {
