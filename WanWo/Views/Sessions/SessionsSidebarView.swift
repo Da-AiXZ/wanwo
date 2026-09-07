@@ -64,6 +64,12 @@ struct SessionsSidebarView: View {
                 } label: {
                     Label("Shell 测试（M0）", systemImage: "terminal")
                 }
+                Button {
+                    // M2.8 只读事件流诊断页（页内自选会话，取更简单方案）。
+                    selection = .eventStream
+                } label: {
+                    Label("事件流", systemImage: "list.bullet.rectangle")
+                }
             }
         }
         .listStyle(.sidebar)

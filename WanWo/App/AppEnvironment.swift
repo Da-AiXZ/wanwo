@@ -10,11 +10,13 @@
 import Foundation
 import SwiftUI
 
-/// 根导航选择目标（§7.1 M1 子集 + M0 回归入口）。
+/// 根导航选择目标（§7.1 M1 子集 + M0 回归入口 + M2.8 只读诊断入口）。
 enum RootSelection: Hashable {
     case session(id: String)
     case providers
     case shellTest
+    /// M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
+    case eventStream
     case none
 }
 

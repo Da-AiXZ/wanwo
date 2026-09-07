@@ -36,6 +36,9 @@ struct RootView: View {
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()
+        case .eventStream:
+            // M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
+            EventStreamView(environment: environment)
         case .none:
             Text("选择或新建一个会话")
                 .foregroundStyle(.secondary)
