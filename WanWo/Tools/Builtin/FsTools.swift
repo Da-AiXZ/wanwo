@@ -11,6 +11,9 @@
 //      str_replace_editor{command,path,file_text,old_str,new_str,insert_line,view_range}
 //    - 10-design §十一 M2.5（F014：7 件、宿主直读、纯 Swift 遍历不 spawn rg、
 //      read-match-write 临界区）
+//    - G1（M2 移植遗漏补齐）：dsh write.ts/edit.ts 的 diff meta 四件套之
+//      presentationMeta/presentResult——computeHunkDiffs 三行上下文 hunk 随
+//      tool/result.meta 持久化保 replay（实现见 FsDiff.swift）
 //  环境纪律：iOS 禁 spawn——glob/grep 用宿主原生遍历 + NSRegularExpression；
 //  rg 语法子集由「ripgrep 兼容的正则 + include 通配」近似承载（偏差见交付报告）。
 //
@@ -87,6 +90,8 @@ struct FsReadTool: AgentTool {
 // MARK: - 写入工具
 
 /// dsh write：创建或整体替换 UTF-8 文本文件（原子写；临界区内）。
+/// G1：diff meta 随 tool/result.meta 持久化（dsh write.ts presentationMeta 语义——
+/// before 非空才算 hunks；create/同文覆盖落空数组，呈现层回退调用参数兜底）。
 struct FsWriteTool: AgentTool {
     let name = "write"
     let description = "Create or fully replace a UTF-8 text file. Existing files are overwritten; "
@@ -100,6 +105,25 @@ struct FsWriteTool: AgentTool {
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
+    /// dsh write.ts presentCall：diff 卡（调用时无旧文本 → oldText null）。
+    func presentCall(_ args: JSONValue) -> ToolCardIntent? {
+        guard let path = args.objectValue?["file_path"]?.stringValue else { return nil }
+        return ToolCardIntent(kind: .diff, title: "Write \(path)",
+                              detail: "create or overwrite")
+    }
+
+    /// dsh write.ts presentResult：meta hunks 优先；create/同文覆盖/畸形 meta
+    /// 回退到调用参数兜底（整份新内容单 hunk，replay 安全）。
+    func presentResult(_ args: JSONValue, _ output: ToolOutput) -> ToolCardIntent? {
+        guard !output.isError,
+              let path = args.objectValue?["file_path"]?.stringValue,
+              let content = args.objectValue?["content"]?.stringValue else { return nil }
+        let diffs = FsDiff.diffsFromMeta(output.meta)
+            ?? [FileDiff(path: path, oldText: nil, newText: content)]
+        return ToolCardIntent(kind: .diff, title: "Write \(path)",
+                              detail: FsDiff.summarize(diffs))
+    }
+
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         guard let path = args.objectValue?["file_path"]?.stringValue,
               let content = args.objectValue?["content"]?.stringValue else {
@@ -107,6 +131,10 @@ struct FsWriteTool: AgentTool {
         }
         let workspace = ctx.workspace
         let existed = workspace.exists(path)
+        // dsh write.ts 的 before 由后端 outcome 携带；我们写入前读旧文本（仅 diff
+        // 呈现用，读失败按 create 语义 → 空数组，presentResult 回退参数兜底）。
+        // 不走 mutate（ERR-013 修订：read-match-write 是 edit 族语义）。
+        let before: String? = existed ? (try? workspace.readText(path)) : nil
         do {
             // dsh write 语义 =「创建或整体替换」：不走 mutate（read-match-write
             // 是 edit 族语义，对不存在的文件会读打开失败 → NSCocoaErrorDomain
@@ -115,8 +143,15 @@ struct FsWriteTool: AgentTool {
         } catch {
             return .failure(String(describing: error), code: "WRITE_FAILED")
         }
-        return .success(existed ? "File updated: \(path)"
-                                : "File created: \(path) (\(content.utf8.count) bytes)")
+        var output: ToolOutput
+        if existed {
+            output = .success("File updated: \(path)")
+        } else {
+            output = .success("File created: \(path) (\(content.utf8.count) bytes)")
+        }
+        let diffs = before.map { FsDiff.computeHunkDiffs(path: path, before: $0, after: content) } ?? []
+        output.meta = FsDiff.meta(diffs: diffs)
+        return output
     }
 }
 
@@ -139,6 +174,26 @@ struct FsEditTool: AgentTool {
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
+    /// dsh edit.ts presentCall：diff 卡（old_string → new_string 字面替换，
+    /// oldText: old_string || null——空 old_string 已被 execute 拒绝）。
+    func presentCall(_ args: JSONValue) -> ToolCardIntent? {
+        guard let path = args.objectValue?["file_path"]?.stringValue,
+              let oldString = args.objectValue?["old_string"]?.stringValue,
+              let newString = args.objectValue?["new_string"]?.stringValue else { return nil }
+        return ToolCardIntent(kind: .diff, title: "Edit \(path)",
+                              detail: "replace \(oldString.count) chars with \(newString.count) chars")
+    }
+
+    /// dsh edit.ts presentResult：meta hunks 优先；错误或畸形/缺失 meta →
+    /// nil（无 diff 卡，沿用通用结果卡——dsh undefined 语义）。
+    func presentResult(_ args: JSONValue, _ output: ToolOutput) -> ToolCardIntent? {
+        guard !output.isError,
+              let path = args.objectValue?["file_path"]?.stringValue,
+              let diffs = FsDiff.diffsFromMeta(output.meta) else { return nil }
+        return ToolCardIntent(kind: .diff, title: "Edit \(path)",
+                              detail: FsDiff.summarize(diffs))
+    }
+
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         guard let path = args.objectValue?["file_path"]?.stringValue,
               let oldString = args.objectValue?["old_string"]?.stringValue,
@@ -152,7 +207,11 @@ struct FsEditTool: AgentTool {
         let replaceAll = args.objectValue?["replace_all"]?.boolValue ?? false
         let workspace = ctx.workspace
         do {
+            // G1：before 在 read-match-write 临界区内捕获（dsh editText outcome
+            // 的 before/after 语义），编辑成功后随 meta 持久化 hunks。
+            var before: String?
             let next = try workspace.mutate(path) { current in
+                before = current
                 let occurrences = current.components(separatedBy: oldString).count - 1
                 if occurrences == 0 {
                     throw FsToolFailure("old_string not found in \(path)")
@@ -164,9 +223,14 @@ struct FsEditTool: AgentTool {
                 }
                 return current.replacingOccurrences(of: oldString, with: newString)
             }
-            return .success("Edited \(path): replaced \(replaceAll ? "all" : "1") occurrence(s) of "
+            var output = ToolOutput.success("Edited \(path): replaced \(replaceAll ? "all" : "1") occurrence(s) of "
                                 + "\(oldString.count) chars with \(newString.count) chars "
                                 + "(\(next.utf8.count) bytes written)")
+            if let before {
+                output.meta = FsDiff.meta(
+                    diffs: FsDiff.computeHunkDiffs(path: path, before: before, after: next))
+            }
+            return output
         } catch let failure as FsToolFailure {
             return .failure(failure.message, code: "EDIT_FAILED")
         } catch {

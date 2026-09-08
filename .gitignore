@@ -11,8 +11,11 @@ build.log
 
 # XcodeGen 由 project.yml 生成，不入库
 
-# 下一阶段将加入：
-# Vendor/ish/build-*/   (meson 构建产物)
+# Vendor 构建产物（build_ish.sh 输出，CI 生成不进库）
+Vendor/libs/
+Vendor/include/
+Vendor/resources/
+Vendor/ish/build-*/
 
 # rootfs 下载缓存
 .cache/

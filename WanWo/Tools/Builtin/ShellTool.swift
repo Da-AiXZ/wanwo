@@ -57,7 +57,7 @@ struct ShellTool: AgentTool {
     let parameters = JSONValue.schemaObject(
         properties: [
             "command": .stringSchema(description: "The shell command to execute."),
-            "timeout_ms": .numberSchema(description: "Optional timeout in milliseconds. Defaults to 900000 (15 minutes)."),
+            "timeout_ms": .numberSchema(description: "Optional timeout in milliseconds. Defaults to 900000 (15 minutes). The tool-level cooperative cap is 960000 (16 minutes)."),
         ],
         required: ["command"])
 

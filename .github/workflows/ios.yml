@@ -36,7 +36,7 @@ jobs:
 
       - name: Build (unsigned, iPad)
         run: |
-          set -o pipefail
+          set -euo pipefail
           xcodebuild \
             -project WanWo.xcodeproj \
             -scheme WanWo \
