@@ -77,7 +77,7 @@ final class AppEnvironment: ObservableObject {
             fileURL: configDir.appendingPathComponent("permission-rules.jsonl"))
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
-        // 报批项；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
+        // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
         if !ExtensionEventRegistry.shared.isRegistered(
             PermissionCoordinator.policyEventKind) {
             ExtensionEventRegistry.shared.register(ExtensionEventSchema(
@@ -86,6 +86,22 @@ final class AppEnvironment: ObservableObject {
                     "policy", .string,
                     allowedValues: [.string(ApprovalPolicy.ask.rawValue),
                                     .string(ApprovalPolicy.never.rawValue)])],
+                projection: .logOnly,
+                pairing: .none))
+        }
+        // M3 T2.1 补批登记：sandbox/mode 扩展事件 schema（01 笔记
+        // sandbox-policy"sandbox/mode 事件+fold+写路径"原件词汇——团队主理人
+        // 补批，修 T2 偏差 1 沙箱旋钮内存态缺口；mode 与矩阵 SandboxMode 词汇
+        // 一致，projection=logOnly，pairing=none）。
+        if !ExtensionEventRegistry.shared.isRegistered(
+            PermissionCoordinator.sandboxEventKind) {
+            ExtensionEventRegistry.shared.register(ExtensionEventSchema(
+                kind: PermissionCoordinator.sandboxEventKind,
+                requiredFields: [ExtensionFieldSchema(
+                    "mode", .string,
+                    allowedValues: [.string(ApprovalDecisionMatrix.SandboxMode.readOnly.rawValue),
+                                    .string(ApprovalDecisionMatrix.SandboxMode.workspaceWrite.rawValue),
+                                    .string(ApprovalDecisionMatrix.SandboxMode.dangerFullAccess.rawValue)])],
                 projection: .logOnly,
                 pairing: .none))
         }

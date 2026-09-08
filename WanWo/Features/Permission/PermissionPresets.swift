@@ -14,8 +14,8 @@
 //      否则 custom。
 //    - apply 语义（diff 写）：preset 名未变不动；旋钮值没变不写
 //      （PermissionCoordinator.applyPreset 落点）。
-//  WanWo 归一（偏差登记，见批次报告）：
-//    · sandbox 旋钮 = 内存态（会话级）——sandbox/mode 事件词汇未获报批；
+//  WanWo 归一（T2.1 起双旋钮均持久，原 T2 偏差 1 已修）：
+//    · sandbox 旋钮 = 持久（sandbox/mode extension 事件折叠，T2.1 补批词汇）；
 //    · approval 旋钮 = 持久（approval/policy extension 事件折叠；落盘成功
 //      才进内存，fail closed）。
 //
@@ -64,7 +64,8 @@ final class PermissionKnobs: @unchecked Sendable {
     private var approvalStorage: ApprovalPolicy = .ask
     private var lastSelectionStorage: String?
 
-    /// 沙箱旋钮（内存态；会话级，重开复位缺省档——偏差登记）。
+    /// 沙箱旋钮（持久；由 PermissionCoordinator 在 sandbox/mode 事件落盘
+    /// 成功后写入——写盘失败绝不进内存，fail closed；T2.1 起不再是内存态）。
     var sandbox: ApprovalDecisionMatrix.SandboxMode {
         get { lock.lock(); defer { lock.unlock() }; return sandboxStorage }
         set { lock.lock(); sandboxStorage = newValue; lock.unlock() }

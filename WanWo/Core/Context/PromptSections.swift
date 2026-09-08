@@ -58,8 +58,8 @@
 //       已激活——PermissionCoordinator.approvalPolicyContextLine 供值，经
 //       ContextInjector.approvalPolicyProvider 走快照通道注入（快照不进 system，
 //       值跟随变化、仅变化才重注入——ERR-024 纪律）；sandbox-policy(110) 仍空
-//       （sandbox/mode 事件词汇未获报批，沙箱旋钮为内存态，偏差登记）；
-//       subagent-delegation(120) 不变。
+//       （sandbox/mode 事件词汇已随 T2.1 补批注册并持久化，110 快照位供值
+//       未排期）；subagent-delegation(120) 不变。
 //   10. time（dsh packages/context/time-context）——opt-in 独立注入通道（非快照
 //       组成项），M2 不移植；快照自此无时间戳（ERR-025① 缓存断点嫌疑消除）。
 //

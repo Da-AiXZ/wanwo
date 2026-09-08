@@ -180,7 +180,7 @@ final class PermissionTests: XCTestCase {
         XCTAssertEqual(knobs.currentPresetName(), "danger-full-access")
     }
 
-    // MARK: - approval/policy 事件往返 + resume 折叠
+    // MARK: - approval/policy + sandbox/mode 事件往返 + resume 折叠
 
     func testApprovalPolicyRoundtripAndRestore() async throws {
         let (writer, dir) = try await makeWriter()
@@ -196,5 +196,74 @@ final class PermissionTests: XCTestCase {
         let encoded = try JSONEncoder().encode(writer.events[0])
         let decoded = try JSONDecoder().decode(SessionEvent.self, from: encoded)
         XCTAssertEqual(decoded.payload, writer.events[0].payload)
+    }
+
+    /// T2.1：applyPreset 双旋钮持久化（sandbox/mode 事件落盘 + resume 折叠）。
+    func testApplyPresetPersistsBothKnobsAndRestores() async throws {
+        let (writer, dir) = try await makeWriter()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PermissionCoordinator(writer: writer, rules: makeStore())
+        let result = await coordinator.applyPreset(named: "danger-full-access")
+        XCTAssertTrue(result.contains("已切换"), result)
+        XCTAssertEqual(coordinator.knobs.sandbox, .dangerFullAccess)
+        XCTAssertEqual(coordinator.knobs.approval, .never)
+        // 双事件均落盘（diff 写：两旋钮都变 → 两条事件）。
+        let kinds = writer.events.compactMap { event -> String? in
+            if case .extensionEvent(let kind, _) = event.payload { return kind }
+            return nil
+        }
+        XCTAssertEqual(kinds, ["approval/policy", "sandbox/mode"])
+        // resume 折叠：新协调器双旋钮均恢复。
+        let restored = PermissionCoordinator(writer: writer, rules: makeStore())
+        XCTAssertEqual(restored.knobs.sandbox, .dangerFullAccess)
+        XCTAssertEqual(restored.knobs.approval, .never)
+        XCTAssertEqual(restored.knobs.currentPresetName(), "danger-full-access")
+    }
+
+    /// T2.1：applyPreset diff 写——同值旋钮不落事件。
+    func testApplyPresetDiffWriteSkipsUnchangedKnob() async throws {
+        let (writer, dir) = try await makeWriter()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PermissionCoordinator(writer: writer, rules: makeStore())
+        // workspace-write→workspace-write(+ask) 为当前态 → 无切换。
+        let noop = await coordinator.applyPreset(named: "workspace-write")
+        XCTAssertTrue(noop.contains("已处于"), noop)
+        XCTAssertTrue(writer.events.filter {
+            if case .extensionEvent = $0.payload { return true }
+            return false
+        }.isEmpty)
+        // diff 写单旋钮形态：预置 approval=never（事件折叠进内存）后切回
+        // workspace-write——approval never→ask 变化、sandbox 复位→两旋钮均变，
+        // 验证事件序列顺序稳定（先 approval 后 sandbox）。
+        try await writer.append(.extensionEvent(
+            kind: "approval/policy", payload: .object(["policy": .string("never")])))
+        let custom = PermissionCoordinator(writer: writer, rules: makeStore())
+        let before = writer.events.count
+        let result = await custom.applyPreset(named: "workspace-write")
+        XCTAssertTrue(result.contains("已切换"), result)
+        let kinds = writer.events.dropFirst(before).compactMap { event -> String? in
+            if case .extensionEvent(let kind, _) = event.payload { return kind }
+            return nil
+        }
+        XCTAssertEqual(kinds, ["approval/policy", "sandbox/mode"],
+                       "事件顺序稳定：先 approval/policy 后 sandbox/mode")
+    }
+
+    /// T2.1：/permission 分支——custom 拒绝 + 未知名报错带清单 + 空输入查询。
+    func testApplyPresetRejectsCustomAndUnknown() async throws {
+        let (writer, dir) = try await makeWriter()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PermissionCoordinator(writer: writer, rules: makeStore())
+        let customResult = await coordinator.applyPreset(named: "custom")
+        XCTAssertTrue(customResult.contains("派生态"), customResult)
+        let unknownResult = await coordinator.applyPreset(named: "no-such-preset")
+        XCTAssertTrue(unknownResult.contains("未知权限预设"), unknownResult)
+        let statusResult = await coordinator.applyPreset(named: nil)
+        XCTAssertTrue(statusResult.contains("当前权限预设"), statusResult)
+        let kinds = writer.events.compactMap { event -> String? in
+            if case .extensionEvent(let kind, _) = event.payload { return kind }
+            return nil
+        }
+        XCTAssertTrue(kinds.isEmpty, "拒绝/查询路径不得落任何旋钮事件")
     }
 }

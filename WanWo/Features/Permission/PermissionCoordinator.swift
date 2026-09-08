@@ -17,10 +17,10 @@
 //      WanWo 落点 = RuntimeContextProjection 快照通道（ContextInjector.
 //      approvalPolicyProvider 供值）：完整当前值跟随、仅变化才重注入、缓存
 //      前缀不破（ERR-024 纪律：快照不进 system——「system 段」字面与缓存
-//      纪律冲突处按快照位实现，偏差登记见批次报告）。
-//  事件词汇：approval/policy 走 E1 extensionEvent 通道（T2 报批登记；
-//  schema 由 AppEnvironment 装配期注册：policy ∈ {ask, never}，
-//  projection=logOnly，pairing=none）。
+//      纪律冲突处按快照位实现，team-lead 已追认）。
+//  事件词汇：approval/policy（T2 批准）+ sandbox/mode（T2.1 补批，01 笔记
+//  sandbox-policy 原件词汇）均走 E1 extensionEvent 通道，schema 由
+//  AppEnvironment 装配期注册（projection=logOnly，pairing=none）。
 //
 
 import Foundation
@@ -29,9 +29,14 @@ import Foundation
 /// /permission 实现 + approval-policy 上下文位供值。
 /// 线程模型：审批缝在后台线程读（knobs/rules/cache 均 NSLock 保护），
 /// /permission 在命令任务写。
+/// T2.1：双旋钮均持久——approval/policy 与 sandbox/mode 两个 extension 事件
+/// （均已批）先落盘成功再进内存（fail closed）；resume 时分别折叠恢复。
 final class PermissionCoordinator: @unchecked Sendable {
     /// approval/policy 扩展事件 kind（wire type = "extension/approval/policy"）。
     static let policyEventKind = "approval/policy"
+    /// sandbox/mode 扩展事件 kind（wire type = "extension/sandbox/mode"；
+    /// T2.1 补批——01 笔记 sandbox-policy 原件词汇，修沙箱旋钮内存态缺口）。
+    static let sandboxEventKind = "sandbox/mode"
     /// 沉淀前缀规则的 token 上限（防超长命令生成巨型规则）。
     static let maxPrefixTokens = 8
 
@@ -50,20 +55,28 @@ final class PermissionCoordinator: @unchecked Sendable {
         self.writer = writer
         self.rules = rules
         self.cwd = cwd
-        restoreApprovalPolicy()
+        restoreKnobs()
     }
 
-    // MARK: - 折叠（resume：从会话事件流恢复审批策略）
+    // MARK: - 折叠（resume：从会话事件流恢复双旋钮）
 
-    /// 取事件流中最后一条 approval/policy 的 policy 值进内存（无历史 →
-    /// 保持缺省 ask——fail closed 缺省）。
-    private func restoreApprovalPolicy() {
+    /// 分别取事件流中最后一条 approval/policy 与 sandbox/mode 的值进内存
+    /// （无历史 → 保持缺省 ask + workspace-write——fail closed 缺省档）。
+    private func restoreKnobs() {
         for event in writer.events.reversed() {
             if case .extensionEvent(Self.policyEventKind, let payload) = event.payload,
                let raw = payload.field("policy")?.stringValue,
                let policy = ApprovalPolicy(rawValue: raw) {
                 knobs.approval = policy
-                return
+                break
+            }
+        }
+        for event in writer.events.reversed() {
+            if case .extensionEvent(Self.sandboxEventKind, let payload) = event.payload,
+               let raw = payload.field("mode")?.stringValue,
+               let mode = ApprovalDecisionMatrix.SandboxMode(rawValue: raw) {
+                knobs.sandbox = mode
+                break
             }
         }
     }
@@ -138,8 +151,9 @@ final class PermissionCoordinator: @unchecked Sendable {
             + "read-only 档需自定义预设，本构建暂未提供；custom 为派生态，不可作为切换目标。"
     }
 
-    /// 切换预设（dsh apply 语义适配：审批旋钮持久 diff 写；沙箱旋钮内存
-    /// diff 写；叙述以 user 消息注入——model-visible=logged）。
+    /// 切换预设（dsh apply 语义：双旋钮持久 diff 写——先全部落盘成功再统一
+    /// 进内存，任一失败整体不切换（fail closed）；叙述以 user 消息注入——
+    /// model-visible=logged）。
     func applyPreset(named rawName: String?) async -> String {
         let name = (rawName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return statusText() }
@@ -154,24 +168,27 @@ final class PermissionCoordinator: @unchecked Sendable {
         if knobs.currentPresetName() == spec.name {
             return "已处于权限预设 \"\(spec.name)\"，无需切换。"
         }
-        // 审批旋钮：持久 diff 写（值没变不写；落盘失败绝不进内存——fail closed）。
-        if knobs.approval != spec.approval {
-            do {
+        // 双旋钮持久 diff 写（值没变不写；schema 由写侧门校验，词汇恒合法；
+        // 先写后提交内存——半切换状态不存在，fail closed）。
+        do {
+            if knobs.approval != spec.approval {
                 _ = try await writer.append(.extensionEvent(
                     kind: Self.policyEventKind,
                     payload: .object(["policy": .string(spec.approval.rawValue)])))
-            } catch {
-                Self.logger.error("approval/policy append failed: "
-                    + "\(String(describing: error))")
-                return "错误：审批策略落盘失败（\(String(describing: error))），"
-                    + "预设未切换（fail closed）。"
             }
-            knobs.approval = spec.approval
+            if knobs.sandbox != spec.sandbox {
+                _ = try await writer.append(.extensionEvent(
+                    kind: Self.sandboxEventKind,
+                    payload: .object(["mode": .string(spec.sandbox.rawValue)])))
+            }
+        } catch {
+            Self.logger.error("permission preset append failed: "
+                + "\(String(describing: error))")
+            return "错误：预设落盘失败（\(String(describing: error))），"
+                + "预设未切换（fail closed）。"
         }
-        // 沙箱旋钮：内存 diff 写（sandbox/mode 事件词汇未获报批——偏差登记）。
-        if knobs.sandbox != spec.sandbox {
-            knobs.sandbox = spec.sandbox
-        }
+        knobs.approval = spec.approval
+        knobs.sandbox = spec.sandbox
         knobs.lastSelection = spec.name
         // 切换叙述（dsh inject user message；<permission-update> 前缀由投影层
         // 过滤——用户可见反馈走 command/done 文本）。叙述丢失不致命（快照位
