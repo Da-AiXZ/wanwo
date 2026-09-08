@@ -24,7 +24,9 @@ struct ChatView: View {
             Divider()
             content
             Divider()
-            inputBar
+            // M3 T1：composer 座位（审批/提问接管输入框，dsh composer 接管形态；
+            // 高度上限共用 336px，座位高度稳定不跳动——2026-07-30 笔记）。
+            composerSeat
         }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
@@ -202,6 +204,17 @@ struct ChatView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
+            // 交互状态行（M3 T1：审批 waiting/结算态、提问等待——琥珀语义行）。
+            if let status = card.statusNote, !status.isEmpty {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(ApprovalPanelStyle.warnPrimary)
+                        .frame(width: 6, height: 6)
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(ApprovalPanelStyle.warnPrimary)
+                }
+            }
             if !card.liveOutput.isEmpty {
                 Text(card.liveOutput)
                     .font(.caption2.monospaced())
@@ -241,6 +254,29 @@ struct ChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo("streaming-text", anchor: .bottom)
+        }
+    }
+
+    // MARK: - composer 座位（M3 T1：接管路由，dsh conversation.composer 链形态——
+    // 待决审批优先于待决提问呈现，与 dsh 侧栏「first pending question ahead of
+    // concurrent approvals」的 composer 路由口径一致）
+
+    @ViewBuilder
+    private var composerSeat: some View {
+        if let approval = viewModel.pendingApprovals.first {
+            ApprovalPanelView(pending: approval,
+                              answering: viewModel.approvalAnswering) { allow in
+                viewModel.answerApproval(approval, allow: allow)
+            }
+        } else if let question = viewModel.pendingQuestions.first {
+            QuestionComposerView(pending: question,
+                                 busy: viewModel.questionBusy,
+                                 onSubmit: { answer in
+                                     viewModel.submitQuestionAnswer(question, answer: answer)
+                                 },
+                                 onCancel: { viewModel.cancelQuestion(question) })
+        } else {
+            inputBar
         }
     }
 

@@ -61,8 +61,10 @@ actor AgentLoop {
         var onTokenPressure: @Sendable (Compactor.PressureInfo?) -> Void = { _ in }
         var onTurnEnd: @Sendable (TurnEndReason) -> Void = { _ in }
         var onPhaseChange: @Sendable (Phase) -> Void = { _ in }
-        /// 工具卡活投影（callId, name, presentCall detail）——tool/call 落盘后发射。
-        var onToolCallStarted: @Sendable (String, String, String?) -> Void = { _, _, _ in }
+        /// 工具卡活投影（callId, name, arguments 原文, presentCall detail）——
+        /// tool/call 落盘后发射。arguments 原文随行：live 路径据此缓存 callArgs，
+        /// 使 presentResult 的纯函数复现与 replay 同形（M3 T1）。
+        var onToolCallStarted: @Sendable (String, String, String, String?) -> Void = { _, _, _, _ in }
         /// 工具卡收敛（callId, 结果文本, isError）——tool/result 落盘后发射。
         var onToolCallFinished: @Sendable (String, String, Bool) -> Void = { _, _, _ in }
     }

@@ -79,3 +79,24 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+
+  # M3 T1：单元测试目标（纯逻辑单测，WanWoTests 已批；CI 无 test action——
+  # 按收益取舍本地跑；不触碰 WanWo 主 target 的任何编译宏/链接参数基线）。
+  WanWoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WanWoTests
+    dependencies:
+      - target: WanWo
+
+# 测试 scheme（本地 xcodebuild test 用；主流水线构建路径不受影响）。
+schemes:
+  WanWo:
+    build:
+      targets:
+        WanWo: all
+        WanWoTests: [test]
+    test:
+      targets:
+        - WanWoTests

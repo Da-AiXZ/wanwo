@@ -36,12 +36,25 @@ struct SessionsSidebarView: View {
                     Button {
                         selection = .session(id: summary.id)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(summary.title ?? "新会话")
-                                .lineLimit(1)
-                            Text(summary.updatedAt.formatted(.dateTime.month().day().hour().minute()))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(summary.title ?? "新会话")
+                                    .lineLimit(1)
+                                Text(summary.updatedAt.formatted(.dateTime.month().day().hour().minute()))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            // M3 T1：琥珀警示圆点（dsh 2026-07-23 笔记——sidebar
+                            // mirrors every blocked interaction with an amber
+                            // warning dot that outranks the running ring；
+                            // WanWo 侧栏暂无运行中圆环，见批次报告偏差登记）。
+                            if environment.pendingInteractionSessionIDs.contains(summary.id) {
+                                Circle()
+                                    .fill(ApprovalPanelStyle.warnPrimary)
+                                    .frame(width: 8, height: 8)
+                                    .accessibilityLabel("有待决审批或提问")
+                            }
                         }
                     }
                 }

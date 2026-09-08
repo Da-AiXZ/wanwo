@@ -19,7 +19,8 @@ import Foundation
 
 final class ToolPipeline: @unchecked Sendable {
     let registry: ToolRegistry
-    /// M2 = AutoApprovalSeam 占位；M3 换审批卡 answerer（fail closed：nil 即 deny）。
+    /// M3 T1 = CompositeApprovalSeam（四步管线：判定→allow 直通/forbidden 拒/
+    /// prompt→挂起或 fail closed）；fail closed：nil 即拒（answerer 缺失即拒，F018）。
     let approvalSeam: ApprovalSeam?
     let repeatAdviser: RepeatCallAdviser
     /// spill 阈值（F037：>50KB 落盘）。
@@ -49,19 +50,20 @@ final class ToolPipeline: @unchecked Sendable {
             return .failure(reason, code: "DENIED_BY_GUARD", name: "ToolGuardError")
         }
 
-        // 2. pre-execute 判定（M2：无扩展 listener；审批判定按 dsh ask 语义）。
-        //    fail closed：seam 缺失 → deny（answerer 缺失即拒，F018）。
-        //    【M2 占位】管线恒走 AutoApprovalSeam → allow；真判定 M3 落地。
-        if let seam = approvalSeam {
-            let verdict = await seam.request(tool: toolName, args: args, reason: nil,
-                                             sessionId: ctx.sessionId,
-                                             turn: ctx.turn, step: ctx.step)
-            if verdict != .allow {
-                return .failure("tool call \"\(toolName)\" was not approved",
-                                code: "NOT_APPROVED", name: "ApprovalDeniedError")
-            }
-        } else {
+        // 2. pre-execute 审批判定（M3 T1：CompositeApprovalSeam 四步管线——
+        //    判定 .allow 直通 / .forbidden 拒 / .prompt → 审批协调器挂起）。
+        //    fail closed：seam 缺失 → 拒（answerer 缺失即拒，F018；
+        //    dsh user-approval index.ts:55-56 'unavailable' 语义）。
+        guard let seam = approvalSeam else {
             return .failure("no approval answerer configured; denying by default",
+                            code: "NOT_APPROVED", name: "ApprovalDeniedError")
+        }
+        let outcome = await seam.request(tool: toolName, args: args,
+                                         callId: ctx.callId, reason: nil)
+        if outcome != .allowedOnce {
+            // 四值闭集中除唯一授予外一律合成失败结果（.rejected=用户拒绝 /
+            // .cancelled=请求撤销 / .unavailable=fail-closed 归一化）。
+            return .failure(Self.denialMessage(tool: toolName, outcome: outcome),
                             code: "NOT_APPROVED", name: "ApprovalDeniedError")
         }
 
@@ -87,6 +89,19 @@ final class ToolPipeline: @unchecked Sendable {
             final.text += "\n\n\(advisory)"
         }
         return final
+    }
+
+    /// 四值闭集 → 拒绝文案（失败必须自解释，F060 最小纪律；internal 供单测直证）。
+    static func denialMessage(tool: String, outcome: ApprovalOutcome) -> String {
+        switch outcome {
+        case .rejected:
+            return "tool call \"\(toolName)\" was rejected by the user"
+        case .cancelled:
+            return "approval for tool call \"\(toolName)\" was cancelled"
+        case .unavailable, .allowedOnce:
+            // allowedOnce 走不到这里（调用点已放行）；unavailable = fail closed。
+            return "no approval answerer available for \"\(toolName)\"; failing closed"
+        }
     }
 
     /// F037：超过 50KB 的文本结果落盘并替换为 head + locator。

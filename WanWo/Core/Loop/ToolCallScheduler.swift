@@ -225,12 +225,12 @@ enum ToolCallScheduler {
 
     // MARK: 工具卡回调（Callbacks 缝：started 在 tool/call 落盘后、finished 在 tool/result 落盘后）
 
-    /// 工具卡活投影（callId, name, presentCall detail）。
+    /// 工具卡活投影（callId, name, arguments 原文, presentCall detail）。
     private static func notifyStarted(_ deps: AgentLoop.Dependencies,
                                       call: ToolCallSpec,
                                       args: JSONValue) {
         let detail = deps.registry.get(call.name)?.presentCall(args)?.detail
-        deps.callbacks.onToolCallStarted(call.id, call.name, detail)
+        deps.callbacks.onToolCallStarted(call.id, call.name, call.arguments, detail)
     }
 
     /// 工具卡收敛（callId, 结果文本, isError）。

@@ -44,6 +44,9 @@ final class ChatViewModel: ObservableObject {
         var resultText: String?
         var isError: Bool = false
         var isRunning: Bool = true
+        /// 交互状态行（M3 T1：审批 waiting/结算态、提问 waiting——dsh 流内
+        /// toolview 行的 WanWo 形态；琥珀语义行）。
+        var statusNote: String?
     }
 
     struct Bubble: Identifiable, Equatable {
@@ -68,6 +71,15 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var modelLabel = ""
     @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
+    // MARK: M3 T1 待决交互（composer 接管数据源；dsh 2026-07-23/07-29 笔记）
+    /// 待决审批队列（composer 接管显示队首；first answer wins 由协调器保证）。
+    @Published private(set) var pendingApprovals: [PendingApprovalPresentation] = []
+    /// 待决提问队列（composer 接管显示队首）。
+    @Published private(set) var pendingQuestions: [PendingQuestionPresentation] = []
+    /// 审批按钮防双击（dsh：answered 后本地禁用，失败 re-arm）。
+    @Published private(set) var approvalAnswering = false
+    /// 提问提交防双击。
+    @Published private(set) var questionBusy = false
 
     private let environment: AppEnvironment
     private let sessionID: String
@@ -78,6 +90,9 @@ final class ChatViewModel: ObservableObject {
     private var callArgs: [String: (name: String, args: JSONValue)] = [:]
     private var runningTask: Task<Void, Never>?
     private var slashCommands: SlashCommandRegistry?
+    // MARK: M3 T1 审批/提问装配引用（answer 路径回传宿主裁决登记处）
+    private var approvalCoordinator: ApprovalCoordinator?
+    private var questionService: UserQuestionService?
 
     // 0.2s 节流（§5.4 OutputSanitizer 节流语义；M1 flush 模式复用）
     private var pendingTextChunks: Deque<String> = []
@@ -107,8 +122,11 @@ final class ChatViewModel: ObservableObject {
                 let stack = await self.environment.makeAgentStack(
                     sessionId: self.sessionID,
                     writer: writer,
-                    callbacks: self.makeCallbacks())
+                    callbacks: self.makeCallbacks(),
+                    interactionPresenter: self)
                 self.agentLoop = stack.loop
+                self.approvalCoordinator = stack.approvalCoordinator
+                self.questionService = stack.questionService
                 if let loop = stack.loop {
                     self.registry = loop.deps.registry
                     self.slashCommands = SlashCommandRegistry.makeDefault(
@@ -135,6 +153,10 @@ final class ChatViewModel: ObservableObject {
         let task = runningTask
         runningTask = nil
         task?.cancel()
+        // M3 T1：桥关闭——在途待决一律 fail closed（审批 .unavailable /
+        // 提问 ASK_ABORTED；m3-scope-brief §二.5「桥关闭在途待决一律 unavailable」）。
+        approvalCoordinator?.bridgeClosed()
+        questionService?.bridgeClosed()
         guard let writer = writer else { return }
         let store = environment.sessionStore
         Task {
@@ -235,9 +257,11 @@ final class ChatViewModel: ObservableObject {
                     if case .running = phase { self.phase = .streaming }
                 }
             },
-            onToolCallStarted: { [weak self] callId, name, detail in
+            onToolCallStarted: { [weak self] callId, name, arguments, detail in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    // live 路径同样缓存 callArgs（与 replay 同源；presentResult 复现用）。
+                    self.callArgs[callId] = (name, ToolCallScheduler.parseArgs(arguments))
                     let card = ToolCard(callId: callId, name: name,
                                         title: name, detail: detail)
                     self.bubbles.append(Bubble(id: "tc-live-\(callId)", kind: .tool(card)))
@@ -250,6 +274,17 @@ final class ChatViewModel: ObservableObject {
                         if case .tool(let card) = $0.kind { return card.callId == callId }
                         return false
                     }), case .tool(var card) = self.bubbles[index].kind {
+                        // presentResult 纯函数复现（live 与 replay 同形；M3 T1：
+                        // ask_user_question 的 N/M answered 等结算标题由此更新）。
+                        let args = self.callArgs[callId]?.args ?? .null
+                        let toolOutput = ToolOutput(text: output, isError: isError,
+                                                    errorName: nil, errorCode: nil,
+                                                    meta: nil)
+                        if let name = self.callArgs[callId]?.name,
+                           let intent = self.registry?.get(name)?.presentResult(args, toolOutput) {
+                            card.title = intent.title
+                            card.detail = intent.detail
+                        }
                         card.resultText = output
                         card.isError = isError
                         card.isRunning = false
@@ -357,6 +392,10 @@ final class ChatViewModel: ObservableObject {
                         card.resultText = content
                         card.isError = isError
                         card.isRunning = false
+                        // replay 结算态：审批未通过（NOT_APPROVED）的琥珀行
+                        // （waiting 态是 live 独有状态，重投影后按在途队列重放）。
+                        card.statusNote = (isError && errorCode == "NOT_APPROVED")
+                            ? "未获批准" : nil
                         result[index].kind = .tool(card)
                     }
                 }
@@ -379,6 +418,10 @@ final class ChatViewModel: ObservableObject {
         bubbles = result
         streamingText = ""
         streamingReasoning = ""
+        // live 琥珀状态行不在事件流中——重投影后按在途队列重放（M3 T1）。
+        if let first = pendingApprovals.first, let callId = first.callId {
+            setCardStatus(callId: callId, note: "等待审批")
+        }
     }
 
     // MARK: - 流式直通车（0.2s 节流 flush）
@@ -414,6 +457,140 @@ final class ChatViewModel: ObservableObject {
         if !pendingReasoningChunks.isEmpty {
             while let chunk = pendingReasoningChunks.popFirst() {
                 streamingReasoning += chunk
+            }
+        }
+    }
+}
+
+// MARK: - M3 T1 交互呈现缝（SessionInteractionPresenter；dsh composer 接管 +
+// 流内 toolview 行 + 侧栏琥珀点镜像，2026-07-23 / 2026-07-29 笔记）
+
+extension ChatViewModel: SessionInteractionPresenter {
+    func presentApproval(_ pending: PendingApprovalPresentation) {
+        // 配对命令（dsh conversation.approval.detail 槽语义：按 callId 关联
+        // 已流式呈现的工具卡，presentCall 复现命令文本，不重复 args JSON）。
+        var commandDetail: String?
+        if let callId = pending.callId, let entry = callArgs[callId],
+           let intent = registry?.get(entry.name)?.presentCall(entry.args) {
+            commandDetail = intent.detail
+        }
+        let enriched = PendingApprovalPresentation(
+            id: pending.id, toolName: pending.toolName, callId: pending.callId,
+            reason: pending.reason, commandDetail: commandDetail)
+        pendingApprovals.append(enriched)
+        if let callId = pending.callId {
+            setCardStatus(callId: callId, note: "等待审批")
+        }
+        environment.notePendingInteraction(sessionId: sessionID, active: true)
+    }
+
+    func settleApproval(id: String, outcome: ApprovalOutcome) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else { return }
+        let presentation = pendingApprovals.remove(at: index)
+        approvalAnswering = false
+        // 工具卡结算态（琥珀行；allowed-once 后工具继续执行，无琥珀行——
+        // dsh：批准后工具卡回到 running 语义）。
+        if let callId = presentation.callId {
+            let note: String?
+            switch outcome {
+            case .allowedOnce: note = nil
+            case .rejected: note = "未获批准"
+            case .cancelled: note = "审批已取消"
+            case .unavailable: note = "审批不可用（fail closed）"
+            }
+            setCardStatus(callId: callId, note: note)
+        }
+        refreshPendingInteractionMirror()
+    }
+
+    func presentQuestion(_ pending: PendingQuestionPresentation) {
+        pendingQuestions.append(pending)
+        environment.notePendingInteraction(sessionId: sessionID, active: true)
+    }
+
+    func settleQuestion(id: String, settlement: QuestionSettlement) {
+        guard let index = pendingQuestions.firstIndex(where: { $0.id == id }) else { return }
+        let presentation = pendingQuestions.remove(at: index)
+        questionBusy = false
+        // 工具卡结算态（与 AskUserTool.presentResult 的 N/M answered / cancelled /
+        // interrupted 判定同规则——live 与 replay 同形）。
+        if let callId = presentation.callId {
+            let note: String?
+            switch settlement {
+            case .answered(let answer):
+                let answeredIDs = Set(answer.answers.filter { item in
+                    !item.selected.isEmpty || !(item.custom ?? "").isEmpty
+                }.map(\.id))
+                let answered = presentation.questions.filter { answeredIDs.contains($0.id) }.count
+                note = "\(answered)/\(presentation.questions.count) 已回答"
+            case .cancelled: note = "已取消"
+            case .aborted: note = "已中断"
+            }
+            setCardStatus(callId: callId, note: note)
+        }
+        refreshPendingInteractionMirror()
+    }
+
+    /// 侧栏琥珀点镜像清退（最后一个待决交互结算时）。
+    private func refreshPendingInteractionMirror() {
+        if pendingApprovals.isEmpty && pendingQuestions.isEmpty {
+            environment.notePendingInteraction(sessionId: sessionID, active: false)
+        }
+    }
+
+    /// 工具卡琥珀状态行更新。
+    private func setCardStatus(callId: String, note: String?) {
+        for index in bubbles.indices {
+            if case .tool(var card) = bubbles[index].kind, card.callId == callId {
+                card.statusNote = note
+                bubbles[index].kind = .tool(card)
+                return
+            }
+        }
+    }
+}
+
+// MARK: - M3 T1 用户裁决入口（composer 接管 → 宿主裁决登记处）
+
+extension ChatViewModel {
+    /// 审批裁决（允许一次 / 拒绝）。first answer wins 由协调器保证；本地防双击，
+    /// 被拒（已结算/不存在）即 re-arm——dsh 笔记「disable locally, re-arm on failure」。
+    func answerApproval(_ pending: PendingApprovalPresentation, allow: Bool) {
+        guard !approvalAnswering else { return }
+        approvalAnswering = true
+        let outcome: ApprovalOutcome = allow ? .allowedOnce : .rejected
+        let coordinator = approvalCoordinator
+        Task { [weak self] in
+            let accepted = coordinator?.answer(requestId: pending.id, outcome: outcome) ?? false
+            if !accepted {
+                self?.approvalAnswering = false
+            }
+        }
+    }
+
+    /// 提交整组回答（draft 组装在视图层按 dsh submitDrafts 语义完成后回传）。
+    func submitQuestionAnswer(_ pending: PendingQuestionPresentation,
+                              answer: AskUserQuestionAnswer) {
+        guard !questionBusy else { return }
+        questionBusy = true
+        let service = questionService
+        Task { [weak self] in
+            let accepted = service?.answer(requestId: pending.id, answer) ?? false
+            if !accepted {
+                self?.questionBusy = false
+            }
+        }
+    }
+
+    /// 关闭整组提问（dsh composer cancel → ASK_CANCELLED，中性结算态）。
+    func cancelQuestion(_ pending: PendingQuestionPresentation) {
+        guard !questionBusy else { return }
+        questionBusy = true
+        let service = questionService
+        Task { [weak self] in
+            let accepted = service?.dismiss(requestId: pending.id) ?? false
+            if !accepted {
+                self?.questionBusy = false
             }
         }
     }

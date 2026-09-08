@@ -31,6 +31,18 @@ final class AppEnvironment: ObservableObject {
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
     @Published var selection: RootSelection = .none
+    /// 待决交互镜像（侧栏琥珀点数据源；dsh 2026-07-23 笔记——sidebar mirrors
+    /// every blocked interaction with an amber warning dot，优先级高于运行中圆环）。
+    @Published private(set) var pendingInteractionSessionIDs: Set<String> = []
+
+    /// 待决交互状态登记（ChatViewModel 在审批/提问 present 与 settle 时调用）。
+    func notePendingInteraction(sessionId: String, active: Bool) {
+        if active {
+            pendingInteractionSessionIDs.insert(sessionId)
+        } else {
+            pendingInteractionSessionIDs.remove(sessionId)
+        }
+    }
 
     private static let logger = AppLogger(category: "env")
 
@@ -135,17 +147,25 @@ final class AppEnvironment: ObservableObject {
     // MARK: - Agent 栈装配（M2）
 
     /// 装配 AgentLoop 全家（§十一 M2：registry / pipeline / compactor / spill /
-    /// injector / loop；审批缝 = AutoApprovalSeam 仅 M2 占位，M3 换审批卡 answerer）。
+    /// injector / loop；审批缝 = M3 T1 CompositeApprovalSeam 四步管线 +
+    /// ApprovalCoordinator + UserQuestionService，M2 AutoApprovalSeam 占位已废）。
+    /// - Parameters:
+    ///   - interactionPresenter: 交互呈现缝（ChatViewModel；nil = 无 answerer，
+    ///     审批 fail closed unavailable、提问 fail closed NO_PROVIDER）。
     /// - Returns: loop = nil 表示装配失败（无端点/凭据不可读），failureReason 带具体
     ///   原因（ERR-016：原 try? 吞错导致降级横幅只有泛化提示，无法定位）。
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
-                        callbacks: AgentLoop.Callbacks) async -> (loop: AgentLoop?, failureReason: String?) {
+                        callbacks: AgentLoop.Callbacks,
+                        interactionPresenter: SessionInteractionPresenter? = nil)
+        async -> (loop: AgentLoop?, failureReason: String?,
+                  approvalCoordinator: ApprovalCoordinator?,
+                  questionService: UserQuestionService?) {
         do {
             _ = try await makeAgentAdapter()
         } catch {
             let reason = (error as? LLMError)?.message ?? String(describing: error)
-            return (nil, reason)
+            return (nil, reason, nil, nil)
         }
 
         // ERR-022：聊天执行链首次使用前幂等确保内核已 boot（App 启动已后台
@@ -153,13 +173,22 @@ final class AppEnvironment: ObservableObject {
         do {
             try await KernelBootCoordinator.ensureKernelBooted()
         } catch {
-            return (nil, "内核启动失败：\((error as NSError).localizedDescription)")
+            return (nil, "内核启动失败：\((error as NSError).localizedDescription)", nil, nil)
         }
 
         let registry = ToolRegistry()
         registry.register(ShellTool(sessionId: sessionId))
         FsTools.registerAll(into: registry, sessionId: sessionId)
         WebTools.registerAll(into: registry)
+
+        // M3 T1 审批装配（m3-scope-brief §二.3-5）：
+        //   · ApprovalDecisionMatrix —— workspace-write 最简矩阵（T1 缺省档）；
+        //   · ApprovalCoordinator —— turn-enclosed + 审计对 + first answer wins；
+        //   · UserQuestionService —— ask_user_question 的 answerer 缝。
+        let coordinator = ApprovalCoordinator(writer: writer,
+                                              presenter: interactionPresenter)
+        let questionService = UserQuestionService(presenter: interactionPresenter)
+        registry.register(AskUserTool(service: questionService))
 
         let spill = SpillStore(
             root: WanWoPaths.persistentBase
@@ -168,8 +197,12 @@ final class AppEnvironment: ObservableObject {
         let repeatAdviser = RepeatCallAdviser()
         let pipeline = ToolPipeline(
             registry: registry,
-            // 【仅 M2 占位】自动批准 answerer（照记 approval 事件保审计）；M3 换真审批卡。
-            approvalSeam: AutoApprovalSeam(writer: writer),
+            // M3 T1：四步管线（判定→allow 直通/forbidden 拒/prompt→挂起或 fail
+            // closed）；policyProvider 恒 .ask——T2 接 approval/policy 折叠。
+            approvalSeam: CompositeApprovalSeam(
+                matrix: ApprovalDecisionMatrix(sandboxMode: .workspaceWrite),
+                coordinator: coordinator,
+                policyProvider: { .ask }),
             repeatAdviser: repeatAdviser)
         let compactor = Compactor(makeAdapter: { [weak self] in
             guard let self else {
@@ -199,6 +232,6 @@ final class AppEnvironment: ObservableObject {
                 return try await self.makeAgentAdapter()
             },
             callbacks: callbacks)
-        return (AgentLoop(deps: deps), nil)
+        return (AgentLoop(deps: deps), nil, coordinator, questionService)
     }
 }
