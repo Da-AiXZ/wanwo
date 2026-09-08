@@ -17,6 +17,8 @@ enum RootSelection: Hashable {
     case shellTest
     /// M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
     case eventStream
+    /// M3 T2 权限管理页（规则 CRUD + 预设说明；T1 偏差 6 补齐）。
+    case permissions
     case none
 }
 
@@ -27,6 +29,8 @@ final class AppEnvironment: ObservableObject {
     let sessionStore: SessionStore
     /// GRDB 投影库（对 UI 不透明；仅供会话层更新索引）。
     let database: SessionDatabase
+    /// M3 T2：权限规则库（App 级共享 user 层 JSONL；flock 排他 + 签名去重）。
+    let permissionRules: PermissionRulesStore
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -69,6 +73,22 @@ final class AppEnvironment: ObservableObject {
         self.database = db
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
+        self.permissionRules = PermissionRulesStore(
+            fileURL: configDir.appendingPathComponent("permission-rules.jsonl"))
+
+        // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
+        // 报批项；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
+        if !ExtensionEventRegistry.shared.isRegistered(
+            PermissionCoordinator.policyEventKind) {
+            ExtensionEventRegistry.shared.register(ExtensionEventSchema(
+                kind: PermissionCoordinator.policyEventKind,
+                requiredFields: [ExtensionFieldSchema(
+                    "policy", .string,
+                    allowedValues: [.string(ApprovalPolicy.ask.rawValue),
+                                    .string(ApprovalPolicy.never.rawValue)])],
+                projection: .logOnly,
+                pairing: .none))
+        }
 
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
@@ -160,12 +180,13 @@ final class AppEnvironment: ObservableObject {
                         interactionPresenter: SessionInteractionPresenter? = nil)
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
-                  questionService: UserQuestionService?) {
+                  questionService: UserQuestionService?,
+                  permission: PermissionCoordinator?) {
         do {
             _ = try await makeAgentAdapter()
         } catch {
             let reason = (error as? LLMError)?.message ?? String(describing: error)
-            return (nil, reason, nil, nil)
+            return (nil, reason, nil, nil, nil)
         }
 
         // ERR-022：聊天执行链首次使用前幂等确保内核已 boot（App 启动已后台
@@ -173,7 +194,8 @@ final class AppEnvironment: ObservableObject {
         do {
             try await KernelBootCoordinator.ensureKernelBooted()
         } catch {
-            return (nil, "内核启动失败：\((error as NSError).localizedDescription)", nil, nil)
+            return (nil, "内核启动失败：\((error as NSError).localizedDescription)",
+                    nil, nil, nil)
         }
 
         let registry = ToolRegistry()
@@ -190,6 +212,10 @@ final class AppEnvironment: ObservableObject {
         let questionService = UserQuestionService(presenter: interactionPresenter)
         registry.register(AskUserTool(service: questionService))
 
+        // M3 T2 权限装配：每会话 PermissionCoordinator（双旋钮折叠 + 规则引擎
+        // + 会话审批缓存 + 沉淀 + /permission）；规则库 App 级共享。
+        let permission = PermissionCoordinator(writer: writer, rules: permissionRules)
+
         let spill = SpillStore(
             root: WanWoPaths.persistentBase
                 .appendingPathComponent("spill", isDirectory: true)
@@ -197,12 +223,14 @@ final class AppEnvironment: ObservableObject {
         let repeatAdviser = RepeatCallAdviser()
         let pipeline = ToolPipeline(
             registry: registry,
-            // M3 T1：四步管线（判定→allow 直通/forbidden 拒/prompt→挂起或 fail
-            // closed）；policyProvider 恒 .ask——T2 接 approval/policy 折叠。
+            // M3 T1 四步管线 + T2：规则引擎先行（prefix/network 取最严）→
+            // 未命中矩阵启发式兜底 → 会话缓存 → never 短路 → 协调器；
+            // policyProvider = approval 旋钮实时折叠值。
             approvalSeam: CompositeApprovalSeam(
                 matrix: ApprovalDecisionMatrix(sandboxMode: .workspaceWrite),
                 coordinator: coordinator,
-                policyProvider: { .ask }),
+                policyProvider: { [permission] in permission.knobs.approval },
+                permission: permission),
             repeatAdviser: repeatAdviser)
         let compactor = Compactor(makeAdapter: { [weak self] in
             guard let self else {
@@ -215,6 +243,12 @@ final class AppEnvironment: ObservableObject {
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
         PromptSections.registerAll(into: assembler)
         let injector = ContextInjector()
+        // M3 T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——快照
+        // 通道注入（ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重
+        // 注入，缓存前缀不破）。
+        injector.approvalPolicyProvider = { [permission] in
+            permission.approvalPolicyContextLine
+        }
 
         let deps = AgentLoop.Dependencies(
             sessionId: sessionId,
@@ -232,6 +266,6 @@ final class AppEnvironment: ObservableObject {
                 return try await self.makeAgentAdapter()
             },
             callbacks: callbacks)
-        return (AgentLoop(deps: deps), nil, coordinator, questionService)
+        return (AgentLoop(deps: deps), nil, coordinator, questionService, permission)
     }
 }

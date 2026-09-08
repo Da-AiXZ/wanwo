@@ -271,8 +271,8 @@ struct ChatView: View {
     private var composerSeat: some View {
         if let approval = viewModel.pendingApprovals.first {
             ApprovalPanelView(pending: approval,
-                              answering: viewModel.approvalAnswering) { allow in
-                viewModel.answerApproval(approval, allow: allow)
+                              answering: viewModel.approvalAnswering) { allow, remember in
+                viewModel.answerApproval(approval, allow: allow, remember: remember)
             }
         } else if let question = viewModel.pendingQuestions.first {
             QuestionComposerView(pending: question,

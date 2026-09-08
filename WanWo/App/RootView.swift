@@ -33,6 +33,9 @@ struct RootView: View {
                 .id(id)
         case .providers:
             ProvidersView(environment: environment)
+        case .permissions:
+            // M3 T2 权限管理页（规则 CRUD + 预设说明；T1 偏差 6 补齐）。
+            PermissionsView(environment: environment)
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()

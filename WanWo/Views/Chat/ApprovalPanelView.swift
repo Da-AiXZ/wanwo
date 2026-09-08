@@ -48,8 +48,9 @@ struct ApprovalPanelView: View {
     let pending: PendingApprovalPresentation
     /// 提交在途（按钮禁用；结算失败由 VM re-arm——dsh re-arm 语义）。
     let answering: Bool
-    /// allow=true → allowed-once；false → rejected。
-    let onAnswer: (_ allow: Bool) -> Void
+    /// allow=true → allowed-once（remember=true 附加「允许并记住」沉淀）；
+    /// false → rejected。
+    let onAnswer: (_ allow: Bool, _ remember: Bool) -> Void
 
     /// headline：请求理由，缺省走 dsh escalation 文案模板（locales.ts 逐字）。
     private var headline: String {
@@ -95,11 +96,12 @@ struct ApprovalPanelView: View {
             .frame(maxHeight: ApprovalPanelStyle.textMaxHeight, alignment: .top)
             .accessibilityLabel("审批详情")
 
-            // 动作行（滚动区外恒可见；拒绝 outline / 允许一次 primary）。
+            // 动作行（滚动区外恒可见；拒绝 outline / 允许一次 primary；
+            // T2：bash 待批命令附「允许并记住」沉淀出口——rememberable）。
             HStack(spacing: 8) {
                 Spacer()
                 Button {
-                    onAnswer(false)
+                    onAnswer(false, false)
                 } label: {
                     Text("拒绝")
                         .frame(minWidth: 64)
@@ -108,8 +110,20 @@ struct ApprovalPanelView: View {
                 .tint(.red)
                 .disabled(answering)
 
+                if pending.rememberable {
+                    Button {
+                        onAnswer(true, true)
+                    } label: {
+                        Text("允许并记住")
+                            .frame(minWidth: 64)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ApprovalPanelStyle.warnPrimary)
+                    .disabled(answering)
+                }
+
                 Button {
-                    onAnswer(true)
+                    onAnswer(true, false)
                 } label: {
                     Text("允许一次")
                         .frame(minWidth: 64)

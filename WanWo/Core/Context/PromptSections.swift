@@ -54,7 +54,12 @@
 //       对应子系统不在 M0-M2 范围（plan/team/PTC/SDK/结构化输出均未排期）。
 //    9. CONTEXT_ORDERS 动态上下文位：sandbox-policy(110) / approval-policy(115) /
 //       subagent-delegation(120)——M2 为 AutoApprovalSeam 占位、无沙箱与
-//       子代理，均无内容可注入（快照对应位为空）。
+//       子代理，均无内容可注入（快照对应位为空）。M3 T2：approval-policy(115)
+//       已激活——PermissionCoordinator.approvalPolicyContextLine 供值，经
+//       ContextInjector.approvalPolicyProvider 走快照通道注入（快照不进 system，
+//       值跟随变化、仅变化才重注入——ERR-024 纪律）；sandbox-policy(110) 仍空
+//       （sandbox/mode 事件词汇未获报批，沙箱旋钮为内存态，偏差登记）；
+//       subagent-delegation(120) 不变。
 //   10. time（dsh packages/context/time-context）——opt-in 独立注入通道（非快照
 //       组成项），M2 不移植；快照自此无时间戳（ERR-025① 缓存断点嫌疑消除）。
 //

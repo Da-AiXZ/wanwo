@@ -73,6 +73,8 @@ final class ChatViewModel: ObservableObject {
     // MARK: M3 T1 审批/提问装配引用（answer 路径回传宿主裁决登记处）
     private var approvalCoordinator: ApprovalCoordinator?
     private var questionService: UserQuestionService?
+    /// M3 T2 权限协调器（/permission 命令装配输入）。
+    private var permission: PermissionCoordinator?
 
     // 0.2s 节流（§5.4 OutputSanitizer 节流语义；M1 flush 模式复用）
     private var pendingTextChunks: Deque<String> = []
@@ -110,10 +112,12 @@ final class ChatViewModel: ObservableObject {
                 self.agentLoop = stack.loop
                 self.approvalCoordinator = stack.approvalCoordinator
                 self.questionService = stack.questionService
+                self.permission = stack.permission
                 if let loop = stack.loop {
                     self.registry = loop.deps.registry
                     self.slashCommands = SlashCommandRegistry.makeDefault(
-                        loop: loop, environment: self.environment)
+                        loop: loop, environment: self.environment,
+                        permission: self.permission)
                 } else {
                     // ERR-015/016：装配失败按「未配置模型」降级（原 agentLoop! 强解闪退）；
                     // 横幅带具体失败原因（无端点 / Key 不可读等），不再只有泛化提示。
@@ -198,7 +202,7 @@ final class ChatViewModel: ObservableObject {
         let args = text.count > name.count + 1
             ? String(text.dropFirst(name.count + 2)) : nil
         try? await writer.append(.commandRun(commandId: commandId, name: name, args: args))
-        let result = await command.run()
+        let result = await command.run(args)
         try? await writer.append(.commandDone(commandId: commandId, kind: "success", text: result))
         reproject()
     }
@@ -443,7 +447,8 @@ extension ChatViewModel: SessionInteractionPresenter {
         }
         let enriched = PendingApprovalPresentation(
             id: pending.id, toolName: pending.toolName, callId: pending.callId,
-            reason: pending.reason, commandDetail: commandDetail)
+            reason: pending.reason, commandDetail: commandDetail,
+            rememberable: pending.rememberable)
         pendingApprovals.append(enriched)
         if let callId = pending.callId {
             setCardStatus(callId: callId, note: "等待审批")
@@ -520,15 +525,19 @@ extension ChatViewModel: SessionInteractionPresenter {
 // MARK: - M3 T1 用户裁决入口（composer 接管 → 宿主裁决登记处）
 
 extension ChatViewModel {
-    /// 审批裁决（允许一次 / 拒绝）。first answer wins 由协调器保证；本地防双击，
-    /// 被拒（已结算/不存在）即 re-arm——dsh 笔记「disable locally, re-arm on failure」。
-    func answerApproval(_ pending: PendingApprovalPresentation, allow: Bool) {
+    /// 审批裁决（允许一次 / 允许并记住 / 拒绝）。first answer wins 由协调器
+    /// 保证；本地防双击，被拒（已结算/不存在）即 re-arm——dsh 笔记「disable
+    /// locally, re-arm on failure」。T2：remember = 「允许并记住」沉淀出口
+    /// （仅 allowedOnce 有意义；沉淀由 CompositeApprovalSeam 在结算后执行）。
+    func answerApproval(_ pending: PendingApprovalPresentation, allow: Bool,
+                        remember: Bool = false) {
         guard !approvalAnswering else { return }
         approvalAnswering = true
         let outcome: ApprovalOutcome = allow ? .allowedOnce : .rejected
         let coordinator = approvalCoordinator
         Task { [weak self] in
-            let accepted = coordinator?.answer(requestId: pending.id, outcome: outcome) ?? false
+            let accepted = coordinator?.answer(requestId: pending.id, outcome: outcome,
+                                               remember: remember) ?? false
             if !accepted {
                 self?.approvalAnswering = false
             }

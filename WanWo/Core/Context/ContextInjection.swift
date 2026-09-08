@@ -40,6 +40,12 @@ struct ContextInjector: Sendable {
     /// 每回合 @file 引用上限。
     static let maxFileRefs = 4
 
+    /// M3 T2：approval-policy 动态上下文位供值缝（dsh CONTEXT_ORDERS
+    /// approval-policy 115；PermissionCoordinator 装配）。快照通道注入：
+    /// 完整当前值跟随、仅变化才重注入、缓存前缀不破（ERR-024 纪律：快照
+    /// 不进 system）。nil = 位空缺（缺省不注入）。
+    var approvalPolicyProvider: (@Sendable () -> String?)?
+
     // MARK: - agent-instructions 基础文案（dsh render.ts 逐字）
 
     /// dsh WORKSPACE_CONTEXT_INTRO（基线注入的引导句）。
@@ -111,11 +117,17 @@ struct ContextInjector: Sendable {
         return Self.renderInstructionFrame(blocks: blocks)
     }
 
-    /// F038：首轮基线快照文本（workspace + AGENTS.md；ERR-025① 无时间戳）。
+    /// F038：首轮基线快照文本（workspace + approval-policy(T2) + AGENTS.md；
+    /// ERR-025① 无时间戳）。
     func baselineSnapshot(workspace: WorkspaceFileAccess, workspacePath: String) -> String {
         var parts: [String] = []
         parts.append("<runtime-context>")
         parts.append("workspace: \(workspacePath)")
+        // T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——策略切换后
+        // 本行文本变化 → 快照整体变化 → 自动重注入（RuntimeContextProjection）。
+        if let provider = approvalPolicyProvider, let line = provider(), !line.isEmpty {
+            parts.append(line)
+        }
         if let agentsMd = loadAgentsMd(workspace: workspace),
            let block = Self.agentsMdBaselineBlock(agentsMd) {
             parts.append(block)

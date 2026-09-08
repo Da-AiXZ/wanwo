@@ -57,7 +57,8 @@ enum ConversationProjector {
     // MARK: - 注入/标记消息过滤（F038/F039/F040 + 压缩摘要呈现；不渲染气泡）
 
     static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
-                                 "<compaction-summary>", "<file>"]
+                                 "<compaction-summary>", "<file>",
+                                 "<permission-update>"]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }

@@ -69,6 +69,12 @@ struct SessionsSidebarView: View {
                 } label: {
                     Label("Providers", systemImage: "cpu")
                 }
+                Button {
+                    // M3 T2：权限管理页（规则 CRUD、来源可溯；T1 偏差 6 补齐）。
+                    selection = .permissions
+                } label: {
+                    Label("权限", systemImage: "lock.shield")
+                }
             }
 
             Section("诊断") {
