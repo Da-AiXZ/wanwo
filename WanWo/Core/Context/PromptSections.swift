@@ -16,20 +16,39 @@
 //      为 read 工具存在——M2 恒注册 read，故无条件注册）
 //  布局位经 PromptAssembler.SECTION_ORDERS（dsh SECTION_ORDERS 数值 1:1）。
 //
-//  【dsh 环境特有段落——未移植，列单报批（ERR-025 派单方式）】：
-//    1. harness:identity（"You are an AI agent powered by DeepSeek Harness."）
-//       ——声明宿主身份；WanWo 是否沿用 DeepSeek Harness 名称需拍板。
+//  【自拟段落批次 · 用户批准稿（2026，analysis/draft-sections.md 逐字）】：
+//    - harness:identity（WanWo 版，order -1000）——dsh 原文一句
+//      "You are an AI agent powered by DeepSeek Harness." 替换为 WanWo
+//      宿主身份 + 运行环境说明（iPad 原生 + 内嵌 Alpine Linux 沙箱 iSH），
+//      是模型区分 bash（guest 内执行）与 fs 工具（宿主 workspace 直读）语义
+//      分野的前提。
+//    - tool:bash（order 1000）——dsh OSS 快照仅有布局位无文本；纯自拟，
+//      逐条对拍 ShellTool 实际行为（busybox ash 默认 / BashismDetector 按需
+//      装 bash / 每命令独立 fork / 900000 ms 默认超时 / sanitizer 截断），
+//      并承载跨工具路由策略（read 优先于 bash cat；fs 工具优先于 shell
+//      等价物——dsh notes 2026-08-07-ptc-executor-collapse.md:44 口径）+
+//      iSH 适配（guest 磁盘写慢→nohup 后台化装包；双通道同一 workspace
+//      内容可见性；apk 镜像切换 tsinghua/aliyun）。
+//    - tool:web_search（2000）/ tool:web_fetch（2100）——dsh 无公开文本；
+//      纯自拟，对拍 WebTools 行为（model-mediated 摘要 + UNVERIFIED 语义；
+//      web_fetch 文本净化截断、二进制只回元信息）。
+//    - tool:read_image（1600）/ tool:str_replace_editor（1700）——WanWo 本地
+//      工具，dsh 无对应物；1600/1700 为本次新增槽位（已入 SECTION_ORDERS）。
+//      read_image 明确声明模型当前收不到像素数据，防止模型谎称"已看过图"；
+//      str_replace_editor 定位为 edit 族的补充形态（主力仍是 read/write/
+//      edit/glob/grep），避免绕开 fs-observation-policy 既有语义。
+//
+//  【dsh 环境特有段落——未移植（ERR-025 派单方式）】：
+//    1. harness:identity —— 已解决：WanWo 版自拟文案于本批注册（见上批注）。
 //    2. harness:source（dsh checkout 路径说明）——dsh 开发环境特有，iOS 无意义。
 //    3. app:web-surface（dsh Web GUI 本地 URL）——dsh web 壳特有。
 //    4. deployment:persona（order 0，部署方 config.persona 提供）——M2 无部署
 //       persona 配置源；空段落本来就被组装器丢弃。
-//    5. tool:bash / tool:pwsh（SECTION_ORDERS 1000/1010）——dsh OSS 快照只保留
-//       布局位，无公开 section 文本（闭源部署插件）；WanWo 有 ShellTool(bash)，
-//       需自拟文案，待批准后补注册。
-//    6. tool:web-search / tool:web-fetch（2000/2100）——同上，dsh 无公开文本；
-//       WanWo WebTools 已有 schema description，section 待批准后自拟。
-//    7. WanWo 本地新增工具 read_image / str_replace_editor——dsh 无对应物，
-//       无可移植文本；是否为其写 section 待拍板。
+//    5. tool:bash —— 已解决：自拟文案于本批注册；tool:pwsh（1010）WanWo 无
+//       对应工具，不注册。
+//    6. tool:web-search / tool:web-fetch —— 已解决：自拟文案于本批注册。
+//    7. WanWo 本地工具 read_image / str_replace_editor —— 已解决：自拟文案
+//       于本批注册（新槽位 1600/1700）。
 //    8. plan:policy / team:policy / ptc-only / tools-sdk /
 //       deliverable-file-references / structured-output——dsh 子系统 sections，
 //       对应子系统不在 M0-M2 范围（plan/team/PTC/SDK/结构化输出均未排期）。
@@ -86,16 +105,98 @@ enum PromptSections {
         + "and do not claim to have inspected it before reading. "
         + "@\"...\" quotes a path containing spaces."
 
+    // MARK: - 自拟文本（用户批准稿；analysis/draft-sections.md 逐字）
+
+    /// "harness:identity"（WanWo 版；dsh 原文仅一句 DeepSeek Harness 身份声明，
+    /// WanWo 版保持同等克制的分量，补运行环境说明——bash 语义（guest 内执行）
+    /// 与 fs 工具语义（宿主 workspace 直读）分野的前提）。
+    static let harnessIdentity = "You are an AI agent running in the WanWo harness: a native iPad app whose "
+        + "execution environment is an embedded Alpine Linux sandbox (iSH) for shell "
+        + "commands, plus a host-side workspace for file tools and web access."
+
+    /// "tool:bash"（dsh 快照无文本，纯自拟；对拍 ShellTool 行为 + 跨工具路由
+    /// 策略 + iSH 适配：guest 磁盘写慢 nohup 后台化、双通道一致性、apk 镜像切换）。
+    static let toolBash = "Use the bash tool to run shell commands in the session's Alpine Linux guest. "
+        + "The default shell is busybox ash (POSIX sh); bash-only syntax is detected "
+        + "automatically and bash is installed on demand, but prefer plain POSIX "
+        + "constructs so commands run without that extra setup. Each command runs in its "
+        + "own process with no shared state: cd, export, and background jobs do not "
+        + "persist between calls. The working directory is the session workspace "
+        + "(/var/wanwo/workspace). Commands default to a 900000 ms (15 minute) timeout; "
+        + "pass timeout_ms to override. Output is sanitized (terminal control sequences "
+        + "stripped) and truncated to keep the head and tail — structure long output with "
+        + "head, tail, or grep inside the same command. Guest disk writes are slow — "
+        + "large apk installs (e.g. nodejs) can take many minutes; run long installs "
+        + "detached with nohup and poll the log instead of blocking on the tool timeout. "
+        + "The file tools (read/write/edit/glob/grep) and bash operate on the same "
+        + "workspace contents, so files created either way are visible to both. When apk "
+        + "installs are slow or fail, check /etc/apk/repositories and switch to a nearby "
+        + "mirror (e.g. https://mirrors.tuna.tsinghua.edu.cn/alpine/ or "
+        + "https://mirrors.aliyun.com/alpine/) that serves the current Alpine version, "
+        + "then retry. Route file work to the dedicated tools first: use read — not bash cat — to inspect "
+        + "text files, and glob/grep/"
+        + "edit for finding and changing files; use bash for what those tools cannot do: "
+        + "package management (apk), process control, and guest-side builds and scripts."
+
+    /// "tool:web_search"（dsh 无公开文本，纯自拟；对拍 WebSearchTool：
+    /// model-mediated 摘要 + UNVERIFIED——结果是线索不是实据）。
+    static let toolWebSearch = "Use the web_search tool to search the web for current information. Results "
+        + "are synthesized summaries with source URLs and snippets; the search backend "
+        + "is model-mediated, so items may be marked UNVERIFIED. Treat results as leads, "
+        + "not ground truth: before relying on a specific claim, fetch its source URL "
+        + "with web_fetch and confirm the wording there."
+
+    /// "tool:web_fetch"（dsh 无公开文本，纯自拟；对拍 WebFetchTool：文本净化
+    /// 截断回注（max_bytes 默认 200000）、二进制只回元信息）。
+    static let toolWebFetch = "Use the web_fetch tool to retrieve a specific URL over HTTP(S). Text "
+        + "responses (text, json, xml, javascript) are returned sanitized and capped "
+        + "(max_bytes defaults to 200000); binary responses return metadata only — "
+        + "content type and size, never the bytes. Prefer web_fetch for reading a known "
+        + "page or API endpoint, and for verifying a source surfaced by web_search."
+
+    /// "tool:read_image"（WanWo 本地工具，无 dsh 对应物；对拍 FsReadImageTool：
+    /// 模型当前收不到像素数据——文案防止模型谎称"已看过图"）。
+    static let toolReadImage = "Use the read_image tool to inspect an image file (PNG/JPEG/WebP/GIF) in the "
+        + "workspace. It returns the image's metadata — path, format, dimensions, and "
+        + "size — and the image itself is presented to the user in the tool card. The "
+        + "model does not receive the pixel data in the current build: do not claim to "
+        + "have visually inspected the image; rely on the reported metadata and on the "
+        + "user's descriptions."
+
+    /// "tool:str_replace_editor"（WanWo 本地工具，无 dsh 对应物；四命令
+    /// view/create/str_replace/insert；定位为 edit 族补充形态，主力仍是
+    /// read/write/edit/glob/grep，避免绕开 fs-observation-policy 既有语义）。
+    static let toolStrReplaceEditor = "The str_replace_editor tool offers Anthropic-style single-call editing as a "
+        + "complement to the read/write/edit tools: `view` shows a file with line "
+        + "numbers (optionally limited by a 1-based `view_range`), `create` writes a new "
+        + "file from `file_text` and fails if the path already exists, `str_replace` "
+        + "replaces `old_str` with `new_str` (old_str must appear exactly once), and "
+        + "`insert` places `new_str` after the 1-based line `insert_line`. Prefer the "
+        + "edit tool for routine changes and read the file first (the default "
+        + "fs-observation-policy requires it), unless you just created or edited it in "
+        + "this session; reach for str_replace_editor when its single-call command shape "
+        + "fits the change better."
+
     // MARK: - 注册
 
-    /// 把 M2 范围内的 dsh 逐字段落注册进组装器。
-    /// 顺序由 SECTION_ORDERS 决定（file-reference 900 → read 1000 后的
-    /// 1100/1200/1300/1400/1500），与 dsh 段落布局一致。
+    /// 把 system prompt 静态段落注册进组装器。
+    /// 顺序由 SECTION_ORDERS 决定，与 dsh 段落布局一致：
+    /// harness:identity -1000 → file-reference 900 → bash 1000 → read 1100 /
+    /// write 1200 / edit 1300 / glob 1400 / grep 1500 / read_image 1600 /
+    /// str_replace_editor 1700 → web_search 2000 / web_fetch 2100。
     static func registerAll(into assembler: PromptAssembler) {
+        assembler.section(PromptSection(
+            name: "harness:identity",
+            order: SECTION_ORDERS.harnessIdentity,
+            text: harnessIdentity))
         assembler.section(PromptSection(
             name: "context:file-reference",
             order: SECTION_ORDERS.fileReference,
             text: fileReference))
+        assembler.section(PromptSection(
+            name: "tool:bash",
+            order: SECTION_ORDERS.toolBash,
+            text: toolBash))
         assembler.section(PromptSection(
             name: "tool:read",
             order: SECTION_ORDERS.toolRead,
@@ -116,5 +217,21 @@ enum PromptSections {
             name: "tool:grep",
             order: SECTION_ORDERS.toolGrep,
             text: toolGrep))
+        assembler.section(PromptSection(
+            name: "tool:read_image",
+            order: SECTION_ORDERS.toolReadImage,
+            text: toolReadImage))
+        assembler.section(PromptSection(
+            name: "tool:str_replace_editor",
+            order: SECTION_ORDERS.toolStrReplaceEditor,
+            text: toolStrReplaceEditor))
+        assembler.section(PromptSection(
+            name: "tool:web_search",
+            order: SECTION_ORDERS.toolWebSearch,
+            text: toolWebSearch))
+        assembler.section(PromptSection(
+            name: "tool:web_fetch",
+            order: SECTION_ORDERS.toolWebFetch,
+            text: toolWebFetch))
     }
 }

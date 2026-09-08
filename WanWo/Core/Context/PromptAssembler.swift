@@ -25,6 +25,8 @@ enum SECTION_ORDERS {
     static let toolEdit = 1300
     static let toolGlob = 1400
     static let toolGrep = 1500
+    static let toolReadImage = 1600
+    static let toolStrReplaceEditor = 1700
     static let toolWebSearch = 2000
     static let toolWebFetch = 2100
     static let toolsSDK = 5000
