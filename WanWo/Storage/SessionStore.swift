@@ -220,7 +220,8 @@ actor SessionStore {
     /// 损坏的 JSONL（torn tail）不在此处置——沿用既有 interruptedTurnClosers
     /// 修复链（openWriter 全量扫描 + 截断残尾）衔接。
     func verifyIncremental() {
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
+        let keySet = Set(keys)
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: keys, options: []) else { return }
 
@@ -233,9 +234,9 @@ actor SessionStore {
         var didChange = false
         for file in jsonlFiles {
             let stem = file.deletingPathExtension().lastPathComponent
-            let mtimeSeconds = (try? file.resourceValues(forKeys: keys))?
+            let mtimeSeconds = (try? file.resourceValues(forKeys: keySet))?
                 .contentModificationDate?.timeIntervalSince1970
-            let size = (try? file.resourceValues(forKeys: keys))?.fileSize
+            let size = (try? file.resourceValues(forKeys: keySet))?.fileSize
 
             // 基线一致 → 已同步，跳过（增量校验的核心快路径）。
             if let row = rowsByFileStem[stem],
