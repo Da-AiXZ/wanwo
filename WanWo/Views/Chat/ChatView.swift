@@ -134,6 +134,8 @@ struct ChatView: View {
             }
             .onChange(of: viewModel.bubbles) { _ in scrollToBottom(proxy) }
             .onChange(of: viewModel.streamingText) { _ in scrollToBottom(proxy) }
+            // E2：只流思考（文本尚空）时同样跟随滚动。
+            .onChange(of: viewModel.streamingReasoning) { _ in scrollToBottom(proxy) }
         }
     }
 
@@ -252,8 +254,12 @@ struct ChatView: View {
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        // E2：锚点跟随在流的尾部气泡（纯文本流 → streaming-text；纯思考流 →
+        // streaming-reasoning；工具卡落位经 bubbles onChange 走同一入口）。
+        let anchor: String = viewModel.streamingText.isEmpty
+            ? "streaming-reasoning" : "streaming-text"
         withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo("streaming-text", anchor: .bottom)
+            proxy.scrollTo(anchor, anchor: .bottom)
         }
     }
 

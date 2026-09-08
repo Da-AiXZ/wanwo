@@ -14,6 +14,15 @@
 //      / <file> 开头的 user 消息不渲染气泡（注入通道，F038/F039/F040）
 //    · token 压力三档显示（F041 素净版）
 //  UI 投影 = 会话事件流的只读视图；0.2s 节流 flush 沿用 M1 模式。
+//  M3 E2（live/replay 统一投影）：
+//    · 气泡/工具卡类型与事件→气泡折叠下沉到 ConversationProjector（唯一规则；
+//      dsh assembler 语义：live append 与 replay replaceWindow 同一 matchInput，
+//      节点位置=起始事件 seq），live 不再按到达序自行追加工具卡
+//    · toolCallStarted 即重投影（此刻 assistant/message + tool/call 已落盘），
+//      流式缓冲=刚提交消息 → 由事件流渲染并清空（思考/回复按块分立）
+//    · shell 行进 0.2s 节流缓冲（§7.3 shell 卡 0.2s 节流；与文本 chunk 同钟）
+//    · 工具卡 id 锚定 callId、气泡 id 锚定 seq+块下标——重投影身份稳定
+//    · live 流式输出环形窗口封顶（长文本渲染优化）
 //
 
 import Foundation
@@ -29,39 +38,10 @@ final class ChatViewModel: ObservableObject {
         case failed(String)
     }
 
-    /// 工具卡状态（dsh 工具卡 M2 素净版；正式卡片族 = M9）。
-    struct ToolCard: Identifiable, Equatable {
-        /// Identifiable（ForEach/差分用；callId 全局唯一即 id）。
-        var id: String { callId }
-
-        let callId: String
-        var name: String
-        var title: String
-        var detail: String?
-        /// 流式输出（shell 行等）。
-        var liveOutput: String = ""
-        /// 结果文本（收敛后）。
-        var resultText: String?
-        var isError: Bool = false
-        var isRunning: Bool = true
-        /// 交互状态行（M3 T1：审批 waiting/结算态、提问 waiting——dsh 流内
-        /// toolview 行的 WanWo 形态；琥珀语义行）。
-        var statusNote: String?
-    }
-
-    struct Bubble: Identifiable, Equatable {
-        enum Kind: Equatable {
-            case user(String)
-            case assistant(String)
-            case reasoning(String)
-            case tool(ToolCard)
-            case command(kind: String, text: String)
-            case note(String)
-        }
-
-        let id: String
-        var kind: Kind
-    }
+    // MARK: E2：气泡/工具卡类型下沉到 ConversationProjector（live/replay 共用
+    // 折叠的产物类型）；旧嵌套名以 typealias 保稳（ChatView 等引用不变）。
+    typealias ToolCard = ConversationProjector.ToolCard
+    typealias Bubble = ConversationProjector.Bubble
 
     @Published private(set) var bubbles: [Bubble] = []
     @Published private(set) var streamingText = ""
@@ -97,6 +77,9 @@ final class ChatViewModel: ObservableObject {
     // 0.2s 节流（§5.4 OutputSanitizer 节流语义；M1 flush 模式复用）
     private var pendingTextChunks: Deque<String> = []
     private var pendingReasoningChunks: Deque<String> = []
+    /// shell 行节流缓冲（E2：§7.3 shell 卡 0.2s 节流——原逐行直改 bubbles，
+    /// 高频 bash 输出每行一次全表差分；现与文本 chunk 同一 flush 时钟）。
+    private var pendingShellLines: [String: [String]] = [:]
     private var flushTimer: Timer?
 
     init(environment: AppEnvironment, sessionID: String) {
@@ -229,7 +212,11 @@ final class ChatViewModel: ObservableObject {
             },
             onShellLine: { [weak self] callId, line in
                 Task { @MainActor [weak self] in
-                    self?.appendToCard(callId: callId, line: line)
+                    guard let self else { return }
+                    // E2：shell 行进节流缓冲（§7.3 shell 卡 0.2s 节流），
+                    // flushNow 统一落卡。
+                    self.pendingShellLines[callId, default: []].append(line)
+                    self.flushIfIdle()
                 }
             },
             onTokenPressure: { [weak self] info in
@@ -257,14 +244,17 @@ final class ChatViewModel: ObservableObject {
                     if case .running = phase { self.phase = .streaming }
                 }
             },
-            onToolCallStarted: { [weak self] callId, name, arguments, detail in
+            onToolCallStarted: { [weak self] _, _, _, _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    // live 路径同样缓存 callArgs（与 replay 同源；presentResult 复现用）。
-                    self.callArgs[callId] = (name, ToolCallScheduler.parseArgs(arguments))
-                    let card = ToolCard(callId: callId, name: name,
-                                        title: name, detail: detail)
-                    self.bubbles.append(Bubble(id: "tc-live-\(callId)", kind: .tool(card)))
+                    // E2 统一投影：tool/call 已落盘（ToolCallScheduler 契约：
+                    // started 在落盘后发射），卡片位置由事件流折叠给出（dsh
+                    // assembler：append 与 replaceWindow 同一 matchInput，节点
+                    // 位置=起始事件 seq）。此刻本步 assistant/message 亦已落盘
+                    // （AgentLoop runStep：先 append 消息再调度工具）——重投影
+                    // 自事件流渲染思考/回复块并清空流式缓冲（按块分立），live
+                    // 不再按到达序自行 append 卡片（原 live/replay 分叉点）。
+                    self.reproject()
                 }
             },
             onToolCallFinished: { [weak self] callId, output, isError in
@@ -289,6 +279,10 @@ final class ChatViewModel: ObservableObject {
                         card.isError = isError
                         card.isRunning = false
                         self.bubbles[index].kind = .tool(card)
+                    } else {
+                        // 卡不在场兜底（理论不发生：started 已重投影；防御
+                        // 回调乱序/漏发——直接按事件流重建）。
+                        self.reproject()
                     }
                 }
             })
@@ -297,11 +291,30 @@ final class ChatViewModel: ObservableObject {
     private func appendToCard(callId: String, line: String) {
         for index in bubbles.indices {
             if case .tool(var card) = bubbles[index].kind, card.callId == callId {
-                card.liveOutput += (card.liveOutput.isEmpty ? "" : "\n") + line
+                card.liveOutput = Self.appendingLiveLine(card.liveOutput, line)
                 bubbles[index].kind = .tool(card)
                 return
             }
         }
+    }
+
+    // MARK: - 长文本渲染优化（E2）
+
+    /// live 流式输出环形窗口封顶：卡片只保留尾部 N 字符（完整原文在事件流，
+    /// 卡片只为可读性——dsh toolview 为虚拟化列表，WanWo M9 前以窗口兜底，
+    /// 防 bash 高频输出的无界 Text 布局）。
+    static let maxLiveOutputCharacters = 3_000
+    static let liveOutputTruncationMarker = "…（前文已截断）"
+
+    static func appendingLiveLine(_ current: String, _ line: String) -> String {
+        var updated = current.isEmpty ? line : current + "\n" + line
+        if updated.count > maxLiveOutputCharacters {
+            let body = String(updated.suffix(maxLiveOutputCharacters))
+            updated = body.hasPrefix(liveOutputTruncationMarker)
+                ? body
+                : liveOutputTruncationMarker + "\n" + body
+        }
+        return updated
     }
 
     /// 状态条错误文案（F060）：code + message 原文（DeepSeek providerMessage，
@@ -329,99 +342,43 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 投影（UI = 事件流的只读视图）
-
-    /// 注入/标记消息前缀（F038/F039/F040 + 压缩摘要呈现；不渲染气泡）。
-    private static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
-                                         "<compaction-summary>", "<file>"]
-
-    private func isMarkerMessage(_ text: String) -> Bool {
-        Self.markerPrefixes.contains { text.hasPrefix($0) }
-    }
+    // MARK: - 投影（UI = 事件流的只读视图；E2 起折叠在 ConversationProjector）
 
     private func reproject() {
         guard let writer = writer else { return }
-        var result: [Bubble] = []
-        callArgs.removeAll()
-        for event in writer.events {
-            switch event.payload {
-            case .userMessage(let text):
-                guard !isMarkerMessage(text) else { continue }
-                result.append(Bubble(id: "u\(event.seq)", kind: .user(text)))
-
-            case .assistantMessage(_, _, let message, _, _):
-                for block in message.content {
-                    switch block {
-                    case .text(let t):
-                        result.append(Bubble(id: "a\(event.seq)-t\(result.count)",
-                                             kind: .assistant(t)))
-                    case .reasoning(let t):
-                        result.append(Bubble(id: "a\(event.seq)-r\(result.count)",
-                                             kind: .reasoning(t)))
-                    case .toolCall:
-                        break // 工具卡由 tool/call 事件渲染
-                    }
-                }
-
-            case .toolCall(let turn, let step, let callId, let name, let arguments):
-                let args = ToolCallScheduler.parseArgs(arguments)
-                callArgs[callId] = (name, args)
-                let intent = registry?.get(name)?.presentCall(args)
-                    ?? ToolCardIntent(title: name)
-                result.append(Bubble(id: "tc\(event.seq)", kind: .tool(ToolCard(
-                    callId: callId, name: name,
-                    title: intent.title,
-                    detail: intent.detail ?? "turn \(turn) · step \(step)"))))
-
-            case .toolResult(_, _, let callId, let content, let isError,
-                             let errorName, let errorCode, let meta):
-                // 收敛同名 running 卡（replay 投影顺序保证先 call 后 result）。
-                if let index = result.lastIndex(where: {
-                    if case .tool(let card) = $0.kind { return card.callId == callId }
-                    return false
-                }) {
-                    if case .tool(var card) = result[index].kind {
-                        let args = callArgs[callId]?.args ?? .null
-                        let output = ToolOutput(text: content, isError: isError,
-                                                errorName: errorName, errorCode: errorCode,
-                                                meta: meta)
-                        if let intent = registry?.get(card.name)?.presentResult(args, output) {
-                            card.title = intent.title
-                            card.detail = intent.detail
-                        }
-                        card.resultText = content
-                        card.isError = isError
-                        card.isRunning = false
-                        // replay 结算态：审批未通过（NOT_APPROVED）的琥珀行
-                        // （waiting 态是 live 独有状态，重投影后按在途队列重放）。
-                        card.statusNote = (isError && errorCode == "NOT_APPROVED")
-                            ? "未获批准" : nil
-                        result[index].kind = .tool(card)
-                    }
-                }
-
-            case .commandRun(_, let name, _):
-                result.append(Bubble(id: "cr\(event.seq)", kind: .command(kind: "run", text: name)))
-
-            case .commandDone(_, let kind, let text):
-                result.append(Bubble(id: "cd\(event.seq)",
-                                     kind: .command(kind: kind, text: text ?? "")))
-
-            case .compactionSummary(let compactionId, _, _, _, _, _):
-                result.append(Bubble(id: "cs\(event.seq)",
-                                     kind: .note("上下文已压缩（\(compactionId.prefix(8))）")))
-
-            default:
-                break
+        // 瞬态续接（dsh current map 语义）：在途卡片的 liveOutput（含尚未
+        // flush 的 shell 行）与 statusNote 按 callId 带入新投影——只重建
+        // 「dirty」内容，未变节点保状态。
+        var carried = Self.toolCards(in: bubbles)
+        for (callId, lines) in pendingShellLines {
+            guard var card = carried[callId] else { continue }
+            for line in lines {
+                card.liveOutput = Self.appendingLiveLine(card.liveOutput, line)
             }
+            carried[callId] = card
         }
-        bubbles = result
+        pendingShellLines.removeAll()
+        var callArgsSnapshot = callArgs
+        let projected = ConversationProjector.project(
+            events: writer.events, registry: registry,
+            callArgs: &callArgsSnapshot, previousCards: carried)
+        callArgs = callArgsSnapshot
+        bubbles = projected
         streamingText = ""
         streamingReasoning = ""
         // live 琥珀状态行不在事件流中——重投影后按在途队列重放（M3 T1）。
         if let first = pendingApprovals.first, let callId = first.callId {
             setCardStatus(callId: callId, note: "等待审批")
         }
+    }
+
+    /// 现存工具卡快照（callId → 卡），供投影续接瞬态字段。
+    private static func toolCards(in bubbles: [Bubble]) -> [String: ToolCard] {
+        var cards: [String: ToolCard] = [:]
+        for bubble in bubbles {
+            if case .tool(let card) = bubble.kind { cards[card.callId] = card }
+        }
+        return cards
     }
 
     // MARK: - 流式直通车（0.2s 节流 flush）
@@ -457,6 +414,16 @@ final class ChatViewModel: ObservableObject {
         if !pendingReasoningChunks.isEmpty {
             while let chunk = pendingReasoningChunks.popFirst() {
                 streamingReasoning += chunk
+            }
+        }
+        // E2：缓冲的 shell 行统一落卡（0.2s 节流；§7.3）。
+        if !pendingShellLines.isEmpty {
+            let buffered = pendingShellLines
+            pendingShellLines.removeAll()
+            for (callId, lines) in buffered {
+                for line in lines {
+                    appendToCard(callId: callId, line: line)
+                }
             }
         }
     }
