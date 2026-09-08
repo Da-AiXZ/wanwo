@@ -58,7 +58,7 @@ enum ConversationProjector {
 
     static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
                                  "<compaction-summary>", "<file>",
-                                 "<permission-update>"]
+                                 "<permission-update>", "<plan-mode-update>"]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }

@@ -75,6 +75,8 @@ final class ChatViewModel: ObservableObject {
     private var questionService: UserQuestionService?
     /// M3 T2 权限协调器（/permission 命令装配输入）。
     private var permission: PermissionCoordinator?
+    /// M3 T3 计划模式协调器（/plan 命令装配输入）。
+    private var plan: PlanModeController?
 
     // 0.2s 节流（§5.4 OutputSanitizer 节流语义；M1 flush 模式复用）
     private var pendingTextChunks: Deque<String> = []
@@ -113,11 +115,12 @@ final class ChatViewModel: ObservableObject {
                 self.approvalCoordinator = stack.approvalCoordinator
                 self.questionService = stack.questionService
                 self.permission = stack.permission
+                self.plan = stack.plan
                 if let loop = stack.loop {
                     self.registry = loop.deps.registry
                     self.slashCommands = SlashCommandRegistry.makeDefault(
                         loop: loop, environment: self.environment,
-                        permission: self.permission)
+                        permission: self.permission, plan: self.plan)
                 } else {
                     // ERR-015/016：装配失败按「未配置模型」降级（原 agentLoop! 强解闪退）；
                     // 横幅带具体失败原因（无端点 / Key 不可读等），不再只有泛化提示。

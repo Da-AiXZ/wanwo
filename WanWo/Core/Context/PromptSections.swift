@@ -50,8 +50,11 @@
 //    7. WanWo 本地工具 read_image / str_replace_editor —— 已解决：自拟文案
 //       于本批注册（新槽位 1600/1700）。
 //    8. plan:policy / team:policy / ptc-only / tools-sdk /
-//       deliverable-file-references / structured-output——dsh 子系统 sections，
-//       对应子系统不在 M0-M2 范围（plan/team/PTC/SDK/结构化输出均未排期）。
+//       deliverable-file-references / structured-output——dsh 子系统 sections。
+//       M3 T3：plan:policy 已激活——PlanModeController 装配期注册（order 500 =
+//       SECTION_ORDERS.planPolicy；text="{{plan_policy}}" 变量门控，active 时
+//       变量= cordis.patch.yml:311-321 PLAN_POLICY 原文、inactive 时=""，空段落
+//       被 assemble 丢弃）；team/PTC/SDK/结构化输出仍不在排期范围。
 //    9. CONTEXT_ORDERS 动态上下文位：sandbox-policy(110) / approval-policy(115) /
 //       subagent-delegation(120)——M2 为 AutoApprovalSeam 占位、无沙箱与
 //       子代理，均无内容可注入（快照对应位为空）。M3 T2：approval-policy(115)

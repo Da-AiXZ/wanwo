@@ -105,6 +105,13 @@ final class UserQuestionService: @unchecked Sendable {
         self.presenter = presenter
     }
 
+    /// 是否存在审阅通道（T3 exit_plan_mode 前置检查用——dsh execute 在 ask 之前
+    /// 判 ctx.get('userQuestions') 是否可用并给出专属文案；ask 自身的 NO_PROVIDER
+    /// 文案面向 ask_user_question 工具，通道缺失时两者都 fail closed）。
+    var hasAnswerer: Bool {
+        presenter != nil
+    }
+
     // MARK: 询问（工具侧阻塞入口；dsh index.ts:86-151 ask() 全时序）
 
     /// 询问用户并等待回答。

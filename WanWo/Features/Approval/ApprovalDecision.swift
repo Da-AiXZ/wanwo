@@ -62,9 +62,10 @@ enum ToolEffectTable {
                                         "web_search", "web_fetch"]
     /// 工作区写入类（fs 写侧三件；均在 /var/wanwo/workspace 工作区内）。
     static let workspaceWrite: Set<String> = ["write", "edit", "str_replace_editor"]
-    /// 人机交互类（ask_user_question 自身；语义出处 dsh tool-ask-user——
-    /// 工具在暂停等人类回答，若再触发审批会互相等待死锁）。
-    static let interaction: Set<String> = ["ask_user_question"]
+    /// 人机交互类（ask_user_question 自身 + T3 exit_plan_mode——后者暂停等
+    /// 人类审阅计划；语义出处 dsh plan-mode——工具在暂停等人类回答，若再触发
+    /// 审批会互相等待死锁）。
+    static let interaction: Set<String> = ["ask_user_question", "exit_plan_mode"]
     /// 任意效果类：bash（guest 内任意代码执行）。
     static let arbitrary: Set<String> = ["bash"]
 

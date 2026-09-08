@@ -106,6 +106,18 @@ final class AppEnvironment: ObservableObject {
                 pairing: .none))
         }
 
+        // M3 T3 报批登记：plan/mode 扩展事件 schema（E1 通道——T3 批次报批项，
+        // dsh plan-mode index.ts:39-48 词汇原件：{active:boolean} log-only 整值
+        // 替换、last wins；projection=logOnly，pairing=none）。
+        if !ExtensionEventRegistry.shared.isRegistered(
+            PlanModeController.modeEventKind) {
+            ExtensionEventRegistry.shared.register(ExtensionEventSchema(
+                kind: PlanModeController.modeEventKind,
+                requiredFields: [ExtensionFieldSchema("active", .bool)],
+                projection: .logOnly,
+                pairing: .none))
+        }
+
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
         // 后台增量校验兜底外部变更：mtime/size 基线比对，零变化静默完成；
@@ -197,12 +209,13 @@ final class AppEnvironment: ObservableObject {
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
-                  permission: PermissionCoordinator?) {
+                  permission: PermissionCoordinator?,
+                  plan: PlanModeController?) {
         do {
             _ = try await makeAgentAdapter()
         } catch {
             let reason = (error as? LLMError)?.message ?? String(describing: error)
-            return (nil, reason, nil, nil, nil)
+            return (nil, reason, nil, nil, nil, nil)
         }
 
         // ERR-022：聊天执行链首次使用前幂等确保内核已 boot（App 启动已后台
@@ -211,7 +224,7 @@ final class AppEnvironment: ObservableObject {
             try await KernelBootCoordinator.ensureKernelBooted()
         } catch {
             return (nil, "内核启动失败：\((error as NSError).localizedDescription)",
-                    nil, nil, nil)
+                    nil, nil, nil, nil)
         }
 
         let registry = ToolRegistry()
@@ -258,6 +271,11 @@ final class AppEnvironment: ObservableObject {
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
         PromptSections.registerAll(into: assembler)
+        // M3 T3 计划模式装配：plan/mode 折叠 + plan:policy 段落（order 500，
+        // {{plan_policy}} 变量门控）+ /plan + 常驻 exit_plan_mode。
+        let planMode = PlanModeController(writer: writer, assembler: assembler)
+        registry.register(ExitPlanModeTool(controller: planMode,
+                                           service: questionService))
         let injector = ContextInjector()
         // M3 T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——快照
         // 通道注入（ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重
@@ -282,6 +300,7 @@ final class AppEnvironment: ObservableObject {
                 return try await self.makeAgentAdapter()
             },
             callbacks: callbacks)
-        return (AgentLoop(deps: deps), nil, coordinator, questionService, permission)
+        return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
+                planMode)
     }
 }
