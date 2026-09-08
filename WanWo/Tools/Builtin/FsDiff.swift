@@ -169,7 +169,7 @@ enum FsDiff {
 
     /// meta 载荷 `{diffs: [...]}`（tool/result.meta 落 JSONL，replay 复现变更卡）。
     static func meta(diffs: [FileDiff]) -> JSONValue {
-        .object(["diffs": .array(diffs.map encode)])
+        .object(["diffs": .array(diffs.map { Self.encode($0) })])
     }
 
     private static func encode(_ diff: FileDiff) -> JSONValue {
@@ -187,7 +187,7 @@ enum FsDiff {
               !items.isEmpty else { return nil }
         var diffs: [FileDiff] = []
         for item in items {
-            guard case .object(let d)? = item,
+            guard case .object(let d) = item,
                   case .string(let path)? = d["path"],
                   case .string(let newText)? = d["newText"] else { return nil }
             let oldText: String?
