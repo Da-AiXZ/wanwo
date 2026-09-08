@@ -134,6 +134,18 @@ final class SessionWriter: @unchecked Sendable {
         return try body()
     }
 
+    /// 当前日志文件的属性基线（mtime 秒 / 字节数）——投影 touch 时同步刷新，
+    /// 保证下次启动的增量校验（SessionStore.verifyIncremental）能按基线判定
+    /// 「该文件已同步」，避免每个启动周期重复重扫活跃会话。
+    private var fileBaseline: (mtimeSeconds: Double?, size: Int?) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: log.fileURL.path) else {
+            return (nil, nil)
+        }
+        let mtimeSeconds = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+        let size = (attrs[.size] as? NSNumber)?.intValue
+        return (mtimeSeconds, size)
+    }
+
     // MARK: - 追加（gate 串行；dsh Session.append 校验管线）
 
     /// 校验并 durable 追加一条事件。返回即已 fsync（model-visible=logged 的实现根基）。
@@ -193,7 +205,10 @@ final class SessionWriter: @unchecked Sendable {
         }
         withState { eventsStorage.append(event) }
         // GRDB 投影同步（一致性：索引与事实源同步推进；失败仅记日志，不中断对话）。
-        database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1)
+        // 同步刷新文件基线（mtime/size）——持久索引「写路径维护」的组成段。
+        let baseline = fileBaseline
+        database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1,
+                       fileMtimeSeconds: baseline.mtimeSeconds, fileSize: baseline.size)
         return event
     }
 
@@ -205,7 +220,9 @@ final class SessionWriter: @unchecked Sendable {
             }
             try await log.append(event)
             withState { eventsStorage.append(event) }
-            database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1)
+            let baseline = fileBaseline
+            database.touch(id: id, updatedAt: Date(), eventCount: event.seq + 1,
+                           fileMtimeSeconds: baseline.mtimeSeconds, fileSize: baseline.size)
         }
     }
 

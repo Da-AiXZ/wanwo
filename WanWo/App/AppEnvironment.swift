@@ -58,9 +58,13 @@ final class AppEnvironment: ObservableObject {
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
 
-        // 启动对账：以 JSONL 事实源重建索引（投影与 JSONL 一致性，§十一 M1.2）。
+        // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
+        // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
+        // 后台增量校验兜底外部变更：mtime/size 基线比对，零变化静默完成；
+        // 变化/新增文件只重扫该文件（轻量探针，header + 尾部事件）；索引空而
+        // JSONL 存在（新装/删重装）→ 快速重建。完成后 bump sessionsRevision。
         Task { [weak self] in
-            await self?.sessionStore.reconcileIndex()
+            await self?.sessionStore.verifyIncremental()
             await MainActor.run { self?.sessionsRevision += 1 }
         }
 

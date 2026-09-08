@@ -125,6 +125,94 @@ enum SessionLogScanner {
         return try parseHeaderLine(data.subdata(in: data.startIndex..<headerEnd))
     }
 
+    // MARK: - 轻量索引探针（持久索引增量校验 / 兜底快速重建专用）
+
+    /// 一次轻量探测的结果（header + 行计数 + 尾部事件摘要）。
+    struct SessionIndexProbe {
+        var header: SessionHeader
+        /// 已提交事件行数（按换行字节计数；torn tail 无换行不计入）。
+        /// 注：若日志中部存在不可解码行（openWriter 全量扫描前无法发现），
+        /// 本计数为物理行口径，可能略高于可解码事件数——投影用途可接受，
+        /// 打开会话时由既有全量扫描口径纠正。
+        var eventCount: Int
+        /// 尾部窗口内最后一条已提交事件的时间；无事件（头-only 日志）为 nil。
+        var lastTimeMs: Int64?
+        /// 尾部窗口内最新的 session/title 标题；窗口内没有为 nil（调用方应
+        /// 保留索引既有标题，见 SessionStore.verifyIncremental）。
+        var title: String?
+    }
+
+    /// 轻量探测一个 JSONL 会话文件（持久索引路径专用；**禁止全文件读入内存 +
+    /// 全事件解析**）：
+    ///   1. 只读首行 → header（64KB 上限防御异常文件）；
+    ///   2. 256KB 分块正向扫，仅统计换行字节 → eventCount（零事件解码）；
+    ///   3. FileHandle seek 末尾读至多 64KB 窗口，只解码窗口内完整行：
+    ///      取最后一条已提交事件的 timeMs + 窗口内最新 session/title；
+    ///      无换行结尾的残帧 = torn tail，忽略（与 scan 语义一致）。
+    /// 内存上界 O(256KB)，事件解码上界 O(64KB 窗口)。
+    static func probeLightweight(fileURL: URL) throws -> SessionIndexProbe {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        // 1) header：只读首行。
+        guard let firstChunk = handle.read(upToCount: 64 * 1024),
+              !firstChunk.isEmpty else {
+            throw SessionLogError.emptyOrHeaderless
+        }
+        guard let headerEnd = firstChunk.firstIndex(of: 0x0A) else {
+            throw SessionLogError.emptyOrHeaderless
+        }
+        let header = try parseHeaderLine(
+            firstChunk.subdata(in: firstChunk.startIndex..<headerEnd))
+
+        // 2) 行计数：从首行末尾起分块扫，仅数换行字节（不做任何事件解码）。
+        var eventCount = 0
+        try handle.seek(toOffset: UInt64(headerEnd + 1))
+        while true {
+            let chunk: Data
+            do {
+                guard let read = try handle.read(upToCount: 256 * 1024),
+                      !read.isEmpty else { break }
+                chunk = read
+            } catch {
+                break // I/O 失败：行计数停留在已读部分（投影口径可接受）。
+            }
+            for byte in chunk where byte == 0x0A {
+                eventCount += 1
+            }
+        }
+
+        // 3) 尾部窗口：seek 末尾读至多 64KB，只解码完整行。
+        var lastTimeMs: Int64?
+        var title: String?
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        let window = min(Int(fileSize), 64 * 1024)
+        if window > 0 {
+            try handle.seek(toOffset: UInt64(fileSize - UInt64(window)))
+            let tail = (try? handle.read(upToCount: window)) ?? Data()
+            var lines: [Data] = []
+            var cursor = tail.startIndex
+            while let nl = tail[cursor...].firstIndex(of: 0x0A) {
+                lines.append(tail.subdata(in: cursor..<nl))
+                cursor = tail.index(after: nl)
+            }
+            // 末尾无换行的残帧不会进入 lines（torn tail 忽略）。
+            let decoder = JSONDecoder()
+            for line in lines.reversed() {
+                guard let event = try? decoder.decode(SessionEvent.self, from: line) else {
+                    continue
+                }
+                if lastTimeMs == nil { lastTimeMs = event.timeMs }
+                if case .sessionTitle(let t, _) = event.payload {
+                    title = t
+                    break
+                }
+            }
+        }
+        return SessionIndexProbe(header: header, eventCount: eventCount,
+                                 lastTimeMs: lastTimeMs, title: title)
+    }
+
     private static func parseHeaderLine(_ lineData: Data) throws -> SessionHeader {
         guard !lineData.isEmpty else { throw SessionLogError.emptyOrHeaderless }
         let line: HeaderLine
