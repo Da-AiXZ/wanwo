@@ -220,7 +220,7 @@ actor SessionStore {
     /// 损坏的 JSONL（torn tail）不在此处置——沿用既有 interruptedTurnClosers
     /// 修复链（openWriter 全量扫描 + 截断残尾）衔接。
     func verifyIncremental() {
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: keys, options: []) else { return }
 
