@@ -155,7 +155,7 @@ enum SessionLogScanner {
         defer { try? handle.close() }
 
         // 1) header：只读首行。
-        guard let firstChunk = handle.read(upToCount: 64 * 1024),
+        guard let firstChunk = try handle.read(upToCount: 64 * 1024),
               !firstChunk.isEmpty else {
             throw SessionLogError.emptyOrHeaderless
         }
