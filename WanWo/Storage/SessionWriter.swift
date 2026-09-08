@@ -185,10 +185,20 @@ final class SessionWriter: @unchecked Sendable {
         // 值语义快照：validate 通过即推进校验器状态，log 落盘失败时据此回滚。
         var preValidateState: SessionInvariant?
         let event = try withState { () -> SessionEvent in
-            let event = SessionEvent(seq: eventsStorage.count,
+            // E1 写侧门（编码端 fail closed）：本进程永不落 schema 违例的
+            // extension 事件——解码端同规则拒绝，读写两侧闭环（v2.4 修订①）。
+            if case .extensionEvent(let kind, let extPayload) = payload,
+               let reason = ExtensionEventRegistry.shared.validationReason(
+                   kind: kind, payload: extPayload) {
+                throw ExtensionEventRegistry.SchemaViolation(kind: kind, reason: reason)
+            }
+            var event = SessionEvent(seq: eventsStorage.count,
                                      timeMs: Int64(Date().timeIntervalSince1970 * 1000),
                                      payload: payload,
                                      ignorable: ignorable)
+            // E1：extension 事件 wire 恒带 ignorable（v2.4 修订①「旧版本读新
+            // 日志不崩」的编码端承载——旧构建遇到未知类型按 ignorable 透传）。
+            if case .extensionEvent = payload { event.ignorable = true }
             preValidateState = invariant
             try invariant.validate(event)
             return event

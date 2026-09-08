@@ -451,9 +451,18 @@ private enum EventStreamRowBuilder {
             return ("\(tool) · \(reason ?? "-")", false)
         case .approvalDecided(_, let verdict):
             return (verdict, false)
+        case .extensionEvent(let kind, let payload):
+            // E1：扩展事件透传记录（kind + 载荷单行摘要；控制灰分类复用）。
+            return ("\(kind) · \(prefix(extensionPayloadText(payload), 80))", false)
         case .ignored(let kind):
             return ("外来事件透传 · \(kind)", false)
         }
+    }
+
+    /// extension payload 紧凑 JSON 文本（编码失败按 "{}" 兜底——诊断页不抛）。
+    private static func extensionPayloadText(_ payload: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(payload) else { return "{}" }
+        return String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
     }
 
     private static func turnReasonText(_ reason: TurnEndReason) -> String {

@@ -142,6 +142,15 @@ struct SessionEvent: Equatable, Sendable {
         case approvalDecided(requestId: String, verdict: String)
         /// 外来未来事件（带 ignorable 标记透传；本进程永不主动写入）。
         case ignored(kind: String)
+        // MARK: E1 扩展通道（10-design v2.4 修订①；此后专用 case 集合永久冻结，
+        // 新事件种类一律走本通道——报批登记后经 ExtensionEventRegistry 注册实现）
+        /// 模块内注册表扩展事件（dsh merge-extensible 的 Swift 移植）：
+        ///   · wire type "extension/\(kind)"，wire 恒带 ignorable（前向兼容：
+        ///     旧构建读新日志透传不崩，defaultIgnorable 承载）；
+        ///   · 已注册 kind：解码按注册 schema 逐字段校验，缺字段/类型错/值非法
+        ///     → fail closed 拒该条；写侧同规则拒绝（SessionWriter 门）；
+        ///   · 未注册 kind：解码透传 + 消费侧跳过 + 扫描计数（SessionLogScanner）。
+        case extensionEvent(kind: String, payload: JSONValue)
     }
 
     var seq: Int
@@ -181,11 +190,14 @@ struct SessionEvent: Equatable, Sendable {
         case .commandDone: return "command/done"
         case .approvalAsked: return "approval/asked"
         case .approvalDecided: return "approval/decided"
+        case .extensionEvent(let kind, _): return "extension/\(kind)"
         case .ignored(let kind): return kind
         }
     }
 
     /// 本进程已知的事件类型集合（dsh known-event-types 语义：known 之外必须 ignorable）。
+    /// E1：extension 通道的 kind 是动态集合（ExtensionEventRegistry 注册表驱动），
+    /// wire 以 "extension/" 前缀恒定可辨且 defaultIgnorable 恒 true，不入本静态集合。
     static let knownTypes: Set<String> = [
         "turn/start", "turn/end", "step/start", "step/end",
         "user/message", "assistant/chunk", "assistant/message",
@@ -200,13 +212,16 @@ struct SessionEvent: Equatable, Sendable {
     /// 默认 ignorable 值（信息性记录可安全跳过；核心结构事件缺省 required）。
     /// dsh 口径：command/*、approval/* 为呈现/审计记录（不影响重建）→ ignorable；
     /// tool/*、compaction/* 参与重建 → required。
+    /// E1：extension 通道恒 ignorable——v2.4 修订①「旧版本读新日志不崩」的
+    /// wire 承载（旧构建遇到未知 "extension/\(kind)" 类型按 ignorable 透传）。
     static func defaultIgnorable(for wireType: String) -> Bool {
         switch wireType {
         case "session/title", "system",
              "command/run", "command/done",
              "approval/asked", "approval/decided":
             return true
-        default: return false
+        default:
+            return wireType.hasPrefix("extension/")
         }
     }
 }
@@ -304,6 +319,11 @@ extension SessionEvent: Codable {
     private struct ApprovalDecidedData: Codable {
         var requestId: String; var verdict: String
     }
+    // MARK: E1 扩展通道载荷（data = {kind, payload}；wire type = "extension/\(kind)"）
+    private struct ExtensionEventData: Codable {
+        var kind: String
+        var payload: JSONValue
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Keys.self)
@@ -397,14 +417,36 @@ extension SessionEvent: Codable {
             let d = try decodePayload(ApprovalDecidedData.self)
             payload = .approvalDecided(requestId: d.requestId, verdict: d.verdict)
         default:
-            // 未识别类型：ignorable → 透传；否则拒绝重建（dsh 语义：静默跳过
-            // 必需事件可能把会话读错，宁可拒绝）。
-            guard ignorable else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .type, in: container,
-                    debugDescription: "unknown required session event type \"\(type)\"; refusing to reconstruct session")
+            // E1 扩展通道：wire type "extension/\(kind)"（kind 归注册表管）。
+            if type.hasPrefix("extension/") {
+                let kindFromType = String(type.dropFirst("extension/".count))
+                let d = try decodePayload(ExtensionEventData.self)
+                // wire/data kind 一致性（fail closed：拼错的行不可静默读入）。
+                guard !d.kind.isEmpty, d.kind == kindFromType else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .type, in: container,
+                        debugDescription: "extension event kind mismatch: type \"\(type)\" vs data.kind \"\(d.kind)\"")
+                }
+                // 已注册 kind：schema 逐字段校验，缺字段/类型错/值非法
+                // → fail closed 拒该条（v2.4 修订①）。未注册 kind：透传
+                // （消费侧跳过 + SessionLogScanner 计数）。
+                if let reason = ExtensionEventRegistry.shared.validationReason(
+                    kind: d.kind, payload: d.payload) {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .type, in: container,
+                        debugDescription: "extension event \"\(d.kind)\" failed schema validation: \(reason)")
+                }
+                payload = .extensionEvent(kind: d.kind, payload: d.payload)
+            } else {
+                // 未识别类型：ignorable → 透传；否则拒绝重建（dsh 语义：静默跳过
+                // 必需事件可能把会话读错，宁可拒绝）。
+                guard ignorable else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .type, in: container,
+                        debugDescription: "unknown required session event type \"\(type)\"; refusing to reconstruct session")
+                }
+                payload = .ignored(kind: type)
             }
-            payload = .ignored(kind: type)
         }
     }
 
@@ -501,6 +543,9 @@ extension SessionEvent: Codable {
                 forKey: .data)
         case .approvalDecided(let requestId, let verdict):
             try container.encode(ApprovalDecidedData(requestId: requestId, verdict: verdict),
+                                 forKey: .data)
+        case .extensionEvent(let kind, let payload):
+            try container.encode(ExtensionEventData(kind: kind, payload: payload),
                                  forKey: .data)
         case .ignored:
             // 外来事件不回写；防御性编码为仅类型标记。

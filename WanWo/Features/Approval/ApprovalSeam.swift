@@ -46,8 +46,19 @@ enum ApprovalOutcome: String, Equatable, Sendable, Codable {
 
     /// dsh index.ts:279 语义：rogue（非词汇）返回值归一为 fail-closed 的
     /// `unavailable`，绝不把未知值泄漏进调用方的闭集 switch。
+    /// E1 追加（v2.4 备忘答复，已批）：M2 台账兼容——旧日志 approval/decided
+    /// 的 verdict 为 "allow"/"deny" 双值，重放映射 allow→allowed-once（M2 语义
+    /// = 授予一次）、deny→rejected（M2 语义 = 用户主动拒绝）；其余非词汇值
+    /// 仍归一 unavailable（dsh rogue 语义不变）。
     static func normalizing(_ raw: String) -> ApprovalOutcome {
-        all.first { $0.rawValue == raw } ?? .unavailable
+        if let exact = all.first(where: { $0.rawValue == raw }) {
+            return exact
+        }
+        switch raw {
+        case "allow": return .allowedOnce
+        case "deny": return .rejected
+        default: return .unavailable
+        }
     }
 }
 

@@ -40,6 +40,11 @@ struct SessionLogScan {
     var committedBytes: Int
     /// 非致命损坏描述（torn tail；中部损坏会直接抛 SessionLogError.corrupt）。
     var issue: String?
+    /// E1：未注册 kind 的 extension 事件计数（透传保留在流内——保 seq 连续性，
+    /// 消费侧跳过；此处仅观测「旧版本读新日志」口径）。
+    var skippedExtensionCount: Int = 0
+    /// E1：被计数的未注册 kind 集合（诊断页展示）。
+    var skippedExtensionKinds: Set<String> = []
 }
 
 enum SessionLogScanner {
@@ -64,6 +69,8 @@ enum SessionLogScanner {
         var committedBytes = headerEnd + 1
         var issue: String?
         var lineNumber = 0
+        var skippedExtensionCount = 0
+        var skippedExtensionKinds = Set<String>()
 
         var cursor = data.index(after: headerEnd)
         while cursor < data.endIndex {
@@ -109,12 +116,23 @@ enum SessionLogScanner {
                 continue
             }
 
+            // E1：未注册 kind 的 extension 事件计数（事件仍保留在流内——纪律：
+            // 中部事件不可局部丢弃，否则其后全部事件因 seq gap 被连坐丢弃；
+            // 消费侧按未注册一律跳过，此处仅观测计数）。
+            if case .extensionEvent(let kind, _) = event.payload,
+               !ExtensionEventRegistry.shared.isRegistered(kind) {
+                skippedExtensionCount += 1
+                skippedExtensionKinds.insert(kind)
+            }
+
             events.append(event)
             committedBytes = lineEndOffset
         }
 
         return SessionLogScan(header: header, events: events,
-                              committedBytes: committedBytes, issue: issue)
+                              committedBytes: committedBytes, issue: issue,
+                              skippedExtensionCount: skippedExtensionCount,
+                              skippedExtensionKinds: skippedExtensionKinds)
     }
 
     /// 仅解析头行（轻量列表/对账用）。

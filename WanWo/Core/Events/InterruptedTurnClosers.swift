@@ -45,6 +45,10 @@ enum InterruptedTurnClosers {
                         }
                     }
                 }
+            case .extensionEvent:
+                // E1：extension 事件对 turn/step 结构中性（默认非配对），
+                // 不影响回合开放状态，也无需合成收尾；未注册 kind 同此口径。
+                break
             default:
                 break
             }

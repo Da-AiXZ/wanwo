@@ -64,6 +64,17 @@ struct DeriveFold {
                 messages.append(ChatMessage(
                     role: .user,
                     content: "<compaction-summary>\n\(summary)\n</compaction-summary>"))
+            case .extensionEvent(let kind, let payload):
+                // E1：按注册投影规则分流（默认 logOnly 不进派生历史）。
+                if ExtensionEventRegistry.shared.projectionRule(for: kind) == .modelVisible {
+                    // model-visible：标准信封 user 消息进派生（model-visible=logged
+                    // 的消费侧；首个 model-visible 业务事件注册时可按需细化表示，
+                    // 机制位一次到位——v2.4 修订①「按投影规则决定是否进派生」）。
+                    messages.append(ChatMessage(
+                        role: .user,
+                        content: "<extension-event kind=\"\(kind)\">\n"
+                            + Self.extensionPayloadText(payload) + "\n</extension-event>"))
+                }
             default:
                 break
             }
@@ -116,5 +127,11 @@ struct DeriveFold {
             }
         }
         self.messages = paired
+    }
+
+    /// extension payload 紧凑 JSON 文本（编码失败按 "{}" 兜底——投影不抛）。
+    private static func extensionPayloadText(_ payload: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(payload) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
     }
 }

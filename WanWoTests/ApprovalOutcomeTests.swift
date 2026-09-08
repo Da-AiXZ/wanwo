@@ -26,9 +26,17 @@ final class ApprovalOutcomeTests: XCTestCase {
         XCTAssertEqual(ApprovalOutcome.normalizing("allowed-once"), .allowedOnce)
         XCTAssertEqual(ApprovalOutcome.normalizing("nonsense"), .unavailable)
         XCTAssertEqual(ApprovalOutcome.normalizing(""), .unavailable)
-        XCTAssertEqual(ApprovalOutcome.normalizing("allow"), .unavailable)      // M2 旧值
-        XCTAssertEqual(ApprovalOutcome.normalizing("deny"), .unavailable)       // M2 旧值
         XCTAssertEqual(ApprovalOutcome.normalizing("ALLOWED-ONCE"), .unavailable) // 大小写敏感
+    }
+
+    /// E1 legacy 台账兼容（v2.4 备忘答复，已批）：M2 期 verdict 双值
+    /// "allow"/"deny" 重放映射——allow→allowed-once、deny→rejected。
+    func testLegacyM2VerdictMapping() {
+        XCTAssertEqual(ApprovalOutcome.normalizing("allow"), .allowedOnce)
+        XCTAssertEqual(ApprovalOutcome.normalizing("deny"), .rejected)
+        // 与 M2 旧值仅差大小写的串不享受映射（严格字面匹配）。
+        XCTAssertEqual(ApprovalOutcome.normalizing("ALLOW"), .unavailable)
+        XCTAssertEqual(ApprovalOutcome.normalizing("Deny"), .unavailable)
     }
 
     /// Codable 往返（审计事件 verdict 字段值 round-trip）。

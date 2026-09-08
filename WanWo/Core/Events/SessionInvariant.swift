@@ -23,6 +23,13 @@ struct SessionInvariant {
     private(set) var nextTurn: Int = 1
     private(set) var nextStep: Int = 1
     private var seenCallIds: Set<String> = []
+    /// E1：extension 应答配对的开键集（dsh approval requestId 配对语义的
+    /// 通用化；键生命周期 = 会话级，对齐 seenCallIds）。键 = (开 kind, 关 kind)。
+    private struct ExtensionPair: Hashable {
+        let openKind: String
+        let closeKind: String
+    }
+    private var openExtensionKeys: [ExtensionPair: Set<String>] = [:]
 
     enum InvariantViolation: Error, Equatable {
         case seqNotIncreasing(event: Int, last: Int)
@@ -35,6 +42,8 @@ struct SessionInvariant {
         case stepScopedEventOutsideStep(kind: String, turn: Int?, step: Int?)
         case requestHeaderOutsideTurn
         case toolResultWithoutCall(event: Int, callId: String)
+        /// E1：extension 应答配对违例（close 无 open / 键缺失或非字符串）。
+        case extensionPairViolation(event: Int, kind: String, reason: String)
     }
 
     /// 校验一个候选事件（不通过即抛）。通过后由调用方 commit()。
@@ -94,6 +103,11 @@ struct SessionInvariant {
             guard seenCallIds.contains(callId) else {
                 throw InvariantViolation.toolResultWithoutCall(event: event.seq, callId: callId)
             }
+        case .extensionEvent(let kind, let payload):
+            // E1：extension 事件对 turn/step 结构无约束；配对规则按注册表
+            // 分流（默认 .none 无约束；answeredBy 见 validateExtensionPairing）。
+            // 未注册 kind：透传事件（消费侧跳过口径），无约束。
+            try validateExtensionPairing(kind: kind, payload: payload, event: event)
         case .userMessage, .llmRetry, .llmRetryStarted, .sessionTitle, .system, .ignored,
              .compactionStart, .compactionSummary, .compactionEnd, .compactionPrune,
              .commandRun, .commandDone, .approvalAsked, .approvalDecided:
@@ -102,6 +116,45 @@ struct SessionInvariant {
         }
         // commit（dsh applyTransition）
         lastSeq = event.seq
+    }
+
+    /// E1 通道配对校验（注册规则驱动）：
+    ///   · 本 kind 是某 answeredBy 规则的 closeKind → 键必须命中对应开集（消费）；
+    ///   · 本 kind 自身带 answeredBy 规则（开事件）→ 键必须存在且为字符串（登记）。
+    /// 先关后开：同一事件既是某对的关又是另一对的开时，先消费键再登记。
+    private mutating func validateExtensionPairing(kind: String, payload: JSONValue,
+                                                   event: SessionEvent) throws {
+        let registry = ExtensionEventRegistry.shared
+        for openSchema in registry.allSchemas() {
+            guard case .answeredBy(let closeKind, let keyField) = openSchema.pairing,
+                  closeKind == kind else { continue }
+            guard case .object(let fields) = payload,
+                  let keyValue = fields[keyField],
+                  case .string(let key) = keyValue else {
+                throw InvariantViolation.extensionPairViolation(
+                    event: event.seq, kind: kind,
+                    reason: "pairing close for \"\(openSchema.kind)\" lacks string key \"\(keyField)\"")
+            }
+            let pair = ExtensionPair(openKind: openSchema.kind, closeKind: closeKind)
+            guard openExtensionKeys[pair]?.contains(key) == true else {
+                throw InvariantViolation.extensionPairViolation(
+                    event: event.seq, kind: kind,
+                    reason: "pairing close key \"\(key)\" has no open \"\(openSchema.kind)\"")
+            }
+            openExtensionKeys[pair]?.remove(key)
+        }
+        if let schema = registry.schema(for: kind),
+           case .answeredBy(let closeKind, let keyField) = schema.pairing {
+            guard case .object(let fields) = payload,
+                  let keyValue = fields[keyField],
+                  case .string(let key) = keyValue else {
+                throw InvariantViolation.extensionPairViolation(
+                    event: event.seq, kind: kind,
+                    reason: "pairing open lacks string key \"\(keyField)\"")
+            }
+            openExtensionKeys[ExtensionPair(openKind: kind, closeKind: closeKind),
+                              default: []].insert(key)
+        }
     }
 
     private func requireOpenStep(_ kind: String, turn: Int, step: Int) throws {

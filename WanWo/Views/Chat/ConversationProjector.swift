@@ -156,10 +156,28 @@ enum ConversationProjector {
                 result.append(Bubble(id: "cs\(event.seq)",
                                      kind: .note("上下文已压缩（\(compactionId.prefix(8))）")))
 
+            case .extensionEvent(let kind, let payload):
+                // E1：log-only 默认不渲染（未注册 kind 同为 log-only——消费侧
+                // 跳过口径，v2.4 修订①）。model-visible 注册项以 note 气泡
+                // 呈现（机制位；首个 model-visible 业务事件可按需升级专属视图）。
+                guard ExtensionEventRegistry.shared.projectionRule(for: kind) == .modelVisible
+                else { break }
+                result.append(Bubble(id: "x\(event.seq)",
+                                     kind: .note("扩展事件 \(kind)："
+                                         + Self.extensionPayloadSummary(payload))))
+
             default:
                 break
             }
         }
         return result
+    }
+
+    /// extension payload 单行摘要（紧凑 JSON，拍平换行、截 80 字符）。
+    private static func extensionPayloadSummary(_ payload: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(payload) else { return "{}" }
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\n", with: " ")
+        return text.count <= 80 ? text : String(text.prefix(80)) + "…"
     }
 }
