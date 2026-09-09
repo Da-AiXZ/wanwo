@@ -25,14 +25,17 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            statusBar
-            Divider()
+            // P2-⑩ 撤顶部旧 UI：原 statusBar（模型名 + 上下文 X/Y + 三档压力
+            // 细条 + 阶段 ProgressView）整段移除——模型名归 composer 模型挡位
+            // （ModelSelect.tsx 命名座位）、占用归 ContextMeter 环（one home
+            // per fact）、发送/停止已随 T2.2 A5 移交主按钮同位状态机。
             content
             Divider()
             // M3 T1：composer 座位（审批/提问接管输入框，dsh composer 接管形态；
             // 高度上限共用 336px，座位高度稳定不跳动——2026-07-30 笔记）。
             composerSeat
-            // 状态条 dock（C8；StatsLine.tsx:1-3——挂 composer 之下不随流滚动）。
+            // 状态条 dock（C8；StatsLine.tsx:1-3——挂 composer 之下不随流滚动；
+            // P2-⑬ 单行呈现=StatsLineView lineLimit(1) 既有语义）。
             if let line = viewModel.statsLine {
                 StatsLineView(line: line)
             }
@@ -44,64 +47,18 @@ struct ChatView: View {
         .onDisappear { viewModel.close() }
         // A4：/permission danger-full-access 前置风险确认（dsh popupSelect
         // confirming gate；与入口①③共文案——当前会话挡 accessZh 变体）。
-        .sheet(isPresented: Binding(
+        // P2-⑫：呈现由 sheet 改居中模态（dsh SettingsRoot/RiskConfirmation
+        // 对话框形态——透明底全屏 + 居中卡片）。
+        .fullScreenCover(isPresented: Binding(
             get: { viewModel.pendingPermissionConfirmation != nil },
             set: { if !$0 { viewModel.cancelPendingPermission() } })) {
-            PermissionConfirmationGate(
-                onConfirm: { viewModel.confirmPendingPermission() },
-                onCancel: { viewModel.cancelPendingPermission() })
-        }
-    }
-
-    // MARK: - 顶部状态条（模型 + token 压力三档 + 阶段）
-
-    private var pressureColor: Color {
-        guard let pressure = viewModel.pressure else { return .clear }
-        if pressure.ratio >= 1 { return .red }
-        if pressure.ratio >= 0.8 { return .orange }
-        return .green
-    }
-
-    private var statusBar: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 8) {
-                Text(viewModel.modelLabel.isEmpty ? "未选择模型" : viewModel.modelLabel)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let pressure = viewModel.pressure {
-                    Text("上下文 \(pressure.usedTokens)/\(pressure.thresholdTokens)")
-                        .font(.caption2)
-                        .foregroundStyle(pressureColor)
-                }
-                switch viewModel.phase {
-                case .loading:
-                    ProgressView().controlSize(.small)
-                case .streaming:
-                    // T2.2 A5：停止动作移交 composer 主按钮（同位状态机，
-                    // InputBar.tsx:313-326）；顶部仅保留进行中指示。
-                    ProgressView().controlSize(.small)
-                case .failed, .idle:
-                    EmptyView()
-                }
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                PermissionConfirmationGate(
+                    onConfirm: { viewModel.confirmPendingPermission() },
+                    onCancel: { viewModel.cancelPendingPermission() })
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            // 压力细条（三档着色）。
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color(.tertiarySystemFill))
-                    if let pressure = viewModel.pressure, pressure.thresholdTokens > 0 {
-                        Capsule().fill(pressureColor)
-                            .frame(width: geo.size.width
-                                   * min(1, CGFloat(pressure.usedTokens)
-                                       / CGFloat(pressure.thresholdTokens)))
-                    }
-                }
-            }
-            .frame(height: 2)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
+            .presentationBackground(.clear)
         }
     }
 
@@ -125,13 +82,10 @@ struct ChatView: View {
                         bubbleView(bubble).id(bubble.id)
                     }
                     if !viewModel.streamingReasoning.isEmpty {
-                        Text(viewModel.streamingReasoning)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(8)
+                        // P2-⑬：流式思考走披露行（dsh ReasoningRow running 态——
+                        // 折叠 + 尾行跟随）。
+                        ReasoningRowView(text: viewModel.streamingReasoning,
+                                         running: true)
                             .id("streaming-reasoning")
                     }
                     if !viewModel.streamingText.isEmpty {
@@ -176,15 +130,11 @@ struct ChatView: View {
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(8)
         case .reasoning(let text):
-            Text("思考：" + text)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(Color(.tertiarySystemBackground))
-                .cornerRadius(8)
+            // P2-⑬：思考块披露行（dsh ReasoningRow 完成态——折叠 + 首行摘要，
+            // 点击展开全文）。
+            ReasoningRowView(text: text, running: false)
         case .tool(let card):
-            toolCardView(card)
+            ToolCardView(card: card)
         case .command(_, let text):
             Text("⌘ " + text)
                 .font(.footnote.monospaced())
@@ -198,79 +148,7 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - 工具卡（§7.3：参数摘要 → 流式输出 → 完成收敛）
-
-    private func toolCardView(_ card: ChatViewModel.ToolCard) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: iconName(for: card.name))
-                    .font(.caption)
-                    .foregroundStyle(card.isRunning ? Color.accentColor
-                                                    : (card.isError ? Color.red : Color.secondary))
-                Text(card.title)
-                    .font(.footnote.monospaced())
-                    .lineLimit(2)
-                Spacer()
-                if card.isRunning {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Image(systemName: card.isError ? "exclamationmark.circle" : "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(card.isError ? Color.red : Color.green)
-                }
-            }
-            if let detail = card.detail, !detail.isEmpty {
-                Text(detail)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            // 交互状态行（M3 T1：审批 waiting/结算态、提问等待——琥珀语义行）。
-            if let status = card.statusNote, !status.isEmpty {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(ApprovalPanelStyle.warnPrimary)
-                        .frame(width: 6, height: 6)
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(ApprovalPanelStyle.warnPrimary)
-                }
-            }
-            if !card.liveOutput.isEmpty {
-                Text(card.liveOutput)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, maxHeight: 180, alignment: .topLeading)
-                    .padding(6)
-                    .background(Color(.tertiarySystemBackground))
-                    .cornerRadius(6)
-            }
-            if let result = card.resultText, !result.isEmpty {
-                Text(result)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(card.isError ? Color.red : Color.secondary)
-                    .lineLimit(12)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(6)
-                    .background(Color(.tertiarySystemBackground))
-                    .cornerRadius(6)
-            }
-        }
-        .padding(8)
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(8)
-    }
-
-    private func iconName(for tool: String) -> String {
-        switch tool {
-        case "bash": return "terminal"
-        case "read", "read_image", "write", "edit", "str_replace_editor":
-            return "doc.text"
-        case "glob", "grep": return "magnifyingglass"
-        case "web_search", "web_fetch": return "globe"
-        default: return "wrench.and.screwdriver"
-        }
-    }
+    // MARK: - 工具卡（P2-⑬：折叠语义移交 ToolCardView；图标随之内聚）
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         // E2：锚点跟随在流的尾部气泡（纯文本流 → streaming-text；纯思考流 →
@@ -362,12 +240,14 @@ struct ChatView: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("指令")
                 // 权限挡位下拉（A3；PermissionSelect.tsx——提交走 /permission
-                // 命令同一写通路径）。
+                // 命令同一写通路径；confirmed = 下拉内确认已过，双弹修复）。
                 if let permission = viewModel.currentPermissionPreset {
                     PermissionSelectView(
                         currentPreset: permission,
                         busy: viewModel.isCommandRunning,
-                        onCommand: { viewModel.runCommandLine($0) })
+                        onCommand: { line, confirmed in
+                            viewModel.runCommandLine(line, confirmed: confirmed)
+                        })
                 }
                 // Plan chip（C10；PlanModeControl.tsx:19-69——plan 生效时渲染，
                 // 点击执行 /plan off）。
@@ -390,10 +270,10 @@ struct ChatView: View {
                     .accessibilityLabel("plan mode 已开启，按下关闭")
                 }
                 Spacer()
-                // 模型挡位（C11；ModelSelect.tsx——两级菜单根级，Effort 后置）。
-                ModelSelectView(store: viewModel.endpointStore) {
-                    viewModel.selectModel($0)
-                }
+                // 模型挡位（C11；ModelSelect.tsx——两级菜单 Model/Effort）。
+                ModelSelectView(store: viewModel.endpointStore,
+                                onSelect: { viewModel.selectModel($0) },
+                                onEffort: { viewModel.selectEffort($0) })
                 // 上下文占用环（C9；ContextMeter.tsx:106-165——无数据不渲染）。
                 if let pressure = viewModel.pressure {
                     ContextMeterView(pressure: pressure)
@@ -421,21 +301,34 @@ struct ChatView: View {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         // 命令菜单（C7；+ 按钮与 "/" 触发共用——dsh onToggleCommandMenu）。
+        // P2-⑪ 点外关闭（dsh MenuView.tsx:59-72 outside click 语义）：菜单
+        // 之下垫全屏捕获层，点外即收；菜单行自身位于捕获层之上不受影响。
         .overlay(alignment: .bottom) {
             if commandMenuOpen {
-                SlashMenuView(
-                    query: commandMenuQuery,
-                    commands: viewModel.slashCommandList,
-                    onPick: { command in
-                        // claim token 写回（dsh "/name " 带尾随空格）；先清 "/"
-                        // 触发标记，防 onChange 又把菜单拉起。
-                        slashTriggeredMenu = false
-                        viewModel.draft = "/\(command.name) "
-                        commandMenuOpen = false
-                    },
-                    onDismiss: { commandMenuOpen = false })
-                    .offset(y: -108)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                ZStack(alignment: .bottom) {
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                commandMenuOpen = false
+                            }
+                            slashTriggeredMenu = false
+                        }
+                    SlashMenuView(
+                        query: commandMenuQuery,
+                        commands: viewModel.slashCommandList,
+                        onPick: { command in
+                            // claim token 写回（dsh "/name " 带尾随空格）；先清 "/"
+                            // 触发标记，防 onChange 又把菜单拉起。
+                            slashTriggeredMenu = false
+                            viewModel.draft = "/\(command.name) "
+                            commandMenuOpen = false
+                        },
+                        onDismiss: { commandMenuOpen = false })
+                        .offset(y: -108)
+                }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .padding(.horizontal, 12)
@@ -464,6 +357,110 @@ extension ChatViewModel {
     var isBusy: Bool { phase == .streaming }
 }
 
+// MARK: - P2-⑬ 工具卡折叠视图
+
+/// 工具卡（dsh toolview 折叠语义 1:1 形态）：行头与交互琥珀行恒显；
+/// detail / 流式输出 / 结果文本仅在展开态呈现。默认态 = 运行中展开、
+/// 结束后收起（dsh：完成即收敛，点击行头可再展开回看）。
+private struct ToolCardView: View {
+    let card: ChatViewModel.ToolCard
+
+    /// 展开态（初值随卡片在途性：running 展开、完成收起；用户手动切换后保留）。
+    @State private var expanded: Bool
+
+    init(card: ChatViewModel.ToolCard) {
+        self.card = card
+        _expanded = State(initialValue: card.isRunning)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 行头（恒显；点击切换折叠——dsh toolview 行头 chevron 语义）。
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: iconName(for: card.name))
+                        .font(.caption)
+                        .foregroundStyle(card.isRunning ? Color.accentColor
+                                                        : (card.isError ? Color.red : Color.secondary))
+                    Text(card.title)
+                        .font(.footnote.monospaced())
+                        .lineLimit(2)
+                    Spacer()
+                    if card.isRunning {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: card.isError ? "exclamationmark.circle" : "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(card.isError ? Color.red : Color.green)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 0 : -90))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // 参数摘要（展开态）。
+            if expanded, let detail = card.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            // 交互状态行（M3 T1：审批 waiting/结算态、提问等待——琥珀语义行；
+            // 交互态恒显，不随折叠消失）。
+            if let status = card.statusNote, !status.isEmpty {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(ApprovalPanelStyle.warnPrimary)
+                        .frame(width: 6, height: 6)
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(ApprovalPanelStyle.warnPrimary)
+                }
+            }
+            // 流式输出（展开态）。
+            if expanded, !card.liveOutput.isEmpty {
+                Text(card.liveOutput)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, maxHeight: 180, alignment: .topLeading)
+                    .padding(6)
+                    .background(Color(.tertiarySystemBackground))
+                    .cornerRadius(6)
+            }
+            // 结果文本（展开态）。
+            if expanded, let result = card.resultText, !result.isEmpty {
+                Text(result)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(card.isError ? Color.red : Color.secondary)
+                    .lineLimit(12)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(6)
+                    .background(Color(.tertiarySystemBackground))
+                    .cornerRadius(6)
+            }
+        }
+        .padding(8)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(8)
+    }
+
+    private func iconName(for tool: String) -> String {
+        switch tool {
+        case "bash": return "terminal"
+        case "read", "read_image", "write", "edit", "str_replace_editor":
+            return "doc.text"
+        case "glob", "grep": return "magnifyingglass"
+        case "web_search", "web_fetch": return "globe"
+        default: return "wrench.and.screwdriver"
+        }
+    }
+}
+
 // MARK: - A4 Full access 前置确认面（/permission danger-full-access 命令门控）
 
 /// /permission danger-full-access 的确认卡片（dsh popupSelect confirming gate；
@@ -485,14 +482,8 @@ struct PermissionConfirmationGate: View {
             acknowledged: $acknowledged,
             onCancel: onCancel,
             onConfirm: onConfirm)
-            .presentationDetentsIfAvailable([.height(320)])
     }
 }
 
-extension View {
-    /// iOS 16.4+ detents 降级包裹（部署基线 16.6 直用；占位以防 API 前向差异）。
-    @ViewBuilder
-    func presentationDetentsIfAvailable(_ detents: Set<PresentationDetent>) -> some View {
-        self.presentationDetents(detents)
-    }
-}
+// （原 presentationDetentsIfAvailable 降级包裹随 P2-⑫ 居中模态化移除——
+// detents 是 sheet 语义，fullScreenCover 下无意义。）

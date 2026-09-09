@@ -67,6 +67,10 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var statsLine: String?
     /// /permission danger-full-access 前置确认（A4；非 nil = 待确认命令行原文）。
     @Published var pendingPermissionConfirmation: String?
+    /// 当前权限预设名（P2-⑪ 即时刷新：由计算属性改存储镜像——命令路径外的
+    /// @Published 变化不触发重算，改镜像于 reproject 统一落位，保证
+    /// composer 权限挡位标签即时跟随；nil = 权限系统未装配）。
+    @Published private(set) var currentPermissionPreset: String?
 
     private let environment: AppEnvironment
     private let sessionID: String
@@ -199,10 +203,13 @@ final class ChatViewModel: ObservableObject {
     /// GUI 通道的命令提交（dsh「both surfaces write through one path」——
     /// composer 权限挡位下拉 / Plan chip 与手输命令同一 command/run → run →
     /// command/done 落盘路径）。phase 纪律与 send() 一致。
-    func runCommandLine(_ line: String) {
+    /// confirmed = 入口自带的确认已通过（P2-⑪ 双弹修复：dsh 确认缝归入口所有
+    /// ——PermissionSelect.tsx:129-133 下拉内 RiskConfirmation 确认后直达提交；
+    /// 手输 /permission danger-full-access 仍走命令门控确认）。
+    func runCommandLine(_ line: String, confirmed: Bool = false) {
         guard SlashCommandRegistry.isCommand(line), canSendFromPhase else { return }
         runningTask = Task { [weak self] in
-            await self?.runSlashCommand(line)
+            await self?.runSlashCommand(line, confirmed: confirmed)
             self?.runningTask = nil
         }
     }
@@ -237,6 +244,15 @@ final class ChatViewModel: ObservableObject {
         modelLabel = "\(endpoint.name) · \(endpoint.model)"
     }
 
+    /// 推理等级提交（P2-⑧：ModelSelectView effort 子菜单回传——写入活动端点
+    /// 的 reasoningEffort（nil = provider default 不透传）；下一请求即生效
+    /// （AgentLoop makeAdapter 按调用时 activeEndpoint 取用）。
+    func selectEffort(_ effort: String?) {
+        guard var endpoint = environment.endpointStore.activeEndpoint() else { return }
+        endpoint.reasoningEffort = effort
+        environment.endpointStore.update(endpoint)
+    }
+
     /// 模型挡位数据源（ModelSelectView @ObservedObject 接线）。
     var endpointStore: EndpointStore { environment.endpointStore }
 
@@ -267,11 +283,6 @@ final class ChatViewModel: ObservableObject {
     /// 命令任务在途（GUI 命令通道 busy；PermissionSelectView 禁用入参）。
     var isCommandRunning: Bool { runningTask != nil }
 
-    /// 当前权限预设名（composer 权限挡位下拉数据源；nil = 权限系统未装配）。
-    var currentPermissionPreset: String? {
-        permission?.knobs.currentPresetName()
-    }
-
     /// 主按钮状态机（dsh InputBar.tsx:313-326 primaryStops：运行中且无草稿 →
     /// 主按钮同位变停止；有草稿 → 发送（Queue 语义随 M7，本构建禁用）。
     /// nonisolated 纯函数（单测不经 MainActor 直呼）。
@@ -281,13 +292,13 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 斜杠命令（command/run → 执行 → command/done）
 
-    /// 门控入口：Full access 命令先行拦截（确认前零副作用——不落 command/run、
-    /// 不执行），其余直入执行器。
-    private func runSlashCommand(_ text: String) async {
+    /// 门控入口：未经入口确认的 Full access 命令先行拦截（确认前零副作用——
+    /// 不落 command/run、不执行），其余直入执行器。
+    private func runSlashCommand(_ text: String, confirmed: Bool = false) async {
         let name = SlashCommandRegistry.commandName(text)
         let rawArgs = text.count > name.count + 1
             ? String(text.dropFirst(name.count + 2)) : nil
-        if Self.isFullAccessCommand(name: name, args: rawArgs) {
+        if !confirmed, Self.isFullAccessCommand(name: name, args: rawArgs) {
             pendingPermissionConfirmation = text
             return
         }
@@ -336,6 +347,18 @@ final class ChatViewModel: ObservableObject {
             },
             onTokenPressure: { [weak self] info in
                 Task { @MainActor [weak self] in self?.pressure = info }
+            },
+            onUserMessageAppended: { [weak self] text in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // P2-⑪ 消息即时上屏：user/message 落盘即入流（乐观气泡），
+                    // 不等首个工具卡/回合尾重投影。标记消息（runtime snapshot
+                    // 等）与投影层同一过滤纪律，不渲染；下一轮 reproject 以
+                    // 事件流折叠产物整体替换（身份/文本同源收敛）。
+                    guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    self.bubbles.append(ChatViewModel.Bubble(
+                        id: "live-user-\(UUID().uuidString)", kind: .user(text)))
+                }
             },
             onTurnEnd: { [weak self] reason in
                 Task { @MainActor [weak self] in
@@ -481,8 +504,9 @@ final class ChatViewModel: ObservableObject {
         bubbles = projected
         streamingText = ""
         streamingReasoning = ""
-        // T2.2 派生状态刷新（plan chip 镜像 + 状态条折叠）。
+        // T2.2 派生状态刷新（plan chip 镜像 + 状态条折叠 + 权限挡位镜像）。
         planActive = plan?.isActive ?? false
+        currentPermissionPreset = permission?.knobs.currentPresetName()
         statsLine = SessionStatsFold.line(for: SessionStatsFold.fold(events: writer.events))
         // live 琥珀状态行不在事件流中——重投影后按在途队列重放（M3 T1）。
         if let first = pendingApprovals.first, let callId = first.callId {

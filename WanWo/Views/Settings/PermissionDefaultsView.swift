@@ -86,8 +86,13 @@ struct PermissionDefaultsView: View {
         .navigationTitle("权限")
         .navigationBarTitleDisplayMode(.inline)
         // Full access 风险确认（PermissionRow.tsx:81-85 特判 + :105-125 面板）。
-        .sheet(isPresented: $confirmingFullAccess, onDismiss: { acknowledged = false }) {
-            confirmSheet
+        // P2-⑫：呈现由 sheet 改居中模态（dsh RiskConfirmation 对话框形态）。
+        .fullScreenCover(isPresented: $confirmingFullAccess, onDismiss: { acknowledged = false }) {
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                confirmSheet
+            }
+            .presentationBackground(.clear)
         }
     }
 

@@ -101,19 +101,42 @@ struct SessionsSidebarView: View {
         .onChange(of: environment.sessionsRevision) { _ in
             Task { await reload() }
         }
-        // M3 T2.2 A6：删除确认对话框（滑动删除不直删）。
-        .confirmationDialog(
-            "删除会话？该操作不可撤销。",
-            isPresented: Binding(get: { pendingDeleteOffsets != nil },
-                                 set: { if !$0 { pendingDeleteOffsets = nil } }),
-            titleVisibility: .visible) {
-            Button("删除会话", role: .destructive) {
-                if let offsets = pendingDeleteOffsets {
-                    delete(at: offsets)
+        // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
+        // P2-⑫：呈现由 confirmationDialog 改居中模态（dsh SettingsRoot/
+        // WorkspaceBrowser 删除确认对话框形态——透明底全屏 + 居中卡片）。
+        .fullScreenCover(isPresented: Binding(get: { pendingDeleteOffsets != nil },
+                                             set: { if !$0 { pendingDeleteOffsets = nil } })) {
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("删除会话？该操作不可撤销。")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("删除后会话事件流与派生历史一并移除，且无法恢复。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button("取消") { pendingDeleteOffsets = nil }
+                            .buttonStyle(.bordered)
+                        Button("删除会话") {
+                            if let offsets = pendingDeleteOffsets {
+                                delete(at: offsets)
+                            }
+                            pendingDeleteOffsets = nil
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                    }
                 }
-                pendingDeleteOffsets = nil
+                .padding(18)
+                .frame(maxWidth: 420)
+                .background(Color(.systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                .padding(24)
             }
-            Button("取消", role: .cancel) { pendingDeleteOffsets = nil }
+            .presentationBackground(.clear)
         }
     }
 

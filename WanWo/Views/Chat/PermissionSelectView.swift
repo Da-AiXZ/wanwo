@@ -26,7 +26,9 @@ struct PermissionSelectView: View {
     /// 提交在途（busy 禁用——dsh pick/confirmation 期间 disabled）。
     let busy: Bool
     /// 命令行提交缝（"/permission <id>"；与手输同路——one path 纪律）。
-    let onCommand: (String) -> Void
+    /// confirmed = 本下拉内的 RiskConfirmation 已通过（P2-⑪ 双弹修复：
+    /// dsh 确认缝归入口所有——确认后直达提交，不再触发命令门控二次确认）。
+    let onCommand: (String, _ confirmed: Bool) -> Void
 
     @State private var open = false
     @State private var confirmingFullAccess = false
@@ -81,8 +83,13 @@ struct PermissionSelectView: View {
         .disabled(busy)
         .accessibilityLabel("访问模式，当前：\(currentOption?.label ?? currentPreset)")
         // Full access 前置风险确认（dsh :129-133 特判 + :177-190 确认面）。
-        .sheet(isPresented: $confirmingFullAccess, onDismiss: { acknowledged = false }) {
-            confirmSheet
+        // P2-⑫：呈现由 sheet 改居中模态（dsh RiskConfirmation 对话框形态）。
+        .fullScreenCover(isPresented: $confirmingFullAccess, onDismiss: { acknowledged = false }) {
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                confirmSheet
+            }
+            .presentationBackground(.clear)
         }
     }
 
@@ -98,9 +105,10 @@ struct PermissionSelectView: View {
         submit(id)
     }
 
-    private func submit(_ id: String) {
+    private func submit(_ id: String, confirmed: Bool = false) {
         // 同一写通路径：GUI 与命令行均落 /permission <id> 命令（one path）。
-        onCommand("/permission \(id)")
+        // confirmed = 入口确认已过（Full access 下拉确认后直达——双弹修复）。
+        onCommand("/permission \(id)", confirmed)
     }
 
     private var confirmSheet: some View {
@@ -115,7 +123,7 @@ struct PermissionSelectView: View {
             onCancel: { confirmingFullAccess = false },
             onConfirm: {
                 confirmingFullAccess = false
-                submit("danger-full-access")
+                submit("danger-full-access", confirmed: true)
             })
     }
 }
