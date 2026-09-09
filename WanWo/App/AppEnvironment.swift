@@ -276,7 +276,7 @@ final class AppEnvironment: ObservableObject {
         let planMode = PlanModeController(writer: writer, assembler: assembler)
         registry.register(ExitPlanModeTool(controller: planMode,
                                            service: questionService))
-        let injector = ContextInjector()
+        var injector = ContextInjector()
         // M3 T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——快照
         // 通道注入（ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重
         // 注入，缓存前缀不破）。

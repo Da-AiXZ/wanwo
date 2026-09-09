@@ -197,7 +197,7 @@ struct ExitPlanModeTool: AgentTool {
             let ns = String(line) as NSString
             let range = NSRange(location: 0, length: ns.length)
             if let match = regex.firstMatch(in: String(line), range: range),
-               match.range.count > 1 {
+               match.range.length > 1 {
                 return ns.substring(with: match.range(at: 1))
             }
         }

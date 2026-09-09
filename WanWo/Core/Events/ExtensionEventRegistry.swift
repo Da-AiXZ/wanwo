@@ -170,7 +170,7 @@ final class ExtensionEventRegistry: @unchecked Sendable {
         return nil
     }
 
-    private static func matches(_ type: FieldType, _ value: JSONValue) -> Bool {
+    private static func matches(_ type: ExtensionFieldSchema.FieldType, _ value: JSONValue) -> Bool {
         switch (type, value) {
         case (.string, .string): return true
         case (.int, .int): return true

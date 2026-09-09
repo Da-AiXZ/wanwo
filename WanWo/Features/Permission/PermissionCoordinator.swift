@@ -95,12 +95,12 @@ final class PermissionCoordinator: @unchecked Sendable {
 
     /// 会话审批缓存查询（gap1 §八.3 完备键；命中 = 本会话已批准过同一请求）。
     func cachedApproval(tool: String, args: JSONValue) -> Bool {
-        cache.contains(Self.cacheKey(tool: tool, args: args))
+        cache.contains(cacheKey(tool: tool, args: args))
     }
 
     /// 会话审批缓存登记（allowedOnce 结算后调用）。
     func rememberApproval(tool: String, args: JSONValue) {
-        cache.insert(Self.cacheKey(tool: tool, args: args))
+        cache.insert(cacheKey(tool: tool, args: args))
     }
 
     private func cacheKey(tool: String, args: JSONValue) -> String {

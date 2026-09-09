@@ -95,12 +95,12 @@ final class ToolPipeline: @unchecked Sendable {
     static func denialMessage(tool: String, outcome: ApprovalOutcome) -> String {
         switch outcome {
         case .rejected:
-            return "tool call \"\(toolName)\" was rejected by the user"
+            return "tool call \"\(tool)\" was rejected by the user"
         case .cancelled:
-            return "approval for tool call \"\(toolName)\" was cancelled"
+            return "approval for tool call \"\(tool)\" was cancelled"
         case .unavailable, .allowedOnce:
             // allowedOnce 走不到这里（调用点已放行）；unavailable = fail closed。
-            return "no approval answerer available for \"\(toolName)\"; failing closed"
+            return "no approval answerer available for \"\(tool)\"; failing closed"
         }
     }
 
