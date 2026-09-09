@@ -53,6 +53,10 @@ extension SandboxGate {
 
 enum SandboxGate {
 
+    /// resolveMode 失败载体（Result 的 Failure 必须遵循 Error，String 不符合
+    /// ——CI 编译修正引入；message 即 dsh 逐字文案）。
+    struct SandboxGateFailure: Error { let message: String }
+
     /// 解析一笔调用的生效模式：无提权参数 → standing 模式；有 → 校验成对 +
     /// approveEscalation（授予模式仅 stamp 本调用）。
     /// - Returns: `.success(mode)` = 可执行；`.failure(message)` = 合成错误
@@ -63,7 +67,7 @@ enum SandboxGate {
                             subject: String,
                             callId: String?,
                             approver: SandboxEscalationApprover?) async
-        -> Result<SandboxMode, String> {
+        -> Result<SandboxMode, SandboxGateFailure> {
         let requested = args.objectValue?["sandbox_permissions"]?.stringValue
         let justification = args.objectValue?["justification"]?.stringValue
         // 成对校验先行（dsh resolvePolicy 第一步；三条逐字错误）。
@@ -71,9 +75,9 @@ enum SandboxGate {
             try validateEscalationArgs(sandboxPermissions: requested,
                                        justification: justification)
         } catch let error as SandboxEscalationError {
-            return .failure(error.message)
+            return .failure(SandboxGateFailure(message: error.message))
         } catch {
-            return .failure(String(describing: error))
+            return .failure(SandboxGateFailure(message: String(describing: error)))
         }
         guard let requested, let justification else {
             return .success(standingMode)
@@ -89,9 +93,9 @@ enum SandboxGate {
                 approver: approver)
             return .success(granted)
         } catch let error as SandboxEscalationError {
-            return .failure(error.message)
+            return .failure(SandboxGateFailure(message: error.message))
         } catch {
-            return .failure(String(describing: error))
+            return .failure(SandboxGateFailure(message: String(describing: error)))
         }
     }
 
@@ -137,8 +141,8 @@ enum SandboxGate {
         switch await resolveMode(tool: tool, args: args, standingMode: standingMode,
                                  subject: "operation", callId: callId, approver: approver) {
         case .success(let resolved): mode = resolved
-        case .failure(let message):
-            return .failure(message, code: "SANDBOX_ESCALATION_ERROR")
+        case .failure(let failure):
+            return .failure(failure.message, code: "SANDBOX_ESCALATION_ERROR")
         }
         guard fsPathUnderWritableRoots(path, mode: mode) else {
             // dsh mapError（tool-fs sandbox.ts:124-130）：denial marker + hint
@@ -163,8 +167,8 @@ enum SandboxGate {
         switch await resolveMode(tool: tool, args: args, standingMode: standingMode,
                                  subject: "command", callId: callId, approver: approver) {
         case .success(let resolved): mode = resolved
-        case .failure(let message):
-            return .failure(message, code: "SANDBOX_ESCALATION_ERROR")
+        case .failure(let failure):
+            return .failure(failure.message, code: "SANDBOX_ESCALATION_ERROR")
         }
         guard mode == .readOnly, bashLikelyWrites(command) else { return nil }
         return .failure(sandboxDenialMarker(mode) + "\n" + escalationHintMarker("command"),

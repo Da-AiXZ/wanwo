@@ -348,18 +348,6 @@ final class ChatViewModel: ObservableObject {
             onTokenPressure: { [weak self] info in
                 Task { @MainActor [weak self] in self?.pressure = info }
             },
-            onUserMessageAppended: { [weak self] text in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    // P2-⑪ 消息即时上屏：user/message 落盘即入流（乐观气泡），
-                    // 不等首个工具卡/回合尾重投影。标记消息（runtime snapshot
-                    // 等）与投影层同一过滤纪律，不渲染；下一轮 reproject 以
-                    // 事件流折叠产物整体替换（身份/文本同源收敛）。
-                    guard !ConversationProjector.isMarkerMessage(text) else { return }
-                    self.bubbles.append(ChatViewModel.Bubble(
-                        id: "live-user-\(UUID().uuidString)", kind: .user(text)))
-                }
-            },
             onTurnEnd: { [weak self] reason in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -374,6 +362,18 @@ final class ChatViewModel: ObservableObject {
                         self.phase = .idle
                     }
                     self.maybeGenerateTitle()
+                }
+            },
+            onUserMessageAppended: { [weak self] text in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // P2-⑪ 消息即时上屏：user/message 落盘即入流（乐观气泡），
+                    // 不等首个工具卡/回合尾重投影。标记消息（runtime snapshot
+                    // 等）与投影层同一过滤纪律，不渲染；下一轮 reproject 以
+                    // 事件流折叠产物整体替换（身份/文本同源收敛）。
+                    guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    self.bubbles.append(ChatViewModel.Bubble(
+                        id: "live-user-\(UUID().uuidString)", kind: .user(text)))
                 }
             },
             onPhaseChange: { [weak self] phase in

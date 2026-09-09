@@ -37,6 +37,9 @@ enum SessionStatsFold {
         var inputTokens = 0
         var outputTokens = 0
         var cacheReadTokens = 0
+        /// 计费输入（dsh StatsLine.tsx:108-117 billedInputTokens 三桶口径；
+        /// WanWo cacheWrite 恒 0 → uncached + cacheRead）。
+        var billedInputTokens: Int { inputTokens + cacheReadTokens }
     }
 
     static func fold(events: [SessionEvent]) -> Stats {
