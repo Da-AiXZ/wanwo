@@ -21,16 +21,17 @@ struct ContextMeterView: View {
 
     @State private var open = false
 
-    /// 占比整数（0-100；dsh percent = contextOccupancy 的整数占比）。
+    /// 占比整数（0-100；dsh contextOccupancy：min(100, round(used/window×100))，
+    /// 分母 = 模型上下文窗——Math.round 语义，非截断）。
     private var percent: Int {
-        guard pressure.thresholdTokens > 0 else { return 0 }
-        return min(100, Int(Double(pressure.usedTokens)
-            / Double(pressure.thresholdTokens) * 100))
+        guard pressure.contextWindow > 0 else { return 0 }
+        let raw = Double(pressure.usedTokens) / Double(pressure.contextWindow) * 100
+        return min(100, Int(raw.rounded()))
     }
 
     private var percentColor: Color {
-        if pressure.thresholdTokens > 0,
-           Double(pressure.usedTokens) / Double(pressure.thresholdTokens) >= 1 {
+        if pressure.contextWindow > 0,
+           Double(pressure.usedTokens) / Double(pressure.contextWindow) >= 1 {
             return .red
         }
         return .accentColor
@@ -64,7 +65,8 @@ struct ContextMeterView: View {
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(percentColor)
                 }
-                Text("~\(pressure.usedTokens) / \(pressure.thresholdTokens)")
+                Text("~\(SessionStatsFold.formatTokens(pressure.usedTokens)) / "
+                    + "\(SessionStatsFold.formatTokens(pressure.contextWindow))")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }

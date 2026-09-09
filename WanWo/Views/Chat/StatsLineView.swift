@@ -14,9 +14,11 @@
 //      decode 时长记录）下恒缺席——与 dsh「组缺席」语义同形，非砍件。
 //    - :191 —— 上下文占用不进状态条（home = composer 的 ContextMeter 环，
 //      「one home per fact」）。
-//  数据映射偏差（登记）：dsh cacheHit 分母 = 三桶计费输入（uncached+cacheRead
-//  +cacheWrite，:113-115）；WanWo TokenUsage 无 cacheWrite/uncached 拆分，
-//  分母 = inputTokens（prompt 侧总量）、分子 = cacheReadTokens。
+//  P1-5 缓存口径（dsh StatsLine.tsx:103-121 billedInputTokens 对齐）：分母 =
+//  三桶计费输入（uncached + cacheRead + cacheWrite）；WanWo 解析层
+//  inputTokens = prompt_tokens − cacheRead（即 uncached 桶）、无 cacheWrite
+//  桶（恒 0）→ billed = inputTokens + cacheReadTokens。tokIn 显示与缓存命中
+//  共用该分母；「输入 N」组显示计费输入（dsh :129-131 tokIn = billedInput）。
 //
 
 import SwiftUI
@@ -90,11 +92,12 @@ enum SessionStatsFold {
         return String(format: "%.1fk", thousands)
     }
 
-    /// 缓存命中占比（dsh cacheHitPercent：整数 <100，否则取能保持在 100 以下的
-    /// 最小一位小数；无计费输入 → nil——:103-106）。WanWo 分母 = inputTokens。
+    /// 缓存命中占比（dsh cacheHitPercent：分母 = billedInputTokens；整数 <100，
+    /// 否则取能保持在 100 以下的最小一位小数；无计费输入 → nil——:103-106）。
     static func cacheHitPercent(stats: Stats) -> String? {
-        guard stats.inputTokens > 0 else { return nil }
-        let percent = Double(stats.cacheReadTokens) / Double(stats.inputTokens) * 100
+        let billed = stats.billedInputTokens
+        guard billed > 0 else { return nil }
+        let percent = Double(stats.cacheReadTokens) / Double(billed) * 100
         let rounded = (percent * 10).rounded() / 10
         let display = rounded >= 100 ? 100.0 : rounded
         return display == display.rounded()
@@ -114,11 +117,13 @@ enum SessionStatsFold {
             // 首 token / tok/s 组：WanWo 事件词汇无 TTFT 与 decode 时长记录，
             // 整组缺席（dsh group drops out whole——非砍件，见文件头注）。
         }
-        if stats.inputTokens > 0 || stats.outputTokens > 0 {
+        // Billing rides the durable projection: tokIn = 计费输入
+        // （billedInputTokens——dsh StatsLine.tsx:125-131 的组门与显示口径）。
+        if stats.billedInputTokens > 0 || stats.outputTokens > 0 {
             if let cacheHit = cacheHitPercent(stats: stats) {
                 groups.append("缓存命中 \(cacheHit)")
             }
-            groups.append("输入 \(formatTokens(stats.inputTokens)) · "
+            groups.append("输入 \(formatTokens(stats.billedInputTokens)) · "
                 + "输出 \(formatTokens(stats.outputTokens))")
         }
         guard !groups.isEmpty else { return nil }

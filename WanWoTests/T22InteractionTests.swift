@@ -200,7 +200,8 @@ final class T22InteractionTests: XCTestCase {
         let events: [SessionEvent] = [
             event(.turnStart(turn: 1), at: 0),
             event(.stepStart(turn: 1, step: 1), at: 100),
-            // 步 1：LLM 墙钟 900ms；usage 带缓存命中（600/1000 → 60%）。
+            // 步 1：LLM 墙钟 900ms；usage：uncached 1000 + cacheRead 600
+            // → 计费输入 1600，缓存命中 600/1600 = 37.5%（P1-5 三桶口径）。
             event(.assistantMessage(turn: 1, step: 1,
                                     message: assistantMessage("a"),
                                     usage: TokenUsage(inputTokens: 1000, outputTokens: 50,
@@ -228,14 +229,41 @@ final class T22InteractionTests: XCTestCase {
         XCTAssertEqual(stats.inputTokens, 1000)
         XCTAssertEqual(stats.outputTokens, 50)
         XCTAssertEqual(stats.cacheReadTokens, 600)
-        // 分组线：计数组 + token 组（缓存命中 60% + 输入/输出）。
+        // P1-5：计费输入 = uncached + cacheRead + cacheWrite(恒 0) = 1600。
+        XCTAssertEqual(stats.billedInputTokens, 1600)
+        // 分组线：计数组 + token 组（缓存命中 37.5% + 计费输入/输出）。
         let line = SessionStatsFold.line(for: stats)
         XCTAssertNotNil(line)
         XCTAssertTrue(line!.contains("2 轮 · 2 步"), line!)
         XCTAssertTrue(line!.contains("LLM 1.4s"), line!)
         XCTAssertTrue(line!.contains("工具 0.4s"), line!)
-        XCTAssertTrue(line!.contains("缓存命中 60%"), line!)
-        XCTAssertTrue(line!.contains("输入 1.0k · 输出 50"), line!)
+        XCTAssertTrue(line!.contains("缓存命中 37.5%"), line!)
+        XCTAssertTrue(line!.contains("输入 1.6k · 输出 50"), line!)
+    }
+
+    /// P1-5：缓存命中 100% 形态（全 cacheRead）与零计费输入缺席。
+    func testSessionStatsFoldBillingEdgeCases() {
+        let usage = TokenUsage(inputTokens: 0, outputTokens: 10, cacheReadTokens: 800)
+        let events: [SessionEvent] = [
+            event(.turnStart(turn: 1), at: 0),
+            event(.stepStart(turn: 1, step: 1), at: 100),
+            event(.assistantMessage(turn: 1, step: 1,
+                                    message: assistantMessage("a"),
+                                    usage: usage, interrupted: false), at: 1_000),
+        ]
+        let stats = SessionStatsFold.fold(events: events)
+        XCTAssertEqual(stats.billedInputTokens, 800)
+        XCTAssertEqual(SessionStatsFold.cacheHitPercent(stats: stats), "100%")
+        let line = SessionStatsFold.line(for: stats)
+        XCTAssertTrue(line!.contains("缓存命中 100%"), line!)
+        XCTAssertTrue(line!.contains("输入 800 · 输出 10"), line!)
+        // 零计费输入且零输出 → token 组缺席（dsh 组门 :125-126）。
+        var empty = stats
+        empty.inputTokens = 0
+        empty.cacheReadTokens = 0
+        empty.outputTokens = 0
+        XCTAssertNil(SessionStatsFold.cacheHitPercent(stats: empty), "无计费输入 → nil")
+        XCTAssertNil(SessionStatsFold.line(for: SessionStatsFold.fold(events: [])))
     }
 
     func testSessionStatsFoldEmptyLineAndDurationFormat() {

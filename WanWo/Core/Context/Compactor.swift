@@ -41,6 +41,9 @@ final class Compactor: @unchecked Sendable {
     struct PressureInfo: Equatable, Sendable {
         var usedTokens: Int
         var thresholdTokens: Int
+        /// 模型上下文窗（P1-5：dsh context-occupancy 占比分母——ContextMeter
+        /// 环与面板以窗口为分母，阈值仅供压缩触发面使用）。
+        var contextWindow: Int
         /// 0..1+（threshold 的比值；UI 三档着色）。
         var ratio: Double { thresholdTokens > 0 ? Double(usedTokens) / Double(thresholdTokens) : 0 }
     }
@@ -79,12 +82,14 @@ final class Compactor: @unchecked Sendable {
         return total
     }
 
-    /// 当前压力（threshold = 窗口 × thresholdRatio）。
+    /// 当前压力（threshold = 窗口 × thresholdRatio；contextWindow 随行——
+    /// P1-5 ContextMeter 占比口径）。
     func pressure(events: [SessionEvent], model: String?) -> PressureInfo {
         let used = Self.estimateSession(events)
         let window = contextWindow(for: model)
         return PressureInfo(usedTokens: used,
-                            thresholdTokens: Int(Double(window) * policy.thresholdRatio))
+                            thresholdTokens: Int(Double(window) * policy.thresholdRatio),
+                            contextWindow: window)
     }
 
     /// per-model 上下文窗（dsh resolveTargetPolicy 的 M2 形态）。
