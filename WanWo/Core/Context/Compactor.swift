@@ -38,12 +38,33 @@ final class Compactor: @unchecked Sendable {
         case manual
     }
 
+    // MARK: - P2-⑦ 上下文构成（dsh contextBreakdown 投影 1:1 形态）
+    //
+    // 出处（packages/llm/token-meter/src/breakdown-projection.ts:58-88 +
+    // projection.ts:59-66 + estimate.ts:77-90）：三段启发式构成 = 最新
+    // request/header 的 system 与 tools（last-wins，无请求时为 0）+ 会话
+    // 表面的消息计价。dsh projection.ts:50-57 明示「三段不求和等于锚定值，
+    // 只呈现构成近似」——WanWo 同构：system/tools 以 WanWo M2 估计器计价
+    // （与 usedTokens 同源，内部自洽；dsh 的 /4 固定密度为偏差登记）。
+
+    /// 上下文构成三段（ContextMeter 面板 breakdown 行数据源）。
+    struct Breakdown: Equatable, Sendable {
+        /// 最新 request/header 系统提示词（无请求 → 0）。
+        var systemTokens = 0
+        /// 最新 request/header 工具 schema（无请求/空 → 0）。
+        var toolsTokens = 0
+        /// 会话表面（派生历史）消息计价。
+        var messageTokens = 0
+    }
+
     struct PressureInfo: Equatable, Sendable {
         var usedTokens: Int
         var thresholdTokens: Int
         /// 模型上下文窗（P1-5：dsh context-occupancy 占比分母——ContextMeter
         /// 环与面板以窗口为分母，阈值仅供压缩触发面使用）。
         var contextWindow: Int
+        /// 上下文构成（P2-⑦；缺省空值——压缩内部压力检查不需要）。
+        var breakdown: Breakdown = Breakdown()
         /// 0..1+（threshold 的比值；UI 三档着色）。
         var ratio: Double { thresholdTokens > 0 ? Double(usedTokens) / Double(thresholdTokens) : 0 }
     }
@@ -83,13 +104,31 @@ final class Compactor: @unchecked Sendable {
     }
 
     /// 当前压力（threshold = 窗口 × thresholdRatio；contextWindow 随行——
-    /// P1-5 ContextMeter 占比口径）。
-    func pressure(events: [SessionEvent], model: String?) -> PressureInfo {
+    /// P1-5 ContextMeter 占比口径）。header = 最新 request/header（P2-⑦
+    /// breakdown 的 system/tools 计价源；nil = 尚无请求，两段为 0）。
+    func pressure(events: [SessionEvent], model: String?,
+                  header: EpochHeader? = nil) -> PressureInfo {
         let used = Self.estimateSession(events)
         let window = contextWindow(for: model)
+        // breakdown（dsh breakdown-projection.ts:63-83 语义：system/tools
+        // 取最新 header last-wins；message = 表面计价，与 usedTokens 同一折叠）。
+        var breakdown = Breakdown()
+        breakdown.messageTokens = used
+        if let system = header?.system {
+            // dsh estimateSystemTokens（estimate.ts:77-80）：文本计价 + 角色开销 4。
+            breakdown.systemTokens = Self.estimateText(system) + 4
+        }
+        if let tools = header?.tools, !tools.isEmpty {
+            // dsh estimateToolsTokens（estimate.ts:87-90）：schema JSON 计价 + 4。
+            if let data = try? JSONEncoder().encode(tools),
+               let json = String(data: data, encoding: .utf8) {
+                breakdown.toolsTokens = Self.estimateText(json) + 4
+            }
+        }
         return PressureInfo(usedTokens: used,
                             thresholdTokens: Int(Double(window) * policy.thresholdRatio),
-                            contextWindow: window)
+                            contextWindow: window,
+                            breakdown: breakdown)
     }
 
     /// per-model 上下文窗（dsh resolveTargetPolicy 的 M2 形态）。

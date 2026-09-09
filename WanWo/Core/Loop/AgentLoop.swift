@@ -67,6 +67,9 @@ actor AgentLoop {
         var onToolCallStarted: @Sendable (String, String, String, String?) -> Void = { _, _, _, _ in }
         /// 工具卡收敛（callId, 结果文本, isError）——tool/result 落盘后发射。
         var onToolCallFinished: @Sendable (String, String, Bool) -> Void = { _, _, _ in }
+        /// 用户消息已落盘（P2-⑪ 消息即时上屏：user/message append 后发射，
+        /// 文本 = 落盘原文——含注入展开后的最终形态；UI 侧自行过滤标记消息）。
+        var onUserMessageAppended: @Sendable (String) -> Void = { _ in }
     }
 
     // MARK: - 依赖
@@ -365,6 +368,8 @@ actor AgentLoop {
                 let injected = try await self.injectContexts(messages: messages)
                 for text in injected where !text.isEmpty {
                     try await deps.writer.append(.userMessage(text: text))
+                    // P2-⑪ 消息即时上屏（落盘即发射；UI 侧过滤标记消息）。
+                    deps.callbacks.onUserMessageAppended(text)
                 }
 
                 // 压力检查（dsh pre-step 压缩介入点；失败继续回合）。
@@ -513,8 +518,9 @@ actor AgentLoop {
 
     private func checkCompactionPressure() async {
         let events = deps.writer.events
-        let model = deps.writer.recordedRequestHeader?.config.model
-        let info = deps.compactor.pressure(events: events, model: model)
+        let header = deps.writer.recordedRequestHeader
+        let model = header?.config.model
+        let info = deps.compactor.pressure(events: events, model: model, header: header)
         deps.callbacks.onTokenPressure(info)
         guard info.usedTokens >= info.thresholdTokens else { return }
         // 压缩失败不抛穿（dsh：继续回合）。
@@ -524,7 +530,8 @@ actor AgentLoop {
         }
         _ = await deps.compactor.compactIfNeeded(events: events, model: model,
                                                  append: appendClosure)
-        let after = deps.compactor.pressure(events: deps.writer.events, model: model)
+        let after = deps.compactor.pressure(events: deps.writer.events, model: model,
+                                            header: header)
         deps.callbacks.onTokenPressure(after)
     }
 
