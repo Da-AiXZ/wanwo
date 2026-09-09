@@ -27,31 +27,25 @@
 
 import Foundation
 
-/// 审批请求的完整结算（T2：outcome + 用户是否点「允许并记住」——
-/// CompositeApprovalSeam 据此触发会话缓存登记与沉淀）。
-struct ApprovalResolution: Sendable {
-    let outcome: ApprovalOutcome
-    let remembered: Bool
-}
-
 /// 审批协调器：宿主侧唯一裁决登记处。职责：
 ///   · turn-enclosed 前置校验（开放回合外一律 .unavailable，且不落审计）；
 ///   · approval/asked + approval/decided 审计对的唯一落盘点（恒成对）；
 ///   · 在途登记表 + first answer wins（settled 一次性，结算值随项登记）；
 ///   · 任务取消 → .cancelled；桥关闭 → 在途待决一律 .unavailable。
+/// P1-4：T2 记忆位（requestWithMemory/ApprovalResolution/rememberable）随
+/// F022 砍除——allowed-once 仅 stamp 触发审批的那一次提权（dsh
+/// escalation.ts:183），无跨调用授权面。
 final class ApprovalCoordinator: @unchecked Sendable {
 
     private static let logger = AppLogger(category: "ApprovalCoordinator")
 
     /// 在途登记项。结算值随项登记（result）：answer/withdraw/bridgeClosed 与
     /// 续体注册是并发竞速——谁先到谁定值，续体注册时若已结算即按登记值恢复。
-    /// T2：remembered = 用户选择「允许并记住」（与 allowedOnce 同帧结算）。
     private struct PendingEntry {
         let presentation: PendingApprovalPresentation
         var continuation: CheckedContinuation<ApprovalOutcome, Never>?
         var settled = false
         var result: ApprovalOutcome = .cancelled
-        var remembered = false
     }
 
     private let lock = NSLock()
@@ -69,26 +63,19 @@ final class ApprovalCoordinator: @unchecked Sendable {
 
     /// 发起一次审批询问并阻塞等待结论。`.allowedOnce` 是唯一授予。
     func request(tool: String, callId: String?, reason: String?) async -> ApprovalOutcome {
-        await requestWithMemory(tool: tool, callId: callId, reason: reason,
-                                rememberable: false).outcome
-    }
-
-    /// T2：带记忆位的请求（rememberable = 审批面板出现「允许并记住」沉淀出口；
-    /// remembered 随结算返回——CompositeApprovalSeam 据此触发沉淀）。
-    func requestWithMemory(tool: String, callId: String?, reason: String?,
-                           rememberable: Bool) async -> ApprovalResolution {
         // turn-enclosed 前置（dsh index.ts:209-215；WanWo 归一化为 .unavailable，
         // fail closed 同向且不落任何审计事件——回合外的裸审计对正是 crash-tail）。
         guard writer.openTurn != nil else {
             Self.logger.error("approval.request outside an open turn; failing closed "
                 + "(audit pair must be turn-enclosed, dsh index.ts:209-215)")
-            return ApprovalResolution(outcome: .unavailable, remembered: false)
+            return .unavailable
         }
 
         let requestId = "apr-\(UUID().uuidString)"
         // 审计对上半：approval/asked（dsh index.ts:217-222；provenance 走既有
-        // asked.reason 字段——裁决①，T2 填充升级理由）。落盘失败 → fail closed
-        // （dsh index.ts:199-201：返回未落审计的裁决即破坏审计对）。
+        // asked.reason 字段——提权理由 `escalate sandbox to ${mode}: …` 由
+        // P1-3 审批通道传入）。落盘失败 → fail closed（dsh index.ts:199-201：
+        // 返回未落审计的裁决即破坏审计对）。
         do {
             _ = try await writer.append(
                 .approvalAsked(requestId: requestId, tool: tool, reason: reason),
@@ -96,12 +83,12 @@ final class ApprovalCoordinator: @unchecked Sendable {
         } catch {
             Self.logger.error("approval/asked append failed; failing closed: "
                 + "\(String(describing: error))")
-            return ApprovalResolution(outcome: .unavailable, remembered: false)
+            return .unavailable
         }
 
         let presentation = PendingApprovalPresentation(
             id: requestId, toolName: tool, callId: callId,
-            reason: reason, commandDetail: nil, rememberable: rememberable)
+            reason: reason, commandDetail: nil)
 
         // 取消 → .cancelled（dsh index.ts:120-123：aborting withdraws the
         // question, settles 'cancelled' immediately, late answer discarded）。
@@ -121,32 +108,26 @@ final class ApprovalCoordinator: @unchecked Sendable {
         } catch {
             Self.logger.error("approval/decided append failed; failing closed: "
                 + "\(String(describing: error))")
-            return ApprovalResolution(outcome: .unavailable, remembered: false)
+            return .unavailable
         }
 
         // 结算呈现 + 登记表清理（面板退位恢复 composer；dsh：resolved 帧结算）。
         await MainActor.run { [presenter] in
             presenter?.settleApproval(id: requestId, outcome: outcome)
         }
-        // T2：读取「允许并记住」标记（settle 前随 answer 帧写入；结算后读取
-        // 无竞态——first answer wins 保证值已定）。
-        lock.lock()
-        let remembered = pending[requestId]?.remembered ?? false
-        lock.unlock()
-        return ApprovalResolution(outcome: outcome, remembered: remembered)
+        return outcome
     }
 
     // MARK: - 裁决（UI 侧；first answer wins）
 
     /// UI 回填裁决。仅交互二值可回（dsh slots.ts:64 ApprovalDecision）。
-    /// T2：remember = 「允许并记住」（仅 allowedOnce 有意义；随结算登记）。
     /// - Returns: false = 请求不存在或已结算（UI 需 re-arm 按钮——dsh 笔记：
     ///            按钮本地禁用、失败后 re-arm，结算才是真相）。
     @discardableResult
-    func answer(requestId: String, outcome: ApprovalOutcome, remember: Bool = false) -> Bool {
+    func answer(requestId: String, outcome: ApprovalOutcome) -> Bool {
         // 幂等防双击 + rogue 输入拒绝（cancelled/unavailable 不是用户输入）。
         guard outcome == .allowedOnce || outcome == .rejected else { return false }
-        return settle(requestId: requestId, result: outcome, remember: remember)
+        return settle(requestId: requestId, result: outcome)
     }
 
     /// 桥关闭（会话视图离场）：在途待决一律 .unavailable（m3-scope-brief §二.5；
@@ -162,9 +143,7 @@ final class ApprovalCoordinator: @unchecked Sendable {
     // MARK: - 内部
 
     /// 结算一次（first answer wins：settled 项拒绝再次结算）。
-    /// T2：remember 仅在 allowedOnce 结算时登记（拒绝不沉淀）。
-    private func settle(requestId: String, result: ApprovalOutcome,
-                        remember: Bool = false) -> Bool {
+    private func settle(requestId: String, result: ApprovalOutcome) -> Bool {
         lock.lock()
         guard var entry = pending[requestId], !entry.settled else {
             lock.unlock()
@@ -172,9 +151,6 @@ final class ApprovalCoordinator: @unchecked Sendable {
         }
         entry.settled = true
         entry.result = result
-        if result == .allowedOnce && remember {
-            entry.remembered = true
-        }
         let continuation = entry.continuation
         entry.continuation = nil
         pending[requestId] = entry

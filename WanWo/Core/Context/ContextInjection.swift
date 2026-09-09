@@ -45,6 +45,9 @@ struct ContextInjector: Sendable {
     /// 完整当前值跟随、仅变化才重注入、缓存前缀不破（ERR-024 纪律：快照
     /// 不进 system）。nil = 位空缺（缺省不注入）。
     var approvalPolicyProvider: (@Sendable () -> String?)?
+    /// M3 P1-3：sandbox:policy 动态上下文位供值缝（dsh CONTEXT_ORDERS 110；
+    /// renderPolicyContext 三段逐字——SandboxPolicy.renderPolicyContext）。
+    var sandboxPolicyProvider: (@Sendable () -> String?)?
 
     // MARK: - agent-instructions 基础文案（dsh render.ts 逐字）
 

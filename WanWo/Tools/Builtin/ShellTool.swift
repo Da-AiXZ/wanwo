@@ -54,12 +54,16 @@ struct ShellTool: AgentTool {
         + "Standard POSIX sh syntax; bash-only syntax is detected and bash is installed on demand. "
         + "Working directory is the session workspace (/var/wanwo/workspace). Output is sanitized and truncated."
 
-    let parameters = JSONValue.schemaObject(
-        properties: [
+    let parameters: JSONValue = {
+        // P1-3：提权参数字段（dsh escalation.ts:140 subject='command' 的名词
+        // 形态；schema enum = ESCALATION_TARGETS registry-global 闭集）。
+        var props: [String: JSONValue] = [
             "command": .stringSchema(description: "The shell command to execute."),
             "timeout_ms": .numberSchema(description: "Optional timeout in milliseconds. Defaults to 900000 (15 minutes). The tool-level cooperative cap is 960000 (16 minutes)."),
-        ],
-        required: ["command"])
+        ]
+        props.merge(SandboxGate.escalationSchemaFields(noun: "command")) { current, _ in current }
+        return .schemaObject(properties: props, required: ["command"])
+    }()
 
     /// 外层协作超时（ToolTimeout）：略高于桥内 900s 默认，兜底防挂死。
     let timeoutMs: Int? = 960_000

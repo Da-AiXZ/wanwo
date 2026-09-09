@@ -35,9 +35,6 @@ struct PendingApprovalPresentation: Identifiable, Equatable, Sendable {
     /// 配对命令/操作详情（dsh conversation.approval.detail 槽的 WanWo 形态：
     /// presentCall(intent) 复现的命令文本；呈现层不重复 args JSON）。
     let commandDetail: String?
-    /// T2：是否提供「允许并记住」沉淀出口（bash 待批命令且非规则命中路径；
-    /// ApprovalPanelView 按此显隐第三按钮）。
-    var rememberable: Bool = false
 }
 
 // MARK: - 待决提问呈现载荷

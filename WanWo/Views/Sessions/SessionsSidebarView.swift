@@ -73,17 +73,11 @@ struct SessionsSidebarView: View {
                     Label("Providers", systemImage: "cpu")
                 }
                 Button {
-                    // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1，
-                    // 入口③；「权限」行不再冒充规则页）。
+                    // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1；
+                    // P1-4 后唯一权限入口——规则 CRUD 页随 F022 砍除）。
                     selection = .permissionDefaults
                 } label: {
                     Label("权限", systemImage: "lock.shield")
-                }
-                Button {
-                    // M3 T2 规则 CRUD 页（T2.2 起为独立入口）。
-                    selection = .permissions
-                } label: {
-                    Label("权限规则", systemImage: "list.bullet.rectangle")
                 }
             }
 

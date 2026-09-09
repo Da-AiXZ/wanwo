@@ -2,22 +2,21 @@
 //  PermissionCoordinator.swift
 //  WanWo
 //
-//  【按缝新写 · M3 T2】出处：
-//    - 06-codex-gap1 §八.1/§八.3 —— 规则引擎接 pre-execute 缝（命中取最严，
-//      未命中回落既有审批 waterfall）+ 会话级审批缓存（完备键）；
-//    - §七.3 —— 沉淀（ApprovedExecpolicyAmendment 形态：审批通过 + 用户点
-//      「允许并记住」→ bash 命令导出 allow 前缀规则落盘 user 层；黑名单与
-//      签名去重把关）；
+//  【按缝新写 · M3 T2 · P1-4 砍 F022】出处：
 //    - dsh packages/interaction/permission-presets/src/index.ts —— /permission
 //      handler 文案形态（空输入报当前值 + available 清单；未知名报错带清单）
 //      + apply 的 diff 写语义 + preset 切换以 user 消息叙述（dsh inject user
 //      message 语义；WanWo 以 <permission-update> 标记前缀落盘 user/message，
 //      投影层过滤不渲染气泡）。
-//    - dsh CONTEXT_ORDERS approval-policy(115) —— 审批策略动态上下文位。
-//      WanWo 落点 = RuntimeContextProjection 快照通道（ContextInjector.
-//      approvalPolicyProvider 供值）：完整当前值跟随、仅变化才重注入、缓存
-//      前缀不破（ERR-024 纪律：快照不进 system——「system 段」字面与缓存
-//      纪律冲突处按快照位实现，team-lead 已追认）。
+//    - dsh CONTEXT_ORDERS approval-policy(115) —— 审批策略动态上下文位
+//      （ASK/NEVER_SENTENCE 逐字，P1-3 对齐）+ sandbox:policy(110)
+//      （renderPolicyContext 逐字）。WanWo 落点 = RuntimeContextProjection
+//      快照通道（ContextInjector 供值）：完整当前值跟随、仅变化才重注入、
+//      缓存前缀不破（ERR-024 纪律：快照不进 system，team-lead 已追认）。
+//    - P1-4（用户裁决 2026-09-10）：F022 规则引擎（prefix/network）、会话
+//      审批缓存、「允许并记住」沉淀路径整体砍除——dsh 原件无效果规则面，
+//      审批只由沙箱提权请求触发（P1-3），allowed-once 仅 stamp 本调用
+//      （dsh escalation.ts:183）。
 //  事件词汇：approval/policy（T2 批准）+ sandbox/mode（T2.1 补批，01 笔记
 //  sandbox-policy 原件词汇）均走 E1 extensionEvent 通道，schema 由
 //  AppEnvironment 装配期注册（projection=logOnly，pairing=none）。
@@ -25,27 +24,23 @@
 
 import Foundation
 
-/// 每会话权限协调器：双旋钮状态 + 规则引擎入口 + 会话审批缓存 + 沉淀 +
-/// /permission 实现 + approval-policy 上下文位供值。
-/// 线程模型：审批缝在后台线程读（knobs/rules/cache 均 NSLock 保护），
-/// /permission 在命令任务写。
+/// 每会话权限协调器：双旋钮状态 + /permission 实现 + 双动态上下文位供值。
+/// 线程模型：审批缝在后台线程读（knobs NSLock 保护），/permission 在命令
+/// 任务写。
 /// T2.1：双旋钮均持久——approval/policy 与 sandbox/mode 两个 extension 事件
 /// （均已批）先落盘成功再进内存（fail closed）；resume 时分别折叠恢复。
+/// P1-4（用户裁决 2026-09-10）：F022 规则引擎/会话审批缓存/沉淀路径砍除——
+/// 审批只由沙箱提权请求触发（P1-3），allowed-once 仅 stamp 本调用
+/// （dsh escalation.ts:183）。
 final class PermissionCoordinator: @unchecked Sendable {
     /// approval/policy 扩展事件 kind（wire type = "extension/approval/policy"）。
     static let policyEventKind = "approval/policy"
     /// sandbox/mode 扩展事件 kind（wire type = "extension/sandbox/mode"；
     /// T2.1 补批——01 笔记 sandbox-policy 原件词汇，修沙箱旋钮内存态缺口）。
     static let sandboxEventKind = "sandbox/mode"
-    /// 沉淀前缀规则的 token 上限（防超长命令生成巨型规则）。
-    static let maxPrefixTokens = 8
 
     let knobs = PermissionKnobs()
-    let rules: PermissionRulesStore
-    private let cache = SessionApprovalCache()
     private let writer: SessionWriter
-    /// 会话工作目录（缓存键「环境」位；M1-M3 恒定值）。
-    private let cwd: String
 
     /// 新会话缺省双旋钮供值缝（T2.2 派单项 2：App 级默认源——设置·新会话
     /// 默认权限行；不再硬编码 ask+workspace-write。缺省供值 = dsh
@@ -55,15 +50,16 @@ final class PermissionCoordinator: @unchecked Sendable {
 
     private static let logger = AppLogger(category: "PermissionCoordinator")
 
+    /// 四层模式解析顺序（P1-3×P1-4 交汇登记）：
+    ///   ① approved 显式（本调用 stamp，SandboxGate.resolveMode）
+    ///   ② 会话末条 sandbox/mode 事件（restoreKnobs 折叠）
+    ///   ③ 新会话默认源（PermissionDefaultStore——设置·新会话默认权限行）
+    ///   ④ 部署默认（workspace-write + ask——本缺省闭包形态）
     init(writer: SessionWriter,
-         rules: PermissionRulesStore,
-         cwd: String = WanWoPaths.workspaceLinuxDir,
          newSessionDefaults: @escaping @Sendable () -> (sandbox: SandboxMode,
                                                         approval: ApprovalPolicy) =
             { (.workspaceWrite, .ask) }) {
         self.writer = writer
-        self.rules = rules
-        self.cwd = cwd
         self.newSessionDefaults = newSessionDefaults
         restoreKnobs()
     }
@@ -112,64 +108,6 @@ final class PermissionCoordinator: @unchecked Sendable {
             if case .extensionEvent(Self.sandboxEventKind, _) = $0.payload { return true }
             return false
         }
-    }
-
-    // MARK: - 规则引擎 + 策略指纹 + 会话缓存（CompositeApprovalSeam 消费）
-
-    /// 规则引擎判定入口（多层引擎；nil = 未命中 → 调用方回落启发式矩阵）。
-    func rulesVerdict(tool: String, args: JSONValue) -> ApprovalDecisionVerdict? {
-        rules.engine().decide(tool: tool, args: args)
-    }
-
-    /// 策略指纹（codex requirements 指纹语义：审批策略值 + 规则库版本摘要）。
-    var policyFingerprint: String {
-        knobs.approval.rawValue + ":" + rules.signatureDigest()
-    }
-
-    /// 会话审批缓存查询（gap1 §八.3 完备键；命中 = 本会话已批准过同一请求）。
-    func cachedApproval(tool: String, args: JSONValue) -> Bool {
-        cache.contains(cacheKey(tool: tool, args: args))
-    }
-
-    /// 会话审批缓存登记（allowedOnce 结算后调用）。
-    func rememberApproval(tool: String, args: JSONValue) {
-        cache.insert(cacheKey(tool: tool, args: args))
-    }
-
-    private func cacheKey(tool: String, args: JSONValue) -> String {
-        SessionApprovalCache.key(cwd: cwd, tool: tool, args: args,
-                                 sandboxMode: knobs.sandbox.rawValue,
-                                 policyFingerprint: policyFingerprint)
-    }
-
-    // MARK: - 沉淀（「允许并记住」→ 前缀规则落盘）
-
-    /// 把审批通过的 bash 命令沉淀为 allow 前缀规则（user 层 JSONL 追加，
-    /// flock 排他 + 签名去重；黑名单命中拒绝沉淀）。返回用户可见结果文案。
-    func sedimentPrefixRule(fromCommand command: String) -> String {
-        let tokens = PermissionRulesEngine.tokenize(command)
-        guard !tokens.isEmpty else {
-            return "记住失败：命令为空"
-        }
-        if let violation = BannedPrefixSuggestions.violation(in: tokens) {
-            Self.logger.warning("sediment refused: banned prefix \"\(violation)\"")
-            return "记住失败：命令前缀 \"\(violation)\" 在禁推黑名单内，不允许沉淀为规则"
-        }
-        let pattern = tokens.prefix(Self.maxPrefixTokens).map { [$0] }
-        let prefixText = pattern.map { $0[0] }.joined(separator: " ")
-        let rule = PermissionRule(
-            id: UUID().uuidString,
-            kind: "prefix",
-            pattern: Array(pattern),
-            host: nil,
-            verdict: PermissionRuleVerdict.allow.rawValue,
-            source: "remembered",
-            origin: command,
-            createdAtMs: Int64(Date().timeIntervalSince1970 * 1000))
-        if rules.add(rule) {
-            return "已记住：以 \"\(prefixText)\" 开头的命令今后将直接放行（可在 设置 · 权限 中管理）"
-        }
-        return "该命令前缀规则已存在，无需重复记住"
     }
 
     // MARK: - /permission（dsh permission-presets handler 语义）

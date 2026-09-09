@@ -96,12 +96,15 @@ struct FsWriteTool: AgentTool {
     let name = "write"
     let description = "Create or fully replace a UTF-8 text file. Existing files are overwritten; "
         + "read an existing file first and prefer edit for targeted changes."
-    let parameters = JSONValue.schemaObject(
-        properties: [
+    let parameters: JSONValue = {
+        // P1-3：提权参数字段（dsh tool-fs sandbox.ts schemaFields——fs 文案逐字）。
+        var props: [String: JSONValue] = [
             "file_path": .stringSchema(description: "Path to write, resolved by the filesystem backend."),
             "content": .stringSchema(description: "Full UTF-8 text content to write."),
-        ],
-        required: ["file_path", "content"])
+        ]
+        props.merge(SandboxGate.escalationSchemaFields(noun: "file operation")) { current, _ in current }
+        return .schemaObject(properties: props, required: ["file_path", "content"])
+    }()
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
@@ -170,14 +173,17 @@ struct FsEditTool: AgentTool {
     let description = "Edit an existing UTF-8 text file by replacing literal text. "
         + "By default old_string must appear exactly once; provide a more specific old_string "
         + "or set replace_all to true. Read the file first."
-    let parameters = JSONValue.schemaObject(
-        properties: [
+    let parameters: JSONValue = {
+        // P1-3：提权参数字段（dsh tool-fs sandbox.ts schemaFields——fs 文案逐字）。
+        var props: [String: JSONValue] = [
             "file_path": .stringSchema(description: "Path to edit, resolved by the filesystem backend."),
             "old_string": .stringSchema(description: "Literal text to replace. Must match exactly."),
             "new_string": .stringSchema(description: "Literal replacement text. Use an empty string to delete the match."),
             "replace_all": .booleanSchema(description: "Replace all matches. Defaults to false."),
-        ],
-        required: ["file_path", "old_string", "new_string"])
+        ]
+        props.merge(SandboxGate.escalationSchemaFields(noun: "file operation")) { current, _ in current }
+        return .schemaObject(properties: props, required: ["file_path", "old_string", "new_string"])
+    }()
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 

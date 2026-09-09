@@ -561,8 +561,7 @@ extension ChatViewModel: SessionInteractionPresenter {
         }
         let enriched = PendingApprovalPresentation(
             id: pending.id, toolName: pending.toolName, callId: pending.callId,
-            reason: pending.reason, commandDetail: commandDetail,
-            rememberable: pending.rememberable)
+            reason: pending.reason, commandDetail: commandDetail)
         pendingApprovals.append(enriched)
         if let callId = pending.callId {
             setCardStatus(callId: callId, note: "等待审批")
@@ -642,19 +641,17 @@ extension ChatViewModel: SessionInteractionPresenter {
 // MARK: - M3 T1 用户裁决入口（composer 接管 → 宿主裁决登记处）
 
 extension ChatViewModel {
-    /// 审批裁决（允许一次 / 允许并记住 / 拒绝）。first answer wins 由协调器
-    /// 保证；本地防双击，被拒（已结算/不存在）即 re-arm——dsh 笔记「disable
-    /// locally, re-arm on failure」。T2：remember = 「允许并记住」沉淀出口
-    /// （仅 allowedOnce 有意义；沉淀由 CompositeApprovalSeam 在结算后执行）。
-    func answerApproval(_ pending: PendingApprovalPresentation, allow: Bool,
-                        remember: Bool = false) {
+    /// 审批裁决（允许一次 / 拒绝）。first answer wins 由协调器保证；本地防
+    /// 双击，被拒（已结算/不存在）即 re-arm——dsh 笔记「disable locally,
+    /// re-arm on failure」。P1-4：remember 沉淀出口随 F022 砍除。
+    func answerApproval(_ pending: PendingApprovalPresentation, allow: Bool) {
         guard !approvalAnswering else { return }
         approvalAnswering = true
         let outcome: ApprovalOutcome = allow ? .allowedOnce : .rejected
         let coordinator = approvalCoordinator
         Task { [weak self] in
-            let accepted = coordinator?.answer(requestId: pending.id, outcome: outcome,
-                                               remember: remember) ?? false
+            let accepted = coordinator?.answer(requestId: pending.id,
+                                               outcome: outcome) ?? false
             if !accepted {
                 self?.approvalAnswering = false
             }

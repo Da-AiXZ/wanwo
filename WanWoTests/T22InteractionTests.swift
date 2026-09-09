@@ -149,9 +149,7 @@ final class T22InteractionTests: XCTestCase {
         // 默认源 = read-only → 新会话（无旋钮历史）初始双旋钮取默认值。
         let store = makeDefaultStore(name: "read-only")
         let coordinator = PermissionCoordinator(
-            writer: writer, rules: PermissionRulesStore(
-                fileURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent("perm-rules-\(UUID().uuidString).jsonl")),
+            writer: writer,
             newSessionDefaults: { store.newSessionKnobs() })
         XCTAssertEqual(coordinator.knobs.sandbox, .readOnly)
         XCTAssertEqual(coordinator.knobs.approval, .ask)
@@ -165,9 +163,7 @@ final class T22InteractionTests: XCTestCase {
             payload: .object(["mode": .string(SandboxMode
                 .dangerFullAccess.rawValue)])))
         let resumed = PermissionCoordinator(
-            writer: writer, rules: PermissionRulesStore(
-                fileURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent("perm-rules-\(UUID().uuidString).jsonl")),
+            writer: writer,
             newSessionDefaults: { store.newSessionKnobs() })
         XCTAssertEqual(resumed.knobs.sandbox, .dangerFullAccess)
         XCTAssertEqual(resumed.knobs.approval, .never)
@@ -178,9 +174,7 @@ final class T22InteractionTests: XCTestCase {
     func testReadOnlyHostPresetSwitchable() async throws {
         let (writer, dir) = try await makeWriter()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let coordinator = PermissionCoordinator(writer: writer, rules: PermissionRulesStore(
-            fileURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("perm-rules-\(UUID().uuidString).jsonl")))
+        let coordinator = PermissionCoordinator(writer: writer)
         XCTAssertEqual(PermissionPresets.spec(named: "read-only")?.sandbox, .readOnly)
         let result = await coordinator.applyPreset(named: "read-only")
         XCTAssertTrue(result.contains("已切换"), result)

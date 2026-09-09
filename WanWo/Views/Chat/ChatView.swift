@@ -303,9 +303,9 @@ struct ChatView: View {
                                     viewModel.pendingQuestions.first!) })
         case .approval:
             ApprovalPanelView(pending: viewModel.pendingApprovals.first!,
-                              answering: viewModel.approvalAnswering) { allow, remember in
+                              answering: viewModel.approvalAnswering) { allow in
                 viewModel.answerApproval(viewModel.pendingApprovals.first!,
-                                         allow: allow, remember: remember)
+                                         allow: allow)
             }
         case .input:
             inputBar

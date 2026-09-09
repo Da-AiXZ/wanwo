@@ -17,9 +17,8 @@ enum RootSelection: Hashable {
     case shellTest
     /// M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
     case eventStream
-    /// M3 T2 权限规则管理页（规则 CRUD；T2.2 起不再冒充「权限」行）。
-    case permissions
-    /// M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；入口③）。
+    /// M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；P1-4 后唯一
+    /// 权限入口——规则 CRUD 页随 F022 砍除）。
     case permissionDefaults
     case none
 }
@@ -31,10 +30,9 @@ final class AppEnvironment: ObservableObject {
     let sessionStore: SessionStore
     /// GRDB 投影库（对 UI 不透明；仅供会话层更新索引）。
     let database: SessionDatabase
-    /// M3 T2：权限规则库（App 级共享 user 层 JSONL；flock 排他 + 签名去重）。
-    let permissionRules: PermissionRulesStore
     /// M3 T2.2：新会话默认权限预设（设置·权限行持久宿主面；PermissionRow.tsx
-    /// 语义——App 级默认，与当前会话旋钮分离）。
+    /// 语义——App 级默认，与当前会话旋钮分离）。P1-4：规则库与规则 CRUD 页
+    /// 砍除（F022）——权限宿主面只剩本默认源。
     let permissionDefaults: PermissionDefaultStore
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
@@ -78,9 +76,8 @@ final class AppEnvironment: ObservableObject {
         self.database = db
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
-        self.permissionRules = PermissionRulesStore(
-            fileURL: configDir.appendingPathComponent("permission-rules.jsonl"))
         // M3 T2.2：新会话默认权限预设（config/permission-default.json）。
+        // P1-4：permission-rules.jsonl 规则库随 F022 砍除，不再装载。
         self.permissionDefaults = PermissionDefaultStore(
             fileURL: configDir.appendingPathComponent("permission-default.json"))
 
@@ -250,13 +247,12 @@ final class AppEnvironment: ObservableObject {
         let questionService = UserQuestionService(presenter: interactionPresenter)
         registry.register(AskUserTool(service: questionService))
 
-        // M3 T2 权限装配：每会话 PermissionCoordinator（双旋钮折叠 + 规则引擎
-        // + 会话审批缓存 + 沉淀 + /permission）；规则库 App 级共享。
+        // M3 P1-4 权限装配：每会话 PermissionCoordinator（双旋钮折叠 +
+        // /permission + 双动态上下文位；规则引擎/缓存/沉淀随 F022 砍除）。
         // T2.2：新会话缺省双旋钮改读 App 级默认源（设置·权限行持久值），
         // 不再硬编码 ask + workspace-write。
         let permission = PermissionCoordinator(
             writer: writer,
-            rules: permissionRules,
             newSessionDefaults: { [permissionDefaults] in
                 permissionDefaults.newSessionKnobs()
             })

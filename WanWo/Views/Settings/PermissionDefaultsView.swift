@@ -15,7 +15,7 @@
 //      宿主面 = PermissionDefaultStore JSON 持久文件）。
 //    - src/client/locales.ts:5-16 —— zh 文案逐字（title/description/三挡名/
 //      确认四段）。
-//  规则 CRUD 页保留为独立入口（设置 · 权限规则）——不再冒充「权限」行。
+//  P1-4：规则 CRUD 入口随 F022 砍除——本页为唯一权限设置面。
 //
 
 import SwiftUI
@@ -81,17 +81,6 @@ struct PermissionDefaultsView: View {
                 }
             } footer: {
                 Text("仅对之后新建的会话生效；当前会话的权限挡位在聊天输入框的挡位下拉或 /permission 命令切换。")
-            }
-
-            // 规则管理入口（规则 CRUD 保留为独立分区——不再冒充「权限」行）。
-            Section {
-                NavigationLink {
-                    PermissionsView(environment: environment)
-                } label: {
-                    Label("权限规则", systemImage: "list.bullet.rectangle")
-                }
-            } footer: {
-                Text("prefix / network 规则的管理与审批沉淀。")
             }
         }
         .navigationTitle("权限")

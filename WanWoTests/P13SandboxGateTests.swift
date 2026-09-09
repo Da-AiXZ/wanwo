@@ -369,7 +369,7 @@ final class P13SandboxGateTests: XCTestCase {
             guard case .array(let values) = perm["enum"] else {
                 return XCTFail("enum missing on \(name)")
             }
-            XCTAssertEqual(values.map { $0.stringValue },
+            XCTAssertEqual(values.compactMap { $0.stringValue },
                            ["workspace-write", "danger-full-access"], name)
             // justification 必在（description 逐字尾段）。
             guard case .object(let just) = props["justification"],
@@ -444,12 +444,6 @@ final class P13SandboxGateTests: XCTestCase {
     }
 
     // MARK: - 会话写柄（与 ApprovalCoordinatorTests 同模式）
-
-    /// 规则库临时实例（P1-3 临场形态；P1-4 随规则引擎砍除）。
-    private static func makeRules() -> PermissionRulesStore {
-        PermissionRulesStore(fileURL: FileManager.default.temporaryDirectory
-            .appendingPathComponent("perm-rules-\(UUID().uuidString).jsonl"))
-    }
 
     private func makeWriter() async throws -> (SessionWriter, URL) {
         let dir = FileManager.default.temporaryDirectory

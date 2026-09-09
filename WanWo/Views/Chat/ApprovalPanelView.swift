@@ -43,14 +43,14 @@ enum ApprovalPanelStyle {
 }
 
 /// 审批 composer 接管（取代输入框：理由标题 + 配对命令 + 一次性拒绝/允许按钮；
-/// 答后由 settleApproval 退位恢复 composer）。
+/// 答后由 settleApproval 退位恢复 composer）。P1-4：「允许并记住」第三按钮
+/// 随 F022 砍除——allowed-once 仅 stamp 本调用（dsh escalation.ts:183）。
 struct ApprovalPanelView: View {
     let pending: PendingApprovalPresentation
     /// 提交在途（按钮禁用；结算失败由 VM re-arm——dsh re-arm 语义）。
     let answering: Bool
-    /// allow=true → allowed-once（remember=true 附加「允许并记住」沉淀）；
-    /// false → rejected。
-    let onAnswer: (_ allow: Bool, _ remember: Bool) -> Void
+    /// allow=true → allowed-once；false → rejected。
+    let onAnswer: (_ allow: Bool) -> Void
 
     /// headline：请求理由，缺省走 dsh escalation 文案模板（locales.ts 逐字）。
     private var headline: String {
@@ -96,12 +96,11 @@ struct ApprovalPanelView: View {
             .frame(maxHeight: ApprovalPanelStyle.textMaxHeight, alignment: .top)
             .accessibilityLabel("审批详情")
 
-            // 动作行（滚动区外恒可见；拒绝 outline / 允许一次 primary；
-            // T2：bash 待批命令附「允许并记住」沉淀出口——rememberable）。
+            // 动作行（滚动区外恒可见；拒绝 outline / 允许一次 primary）。
             HStack(spacing: 8) {
                 Spacer()
                 Button {
-                    onAnswer(false, false)
+                    onAnswer(false)
                 } label: {
                     Text("拒绝")
                         .frame(minWidth: 64)
@@ -110,20 +109,8 @@ struct ApprovalPanelView: View {
                 .tint(.red)
                 .disabled(answering)
 
-                if pending.rememberable {
-                    Button {
-                        onAnswer(true, true)
-                    } label: {
-                        Text("允许并记住")
-                            .frame(minWidth: 64)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(ApprovalPanelStyle.warnPrimary)
-                    .disabled(answering)
-                }
-
                 Button {
-                    onAnswer(true, false)
+                    onAnswer(true)
                 } label: {
                     Text("允许一次")
                         .frame(minWidth: 64)
