@@ -2,10 +2,10 @@
 //  PermissionsView.swift
 //  WanWo
 //
-//  【按缝新写 · M3 T2】规则管理 UI（CRUD、来源可溯）+ Settings 权限导航
-//  入口（m3-scope-brief §三 T2 件 5；T1 偏差 6 补齐）。规则库 = App 级共享
-//  user 层 JSONL（PermissionRulesStore）；预设切换是会话级操作（/permission
-//  命令），本页呈现默认预设表说明与规则全集。
+//  【按缝新写 · M3 T2 · T2.2 调整】规则管理 UI（CRUD、来源可溯）。
+//  T2.2：本页定位收窄为「权限规则」独立入口（设置段导航 + PermissionDefaultsView
+//  的分区链接可达）——原「权限」入口由新会话默认权限行接管（PermissionRow.tsx
+//  语义，规则页不再冒充「权限」行）；read-only 挡自 T2.2 起可切换（hostTable）。
 //  来源可溯：每条规则展示 source（审批沉淀 / 手工）与 origin 原文。
 //  CRUD 形态：JSONL 追加模型 → 增（表单）/ 删（滑动删除+全量重写）/
 //  查（列表）；改 = 删后重建（追加模型的等价形态，偏差登记见批次报告）。
@@ -38,8 +38,8 @@ struct PermissionsView: View {
             } header: {
                 Text("权限预设")
             } footer: {
-                Text("预设按会话切换：聊天输入 /permission 查看，/permission <预设名> 切换。"
-                    + "read-only 档需自定义预设（本构建未提供）；custom 为派生态，不可作为切换目标。")
+                Text("预设按会话切换：聊天输入 /permission 查看，/permission <预设名> 切换；"
+                    + "当前会话也可用输入框挡位下拉切换。custom 为派生态，不可作为切换目标。")
             }
 
             Section {
@@ -63,7 +63,7 @@ struct PermissionsView: View {
                     + "审批时点「允许并记住」会沉淀「审批沉淀」规则；解释器/提权等黑名单前缀永不沉淀。")
             }
         }
-        .navigationTitle("权限")
+        .navigationTitle("权限规则")
         .toolbar {
             Button {
                 showingAddSheet = true

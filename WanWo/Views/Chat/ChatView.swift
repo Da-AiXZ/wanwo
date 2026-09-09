@@ -13,6 +13,11 @@ import SwiftUI
 struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
 
+    /// 命令菜单开合（C7；+ 按钮与 "/" 触发共用一菜单）。
+    @State private var commandMenuOpen = false
+    /// 本轮菜单是否由 "/" 触发（决定草稿离开 "/" 形态时是否收起）。
+    @State private var slashTriggeredMenu = false
+
     init(environment: AppEnvironment, sessionID: String) {
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
                                                              sessionID: sessionID))
@@ -27,12 +32,25 @@ struct ChatView: View {
             // M3 T1：composer 座位（审批/提问接管输入框，dsh composer 接管形态；
             // 高度上限共用 336px，座位高度稳定不跳动——2026-07-30 笔记）。
             composerSeat
+            // 状态条 dock（C8；StatsLine.tsx:1-3——挂 composer 之下不随流滚动）。
+            if let line = viewModel.statsLine {
+                StatsLineView(line: line)
+            }
         }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewModel.open() }
         // 会话切换/离场即释放写柄 + 取消在途回合（dsh SessionLifecycle open/dispose 配对）。
         .onDisappear { viewModel.close() }
+        // A4：/permission danger-full-access 前置风险确认（dsh popupSelect
+        // confirming gate；与入口①③共文案——当前会话挡 accessZh 变体）。
+        .sheet(isPresented: Binding(
+            get: { viewModel.pendingPermissionConfirmation != nil },
+            set: { if !$0 { viewModel.cancelPendingPermission() } })) {
+            PermissionConfirmationGate(
+                onConfirm: { viewModel.confirmPendingPermission() },
+                onCancel: { viewModel.cancelPendingPermission() })
+        }
     }
 
     // MARK: - 顶部状态条（模型 + token 压力三档 + 阶段）
@@ -60,8 +78,9 @@ struct ChatView: View {
                 case .loading:
                     ProgressView().controlSize(.small)
                 case .streaming:
-                    Button("停止") { viewModel.cancel() }
-                        .controlSize(.small)
+                    // T2.2 A5：停止动作移交 composer 主按钮（同位状态机，
+                    // InputBar.tsx:313-326）；顶部仅保留进行中指示。
+                    ProgressView().controlSize(.small)
                 case .failed, .idle:
                     EmptyView()
                 }
@@ -263,48 +282,217 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - composer 座位（M3 T1：接管路由，dsh conversation.composer 链形态——
-    // 待决审批优先于待决提问呈现，与 dsh 侧栏「first pending question ahead of
-    // concurrent approvals」的 composer 路由口径一致）
+    // MARK: - composer 座位（M3 T1 接管路由；T2.2 A1 修正路由顺序——
+    // dsh 笔记 2026-07-23-web-permission-and-approval.md:19 原文 "presents
+    // the first pending question ahead of concurrent approvals to match
+    // composer routing"：提问先于审批接管；原注释误引该句为审批优先依据）
 
     @ViewBuilder
     private var composerSeat: some View {
-        if let approval = viewModel.pendingApprovals.first {
-            ApprovalPanelView(pending: approval,
-                              answering: viewModel.approvalAnswering) { allow, remember in
-                viewModel.answerApproval(approval, allow: allow, remember: remember)
-            }
-        } else if let question = viewModel.pendingQuestions.first {
-            QuestionComposerView(pending: question,
+        switch ComposerSeatRoute.route(
+            hasPendingQuestion: !viewModel.pendingQuestions.isEmpty,
+            hasPendingApproval: !viewModel.pendingApprovals.isEmpty) {
+        case .question:
+            QuestionComposerView(pending: viewModel.pendingQuestions.first!,
                                  busy: viewModel.questionBusy,
                                  onSubmit: { answer in
-                                     viewModel.submitQuestionAnswer(question, answer: answer)
+                                     viewModel.submitQuestionAnswer(
+                                        viewModel.pendingQuestions.first!, answer: answer)
                                  },
-                                 onCancel: { viewModel.cancelQuestion(question) })
-        } else {
+                                 onCancel: { viewModel.cancelQuestion(
+                                    viewModel.pendingQuestions.first!) })
+        case .approval:
+            ApprovalPanelView(pending: viewModel.pendingApprovals.first!,
+                              answering: viewModel.approvalAnswering) { allow, remember in
+                viewModel.answerApproval(viewModel.pendingApprovals.first!,
+                                         allow: allow, remember: remember)
+            }
+        case .input:
             inputBar
         }
     }
 
-    // MARK: - 输入区
+    // MARK: - 输入区（T2.2：composer 卡形态——文本面 + 底部工具行）
+
+    /// 占位文案（B12；dsh ui-conversation locales.ts zh 逐字：placeholder.default
+    /// :16「发消息或做任务… / 调用指令 @ 文件或对话」/ placeholder.plan:15
+    /// 「描述你的任务以生成计划」）。
+    private var composerPlaceholder: String {
+        viewModel.planActive
+            ? "描述你的任务以生成计划"
+            : "发消息或做任务… / 调用指令 @ 文件或对话"
+    }
+
+    /// 主按钮状态机（A5；dsh InputBar.tsx:313-326 primaryStops：running 且
+    /// 无草稿 → 主按钮同位变停止；有草稿 → 发送）。
+    private var primaryStops: Bool {
+        ChatViewModel.primaryStops(running: viewModel.phase == .streaming,
+                                   draftEmpty: viewModel.isDraftEmpty)
+    }
 
     private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("输入消息，/ 为命令…", text: $viewModel.draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...5)
-                .onSubmit { viewModel.send() }
-            Button(action: { viewModel.send() }) {
-                Image(systemName: "paperplane.fill")
+        VStack(spacing: 0) {
+            // 幽灵提示（C7；dsh InputBar.tsx:335-353 claim hint——仅 /plan 有
+            // hint 词典，args 为空时显示）。
+            if let hint = viewModel.commandHint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
             }
-            .disabled(viewModel.phase != .idle
-                      || viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            // 文本面（占位文案随 plan 态切换——B12）。
+            TextField(composerPlaceholder, text: $viewModel.draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            // 底部工具行（dsh InputBar css.row：tools 左 / trailing 右）。
+            HStack(spacing: 8) {
+                // + 按钮 = 打开命令菜单（C7；InputBar.tsx:441-454——非附件）。
+                Button {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        commandMenuOpen.toggle()
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("指令")
+                // 权限挡位下拉（A3；PermissionSelect.tsx——提交走 /permission
+                // 命令同一写通路径）。
+                if let permission = viewModel.currentPermissionPreset {
+                    PermissionSelectView(
+                        currentPreset: permission,
+                        busy: viewModel.isCommandRunning,
+                        onCommand: { viewModel.runCommandLine($0) })
+                }
+                // Plan chip（C10；PlanModeControl.tsx:19-69——plan 生效时渲染，
+                // 点击执行 /plan off）。
+                if viewModel.planActive {
+                    Button {
+                        viewModel.runCommandLine("/plan off")
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Plan")
+                                .font(.footnote.weight(.medium))
+                            Image(systemName: "xmark")
+                                .font(.caption2)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("plan mode 已开启，按下关闭")
+                }
+                Spacer()
+                // 模型挡位（C11；ModelSelect.tsx——两级菜单根级，Effort 后置）。
+                ModelSelectView(store: viewModel.endpointStore) {
+                    viewModel.selectModel($0)
+                }
+                // 上下文占用环（C9；ContextMeter.tsx:106-165——无数据不渲染）。
+                if let pressure = viewModel.pressure {
+                    ContextMeterView(pressure: pressure)
+                }
+                // 主按钮（A5：发送/停止同位切换；dsh :313-326）。
+                Button {
+                    if primaryStops {
+                        viewModel.cancel()
+                    } else {
+                        viewModel.send()
+                    }
+                } label: {
+                    Image(systemName: primaryStops ? "stop.fill" : "paperplane.fill")
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .disabled(primaryStops
+                          ? false
+                          : !viewModel.canSend || viewModel.isDraftEmpty)
+                .accessibilityLabel(primaryStops ? "停止生成" : "发送消息")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
-        .padding(10)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        // 命令菜单（C7；+ 按钮与 "/" 触发共用——dsh onToggleCommandMenu）。
+        .overlay(alignment: .bottom) {
+            if commandMenuOpen {
+                SlashMenuView(
+                    query: commandMenuQuery,
+                    commands: viewModel.slashCommandList,
+                    onPick: { command in
+                        // claim token 写回（dsh "/name " 带尾随空格）；先清 "/"
+                        // 触发标记，防 onChange 又把菜单拉起。
+                        slashTriggeredMenu = false
+                        viewModel.draft = "/\(command.name) "
+                        commandMenuOpen = false
+                    },
+                    onDismiss: { commandMenuOpen = false })
+                    .offset(y: -108)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        // 手输 "/" 自动开菜单并过滤（MenuView combobox 语义）；离开 "/" 形态
+        // 且菜单由 "/" 触发时收起（"+" 直开的菜单不受草稿影响）。
+        .onChange(of: viewModel.draft) { newValue in
+            if newValue.hasPrefix("/") {
+                commandMenuOpen = true
+                slashTriggeredMenu = true
+            } else if slashTriggeredMenu {
+                commandMenuOpen = false
+                slashTriggeredMenu = false
+            }
+        }
+    }
+
+    /// 菜单过滤词（草稿以 "/" 开头时 = 当前草稿；"+" 打开时 = 全列）。
+    private var commandMenuQuery: String {
+        viewModel.draft.hasPrefix("/") ? viewModel.draft : ""
     }
 }
 
 extension ChatViewModel {
-    /// 状态条「停止」按钮的显示条件（流式进行中）。
+    /// 状态条「停止」按钮的显示条件（流式进行中；T2.2 A5 后保留供诊断用）。
     var isBusy: Bool { phase == .streaming }
+}
+
+// MARK: - A4 Full access 前置确认面（/permission danger-full-access 命令门控）
+
+/// /permission danger-full-access 的确认卡片（dsh popupSelect confirming gate；
+/// 文案 = 当前会话挡 accessZh 变体——ui-permission-presets locales.ts:43-47）。
+struct PermissionConfirmationGate: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    @State private var acknowledged = false
+
+    var body: some View {
+        RiskConfirmationView(
+            title: "确认启用完全权限？",
+            description: "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，"
+                + "包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",
+            acknowledgeLabel: "我已了解风险，并愿意继续",
+            cancelLabel: "取消",
+            confirmLabel: "启用完全权限",
+            acknowledged: $acknowledged,
+            onCancel: onCancel,
+            onConfirm: onConfirm)
+            .presentationDetentsIfAvailable([.height(320)])
+    }
+}
+
+extension View {
+    /// iOS 16.4+ detents 降级包裹（部署基线 16.6 直用；占位以防 API 前向差异）。
+    @ViewBuilder
+    func presentationDetentsIfAvailable(_ detents: Set<PresentationDetent>) -> some View {
+        self.presentationDetents(detents)
+    }
 }

@@ -60,6 +60,13 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var approvalAnswering = false
     /// 提问提交防双击。
     @Published private(set) var questionBusy = false
+    // MARK: M3 T2.2 派生状态
+    /// 计划模式生效（Plan chip 显示位；PlanModeController.isActive 折叠镜像）。
+    @Published private(set) var planActive = false
+    /// 状态条整行（SessionStatsFold；composer dock）。
+    @Published private(set) var statsLine: String?
+    /// /permission danger-full-access 前置确认（A4；非 nil = 待确认命令行原文）。
+    @Published var pendingPermissionConfirmation: String?
 
     private let environment: AppEnvironment
     private let sessionID: String
@@ -187,11 +194,113 @@ final class ChatViewModel: ObservableObject {
         Task { await agentLoop?.cancel(cause: .user) }
     }
 
+    // MARK: - M3 T2.2 GUI 命令通道（与手输同路）
+
+    /// GUI 通道的命令提交（dsh「both surfaces write through one path」——
+    /// composer 权限挡位下拉 / Plan chip 与手输命令同一 command/run → run →
+    /// command/done 落盘路径）。phase 纪律与 send() 一致。
+    func runCommandLine(_ line: String) {
+        guard SlashCommandRegistry.isCommand(line), canSendFromPhase else { return }
+        runningTask = Task { [weak self] in
+            await self?.runSlashCommand(line)
+            self?.runningTask = nil
+        }
+    }
+
+    /// Full access 前置确认（A4）：仅 /permission danger-full-access 需门控
+    /// （dsh popupSelect confirming gate + PermissionSelect.tsx:129-133 特判）；
+    /// 带参直达语义对其他预设保留。nonisolated 纯函数（单测直呼）。
+    nonisolated static func isFullAccessCommand(name: String, args: String?) -> Bool {
+        name == "permission"
+            && args?.trimmingCharacters(in: .whitespacesAndNewlines) == "danger-full-access"
+    }
+
+    /// 确认执行待确认的 Full access 命令（绕过门控直达执行器——确认即放行，
+    /// 否则门控会再次拦截形成回环）。
+    func confirmPendingPermission() {
+        guard let line = pendingPermissionConfirmation else { return }
+        pendingPermissionConfirmation = nil
+        runningTask = Task { [weak self] in
+            await self?.executeSlashCommand(line)
+            self?.runningTask = nil
+        }
+    }
+
+    /// 取消 Full access 确认（fail closed：不执行、不留痕迹）。
+    func cancelPendingPermission() {
+        pendingPermissionConfirmation = nil
+    }
+
+    /// 模型挡位提交（ModelSelectView 回传；下一请求即用新端点）。
+    func selectModel(_ endpoint: EndpointConfig) {
+        environment.endpointStore.setActive(endpoint)
+        modelLabel = "\(endpoint.name) · \(endpoint.model)"
+    }
+
+    /// 模型挡位数据源（ModelSelectView @ObservedObject 接线）。
+    var endpointStore: EndpointStore { environment.endpointStore }
+
+    /// 命令列表（slash 菜单数据源；按名称排序——dsh helpText 同序）。
+    var slashCommandList: [SlashCommandRegistry.Command] {
+        (slashCommands?.commands.values.sorted { $0.name < $1.name }) ?? []
+    }
+
+    /// 幽灵提示（dsh InputBar.tsx:335-353 claim hint：args 为空时显示命令
+    /// hint；dsh 词典仅 hint.plan/goal，WanWo 无 goal → 仅 /plan）。
+    var commandHint: String? {
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        guard trimmed == "/plan" || trimmed.hasPrefix("/plan "),
+              trimmed.dropFirst("/plan".count).trimmingCharacters(in: .whitespaces).isEmpty
+        else { return nil }
+        // hint.plan zh 原文（ui-conversation locales.ts:7 = placeholder.plan 同值）。
+        return "描述你的任务以生成计划"
+    }
+
+    /// 草稿是否为空（主按钮状态机入参）。
+    var isDraftEmpty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 发送就绪（idle/failed 可发——.failed 重试口径不变）。
+    var canSend: Bool { canSendFromPhase }
+
+    /// 命令任务在途（GUI 命令通道 busy；PermissionSelectView 禁用入参）。
+    var isCommandRunning: Bool { runningTask != nil }
+
+    /// 当前权限预设名（composer 权限挡位下拉数据源；nil = 权限系统未装配）。
+    var currentPermissionPreset: String? {
+        permission?.knobs.currentPresetName()
+    }
+
+    /// 主按钮状态机（dsh InputBar.tsx:313-326 primaryStops：运行中且无草稿 →
+    /// 主按钮同位变停止；有草稿 → 发送（Queue 语义随 M7，本构建禁用）。
+    /// nonisolated 纯函数（单测不经 MainActor 直呼）。
+    nonisolated static func primaryStops(running: Bool, draftEmpty: Bool) -> Bool {
+        running && draftEmpty
+    }
+
     // MARK: - 斜杠命令（command/run → 执行 → command/done）
 
+    /// 门控入口：Full access 命令先行拦截（确认前零副作用——不落 command/run、
+    /// 不执行），其余直入执行器。
     private func runSlashCommand(_ text: String) async {
+        let name = SlashCommandRegistry.commandName(text)
+        let rawArgs = text.count > name.count + 1
+            ? String(text.dropFirst(name.count + 2)) : nil
+        if Self.isFullAccessCommand(name: name, args: rawArgs) {
+            pendingPermissionConfirmation = text
+            return
+        }
+        await executeSlashCommand(text)
+    }
+
+    /// 执行器（command/run → run → command/done → 重投影；无门控——确认
+    /// 放行路径与普通命令共用）。
+    private func executeSlashCommand(_ text: String) async {
         guard let writer = writer else { return }
         let name = SlashCommandRegistry.commandName(text)
+        let rawArgs = text.count > name.count + 1
+            ? String(text.dropFirst(name.count + 2)) : nil
         guard let command = slashCommands?.command(named: name) else {
             let help = slashCommands?.helpText ?? "Unknown command."
             try? await writer.append(.commandRun(commandId: UUID().uuidString,
@@ -202,8 +311,7 @@ final class ChatViewModel: ObservableObject {
             return
         }
         let commandId = UUID().uuidString
-        let args = text.count > name.count + 1
-            ? String(text.dropFirst(name.count + 2)) : nil
+        let args = rawArgs
         try? await writer.append(.commandRun(commandId: commandId, name: name, args: args))
         let result = await command.run(args)
         try? await writer.append(.commandDone(commandId: commandId, kind: "success", text: result))
@@ -373,6 +481,9 @@ final class ChatViewModel: ObservableObject {
         bubbles = projected
         streamingText = ""
         streamingReasoning = ""
+        // T2.2 派生状态刷新（plan chip 镜像 + 状态条折叠）。
+        planActive = plan?.isActive ?? false
+        statsLine = SessionStatsFold.line(for: SessionStatsFold.fold(events: writer.events))
         // live 琥珀状态行不在事件流中——重投影后按在途队列重放（M3 T1）。
         if let first = pendingApprovals.first, let callId = first.callId {
             setCardStatus(callId: callId, note: "等待审批")
@@ -572,5 +683,25 @@ extension ChatViewModel {
                 self?.questionBusy = false
             }
         }
+    }
+}
+
+// MARK: - M3 T2.2 A1 composer 路由（提问先于审批）
+
+/// composer 座位路由（纯函数，单测断言位）。
+enum ComposerSeatRoute: Equatable {
+    case question
+    case approval
+    case input
+
+    /// dsh 笔记 2026-07-23-web-permission-and-approval.md:19 原文
+    /// 「presents the first pending question ahead of concurrent approvals to
+    /// match composer routing」：提问（ui-user-questions）先于审批（
+    /// ApprovalPanel）接管 composer——T2.2 A1（原 WanWo 审批优先为反序）。
+    static func route(hasPendingQuestion: Bool,
+                      hasPendingApproval: Bool) -> ComposerSeatRoute {
+        if hasPendingQuestion { return .question }
+        if hasPendingApproval { return .approval }
+        return .input
     }
 }

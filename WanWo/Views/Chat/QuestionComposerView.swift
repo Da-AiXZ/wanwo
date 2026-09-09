@@ -10,11 +10,16 @@
 //      后缀解析（parseRecommendedLabel :30-35）；提交组装语义（:205-232）：
 //      skipped → {id, selected: []}；custom 非空且单选 → 仅 custom；多选保留
 //      selected 并可附带 custom；未答完聚焦缺失项并提示。
-//    - packages/client/ui-user-questions/src/client/QuestionComposer.module.css
-//      —— 结构常量（卡片圆角 16、选项行内边距、footer 布局）。
-//    - .agents/notes/implemented/feature/2026-07-29-ask-question-web-presentation.md
-//      —— composer 接管收集回答；跳过语义（skipped 不计入 N/M）；
-//      multi_select 是结构化元数据，标题逐字渲染（（可多选）后缀约定已删除）。
+    //    - packages/client/ui-user-questions/src/client/QuestionComposer.module.css
+    //      —— 结构常量（卡片圆角 16、选项行内边距、footer 布局）。
+    //    - packages/client/ui-user-questions/src/client/locales.ts:5-14 —— zh
+    //      文案逐字（T2.2 B13 对齐）：error.incomplete「请先完成这道问题。」/
+    //      error.unanswered「请选择一个选项或填写自定义答案。」/
+    //      custom.placeholder「输入你的答案」/ action.skip「跳过本题」/
+    //      nav.cancel「放弃整组问题」。
+    //    - .agents/notes/implemented/feature/2026-07-29-ask-question-web-presentation.md
+    //      —— composer 接管收集回答；跳过语义（skipped 不计入 N/M）；
+    //      multi_select 是结构化元数据，标题逐字渲染（（可多选）后缀约定已删除）。
 //  plan-review 意图（intent.kind = "plan-review"）随 T3 落 PlanReviewPanel；
 //  本页按 dsh 契约对未知意图回退通用流（types.ts:15-19：意图只改呈现不改协议）。
 //
@@ -117,7 +122,8 @@ struct QuestionComposerView: View {
             }
             .buttonStyle(.borderless)
             .disabled(busy)
-            .accessibilityLabel("关闭提问")
+            // B13：zh nav.cancel 逐字（放弃整组问题）。
+            .accessibilityLabel("放弃整组问题")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -193,7 +199,8 @@ struct QuestionComposerView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            TextField("自定义回答（可选）", text: customBinding, axis: .vertical)
+            // B13：custom.placeholder zh 逐字「输入你的答案」。
+            TextField("输入你的答案", text: customBinding, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .padding(8)
@@ -255,7 +262,8 @@ struct QuestionComposerView: View {
 
                 Spacer()
 
-                Button("跳过") { skipQuestion() }
+                // B13：action.skip zh 逐字「跳过本题」。
+                Button("跳过本题") { skipQuestion() }
                     .buttonStyle(.bordered)
                     .disabled(busy)
 
@@ -296,7 +304,8 @@ struct QuestionComposerView: View {
 
     private func continueFlow() {
         if !answered(draft) {
-            feedback = "请先回答当前问题（选择或填写自定义回答）"
+            // B13：error.unanswered zh 逐字（单题未答）。
+            feedback = "请选择一个选项或填写自定义答案。"
             return
         }
         if !isLast {
@@ -323,7 +332,8 @@ struct QuestionComposerView: View {
     private func submitDrafts(_ values: [Draft]) {
         if let missing = values.firstIndex(where: { !$0.skipped && !answered($0) }) {
             index = missing
-            feedback = "还有未回答的问题（可跳过）"
+            // B13：error.incomplete zh 逐字（提交前聚焦缺失项）。
+            feedback = "请先完成这道问题。"
             return
         }
         let answers = questions.enumerated().map { questionIndex, item -> AskUserQuestionAnswerItem in

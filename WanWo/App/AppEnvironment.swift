@@ -17,8 +17,10 @@ enum RootSelection: Hashable {
     case shellTest
     /// M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
     case eventStream
-    /// M3 T2 权限管理页（规则 CRUD + 预设说明；T1 偏差 6 补齐）。
+    /// M3 T2 权限规则管理页（规则 CRUD；T2.2 起不再冒充「权限」行）。
     case permissions
+    /// M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；入口③）。
+    case permissionDefaults
     case none
 }
 
@@ -31,6 +33,9 @@ final class AppEnvironment: ObservableObject {
     let database: SessionDatabase
     /// M3 T2：权限规则库（App 级共享 user 层 JSONL；flock 排他 + 签名去重）。
     let permissionRules: PermissionRulesStore
+    /// M3 T2.2：新会话默认权限预设（设置·权限行持久宿主面；PermissionRow.tsx
+    /// 语义——App 级默认，与当前会话旋钮分离）。
+    let permissionDefaults: PermissionDefaultStore
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -75,6 +80,9 @@ final class AppEnvironment: ObservableObject {
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
         self.permissionRules = PermissionRulesStore(
             fileURL: configDir.appendingPathComponent("permission-rules.jsonl"))
+        // M3 T2.2：新会话默认权限预设（config/permission-default.json）。
+        self.permissionDefaults = PermissionDefaultStore(
+            fileURL: configDir.appendingPathComponent("permission-default.json"))
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
@@ -243,7 +251,14 @@ final class AppEnvironment: ObservableObject {
 
         // M3 T2 权限装配：每会话 PermissionCoordinator（双旋钮折叠 + 规则引擎
         // + 会话审批缓存 + 沉淀 + /permission）；规则库 App 级共享。
-        let permission = PermissionCoordinator(writer: writer, rules: permissionRules)
+        // T2.2：新会话缺省双旋钮改读 App 级默认源（设置·权限行持久值），
+        // 不再硬编码 ask + workspace-write。
+        let permission = PermissionCoordinator(
+            writer: writer,
+            rules: permissionRules,
+            newSessionDefaults: { [permissionDefaults] in
+                permissionDefaults.newSessionKnobs()
+            })
 
         let spill = SpillStore(
             root: WanWoPaths.persistentBase

@@ -34,8 +34,11 @@ struct RootView: View {
         case .providers:
             ProvidersView(environment: environment)
         case .permissions:
-            // M3 T2 权限管理页（规则 CRUD + 预设说明；T1 偏差 6 补齐）。
+            // M3 T2 权限规则管理页（规则 CRUD；T2.2 起为独立入口）。
             PermissionsView(environment: environment)
+        case .permissionDefaults:
+            // M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；入口③）。
+            PermissionDefaultsView(environment: environment)
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()

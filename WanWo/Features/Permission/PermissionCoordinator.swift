@@ -47,21 +47,32 @@ final class PermissionCoordinator: @unchecked Sendable {
     /// 会话工作目录（缓存键「环境」位；M1-M3 恒定值）。
     private let cwd: String
 
+    /// 新会话缺省双旋钮供值缝（T2.2 派单项 2：App 级默认源——设置·新会话
+    /// 默认权限行；不再硬编码 ask+workspace-write。缺省供值 = dsh
+    /// BootHostOptions.sandbox 部署默认语义，笔记 :13）。
+    let newSessionDefaults: @Sendable () -> (sandbox: ApprovalDecisionMatrix.SandboxMode,
+                                             approval: ApprovalPolicy)
+
     private static let logger = AppLogger(category: "PermissionCoordinator")
 
     init(writer: SessionWriter,
          rules: PermissionRulesStore,
-         cwd: String = WanWoPaths.workspaceLinuxDir) {
+         cwd: String = WanWoPaths.workspaceLinuxDir,
+         newSessionDefaults: @escaping @Sendable () -> (sandbox: ApprovalDecisionMatrix.SandboxMode,
+                                                        approval: ApprovalPolicy) =
+            { (.workspaceWrite, .ask) }) {
         self.writer = writer
         self.rules = rules
         self.cwd = cwd
+        self.newSessionDefaults = newSessionDefaults
         restoreKnobs()
     }
 
     // MARK: - 折叠（resume：从会话事件流恢复双旋钮）
 
     /// 分别取事件流中最后一条 approval/policy 与 sandbox/mode 的值进内存
-    /// （无历史 → 保持缺省 ask + workspace-write——fail closed 缺省档）。
+    /// （有历史 → 事件值优先；无对应历史 → 回落 App 级新会话默认源——T2.2：
+    /// 设置·新会话默认权限行。两旋钮独立判定，fail closed 不混合猜测）。
     private func restoreKnobs() {
         for event in writer.events.reversed() {
             if case .extensionEvent(Self.policyEventKind, let payload) = event.payload,
@@ -78,6 +89,28 @@ final class PermissionCoordinator: @unchecked Sendable {
                 knobs.sandbox = mode
                 break
             }
+        }
+        let defaults = newSessionDefaults()
+        if !hasPolicyEvent {
+            knobs.approval = defaults.approval
+        }
+        if !hasSandboxEvent {
+            knobs.sandbox = defaults.sandbox
+        }
+    }
+
+    /// 事件流中是否存在过对应旋钮事件（恢复优先级判定用）。
+    private var hasPolicyEvent: Bool {
+        writer.events.contains {
+            if case .extensionEvent(Self.policyEventKind, _) = $0.payload { return true }
+            return false
+        }
+    }
+
+    private var hasSandboxEvent: Bool {
+        writer.events.contains {
+            if case .extensionEvent(Self.sandboxEventKind, _) = $0.payload { return true }
+            return false
         }
     }
 
@@ -148,7 +181,7 @@ final class PermissionCoordinator: @unchecked Sendable {
         return "当前权限预设：\(current)（sandbox: \(knobs.sandbox.rawValue), "
             + "approval: \(knobs.approval.rawValue)）\n"
             + "可选预设：\(available)\n"
-            + "read-only 档需自定义预设，本构建暂未提供；custom 为派生态，不可作为切换目标。"
+            + "custom 为派生态，不可作为切换目标。"
     }
 
     /// 切换预设（dsh apply 语义：双旋钮持久 diff 写——先全部落盘成功再统一

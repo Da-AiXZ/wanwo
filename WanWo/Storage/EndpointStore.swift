@@ -40,9 +40,13 @@ struct EndpointConfig: Codable, Identifiable, Equatable, Sendable {
 @MainActor
 final class EndpointStore: ObservableObject {
     @Published private(set) var endpoints: [EndpointConfig]
+    /// M3 T2.2：用户显式选定的活动端点（composer 模型挡位写侧；UserDefaults
+    /// 持久——端点 JSON 为 [EndpointConfig] 数组格式，另立键避免破坏既有文件）。
+    @Published private(set) var activeEndpointID: UUID?
 
     private let fileURL: URL
     private static let logger = AppLogger(category: "endpoints")
+    private static let activeIDKey = "wanwo.activeEndpointID"
 
     init(fileURL: URL) {
         self.fileURL = fileURL
@@ -60,11 +64,29 @@ final class EndpointStore: ObservableObject {
                                         isEnabled: true)]
             persist()
         }
+        // 恢复显式选择（端点已不存在则弃用，回落首启用项）。
+        if let raw = UserDefaults.standard.string(forKey: Self.activeIDKey),
+           let id = UUID(uuidString: raw),
+           endpoints.contains(where: { $0.id == id }) {
+            activeEndpointID = id
+        }
     }
 
-    /// 当前启用的端点（M1：取第一个启用项；多路由路由策略随 F053 完整化）。
+    /// 当前启用的端点（显式选择优先；无效/未选回落首启用项——T2.2 前行为）。
     func activeEndpoint() -> EndpointConfig? {
-        endpoints.first(where: { $0.isEnabled })
+        if let id = activeEndpointID,
+           let explicit = endpoints.first(where: { $0.id == id && $0.isEnabled }) {
+            return explicit
+        }
+        return endpoints.first(where: { $0.isEnabled })
+    }
+
+    /// 设定活动端点（composer 模型挡位提交面；下一请求即生效——AgentLoop
+    /// makeAdapter 按调用时 activeEndpoint 取用）。
+    func setActive(_ endpoint: EndpointConfig) {
+        guard endpoints.contains(where: { $0.id == endpoint.id }) else { return }
+        activeEndpointID = endpoint.id
+        UserDefaults.standard.set(endpoint.id.uuidString, forKey: Self.activeIDKey)
     }
 
     // MARK: - 增删改查
@@ -83,6 +105,11 @@ final class EndpointStore: ObservableObject {
     func remove(_ endpoint: EndpointConfig) {
         endpoints.removeAll(where: { $0.id == endpoint.id })
         KeychainStore.delete(account: endpoint.id.uuidString)
+        // 显式选择随端点移除清退（回落首启用项）。
+        if activeEndpointID == endpoint.id {
+            activeEndpointID = nil
+            UserDefaults.standard.removeObject(forKey: Self.activeIDKey)
+        }
         persist()
     }
 

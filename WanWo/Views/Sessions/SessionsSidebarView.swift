@@ -15,6 +15,8 @@ struct SessionsSidebarView: View {
 
     @State private var summaries: [SessionSummary] = []
     @State private var creating = false
+    /// 待确认删除的行号集（A6：滑动删除 → 确认对话框 → 执行）。
+    @State private var pendingDeleteOffsets: IndexSet?
 
     var body: some View {
         List {
@@ -59,7 +61,8 @@ struct SessionsSidebarView: View {
                     }
                 }
                 .onDelete { indexSet in
-                    delete(at: indexSet)
+                    // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
+                    pendingDeleteOffsets = indexSet
                 }
             }
 
@@ -70,10 +73,17 @@ struct SessionsSidebarView: View {
                     Label("Providers", systemImage: "cpu")
                 }
                 Button {
-                    // M3 T2：权限管理页（规则 CRUD、来源可溯；T1 偏差 6 补齐）。
-                    selection = .permissions
+                    // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1，
+                    // 入口③；「权限」行不再冒充规则页）。
+                    selection = .permissionDefaults
                 } label: {
                     Label("权限", systemImage: "lock.shield")
+                }
+                Button {
+                    // M3 T2 规则 CRUD 页（T2.2 起为独立入口）。
+                    selection = .permissions
+                } label: {
+                    Label("权限规则", systemImage: "list.bullet.rectangle")
                 }
             }
 
@@ -96,6 +106,20 @@ struct SessionsSidebarView: View {
         .task { await reload() }
         .onChange(of: environment.sessionsRevision) { _ in
             Task { await reload() }
+        }
+        // M3 T2.2 A6：删除确认对话框（滑动删除不直删）。
+        .confirmationDialog(
+            "删除会话？该操作不可撤销。",
+            isPresented: Binding(get: { pendingDeleteOffsets != nil },
+                                 set: { if !$0 { pendingDeleteOffsets = nil } }),
+            titleVisibility: .visible) {
+            Button("删除会话", role: .destructive) {
+                if let offsets = pendingDeleteOffsets {
+                    delete(at: offsets)
+                }
+                pendingDeleteOffsets = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteOffsets = nil }
         }
     }
 
