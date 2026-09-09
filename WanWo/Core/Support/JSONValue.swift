@@ -199,4 +199,15 @@ extension JSONValue {
     static func booleanSchema(description: String) -> JSONValue {
         .object(["type": .string("boolean"), "description": .string(description)])
     }
+
+    /// 闭集枚举 schema（dsh escalation schema 形态：`{type:'string', enum:[…],
+    /// description}`——registry-global 闭集词汇，如 sandbox_permissions 的
+    /// ESCALATION_TARGETS）。
+    static func enumSchema(description: String, allowedValues: [String]) -> JSONValue {
+        .object([
+            "type": .string("string"),
+            "enum": .array(allowedValues.map { .string($0) }),
+            "description": .string(description),
+        ])
+    }
 }

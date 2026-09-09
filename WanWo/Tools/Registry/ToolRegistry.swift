@@ -56,6 +56,12 @@ struct ToolExecutionContext: Sendable {
     let onShellLine: @Sendable (_ callId: String, _ line: String) -> Void
     /// 一次性 LLM 直调缝（web_search / 摘要类工具用；走当前 adapter）。
     let completeLLM: @Sendable (_ prompt: String, _ system: String?) async throws -> String
+    /// 本调用的生效沙箱模式（P1-3：approved 显式 > 会话末条 sandbox/mode >
+    /// 新会话默认源 > 部署默认——四层解析在装配缝完成，此处为解析产物）。
+    let sandboxMode: SandboxMode
+    /// 提权审批通道（P1-3：审批只由 sandbox_permissions 提权请求触发；
+    /// nil = 无审批服务合成 → 提权 fail closed 'unavailable' 逐字文案）。
+    let escalationApprover: SandboxEscalationApprover?
 }
 
 // MARK: - 卡片呈现意图

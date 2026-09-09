@@ -82,6 +82,13 @@ actor AgentLoop {
         let injector: ContextInjector
         let makeAdapter: @Sendable () async throws -> OpenAICompatAdapter
         let callbacks: Callbacks
+        /// P1-3：本调用生效沙箱模式供值缝（PermissionCoordinator.knobs.sandbox
+        /// 实时折叠值；四层解析顺序在装配缝注释——approved 显式 > 会话末条
+        /// sandbox/mode > 新会话默认源 > 部署默认）。
+        let sandboxModeProvider: @Sendable () -> SandboxMode
+        /// P1-3：提权审批通道（approval 只由 sandbox_permissions 请求触发；
+        /// 'never' 政策在闭包内先短路——dsh user-approval index.ts:266）。
+        let escalationApprover: SandboxEscalationApprover?
     }
 
     // MARK: - 状态

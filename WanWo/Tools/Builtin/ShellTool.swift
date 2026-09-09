@@ -81,6 +81,14 @@ struct ShellTool: AgentTool {
         guard let command = args.objectValue?["command"]?.stringValue, !command.isEmpty else {
             return .failure("missing required parameter \"command\"", code: "INVALID_ARGS")
         }
+        // P1-3：沙箱门（resolvePolicy → 提权审批；read-only 档启发式写检测
+        // 拒绝——dsh 内核围栏的 WanWo 近似，A2 不可抗力）。
+        if let denial = await SandboxGate.authorizeBash(
+            tool: name, command: command, args: args,
+            standingMode: ctx.sandboxMode, callId: ctx.callId,
+            approver: ctx.escalationApprover) {
+            return denial
+        }
         let timeoutSeconds = args.objectValue?["timeout_ms"]?.intValue
             .map { max(1, Double($0) / 1000) } ?? Self.defaultTimeoutSeconds
 

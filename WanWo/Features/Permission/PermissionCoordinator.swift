@@ -50,7 +50,7 @@ final class PermissionCoordinator: @unchecked Sendable {
     /// 新会话缺省双旋钮供值缝（T2.2 派单项 2：App 级默认源——设置·新会话
     /// 默认权限行；不再硬编码 ask+workspace-write。缺省供值 = dsh
     /// BootHostOptions.sandbox 部署默认语义，笔记 :13）。
-    let newSessionDefaults: @Sendable () -> (sandbox: ApprovalDecisionMatrix.SandboxMode,
+    let newSessionDefaults: @Sendable () -> (sandbox: SandboxMode,
                                              approval: ApprovalPolicy)
 
     private static let logger = AppLogger(category: "PermissionCoordinator")
@@ -58,7 +58,7 @@ final class PermissionCoordinator: @unchecked Sendable {
     init(writer: SessionWriter,
          rules: PermissionRulesStore,
          cwd: String = WanWoPaths.workspaceLinuxDir,
-         newSessionDefaults: @escaping @Sendable () -> (sandbox: ApprovalDecisionMatrix.SandboxMode,
+         newSessionDefaults: @escaping @Sendable () -> (sandbox: SandboxMode,
                                                         approval: ApprovalPolicy) =
             { (.workspaceWrite, .ask) }) {
         self.writer = writer
@@ -85,7 +85,7 @@ final class PermissionCoordinator: @unchecked Sendable {
         for event in writer.events.reversed() {
             if case .extensionEvent(Self.sandboxEventKind, let payload) = event.payload,
                let raw = payload.field("mode")?.stringValue,
-               let mode = ApprovalDecisionMatrix.SandboxMode(rawValue: raw) {
+               let mode = SandboxMode(rawValue: raw) {
                 knobs.sandbox = mode
                 break
             }
@@ -233,18 +233,28 @@ final class PermissionCoordinator: @unchecked Sendable {
             + "approval: \(spec.approval.rawValue)。"
     }
 
-    // MARK: - approval-policy 动态上下文位（CONTEXT_ORDERS 115）
+    // MARK: - 动态上下文位（CONTEXT_ORDERS sandbox:policy 110 + approval-policy 115）
+
+    /// dsh user-approval index.ts:68 ASK_SENTENCE 逐字。
+    private static let askSentence = "Approval policy: ask. Operations that require approval may ask "
+        + "through the configured answerers; without an available answerer, the request fails closed."
+    /// dsh user-approval index.ts:66 NEVER_SENTENCE 逐字。
+    private static let neverSentence = "Approval prompts are disabled in this session: actions that "
+        + "require approval are rejected automatically — do not request sandbox escalation "
+        + "(do not set `sandbox_permissions`)."
 
     /// 当前审批策略上下文行（ContextInjector.approvalPolicyProvider 装配；
     /// 快照通道注入——完整当前值跟随，仅变化时重注入，缓存前缀不破）。
     var approvalPolicyContextLine: String? {
         switch knobs.approval {
-        case .ask:
-            return "approval-policy: ask — tools with side effects require explicit user "
-                + "approval before each run, unless a remembered permission rule allows them."
-        case .never:
-            return "approval-policy: never — no approval prompts are shown; calls that "
-                + "would require approval are rejected outright."
+        case .ask: return Self.askSentence
+        case .never: return Self.neverSentence
         }
+    }
+
+    /// 当前沙箱策略上下文行（P1-3：CONTEXT_ORDERS sandbox:policy 110——dsh
+    /// sandbox-policy renderPolicyContext 三段逐字，SandboxPolicy.renderPolicyContext）。
+    var sandboxPolicyContextLine: String? {
+        SandboxPolicy.renderPolicyContext(knobs.sandbox)
     }
 }

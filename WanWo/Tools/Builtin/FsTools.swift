@@ -129,6 +129,13 @@ struct FsWriteTool: AgentTool {
               let content = args.objectValue?["content"]?.stringValue else {
             return .failure("missing required parameters \"file_path\"/\"content\"", code: "INVALID_ARGS")
         }
+        // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；dsh 逐字文案）。
+        if let denial = await SandboxGate.authorizeFsMutation(
+            tool: name, path: path, args: args,
+            standingMode: ctx.sandboxMode, callId: ctx.callId,
+            approver: ctx.escalationApprover) {
+            return denial
+        }
         let workspace = ctx.workspace
         let existed = workspace.exists(path)
         // dsh write.ts 的 before 由后端 outcome 携带；我们写入前读旧文本（仅 diff
@@ -200,6 +207,13 @@ struct FsEditTool: AgentTool {
               let newString = args.objectValue?["new_string"]?.stringValue else {
             return .failure("missing required parameters \"file_path\"/\"old_string\"/\"new_string\"",
                             code: "INVALID_ARGS")
+        }
+        // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；dsh 逐字文案）。
+        if let denial = await SandboxGate.authorizeFsMutation(
+            tool: name, path: path, args: args,
+            standingMode: ctx.sandboxMode, callId: ctx.callId,
+            approver: ctx.escalationApprover) {
+            return denial
         }
         guard !oldString.isEmpty else {
             return .failure("old_string must not be empty", code: "INVALID_ARGS")
@@ -477,8 +491,10 @@ struct FsStrReplaceEditorTool: AgentTool {
     let description = "Custom editing tool. Commands: `view` (show file with line numbers), "
         + "`create` (new file with file_text), `str_replace` (replace old_str with new_str, "
         + "must be unique), `insert` (insert new_str after line insert_line)."
-    let parameters = JSONValue.schemaObject(
-        properties: [
+    let parameters: JSONValue = {
+        // P1-3：提权参数字段（dsh tool-fs sandbox.ts schemaFields——fs 文案逐字；
+        // `view` 命令为只读不设门，字段仍随 schema 呈现——与 write/edit 同形）。
+        var props: [String: JSONValue] = [
             "command": .stringSchema(description: "One of: view, create, str_replace, insert."),
             "path": .stringSchema(description: "Path to file (or directory for view)."),
             "file_text": .stringSchema(description: "Required by `create`: full file content."),
@@ -486,8 +502,10 @@ struct FsStrReplaceEditorTool: AgentTool {
             "new_str": .stringSchema(description: "Replacement text (`str_replace`) or inserted text (`insert`)."),
             "insert_line": .numberSchema(description: "Required by `insert`: new_str is inserted AFTER this 1-based line."),
             "view_range": .stringSchema(description: "Optional for `view`: \"start-end\" 1-based line range."),
-        ],
-        required: ["command", "path"])
+        ]
+        props.merge(SandboxGate.escalationSchemaFields(noun: "file operation")) { current, _ in current }
+        return .schemaObject(properties: props, required: ["command", "path"])
+    }()
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
@@ -497,6 +515,15 @@ struct FsStrReplaceEditorTool: AgentTool {
             return .failure("missing required parameters \"command\"/\"path\"", code: "INVALID_ARGS")
         }
         let workspace = ctx.workspace
+        // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；`view` 是
+        // 只读命令——dsh fs-sandbox 头注「Reads pass through untouched」不设门）。
+        if command != "view",
+           let denial = await SandboxGate.authorizeFsMutation(
+               tool: name, path: path, args: args,
+               standingMode: ctx.sandboxMode, callId: ctx.callId,
+               approver: ctx.escalationApprover) {
+            return denial
+        }
         do {
             switch command {
             case "view":

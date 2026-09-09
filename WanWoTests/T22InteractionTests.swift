@@ -30,9 +30,9 @@ final class T22InteractionTests: XCTestCase {
             kind: PermissionCoordinator.sandboxEventKind,
             requiredFields: [ExtensionFieldSchema(
                 "mode", .string,
-                allowedValues: [.string(ApprovalDecisionMatrix.SandboxMode.readOnly.rawValue),
-                                .string(ApprovalDecisionMatrix.SandboxMode.workspaceWrite.rawValue),
-                                .string(ApprovalDecisionMatrix.SandboxMode.dangerFullAccess.rawValue)])],
+                allowedValues: [.string(SandboxMode.readOnly.rawValue),
+                                .string(SandboxMode.workspaceWrite.rawValue),
+                                .string(SandboxMode.dangerFullAccess.rawValue)])],
             projection: .logOnly,
             pairing: .none))
     }
@@ -162,7 +162,7 @@ final class T22InteractionTests: XCTestCase {
             payload: .object(["policy": .string(ApprovalPolicy.never.rawValue)])))
         try await writer.append(.extensionEvent(
             kind: PermissionCoordinator.sandboxEventKind,
-            payload: .object(["mode": .string(ApprovalDecisionMatrix.SandboxMode
+            payload: .object(["mode": .string(SandboxMode
                 .dangerFullAccess.rawValue)])))
         let resumed = PermissionCoordinator(
             writer: writer, rules: PermissionRulesStore(

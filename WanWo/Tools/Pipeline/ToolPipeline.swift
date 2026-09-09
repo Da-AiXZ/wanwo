@@ -2,16 +2,19 @@
 //  ToolPipeline.swift
 //  WanWo
 //
-//  【语义移植 · dsh】出处：dsh packages/core/tools/src/index.ts（pre-execute waterfall
-//  → execute around → post-execute → result 观察 四事件管线；guard 单调否定；
-//  ask → serviceAsk 缺 answerer 即 deny）+ 10-design §5.3（ToolPipeline F010）
-//  + F037（>50KB 大结果 spill 落盘 + locator）。
-//  管线顺序（一次调用）：
+//  【语义移植 · dsh · P1-3 审批缝重做】出处：dsh packages/core/tools/src/index.ts
+//  （pre-execute waterfall → execute around → post-execute → result 观察 四事件
+//  管线；guard 单调否定）+ 10-design §5.3（ToolPipeline F010）+ F037（>50KB
+//  大结果 spill 落盘 + locator）。
+//  P1-3 重做（对齐 dsh「审批只由提权请求触发」原件语义——dsh 自身无效果分类
+//  表、无主动审批判定；approval 只在 sandbox escalation 的 approveEscalation
+//  里发生，escalation.ts:173）：
 //    1. guard 单调否定（deny 理由即合成错误结果）
-//    2. pre-execute 判定 .allow / .deny / .ask（ask → ApprovalSeam，fail closed）
-//    3. around：ToolTimeout 协作式 deadline
-//    4. post：>50KB 结果 spill 落盘 + locator 替换（F037）
-//    5. result 观察：RepeatCallAdviser advisory 附加（F020，只提醒不改变执行）
+//    2. around：ToolTimeout 协作式 deadline（沙箱拒绝/提权审批由工具体内的
+//       SandboxGate 承担——read-only/workspace-write 围栏、sandbox_permissions
+//       提权、never 短路全部 fail closed）
+//    3. post：>50KB 结果 spill 落盘 + locator 替换（F037）
+//    4. result 观察：RepeatCallAdviser advisory 附加（F020，只提醒不改变执行）
 //  工具体抛错一律合成错误结果（不抛穿 loop，§十三.2）。
 //
 
@@ -19,18 +22,14 @@ import Foundation
 
 final class ToolPipeline: @unchecked Sendable {
     let registry: ToolRegistry
-    /// M3 T1 = CompositeApprovalSeam（四步管线：判定→allow 直通/forbidden 拒/
-    /// prompt→挂起或 fail closed）；fail closed：nil 即拒（answerer 缺失即拒，F018）。
-    let approvalSeam: ApprovalSeam?
     let repeatAdviser: RepeatCallAdviser
     /// spill 阈值（F037：>50KB 落盘）。
     static let spillThresholdBytes = 50_000
 
     private static let logger = AppLogger(category: "ToolPipeline")
 
-    init(registry: ToolRegistry, approvalSeam: ApprovalSeam?, repeatAdviser: RepeatCallAdviser) {
+    init(registry: ToolRegistry, repeatAdviser: RepeatCallAdviser) {
         self.registry = registry
-        self.approvalSeam = approvalSeam
         self.repeatAdviser = repeatAdviser
     }
 
@@ -50,24 +49,11 @@ final class ToolPipeline: @unchecked Sendable {
             return .failure(reason, code: "DENIED_BY_GUARD", name: "ToolGuardError")
         }
 
-        // 2. pre-execute 审批判定（M3 T1：CompositeApprovalSeam 四步管线——
-        //    判定 .allow 直通 / .forbidden 拒 / .prompt → 审批协调器挂起）。
-        //    fail closed：seam 缺失 → 拒（answerer 缺失即拒，F018；
-        //    dsh user-approval index.ts:55-56 'unavailable' 语义）。
-        guard let seam = approvalSeam else {
-            return .failure("no approval answerer configured; denying by default",
-                            code: "NOT_APPROVED", name: "ApprovalDeniedError")
-        }
-        let outcome = await seam.request(tool: toolName, args: args,
-                                         callId: ctx.callId, reason: nil)
-        if outcome != .allowedOnce {
-            // 四值闭集中除唯一授予外一律合成失败结果（.rejected=用户拒绝 /
-            // .cancelled=请求撤销 / .unavailable=fail-closed 归一化）。
-            return .failure(Self.denialMessage(tool: toolName, outcome: outcome),
-                            code: "NOT_APPROVED", name: "ApprovalDeniedError")
-        }
-
-        // 3. around：协作式 timeout 包住工具体；抛错合成失败结果。
+        // 2. around：协作式 timeout 包住工具体；抛错合成失败结果。
+        //    沙箱强制与提权审批在工具体内（SandboxGate）：read-only/workspace-
+        //    write 围栏拒绝 → denial marker + hint（isError）；sandbox_permissions
+        //    提权 → ApprovalCoordinator 挂起等真人；'never' 政策 → 确定性拒绝。
+        //    全部 fail closed：任何异常路径不产生放行。
         let output = await ToolTimeout.run(timeoutMs: tool.timeoutMs) { [weak self] in
             guard let self else {
                 throw LLMError(message: "pipeline released", code: "UNKNOWN")
@@ -79,29 +65,16 @@ final class ToolPipeline: @unchecked Sendable {
             }
         }
 
-        // 4. post：大结果 spill（F037 >50KB → 落盘 + locator，按引用取回）。
+        // 3. post：大结果 spill（F037 >50KB → 落盘 + locator，按引用取回）。
         let postProcessed = await self.applySpill(output, ctx: ctx)
 
-        // 5. result 观察：重复调用 advisory（只提醒，不改变执行结果本身）。
+        // 4. result 观察：重复调用 advisory（只提醒，不改变执行结果本身）。
         var final = postProcessed
         let canonical = Self.canonicalArgsText(args)
         if let advisory = await repeatAdviser.advise(tool: toolName, canonicalArgs: canonical) {
             final.text += "\n\n\(advisory)"
         }
         return final
-    }
-
-    /// 四值闭集 → 拒绝文案（失败必须自解释，F060 最小纪律；internal 供单测直证）。
-    static func denialMessage(tool: String, outcome: ApprovalOutcome) -> String {
-        switch outcome {
-        case .rejected:
-            return "tool call \"\(tool)\" was rejected by the user"
-        case .cancelled:
-            return "approval for tool call \"\(tool)\" was cancelled"
-        case .unavailable, .allowedOnce:
-            // allowedOnce 走不到这里（调用点已放行）；unavailable = fail closed。
-            return "no approval answerer available for \"\(tool)\"; failing closed"
-        }
     }
 
     /// F037：超过 50KB 的文本结果落盘并替换为 head + locator。

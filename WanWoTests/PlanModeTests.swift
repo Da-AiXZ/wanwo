@@ -368,8 +368,10 @@ final class PlanModeTests: XCTestCase {
         XCTAssertNil(tool.timeoutMs, "人类审阅不设 deadline")
         XCTAssertEqual(tool.parameters.field("required")?.arrayItems?.first?.stringValue,
                        "plan")
-        // interaction 效果类 → 审批矩阵恒 allow（免双重审批死锁）。
-        XCTAssertEqual(ToolEffectTable.classify("exit_plan_mode"), .interaction)
+        // P1-3：exit_plan_mode 无 sandbox_permissions schema（人机交互工具
+        // 结构上不可能触发审批——免双重审批死锁的语义归宿）。
+        XCTAssertNil(tool.parameters.field("properties")?.field("sandbox_permissions"))
+        XCTAssertNil(tool.parameters.field("properties")?.field("justification"))
         let registry = ToolRegistry()
         registry.register(tool)
         XCTAssertEqual(registry.executionMode(name: "exit_plan_mode", args: .null),

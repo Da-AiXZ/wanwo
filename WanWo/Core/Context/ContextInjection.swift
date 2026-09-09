@@ -117,12 +117,17 @@ struct ContextInjector: Sendable {
         return Self.renderInstructionFrame(blocks: blocks)
     }
 
-    /// F038：首轮基线快照文本（workspace + approval-policy(T2) + AGENTS.md；
-    /// ERR-025① 无时间戳）。
+    /// F038：首轮基线快照文本（workspace + sandbox:policy(110, P1-3) +
+    /// approval-policy(115) + AGENTS.md；ERR-025① 无时间戳）。
     func baselineSnapshot(workspace: WorkspaceFileAccess, workspacePath: String) -> String {
         var parts: [String] = []
         parts.append("<runtime-context>")
         parts.append("workspace: \(workspacePath)")
+        // P1-3：sandbox:policy 动态上下文位（CONTEXT_ORDERS 110——dsh
+        // renderPolicyContext 逐字；挡位切换后本行变化 → 自动重注入）。
+        if let provider = sandboxPolicyProvider, let line = provider(), !line.isEmpty {
+            parts.append(line)
+        }
         // T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——策略切换后
         // 本行文本变化 → 快照整体变化 → 自动重注入（RuntimeContextProjection）。
         if let provider = approvalPolicyProvider, let line = provider(), !line.isEmpty {

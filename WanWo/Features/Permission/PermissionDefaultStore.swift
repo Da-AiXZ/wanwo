@@ -67,7 +67,7 @@ final class PermissionDefaultStore: @unchecked Sendable {
 
     /// 新会话的初始双旋钮（PermissionCoordinator.restoreKnobs 缺省回落位；
     /// 未知预设名回落 workspace-write + ask——dsh BootHostOptions 部署默认）。
-    func newSessionKnobs() -> (sandbox: ApprovalDecisionMatrix.SandboxMode,
+    func newSessionKnobs() -> (sandbox: SandboxMode,
                                approval: ApprovalPolicy) {
         guard let spec = PermissionPresets.spec(named: defaultPreset) else {
             return (.workspaceWrite, .ask)

@@ -248,7 +248,8 @@ enum ToolCallScheduler {
         return value
     }
 
-    /// 工具执行上下文（每笔调用一份：callId 唯一；completeLLM 惰性建 adapter）。
+    /// 工具执行上下文（每笔调用一份：callId 唯一；completeLLM 惰性建 adapter；
+    /// P1-3：沙箱模式与提权通道随行——围栏与审批的 per-call 真相）。
     private static func makeContext(_ deps: AgentLoop.Dependencies,
                                     turn: Int, step: Int,
                                     callId: String) -> ToolExecutionContext {
@@ -264,7 +265,9 @@ enum ToolCallScheduler {
                 let adapter = try await deps.makeAdapter()
                 return try await Self.complete(adapter: adapter,
                                                prompt: prompt, system: system)
-            })
+            },
+            sandboxMode: deps.sandboxModeProvider(),
+            escalationApprover: deps.escalationApprover)
     }
 
     /// 一次性 LLM 直调（web_search / 摘要类工具缝；M1 只有流式——

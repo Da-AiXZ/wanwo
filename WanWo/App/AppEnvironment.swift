@@ -107,9 +107,9 @@ final class AppEnvironment: ObservableObject {
                 kind: PermissionCoordinator.sandboxEventKind,
                 requiredFields: [ExtensionFieldSchema(
                     "mode", .string,
-                    allowedValues: [.string(ApprovalDecisionMatrix.SandboxMode.readOnly.rawValue),
-                                    .string(ApprovalDecisionMatrix.SandboxMode.workspaceWrite.rawValue),
-                                    .string(ApprovalDecisionMatrix.SandboxMode.dangerFullAccess.rawValue)])],
+                    allowedValues: [.string(SandboxMode.readOnly.rawValue),
+                                    .string(SandboxMode.workspaceWrite.rawValue),
+                                    .string(SandboxMode.dangerFullAccess.rawValue)])],
                 projection: .logOnly,
                 pairing: .none))
         }
@@ -203,8 +203,9 @@ final class AppEnvironment: ObservableObject {
     // MARK: - Agent 栈装配（M2）
 
     /// 装配 AgentLoop 全家（§十一 M2：registry / pipeline / compactor / spill /
-    /// injector / loop；审批缝 = M3 T1 CompositeApprovalSeam 四步管线 +
-    /// ApprovalCoordinator + UserQuestionService，M2 AutoApprovalSeam 占位已废）。
+    /// injector / loop；审批缝 = M3 P1-3 重做——审批只由沙箱提权请求触发
+    /// （ApprovalCoordinator + UserQuestionService 仍在；M2 AutoApprovalSeam
+    /// 占位已废）。
     /// - Parameters:
     ///   - interactionPresenter: 交互呈现缝（ChatViewModel；nil = 无 answerer，
     ///     审批 fail closed unavailable、提问 fail closed NO_PROVIDER）。
@@ -265,16 +266,19 @@ final class AppEnvironment: ObservableObject {
                 .appendingPathComponent("spill", isDirectory: true)
                 .appendingPathComponent(sessionId, isDirectory: true))
         let repeatAdviser = RepeatCallAdviser()
+        // P1-3：提权审批通道（审批只由 sandbox_permissions 请求触发——dsh
+        // escalation.ts:173）。'never' 政策在 dispatch 之前确定性 rejected
+        // （dsh user-approval index.ts:266——不呈现、不落审计对）；ask 交给
+        // 协调器挂起等真人（fail closed：桥关闭/取消/无 answerer 分别归一
+        // cancelled/unavailable）。
+        let escalationApprover: SandboxEscalationApprover = {
+            [permission, coordinator] toolName, callId, reason in
+            if permission.knobs.approval == .never { return .rejected }
+            return await coordinator.request(tool: toolName, callId: callId,
+                                             reason: reason)
+        }
         let pipeline = ToolPipeline(
             registry: registry,
-            // M3 T1 四步管线 + T2：规则引擎先行（prefix/network 取最严）→
-            // 未命中矩阵启发式兜底 → 会话缓存 → never 短路 → 协调器；
-            // policyProvider = approval 旋钮实时折叠值。
-            approvalSeam: CompositeApprovalSeam(
-                matrix: ApprovalDecisionMatrix(sandboxMode: .workspaceWrite),
-                coordinator: coordinator,
-                policyProvider: { [permission] in permission.knobs.approval },
-                permission: permission),
             repeatAdviser: repeatAdviser)
         let compactor = Compactor(makeAdapter: { [weak self] in
             guard let self else {
@@ -292,9 +296,14 @@ final class AppEnvironment: ObservableObject {
         registry.register(ExitPlanModeTool(controller: planMode,
                                            service: questionService))
         var injector = ContextInjector()
-        // M3 T2：approval-policy 动态上下文位（CONTEXT_ORDERS 115）——快照
-        // 通道注入（ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重
-        // 注入，缓存前缀不破）。
+        // M3 P1-3：sandbox:policy 动态上下文位（CONTEXT_ORDERS 110——dsh
+        // sandbox-policy renderPolicyContext 三段逐字）+ approval-policy 位
+        // （115——ASK_SENTENCE/NEVER_SENTENCE 逐字）。两位都走快照通道注入
+        // （ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重注入，
+        // 缓存前缀不破）。
+        injector.sandboxPolicyProvider = { [permission] in
+            permission.sandboxPolicyContextLine
+        }
         injector.approvalPolicyProvider = { [permission] in
             permission.approvalPolicyContextLine
         }
@@ -314,7 +323,13 @@ final class AppEnvironment: ObservableObject {
                 }
                 return try await self.makeAgentAdapter()
             },
-            callbacks: callbacks)
+            callbacks: callbacks,
+            // P1-3：本调用生效沙箱模式（四层解析：approved 显式 > 会话末条
+            // sandbox/mode 事件 > 新会话默认源 > 部署默认——前三层由
+            // PermissionCoordinator 折叠，此处取实时值；approved 显式 stamp
+            // 发生在工具体内 SandboxGate.resolveMode）。
+            sandboxModeProvider: { [permission] in permission.knobs.sandbox },
+            escalationApprover: escalationApprover)
         return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
                 planMode)
     }

@@ -87,32 +87,10 @@ enum ApprovalDecision: String, Equatable, Sendable {
     case rejected
 }
 
-// MARK: - ApprovalSeam（F018 审批缝）
-
-/// 审批缝（F018）。实现方必须 fail closed：任何异常路径都不得产生
-/// `.allowedOnce` 之外的授予语义（`.allowedOnce` 是唯一授予）。
-protocol ApprovalSeam: Sendable {
-    /// 请求审批。
-    /// - Parameters:
-    ///   - tool: 工具名（呈现与审计）。
-    ///   - args: 工具参数（判定矩阵输入）。
-    ///   - callId: 关联 tool/call（dsh ApprovalRequest.callId——UI 把审批
-    ///     挂到已流式呈现的工具卡上；审计事件词汇暂无 callId 字段（T1 零改动），
-    ///     仅用于 live 呈现配对）。
-    ///   - reason: 请求方的可读理由（dsh ApprovalRequest.reason）。
-    /// - Returns: 四值闭集结论；`.allowedOnce` 是唯一放行。
-    func request(tool: String, args: JSONValue, callId: String?,
-                 reason: String?) async -> ApprovalOutcome
-}
-
-// MARK: - fail-closed 兜底
-
-/// 无 answerer 时的兜底缝（协议契约「缺失 answerer 即 unavailable」的显式形态；
-/// dsh index.ts:55-56：with none composed the chain falls through to the
-/// fail-closed 'unavailable'）。
-struct UnavailableApprovalSeam: ApprovalSeam {
-    func request(tool: String, args: JSONValue, callId: String?,
-                 reason: String?) async -> ApprovalOutcome {
-        .unavailable
-    }
-}
+// MARK: - fail-closed 词汇（P1-3 审批缝重做后保留的闭集与政策类型）
+//
+// P1-3：主动审批缝（F018 protocol ApprovalSeam + UnavailableApprovalSeam）
+// 随判定矩阵一并移除——审批只由沙箱提权请求触发（dsh escalation.ts:173，
+// approveEscalation → approval.request），通道见 SandboxEscalation.swift 的
+// SandboxEscalationApprover 结构闭包。本文件保留 Outcome/Policy/Decision
+// 三组类型（审计对与交互呈现仍在用）。

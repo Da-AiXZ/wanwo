@@ -25,7 +25,7 @@ import Foundation
 /// 预设条目（dsh PresetSpec 的 WanWo 形态：name + 双旋钮 + 展示摘要）。
 struct PresetSpec: Equatable, Sendable {
     let name: String
-    let sandbox: ApprovalDecisionMatrix.SandboxMode
+    let sandbox: SandboxMode
     let approval: ApprovalPolicy
     let summary: String
 }
@@ -79,13 +79,13 @@ enum PermissionPresets {
 /// 读、/permission 在命令任务写）。
 final class PermissionKnobs: @unchecked Sendable {
     private let lock = NSLock()
-    private var sandboxStorage: ApprovalDecisionMatrix.SandboxMode = .workspaceWrite
+    private var sandboxStorage: SandboxMode = .workspaceWrite
     private var approvalStorage: ApprovalPolicy = .ask
     private var lastSelectionStorage: String?
 
     /// 沙箱旋钮（持久；由 PermissionCoordinator 在 sandbox/mode 事件落盘
     /// 成功后写入——写盘失败绝不进内存，fail closed；T2.1 起不再是内存态）。
-    var sandbox: ApprovalDecisionMatrix.SandboxMode {
+    var sandbox: SandboxMode {
         get { lock.lock(); defer { lock.unlock() }; return sandboxStorage }
         set { lock.lock(); sandboxStorage = newValue; lock.unlock() }
     }
