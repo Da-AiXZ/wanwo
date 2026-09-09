@@ -81,3 +81,21 @@ protocol SessionInteractionPresenter: AnyObject {
     /// 结算一组待决提问（toolview 行结局：N/M answered / cancelled / interrupted）。
     func settleQuestion(id: String, settlement: QuestionSettlement)
 }
+
+// MARK: - 待决提问队列纯函数（T2.3 P0 第二道防线）
+
+/// 待决提问队列的去重并入（dsh 2026-07-23 笔记 :19——pre-instantiation
+/// buffering「retains each live request identity, **replaces replay
+/// duplicates**」：同 id 重放副本替换既有项，不叠加）。纯函数可测。
+enum PendingQuestionMirror {
+    /// 按 id 并入：既有项替换（保留原位——FIFO 呈现序稳定），否则追加。
+    static func upsert(_ list: [PendingQuestionPresentation],
+                       _ pending: PendingQuestionPresentation) -> [PendingQuestionPresentation] {
+        if let index = list.firstIndex(where: { $0.id == pending.id }) {
+            var updated = list
+            updated[index] = pending
+            return updated
+        }
+        return list + [pending]
+    }
+}

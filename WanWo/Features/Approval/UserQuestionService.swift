@@ -154,9 +154,11 @@ final class UserQuestionService: @unchecked Sendable {
         let presentation = PendingQuestionPresentation(id: requestId, questions: questions,
                                                        callId: callId)
 
-        // 呈现 → 登记续体 → 等首个 settle；任务取消 → ASK_ABORTED
-        // （dsh：signal abort withdraws the question）。
-        await MainActor.run { answerer.presentQuestion(presentation) }
+        // 呈现一次（awaitAnswer 内部按「占位 → 呈现 → 注册续体」时序完成；
+        // T2.3 P0 修复：原 ask() 此处与 awaitAnswer 各呈现一次——presentQuestion
+        // 无条件入列 → 同一 presentation 双份进 UI 队列，settleQuestion 只移除
+        // firstIndex 一份 → 残留一份卡死 composer（真机实证：提交后卡不关、
+        // × 无效、第二轮提问被旧卡遮挡）。dsh ask() 全时序仅呈现一次）。
         let settlement: QuestionSettlement
         do {
             let answer = try await withTaskCancellationHandler {

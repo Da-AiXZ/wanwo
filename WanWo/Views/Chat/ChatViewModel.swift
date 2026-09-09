@@ -590,7 +590,10 @@ extension ChatViewModel: SessionInteractionPresenter {
     }
 
     func presentQuestion(_ pending: PendingQuestionPresentation) {
-        pendingQuestions.append(pending)
+        // T2.3 P0 第二道防线：同 id 重放副本替换不叠加（dsh 笔记 :19
+        // "replaces replay duplicates"；根因修复在 UserQuestionService.ask
+        // 的双重呈现——本防线防未来调用方回归）。
+        pendingQuestions = PendingQuestionMirror.upsert(pendingQuestions, pending)
         environment.notePendingInteraction(sessionId: sessionID, active: true)
     }
 
