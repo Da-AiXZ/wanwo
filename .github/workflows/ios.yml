@@ -61,31 +61,6 @@ jobs:
           name: WanWo-ipa
           path: WanWo-*.ipa
           retention-days: 30
-
-      - name: Run unit tests (iOS Simulator)
-        run: |
-          set -o pipefail
-          # iSH 库的平台变体：arm64 真机库与 arm64 模拟器是不同 Mach-O 平台，
-          # 链接器拒绝混链——真机 ipa 已打包上传，此处重编 sim 平台库覆盖工作
-          # 区副本供模拟器测试链接（真机产物路径与脚本默认行为零影响）。
-          ./scripts/build_ish.sh release ios-sim "$PWD/build/simlibs"
-          cp build/simlibs/*.a Vendor/libs/
-          xcodebuild \
-            -project WanWo.xcodeproj \
-            -scheme WanWo \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
-            -derivedDataPath build \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            test | tee test.log
-
-      - name: Upload test log (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-log
-          path: test.log
-          retention-days: 14
+  # 2026-09-11 用户裁决：拆除 CI 测试轨道（92 用例首轮拦截 1 缺陷，收益不抵
+  # 维护成本）。WanWoTests 代码与 build_ish.sh 的 ios-sim 变体保留——日后重启
+  # 轨道的历史方案见 analysis/t24-scope-brief.md 末节与本文件 git 历史。
