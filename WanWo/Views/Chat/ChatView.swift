@@ -56,9 +56,11 @@ struct ChatView: View {
                 // 捕获层在其区段开洞）。
                 VStack(spacing: 0) {
                     composerSeat
-                    if let line = viewModel.statsLine {
-                        StatsLineView(line: line)
-                    }
+                    // T2.7 件2：StatsLine 恒渲染（dsh StatsLine.tsx:2 dock 槽
+                    // 恒挂载语义 1:1——无数据时以等高空白占位、不为空塌陷，
+                    // chrome 高度全程稳定；首条统计出现只做内容填充，不再撑高
+                    // 一行触发工具行/菜单一次性移位）。
+                    StatsLineView(line: viewModel.statsLine)
                 }
                 .background(composerChromeMeter)
             }

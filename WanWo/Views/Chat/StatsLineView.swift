@@ -137,11 +137,14 @@ enum SessionStatsFold {
 // MARK: - 视图（composer dock）
 
 /// 状态条（挂在 composer 之下；不随消息流滚动——dsh dock 语义）。
+/// T2.7 件2：恒渲染（dsh StatsLine.tsx:2 恒挂载 dock 槽 1:1）——无数据时
+/// 以等高空白占位（单空格行盒与数据态同字体同行高，高度恒定），首条统计
+/// 出现时仅内容填充、无高度跳变。
 struct StatsLineView: View {
-    let line: String
+    let line: String?
 
     var body: some View {
-        Text(line)
+        Text(line ?? " ")
             .font(.caption2.monospaced())
             .foregroundStyle(.secondary)
             .lineLimit(1)
