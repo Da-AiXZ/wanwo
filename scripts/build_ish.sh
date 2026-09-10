@@ -124,8 +124,10 @@ build_ish() {
     fi
 
     if [ ! -f "$BUILD_DIR/build.ninja" ]; then
+        local cross_file="ios-cross.txt"
+        [ "$PLATFORM" == "ios-sim" ] && cross_file="ios-sim-cross.txt"
         meson setup "$BUILD_DIR" \
-            --cross-file "$BUILD_DIR/ios-cross.txt" \
+            --cross-file "$BUILD_DIR/$cross_file" \
             --buildtype="$MESON_BUILDTYPE" \
             -Db_ndebug="$MESON_NDEBUG" \
             -Dlog="" \
