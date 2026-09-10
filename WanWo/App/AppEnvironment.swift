@@ -51,6 +51,26 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    // MARK: - F042/T2.6：会话级模型选择宿主（App 级 per-session 字典）
+
+    private let selectionRegistryLock = NSLock()
+    private var sessionModelSelections: [String: SessionModelSelection] = [:]
+
+    /// 取（惰性建）一个会话的模型选择宿主。
+    /// T2.6 件2：原 ChatViewModel 实例属性方案随 ChatView StateObject 切页
+    /// 销毁而归零（用户 #9——切页面丢选择）；升格 App 级 per-session 字典，
+    /// 会话存续期间保持（dsh ModelSelect.tsx state.current=per-session 语义）。
+    /// ChatViewModel 销毁不清条目（字典随会话数线性、量小——会话删除时惰性
+    /// 清理，呈报）；open() 的 nil 初始化保留（首次打开仍=活动端点+默认）。
+    func modelSelection(for sessionID: String) -> SessionModelSelection {
+        selectionRegistryLock.lock()
+        defer { selectionRegistryLock.unlock() }
+        if let existing = sessionModelSelections[sessionID] { return existing }
+        let created = SessionModelSelection()
+        sessionModelSelections[sessionID] = created
+        return created
+    }
+
     private static let logger = AppLogger(category: "env")
 
     init() {

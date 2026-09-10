@@ -71,8 +71,11 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var attachmentStore: AttachmentStore?
     // MARK: T2.4 P1-3 会话级模型选择（dsh ModelSelect per-session
     // ModelSelection：选择随会话，不落盘、不落事件；App 级缺省=活动端点）。
-    /// 会话级选择值宿主（makeAdapter @Sendable 缝消费）。
-    private let modelSelection = SessionModelSelection()
+    // T2.6 件2：宿主从本类实例属性升格 App 级 per-session 字典——ChatView
+    // StateObject 随 RootSelection 切页销毁重建曾致 holder 归零丢选择（用户 #9）；
+    // 现经 environment.modelSelection(for:) 取会话绑定宿主，会话存续期保持。
+    /// 会话级选择值宿主（makeAgentStack @Sendable 缝消费）。
+    private let modelSelection: SessionModelSelection
     /// 当前生效端点镜像（触发器与勾选显示；会话选择优先）。
     @Published private(set) var currentModelEndpoint: EndpointConfig?
     /// 会话级 effort（nil = provider default）。
@@ -126,6 +129,9 @@ final class ChatViewModel: ObservableObject {
     init(environment: AppEnvironment, sessionID: String) {
         self.environment = environment
         self.sessionID = sessionID
+        // T2.6 件2：会话绑定选择宿主（App 级字典惰性建；切页销毁重建后仍
+        // 取到同一 holder——选择跨 ChatView 生命周期保持）。
+        self.modelSelection = environment.modelSelection(for: sessionID)
     }
 
     // MARK: - 打开（resume + AgentLoop 装配）
