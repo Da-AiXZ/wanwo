@@ -186,15 +186,15 @@ final class ConversationProjectorTests: XCTestCase {
             toolResultEvent(2, callId: "c1", content: "done"),
         ]
         let (bubbles, _) = project(events, previousCards: [previous])
-        // 按测试意图预期 2 泡且 [1] 为卡片；先锁数量再下标（防越界崩溃，
-        // 同时暴露主代码投影产出与预期的偏差）。
-        guard bubbles.count == 2, toolCard(bubbles[1]) != nil else {
-            return XCTFail("预期 count=2 且 [1]=卡片，实际 count=\(bubbles.count)")
+        // E2 语义：tool/result 结算到卡片本体，不另产泡——toolCall+toolResult
+        // 与 toolCall-only 同为 1 泡（对照 testTransientCarryOverForRunningCard）。
+        XCTAssertEqual(bubbles.count, 1)
+        guard bubbles.count == 1, let card = toolCard(bubbles[0]) else {
+            return XCTFail("预期 count=1 且 [0]=卡片，实际 count=\(bubbles.count)")
         }
-        let card = toolCard(bubbles[1])
-        XCTAssertEqual(card?.isRunning, false)
-        XCTAssertEqual(card?.statusNote, nil, "成功结算应清空瞬态等待行")
-        XCTAssertEqual(card?.liveOutput, "out", "liveOutput 仍续接")
+        XCTAssertEqual(card.isRunning, false)
+        XCTAssertEqual(card.statusNote, nil, "成功结算应清空瞬态等待行")
+        XCTAssertEqual(card.liveOutput, "out", "liveOutput 仍续接")
     }
 
     // MARK: NOT_APPROVED 结算琥珀行
@@ -207,9 +207,13 @@ final class ConversationProjectorTests: XCTestCase {
                             isError: true, errorCode: "NOT_APPROVED"),
         ]
         let (bubbles, _) = project(events)
-        let card = toolCard(bubbles[1])
-        XCTAssertEqual(card?.statusNote, "未获批准")
-        XCTAssertEqual(card?.isError, true)
+        // E2 语义：结算琥珀行走卡片本体（同上：1 泡，卡在 [0]）。
+        XCTAssertEqual(bubbles.count, 1)
+        guard bubbles.count == 1, let card = toolCard(bubbles[0]) else {
+            return XCTFail("预期 count=1 且 [0]=卡片，实际 count=\(bubbles.count)")
+        }
+        XCTAssertEqual(card.statusNote, "未获批准")
+        XCTAssertEqual(card.isError, true)
     }
 
     // MARK: 注入/标记消息过滤
