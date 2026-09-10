@@ -92,13 +92,13 @@ struct ChatView: View {
         .onDisappear { viewModel.close() }
         // A4：/permission danger-full-access 前置风险确认（dsh popupSelect
         // confirming gate；与入口①③共文案——当前会话挡 accessZh 变体）。
-        // P2-⑫：呈现由 sheet 改居中模态（dsh SettingsRoot/RiskConfirmation
-        // 对话框形态——透明底全屏 + 居中卡片）。
+        // P2-⑫：呈现由 sheet 改居中模态（dsh RiskConfirmation 对话框形态）。
+        // P1-6.1：去全屏遮罩——与 P1-6 两处同族（dsh RiskConfirmation 挂
+        // PopupSelectView 无全屏遮罩，仅呈现居中确认卡）。
         .fullScreenCover(isPresented: Binding(
             get: { viewModel.pendingPermissionConfirmation != nil },
             set: { if !$0 { viewModel.cancelPendingPermission() } })) {
             ZStack {
-                Color.black.opacity(0.35).ignoresSafeArea()
                 PermissionConfirmationGate(
                     onConfirm: { viewModel.confirmPendingPermission() },
                     onCancel: { viewModel.cancelPendingPermission() })
