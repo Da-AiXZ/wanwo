@@ -84,9 +84,10 @@ struct PermissionSelectView: View {
         .accessibilityLabel("访问模式，当前：\(currentOption?.label ?? currentPreset)")
         // Full access 前置风险确认（dsh :129-133 特判 + :177-190 确认面）。
         // P2-⑫：呈现由 sheet 改居中模态（dsh RiskConfirmation 对话框形态）。
+        // P1-6：去全屏遮罩——dsh RiskConfirmation 挂 PopupSelectView（anchored
+        // popup 家族）无全屏遮罩，仅呈现居中确认卡。
         .fullScreenCover(isPresented: $confirmingFullAccess, onDismiss: { acknowledged = false }) {
             ZStack {
-                Color.black.opacity(0.35).ignoresSafeArea()
                 confirmSheet
             }
             .presentationBackground(.clear)
