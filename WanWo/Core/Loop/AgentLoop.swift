@@ -69,7 +69,9 @@ actor AgentLoop {
         var onToolCallFinished: @Sendable (String, String, Bool) -> Void = { _, _, _ in }
         /// 用户消息已落盘（P2-⑪ 消息即时上屏：user/message append 后发射，
         /// 文本 = 落盘原文——含注入展开后的最终形态；UI 侧自行过滤标记消息）。
-        var onUserMessageAppended: @Sendable (String) -> Void = { _ in }
+        /// T2.6 件6：增第二参 = 随行图片引用（E1 attachment/images 落盘后
+        /// 发射；空数组 = 纯文本消息——live 乐观气泡据此带图上屏）。
+        var onUserMessageAppended: @Sendable (String, [ImageAttachmentRef]) -> Void = { _, _ in }
     }
 
     // MARK: - 依赖
@@ -387,7 +389,9 @@ actor AgentLoop {
                             kind: AttachmentStore.imagesEventKind, payload: payload))
                     }
                     // P2-⑪ 消息即时上屏（落盘即发射；UI 侧过滤标记消息）。
-                    deps.callbacks.onUserMessageAppended(entry.text)
+                    // T2.6 件6：引用事件已落盘后才发射（见上）——随行图片引用
+                    // 供 live 乐观气泡带图上屏（用户 #22 前半）。
+                    deps.callbacks.onUserMessageAppended(entry.text, entry.images)
                 }
 
                 // 压力检查（dsh pre-step 压缩介入点；失败继续回合）。

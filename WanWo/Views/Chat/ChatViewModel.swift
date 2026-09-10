@@ -589,19 +589,20 @@ final class ChatViewModel: ObservableObject {
                     }
                 }
             },
-            onUserMessageAppended: { [weak self] text in
+            onUserMessageAppended: { [weak self] text, images in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     // P2-⑪ 消息即时上屏：user/message 落盘即入流（乐观气泡），
                     // 不等首个工具卡/回合尾重投影。标记消息（runtime snapshot
                     // 等）与投影层同一过滤纪律，不渲染；下一轮 reproject 以
                     // 事件流折叠产物整体替换（身份/文本同源收敛）。
+                    // T2.6 件6（用户 #22 前半）：乐观气泡带图——回调第二参 =
+                    // 随行图片引用（E1 attachment/images 已落盘后发射），重投影
+                    // 前图片即时可见。
                     guard !ConversationProjector.isMarkerMessage(text) else { return }
-                    // F042：live 乐观气泡先纯文本（回调仅携带文本）；图片引用
-                    // 已随 E1 事件落盘，随下一轮 reproject 以事件流折叠产物
-                    // 整体替换上屏（身份/文本/图片同源收敛）。
                     self.bubbles.append(ChatViewModel.Bubble(
-                        id: "live-user-\(UUID().uuidString)", kind: .user(text, [])))
+                        id: "live-user-\(UUID().uuidString)",
+                        kind: .user(text, images)))
                 }
             })
     }
