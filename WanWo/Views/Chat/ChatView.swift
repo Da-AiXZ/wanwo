@@ -537,64 +537,34 @@ struct ChatView: View {
                     .buttonStyle(.borderless)
                     .accessibilityLabel("粘贴图片")
                 }
-                // 权限挡位下拉（A3；PermissionSelect.tsx——提交走 /permission
-                // 命令同一写通路径；confirmed = 下拉内确认已过，双弹修复）。
-                if let permission = viewModel.currentPermissionPreset {
-                    PermissionSelectView(
-                        currentPreset: permission,
-                        busy: viewModel.isCommandRunning,
-                        onCommand: { line, confirmed in
-                            viewModel.runCommandLine(line, confirmed: confirmed)
-                        })
-                }
-                // Plan chip（C10；PlanModeControl.tsx:19-69——plan 生效时渲染，
-                // 点击执行 /plan off）。
-                if viewModel.planActive {
-                    Button {
-                        viewModel.runCommandLine("/plan off")
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Plan")
-                                .font(.footnote.weight(.medium))
-                            Image(systemName: "xmark")
-                                .font(.caption2)
+                // 权限挡位 / Plan chip / 模型挡位 / 占用环 / 主按钮——
+                // T2.6 件8：整体抽入 ComposerToolBar（equatable 状态隔离，
+                // 根因与语义见该类型头注）。
+                ComposerToolBar(
+                    permissionPreset: viewModel.currentPermissionPreset,
+                    isCommandRunning: viewModel.isCommandRunning,
+                    planActive: viewModel.planActive,
+                    current: viewModel.currentModelEndpoint,
+                    currentEffort: viewModel.sessionEffort,
+                    pressure: viewModel.pressure,
+                    primaryStops: primaryStops,
+                    canSend: viewModel.canSend,
+                    isDraftEmpty: viewModel.isDraftEmpty,
+                    endpointStore: viewModel.endpointStore,
+                    onPermissionCommand: { line, confirmed in
+                        viewModel.runCommandLine(line, confirmed: confirmed)
+                    },
+                    onPlanOff: { viewModel.runCommandLine("/plan off") },
+                    onSelectModel: { viewModel.selectModel($0) },
+                    onSelectEffort: { viewModel.selectEffort($0) },
+                    onPrimary: {
+                        if primaryStops {
+                            viewModel.cancel()
+                        } else {
+                            viewModel.send()
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.accentColor.opacity(0.12))
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("plan mode 已开启，按下关闭")
-                }
-                Spacer()
-                // 模型挡位（C11；ModelSelect.tsx——两级菜单 Model/Effort；
-                // T2.4 P1-3：会话级选择——current/effort 为 VM published 镜像）。
-                ModelSelectView(store: viewModel.endpointStore,
-                                current: viewModel.currentModelEndpoint,
-                                currentEffort: viewModel.sessionEffort,
-                                onSelect: { viewModel.selectModel($0) },
-                                onEffort: { viewModel.selectEffort($0) })
-                // 上下文占用环（C9；ContextMeter.tsx:106-165——无数据不渲染）。
-                if let pressure = viewModel.pressure {
-                    ContextMeterView(pressure: pressure)
-                }
-                // 主按钮（A5：发送/停止同位切换；dsh :313-326）。
-                Button {
-                    if primaryStops {
-                        viewModel.cancel()
-                    } else {
-                        viewModel.send()
-                    }
-                } label: {
-                    Image(systemName: primaryStops ? "stop.fill" : "paperplane.fill")
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .buttonStyle(.borderless)
-                .disabled(primaryStops
-                          ? false
-                          : !viewModel.canSend || viewModel.isDraftEmpty)
-                .accessibilityLabel(primaryStops ? "停止生成" : "发送消息")
+                    })
+                .equatable()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -635,6 +605,107 @@ struct ChatView: View {
 extension ChatViewModel {
     /// 状态条「停止」按钮的显示条件（流式进行中；T2.2 A5 后保留供诊断用）。
     var isBusy: Bool { phase == .streaming }
+}
+
+// MARK: - T2.6 件8 composer 工具行（equatable 状态隔离）
+
+/// composer 底部工具行的稳定身份层（权限挡位 / Plan chip / 模型挡位 / 占用环 /
+/// 主按钮）。
+///
+/// 【T2.6 件8 · 根因】AI 回复中模型菜单「跟随上移+变长」：流式 chunk 经
+/// streamingText/bubbles 每 0.2s 触发 ChatView body 整树重求值 → 工具行内的
+/// SwiftUI Menu 随父容器反复重建（弹层锚点跟随触发器 + 重建过渡动画 = 跳动/
+/// 拉长的视觉）；叠加 pressure 环插入、statsLine 撑高 chrome 的几何变化放大
+/// 跟随幅度。修法 = 工具行抽本子视图 + `.equatable()`：输入全为值字段，
+/// 手写 `==` 排除闭包——流式 chunk 不改任何值字段 → 全等 → SwiftUI 跳过
+/// 本子树重求值，Menu 身份与几何在流式期间稳定（交互形态不变，仍为
+/// SwiftUI Menu，未自绘弹层）。pressure 更新/权限 chip 出现等真实数据变化
+/// 照常重绘（触发器一次性移位属数据事实变化，dsh 同行为）。
+private struct ComposerToolBar: View, Equatable {
+    let permissionPreset: String?
+    let isCommandRunning: Bool
+    let planActive: Bool
+    let current: EndpointConfig?
+    let currentEffort: String?
+    let pressure: Compactor.PressureInfo?
+    let primaryStops: Bool
+    let canSend: Bool
+    let isDraftEmpty: Bool
+    let endpointStore: EndpointStore
+    let onPermissionCommand: (String, Bool) -> Void
+    let onPlanOff: () -> Void
+    let onSelectModel: (EndpointConfig) -> Void
+    let onSelectEffort: (String?) -> Void
+    let onPrimary: () -> Void
+
+    /// 值字段相等判定（闭包显式排除——闭包只捕获 viewModel 引用，行为等价；
+    /// current 以 id 判等，对象重建但选择未变时不触发重绘）。
+    static func == (lhs: ComposerToolBar, rhs: ComposerToolBar) -> Bool {
+        lhs.permissionPreset == rhs.permissionPreset
+            && lhs.isCommandRunning == rhs.isCommandRunning
+            && lhs.planActive == rhs.planActive
+            && lhs.current?.id == rhs.current?.id
+            && lhs.currentEffort == rhs.currentEffort
+            && lhs.pressure == rhs.pressure
+            && lhs.primaryStops == rhs.primaryStops
+            && lhs.canSend == rhs.canSend
+            && lhs.isDraftEmpty == rhs.isDraftEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // 权限挡位下拉（A3；PermissionSelect.tsx——提交走 /permission
+            // 命令同一写通路径；confirmed = 下拉内确认已过，双弹修复）。
+            if let permission = permissionPreset {
+                PermissionSelectView(
+                    currentPreset: permission,
+                    busy: isCommandRunning,
+                    onCommand: onPermissionCommand)
+            }
+            // Plan chip（C10；PlanModeControl.tsx:19-69——plan 生效时渲染，
+            // 点击执行 /plan off）。
+            if planActive {
+                Button {
+                    onPlanOff()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Plan")
+                            .font(.footnote.weight(.medium))
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("plan mode 已开启，按下关闭")
+            }
+            Spacer()
+            // 模型挡位（C11；ModelSelect.tsx——两级菜单 Model/Effort；
+            // T2.4 P1-3：会话级选择——current/effort 为 VM published 镜像）。
+            ModelSelectView(store: endpointStore,
+                            current: current,
+                            currentEffort: currentEffort,
+                            onSelect: onSelectModel,
+                            onEffort: onSelectEffort)
+            // 上下文占用环（C9；ContextMeter.tsx:106-165——无数据不渲染）。
+            if let pressure {
+                ContextMeterView(pressure: pressure)
+            }
+            // 主按钮（A5：发送/停止同位切换；dsh :313-326）。
+            Button {
+                onPrimary()
+            } label: {
+                Image(systemName: primaryStops ? "stop.fill" : "paperplane.fill")
+                    .font(.system(size: 15, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .disabled(primaryStops ? false : !canSend || isDraftEmpty)
+            .accessibilityLabel(primaryStops ? "停止生成" : "发送消息")
+        }
+    }
 }
 
 // MARK: - P2-⑬ 工具卡折叠视图
