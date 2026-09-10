@@ -17,6 +17,9 @@ struct ChatView: View {
     @State private var commandMenuOpen = false
     /// 本轮菜单是否由 "/" 触发（决定草稿离开 "/" 形态时是否收起）。
     @State private var slashTriggeredMenu = false
+    /// composer 座位 + 状态条 dock 的合计高度（P1-5：菜单锚定与捕获层开洞
+    /// 的度量——「composer chrome」区段）。
+    @State private var composerChromeHeight: CGFloat = 0
 
     init(environment: AppEnvironment, sessionID: String) {
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
@@ -24,22 +27,64 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // P2-⑩ 撤顶部旧 UI：原 statusBar（模型名 + 上下文 X/Y + 三档压力
-            // 细条 + 阶段 ProgressView）整段移除——模型名归 composer 模型挡位
-            // （ModelSelect.tsx 命名座位）、占用归 ContextMeter 环（one home
-            // per fact）、发送/停止已随 T2.2 A5 移交主按钮同位状态机。
-            content
-            Divider()
-            // M3 T1：composer 座位（审批/提问接管输入框，dsh composer 接管形态；
-            // 高度上限共用 336px，座位高度稳定不跳动——2026-07-30 笔记）。
-            composerSeat
-            // 状态条 dock（C8；StatsLine.tsx:1-3——挂 composer 之下不随流滚动；
-            // P2-⑬ 单行呈现=StatsLineView lineLimit(1) 既有语义）。
-            if let line = viewModel.statsLine {
-                StatsLineView(line: line)
+        // P1-5：菜单与捕获层上移根层全屏坐标系（原挂 composer 卡 .overlay
+        // ——卡片 clipShape 连 hit-testing 一起裁，点卡外碰不到捕获层 =
+        // 「点外关不掉」的根因）。
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                // P2-⑩ 撤顶部旧 UI：原 statusBar（模型名 + 上下文 X/Y + 三档压力
+                // 细条 + 阶段 ProgressView）整段移除——模型名归 composer 模型挡位
+                // （ModelSelect.tsx 命名座位）、占用归 ContextMeter 环（one home
+                // per fact）、发送/停止已随 T2.2 A5 移交主按钮同位状态机。
+                content
+                Divider()
+                // M3 T1：composer 座位（审批/提问接管输入框，dsh composer 接管形态；
+                // 高度上限共用 336px，座位高度稳定不跳动——2026-07-30 笔记）。
+                // 状态条 dock（C8；StatsLine.tsx:1-3——挂 composer 之下不随流滚动；
+                // P2-⑬ 单行呈现=StatsLineView lineLimit(1) 既有语义）。
+                // P1-5：座位+dock 作为一个「chrome 块」度量（菜单锚定其上缘、
+                // 捕获层在其区段开洞）。
+                VStack(spacing: 0) {
+                    composerSeat
+                    if let line = viewModel.statsLine {
+                        StatsLineView(line: line)
+                    }
+                }
+                .background(composerChromeMeter)
+            }
+            // 捕获层（dsh MenuView.tsx:59-72 outside click）：全屏拦截、
+            // composer chrome 区段开洞——卡内点击穿透到 composer（菜单保持，
+            // dsh closest('[data-composer-card]') 内不关语义）。
+            if commandMenuOpen {
+                composerHoleCatcher
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+            // 菜单（dsh MenuView.tsx:25/:50/:77 MAX_HEIGHT 320 anchored popup）：
+            // 锚定 composer 卡上缘向上生长、高度=min(内容,320)。
+            if commandMenuOpen {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    SlashMenuView(
+                        query: commandMenuQuery,
+                        commands: viewModel.slashCommandList,
+                        onPick: { command in
+                            // claim token 写回（dsh "/name " 带尾随空格）；先清 "/"
+                            // 触发标记，防 onChange 又把菜单拉起。
+                            slashTriggeredMenu = false
+                            viewModel.draft = "/\(command.name) "
+                            closeCommandMenu()
+                        },
+                        onDismiss: { closeCommandMenu() })
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, composerChromeHeight)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .zIndex(2)
             }
         }
+        .onPreferenceChange(ComposerChromeHeightKey.self) { composerChromeHeight = $0 }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewModel.open() }
@@ -60,6 +105,46 @@ struct ChatView: View {
             }
             .presentationBackground(.clear)
         }
+    }
+
+    // MARK: - P1-5 命令菜单锚定与捕获（dsh MenuView.tsx 语义）
+
+    /// composer chrome 高度度量（座位 + dock）。
+    private var composerChromeMeter: some View {
+        GeometryReader { geo in
+            Color.clear.preference(key: ComposerChromeHeightKey.self,
+                                   value: geo.size.height)
+        }
+    }
+
+    private struct ComposerChromeHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = max(value, nextValue())
+        }
+    }
+
+    /// 全屏捕获层，底部 chrome 区段开洞（洞内点击穿透到 composer——菜单保持）。
+    private var composerHoleCatcher: some View {
+        GeometryReader { geo in
+            let holeHeight = min(composerChromeHeight, geo.size.height)
+            VStack(spacing: 0) {
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { closeCommandMenu() }
+                Color.clear
+                    .frame(height: holeHeight)
+                    .allowsHitTesting(false)
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private func closeCommandMenu() {
+        withAnimation(.easeOut(duration: 0.12)) {
+            commandMenuOpen = false
+        }
+        slashTriggeredMenu = false
     }
 
     // MARK: - 消息流
@@ -303,44 +388,17 @@ struct ChatView: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        // 命令菜单（C7；+ 按钮与 "/" 触发共用——dsh onToggleCommandMenu）。
-        // P2-⑪ 点外关闭（dsh MenuView.tsx:59-72 outside click 语义）：菜单
-        // 之下垫全屏捕获层，点外即收；菜单行自身位于捕获层之上不受影响。
-        .overlay(alignment: .bottom) {
-            if commandMenuOpen {
-                ZStack(alignment: .bottom) {
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeOut(duration: 0.12)) {
-                                commandMenuOpen = false
-                            }
-                            slashTriggeredMenu = false
-                        }
-                    SlashMenuView(
-                        query: commandMenuQuery,
-                        commands: viewModel.slashCommandList,
-                        onPick: { command in
-                            // claim token 写回（dsh "/name " 带尾随空格）；先清 "/"
-                            // 触发标记，防 onChange 又把菜单拉起。
-                            slashTriggeredMenu = false
-                            viewModel.draft = "/\(command.name) "
-                            commandMenuOpen = false
-                        },
-                        onDismiss: { commandMenuOpen = false })
-                        .offset(y: -108)
-                }
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-        }
+        // P1-5：菜单与捕获层已上移根层 ZStack（原卡上 .overlay 被 clipShape
+        // 裁剪 hit-testing——点外关不掉的根因，见 body 注）。
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         // 手输 "/" 自动开菜单并过滤（MenuView combobox 语义）；离开 "/" 形态
         // 且菜单由 "/" 触发时收起（"+" 直开的菜单不受草稿影响）。
         .onChange(of: viewModel.draft) { newValue in
             if newValue.hasPrefix("/") {
-                commandMenuOpen = true
+                withAnimation(.easeOut(duration: 0.12)) {
+                    commandMenuOpen = true
+                }
                 slashTriggeredMenu = true
             } else if slashTriggeredMenu {
                 commandMenuOpen = false
