@@ -339,13 +339,30 @@ struct ChatView: View {
         var candidates: [ChatViewModel.DraftImageCandidate] = []
         for provider in providers {
             let identifier = UTType.image.identifier
-            guard let data = try? await provider.loadDataRepresentation(
-                forTypeIdentifier: identifier) else { continue }
+            guard let data = try? await Self.loadProviderData(
+                provider, typeIdentifier: identifier) else { continue }
             let mediaType = provider.registeredContentTypes
                 .compactMap { Self.mediaType(of: [$0]) }.first
             candidates.append(.init(data: data, mediaType: mediaType, name: nil))
         }
         viewModel.addDraftImages(candidates)
+    }
+
+    /// NSItemProvider completion → async 桥接（SDK 对该 API 的 async overlay
+    /// 未生成——显式 continuation 确定性编译）。
+    private static func loadProviderData(_ provider: NSItemProvider,
+                                         typeIdentifier: String) async throws -> Data {
+        try await withCheckedThrowingContinuation { cont in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
+                if let data {
+                    cont.resume(returning: data)
+                } else {
+                    cont.resume(throwing: error ?? NSError(
+                        domain: "WanWo.AttachmentIntake", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "拖拽数据读取失败"]))
+                }
+            }
+        }
     }
 
     /// 剪贴板 intake（点按 chip 触发；读图后重编码 PNG + 基线推进）。

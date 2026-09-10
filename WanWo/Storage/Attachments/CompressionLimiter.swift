@@ -15,24 +15,28 @@ final class CompressionLimiter: @unchecked Sendable {
     private var active = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
     private let lock = NSLock()
+    /// 同步形态的 FIFO 排队 + 槽位计数（dsh 等待队列语义的 GCD 承载）。
+    private let gate = DispatchQueue(label: "wanwo.attachment.compression-limiter")
+    private let semaphore: DispatchSemaphore
 
     init(concurrency: Int) {
         precondition(concurrency > 0, "compression limiter requires positive concurrency")
         self.concurrency = concurrency
+        self.semaphore = DispatchSemaphore(value: concurrency)
     }
 
     /// 槽位可用后执行任务（compression-limiter.ts:18-42 run 语义 1:1）。
-    func run<T: Sendable>(_ task: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await acquire()
-        do {
-            let value = try await task()
-            release()
-            return value
-        } catch {
-            release()
-            throw error
+    /// 同步形态：WanWo 存储调用链全同步（saveImage/requestImageVariant 均
+    /// throws 非 async），用串行 gate（GCD FIFO）+ 计数信号量承载同一语义
+    /// ——排队 FIFO、并发上限、槽位结算即移交。任务不得重入 limiter。
+    func run<T: Sendable>(_ task: @escaping @Sendable () throws -> T) throws -> T {
+        gate.sync {
+            semaphore.wait()
+            defer { semaphore.signal() }
+            return try task()
         }
     }
+
 
     /// 取槽：有空槽即占用；否则 FIFO 入队挂起（保序——数组 push/shift 队列）。
     private func acquire() async {

@@ -329,7 +329,7 @@ final class ChatViewModel: ObservableObject {
         case "IMAGE_TOO_MANY_PIXELS":
             return "图片分辨率过大，请压缩后重试"
         case "IMAGE_DIMENSION_TOO_LARGE":
-            return "图片宽高不能超过 \(limits.maxImageDimension}px，请缩小后重试"
+            return "图片宽高不能超过 \(limits.maxImageDimension)}px，请缩小后重试"
         // Undecodable bytes 或声明与字节不符：可解 = 换文件/重新导出，读作
         // 格式问题（image-labels.ts:39-43 注释原文语义）。
         case "INVALID_IMAGE", "IMAGE_TYPE_MISMATCH":
