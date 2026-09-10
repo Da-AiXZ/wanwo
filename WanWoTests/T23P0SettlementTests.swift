@@ -86,7 +86,7 @@ final class T23P0SettlementTests: XCTestCase {
             requestId: presenter.questionsPresented[0],
             AskUserQuestionAnswer(answers: [
                 AskUserQuestionAnswerItem(id: "q1", selected: ["是"], custom: nil)])))
-        let firstAnswer = try await firstAsk
+        let firstAnswer = try await firstAsk.value
         XCTAssertEqual(firstAnswer.answers.first?.selected, ["是"])
         XCTAssertEqual(presenter.questionSettlements.count, 1)
         if case .answered = presenter.questionSettlements[0].settlement {} else {
@@ -106,7 +106,7 @@ final class T23P0SettlementTests: XCTestCase {
             requestId: presenter.questionsPresented[1],
             AskUserQuestionAnswer(answers: [
                 AskUserQuestionAnswerItem(id: "q2", selected: ["否"], custom: nil)])))
-        let secondAnswer = try await secondAsk
+        let secondAnswer = try await secondAsk.value
         XCTAssertEqual(secondAnswer.answers.first?.id, "q2")
         XCTAssertEqual(presenter.questionSettlements.count, 2)
         if case .answered = presenter.questionSettlements[1].settlement {} else {

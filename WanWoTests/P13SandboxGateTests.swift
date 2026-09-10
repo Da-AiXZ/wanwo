@@ -184,8 +184,8 @@ final class P13SandboxGateTests: XCTestCase {
             tool: "write", args: escalating, standingMode: .readOnly,
             subject: "operation", callId: "c1", approver: nil)
         XCTAssertEqual(try? failed.get(), nil)
-        if case .failure(let message) = failed {
-            XCTAssertTrue(message.contains("requires approval, but no approval service is composed"))
+        if case .failure(let failure) = failed {
+            XCTAssertTrue(failure.message.contains("requires approval, but no approval service is composed"))
         } else {
             XCTFail("expected failure")
         }
@@ -194,8 +194,8 @@ final class P13SandboxGateTests: XCTestCase {
         let invalid = await SandboxGate.resolveMode(
             tool: "write", args: half, standingMode: .readOnly,
             subject: "operation", callId: "c1", approver: nil)
-        if case .failure(let message) = invalid {
-            XCTAssertEqual(message, "invalid escalation: sandbox_permissions requires a justification")
+        if case .failure(let failure) = invalid {
+            XCTAssertEqual(failure.message, "invalid escalation: sandbox_permissions requires a justification")
         } else {
             XCTFail("expected failure")
         }
