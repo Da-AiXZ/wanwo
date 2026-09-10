@@ -81,6 +81,21 @@ final class EndpointStore: ObservableObject {
         return endpoints.first(where: { $0.isEnabled })
     }
 
+    /// 会话级选择解析（T2.4 P1-3：dsh ModelSelect.tsx per-session
+    /// ModelSelection 语义——会话选择优先（端点仍启用时），缺省回落活动端点
+    /// （App 级缺省）；返回端点已应用会话 effort 覆盖（nil = provider default
+    /// 不透传）。EndpointConfig.reasoningEffort（端点级字段）由此废弃：
+    /// 解析结果恒被会话值覆盖，旧落盘值不再生效。
+    func resolve(selection: SessionModelSelection.Value?) -> EndpointConfig? {
+        if let selection,
+           let endpoint = endpoints.first(where: { $0.id == selection.endpointID && $0.isEnabled }) {
+            var resolved = endpoint
+            resolved.reasoningEffort = selection.reasoningEffort
+            return resolved
+        }
+        return activeEndpoint()
+    }
+
     /// 设定活动端点（composer 模型挡位提交面；下一请求即生效——AgentLoop
     /// makeAdapter 按调用时 activeEndpoint 取用）。
     func setActive(_ endpoint: EndpointConfig) {

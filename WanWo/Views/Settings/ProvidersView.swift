@@ -88,7 +88,6 @@ struct EndpointEditSheet: View {
     @State private var model: String = ""
     @State private var apiKey: String = ""
     @State private var thinkingEnabled = false
-    @State private var reasoningEffort: String = ""
     @State private var loaded = false
     /// ERR-016：凭据保存结果透出（存储层/失败原因）——失败时留在页面显示，不再静默。
     @State private var credentialNotice: String?
@@ -122,13 +121,10 @@ struct EndpointEditSheet: View {
                 }
                 Section("DeepSeek 扩展（可选透传，09 #16）") {
                     Toggle("thinking", isOn: $thinkingEnabled)
-                    Picker("reasoning_effort", selection: $reasoningEffort) {
-                        Text("（不发）").tag("")
-                        Text("off").tag("off")
-                        Text("low").tag("low")
-                        Text("high").tag("high")
-                        Text("max").tag("max")
-                    }
+                    // T2.4 P1-③：reasoning_effort 控件移除——配置页回归纯
+                    // 服务商配置（dsh 分层：settings models section 只管
+                    // provider/model 目录；推理等级在对话内 per-session 调整，
+                    // ModelSelect.tsx effort pane）。端点级字段废弃。
                 }
             }
             .navigationTitle(endpoint == nil ? "新增端点" : "编辑端点")
@@ -154,7 +150,7 @@ struct EndpointEditSheet: View {
             baseURL = endpoint.baseURL
             model = endpoint.model
             thinkingEnabled = endpoint.thinking == "enabled"
-            reasoningEffort = endpoint.reasoningEffort ?? ""
+            // T2.4 P1-③：reasoningEffort 不回读——端点级字段废弃。
             // Key 不回读显示（Keychain 值不进 UI 文本框；留空 = 保留）。
         }
     }
@@ -169,7 +165,8 @@ struct EndpointEditSheet: View {
         config.baseURL = normalizedBase
         config.model = model
         config.thinking = thinkingEnabled ? "enabled" : nil
-        config.reasoningEffort = reasoningEffort.isEmpty ? nil : reasoningEffort
+        // T2.4 P1-③：不再写 reasoningEffort（端点级字段废弃；编辑既有端点时
+        // 旧值经 config 拷贝原样保留但被会话级选择覆盖，新端点恒 nil）。
 
         if endpoint == nil {
             config.isEnabled = true

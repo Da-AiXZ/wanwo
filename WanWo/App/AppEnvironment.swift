@@ -185,8 +185,10 @@ final class AppEnvironment: ObservableObject {
 
     /// nonisolated adapter 工厂（AgentLoop/Compactor 的 @Sendable makeAdapter 缝用）。
     /// async：EndpointStore 为 MainActor 隔离，activeEndpoint/apiKey 需 await 跳主线程取用。
-    nonisolated func makeAgentAdapter() async throws -> OpenAICompatAdapter {
-        guard let endpoint = await endpointStore.activeEndpoint() else {
+    nonisolated func makeAgentAdapter(selection: SessionModelSelection? = nil) async throws -> OpenAICompatAdapter {
+        // T2.4 P1-3：会话级选择优先（dsh ModelSelect per-session
+        // ModelSelection 语义），缺省回落活动端点（App 级缺省）。
+        guard let endpoint = await endpointStore.resolve(selection: selection?.get()) else {
             throw LLMError(message: "没有已启用的模型端点，请到「设置 · Providers」配置。",
                            code: "NO_ENDPOINT")
         }
@@ -211,7 +213,8 @@ final class AppEnvironment: ObservableObject {
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
                         callbacks: AgentLoop.Callbacks,
-                        interactionPresenter: SessionInteractionPresenter? = nil)
+                        interactionPresenter: SessionInteractionPresenter? = nil,
+                        modelSelection: SessionModelSelection? = nil)
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
@@ -276,11 +279,12 @@ final class AppEnvironment: ObservableObject {
         let pipeline = ToolPipeline(
             registry: registry,
             repeatAdviser: repeatAdviser)
-        let compactor = Compactor(makeAdapter: { [weak self] in
+        let compactor = Compactor(makeAdapter: { [weak self, modelSelection] in
             guard let self else {
                 throw LLMError(message: "environment released", code: "UNKNOWN")
             }
-            return try await self.makeAgentAdapter()
+            // T2.4 P1-3：会话级模型选择随缝传入（压缩摘要与会话主链同源）。
+            return try await self.makeAgentAdapter(selection: modelSelection)
         })
         let assembler = PromptAssembler()
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
@@ -313,11 +317,13 @@ final class AppEnvironment: ObservableObject {
             compactor: compactor,
             spill: spill,
             injector: injector,
-            makeAdapter: { [weak self] in
+            makeAdapter: { [weak self, modelSelection] in
                 guard let self else {
                     throw LLMError(message: "environment released", code: "UNKNOWN")
                 }
-                return try await self.makeAgentAdapter()
+                // T2.4 P1-3：会话级模型选择（@Sendable 缝传值——holder 内
+                // NSLock 保护，请求时读取，per-session 生效）。
+                return try await self.makeAgentAdapter(selection: modelSelection)
             },
             callbacks: callbacks,
             // P1-3：本调用生效沙箱模式（四层解析：approved 显式 > 会话末条

@@ -270,8 +270,11 @@ struct ChatView: View {
                     .accessibilityLabel("plan mode 已开启，按下关闭")
                 }
                 Spacer()
-                // 模型挡位（C11；ModelSelect.tsx——两级菜单 Model/Effort）。
+                // 模型挡位（C11；ModelSelect.tsx——两级菜单 Model/Effort；
+                // T2.4 P1-3：会话级选择——current/effort 为 VM published 镜像）。
                 ModelSelectView(store: viewModel.endpointStore,
+                                current: viewModel.currentModelEndpoint,
+                                currentEffort: viewModel.sessionEffort,
                                 onSelect: { viewModel.selectModel($0) },
                                 onEffort: { viewModel.selectEffort($0) })
                 // 上下文占用环（C9；ContextMeter.tsx:106-165——无数据不渲染）。

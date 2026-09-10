@@ -48,9 +48,16 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var streamingReasoning = ""
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var resumeBanner: String?
-    @Published private(set) var modelLabel = ""
     @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
+    // MARK: T2.4 P1-3 会话级模型选择（dsh ModelSelect per-session
+    // ModelSelection：选择随会话，不落盘、不落事件；App 级缺省=活动端点）。
+    /// 会话级选择值宿主（makeAdapter @Sendable 缝消费）。
+    private let modelSelection = SessionModelSelection()
+    /// 当前生效端点镜像（触发器与勾选显示；会话选择优先）。
+    @Published private(set) var currentModelEndpoint: EndpointConfig?
+    /// 会话级 effort（nil = provider default）。
+    @Published private(set) var sessionEffort: String?
     // MARK: M3 T1 待决交互（composer 接管数据源；dsh 2026-07-23/07-29 笔记）
     /// 待决审批队列（composer 接管显示队首；first answer wins 由协调器保证）。
     @Published private(set) var pendingApprovals: [PendingApprovalPresentation] = []
@@ -114,14 +121,23 @@ final class ChatViewModel: ObservableObject {
                 if repaired > 0 {
                     self.resumeBanner = "已恢复：\(repaired) 个中断收尾已修复"
                 }
-                if let endpoint = (try? self.environment.makeAdapter())?.1 {
-                    self.modelLabel = "\(endpoint.name) · \(endpoint.model)"
+                // T2.4 P1-3：新会话按 dsh 语义初始化会话级选择（App 级缺省 =
+                // 活动端点，effort = provider default；端点级旧 reasoningEffort
+                // 字段废弃不读）。
+                if self.modelSelection.get() == nil,
+                   let active = self.environment.endpointStore.activeEndpoint() {
+                    self.modelSelection.set(
+                        .init(endpointID: active.id, reasoningEffort: nil))
                 }
+                self.currentModelEndpoint =
+                    self.environment.endpointStore.resolve(selection: self.modelSelection.get())
+                self.sessionEffort = self.modelSelection.get()?.reasoningEffort
                 let stack = await self.environment.makeAgentStack(
                     sessionId: self.sessionID,
                     writer: writer,
                     callbacks: self.makeCallbacks(),
-                    interactionPresenter: self)
+                    interactionPresenter: self,
+                    modelSelection: self.modelSelection)
                 self.agentLoop = stack.loop
                 self.approvalCoordinator = stack.approvalCoordinator
                 self.questionService = stack.questionService
@@ -238,19 +254,29 @@ final class ChatViewModel: ObservableObject {
         pendingPermissionConfirmation = nil
     }
 
-    /// 模型挡位提交（ModelSelectView 回传；下一请求即用新端点）。
+    /// 模型选择提交（T2.4 P1-3：dsh choose() 语义——per-session 选择，
+    /// 不写全局 activeEndpoint；选择模型时 effort 回 provider default
+    /// （dsh :171-178 selection 不带旧 effort，WanWo 无 defaultEffort
+    /// 元数据 → nil））。下一请求即生效（makeAdapter 按调用时选择取用）。
     func selectModel(_ endpoint: EndpointConfig) {
-        environment.endpointStore.setActive(endpoint)
-        modelLabel = "\(endpoint.name) · \(endpoint.model)"
+        modelSelection.set(.init(endpointID: endpoint.id, reasoningEffort: nil))
+        currentModelEndpoint = environment.endpointStore.resolve(selection: modelSelection.get())
+        sessionEffort = nil
     }
 
-    /// 推理等级提交（P2-⑧：ModelSelectView effort 子菜单回传——写入活动端点
-    /// 的 reasoningEffort（nil = provider default 不透传）；下一请求即生效
-    /// （AgentLoop makeAdapter 按调用时 activeEndpoint 取用）。
+    /// 推理等级提交（T2.4 P1-3：会话级内存态——dsh chooseEffort() 语义，
+    /// nil = provider default 不透传；写入活动端点的 reasoningEffort 的旧
+    /// 行为随端点级字段废弃而移除）。下一请求即生效。
     func selectEffort(_ effort: String?) {
-        guard var endpoint = environment.endpointStore.activeEndpoint() else { return }
-        endpoint.reasoningEffort = effort
-        environment.endpointStore.update(endpoint)
+        var value = modelSelection.get()
+        if value == nil, let resolved = environment.endpointStore.resolve(selection: nil) {
+            value = .init(endpointID: resolved.id, reasoningEffort: nil)
+        }
+        guard value != nil else { return }
+        value?.reasoningEffort = effort
+        modelSelection.set(value)
+        currentModelEndpoint = environment.endpointStore.resolve(selection: value)
+        sessionEffort = effort
     }
 
     /// 模型挡位数据源（ModelSelectView @ObservedObject 接线）。

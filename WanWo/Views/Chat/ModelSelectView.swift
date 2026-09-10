@@ -2,7 +2,7 @@
 //  ModelSelectView.swift
 //  WanWo
 //
-//  【dsh Web UI 原件移植 · M3 T2.2 / P2-⑧】composer 模型挡位两级菜单。
+//  【dsh Web UI 原件移植 · M3 T2.2 / P2-⑧ / T2.4 P1-3】composer 模型挡位两级菜单。
 //  出处（packages/client/ui-model-selection/src/client/ModelSelect.tsx）：
 //    - :1-13 头注 —— composer 的命名模型座位（conversation.input.model）；
 //      figma 496:26454 两级 MenuDropdown：根菜单 = Model / Effort 行对各钻入
@@ -12,19 +12,21 @@
 //      选中行 checkmark（menuitemradio）。
 //    - effort pane（:321-351）—— effort 等级单选；provider default 行
 //      （:92-94 defaultEffort 缺席时首行 = provider default）。
+//    - state.current = per-session ModelSelection（:48-51 会话目录快照——
+//      T2.4 P1-3：WanWo 对应 = SessionModelSelection 会话级内存态，切会话
+//      各归各；App 级缺省 = 活动端点）。
 //    - 文案逐字（locales.ts:15-30 zh）：trigger.fallback「选择模型」、
 //      menu.model「模型」、menu.effort「推理等级」、
 //      effort.providerDefault「Default」（zh 亦为 Default 字面）、
-//      empty.models「没有可用的模型。」、empty.efforts「当前模型未提供推理等级。」。
-//    - 数据与提交走与 /model 弹层同一 per-session ModelDirectory（:8-9）——
-//      WanWo 对应 = EndpointStore（单一直一源）。
-//  WanWo 偏差登记（P2 报告）：
-//    1. 两级形态 = SwiftUI Menu 嵌套子菜单（模型子菜单 / 推理等级子菜单），
-//       非 dsh 自绘 pane 钻入——自定义浮层会被 composer 卡 clipShape 裁剪，
-//       以系统能力等义两级结构（行内容/分组/勾选/文案仍 1:1）。
+//      empty.models「没有可用的模型。」。
+//    - :250-261 root pane 行右 chevron 由 MenuDropdown 组件自带——SwiftUI
+//      Menu 嵌套子菜单亦自带指示器，本视图不再自绘（T2.4 P1-③ 双 chevron
+//      修复）；触发器 chevron.down 保留（dsh :237 IconChevronDown）。
+//  WanWo 偏差登记：
+//    1. 两级形态 = SwiftUI Menu 嵌套子菜单，非 dsh 自绘 pane 钻入（P2 登记）。
 //    2. effort 词汇 = 部署方 DeepSeek 扩展透传（09 #16：off|low|high|max，
 //       ProvidersView 同表）+ provider default；dsh 的 per-model reasoning
-//       元数据由 Host 广播——WanWo 无 Host 目录，词汇静态（偏差登记）。
+//       元数据由 Host 广播——WanWo 无 Host 目录，词汇静态（P2 登记）。
 //
 
 import SwiftUI
@@ -32,7 +34,11 @@ import SwiftUI
 /// composer 模型挡位（触发器 = 模型名（· effort）；菜单 = 模型 / 推理等级两级）。
 struct ModelSelectView: View {
     @ObservedObject var store: EndpointStore
-    /// 模型选择回传（VM 更新标签；下一请求起生效）。
+    /// 当前生效端点（会话选择优先，缺省 = 活动端点；VM published 镜像）。
+    let current: EndpointConfig?
+    /// 当前会话 effort（nil = provider default）。
+    let currentEffort: String?
+    /// 模型选择回传（会话级选择；下一请求起生效）。
     let onSelect: (EndpointConfig) -> Void
     /// 推理等级选择回传（nil = provider default 不透传）。
     let onEffort: (String?) -> Void
@@ -53,11 +59,9 @@ struct ModelSelectView: View {
         EffortChoice(effort: "max", label: "max"),
     ]
 
-    private var active: EndpointConfig? { store.activeEndpoint() }
-
     /// effort 展示值（dsh :83-88 effectiveEffort → 名称；无 → providerDefault）。
     private var effortLabel: String {
-        guard let effort = active?.reasoningEffort else { return "Default" }
+        guard let effort = currentEffort else { return "Default" }
         return Self.effortChoices.first { $0.effort == effort }?.label ?? effort
     }
 
@@ -75,7 +79,8 @@ struct ModelSelectView: View {
 
     var body: some View {
         Menu {
-            // 根菜单行 1 =「模型」→ 钻入 provider 分组列表（dsh :250-253）。
+            // 根菜单行 1 =「模型」→ 钻入 provider 分组列表（dsh :250-253；
+            // 行右指示器 = Menu 自带，不再自绘——T2.4 P1-③）。
             Menu {
                 ForEach(groups, id: \.name) { group in
                     Section(group.name) {
@@ -85,7 +90,7 @@ struct ModelSelectView: View {
                             } label: {
                                 HStack {
                                     Text(endpoint.model)
-                                    if endpoint.id == active?.id {
+                                    if endpoint.id == current?.id {
                                         Image(systemName: "checkmark")
                                     }
                                 }
@@ -100,11 +105,8 @@ struct ModelSelectView: View {
                 HStack {
                     Text("模型")
                     Spacer()
-                    Text(active?.model ?? "选择模型")
+                    Text(current?.model ?? "选择模型")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -117,7 +119,7 @@ struct ModelSelectView: View {
                     } label: {
                         HStack {
                             Text(choice.label)
-                            if (active?.reasoningEffort ?? nil) == choice.effort {
+                            if currentEffort ?? nil == choice.effort {
                                 Image(systemName: "checkmark")
                             }
                         }
@@ -130,18 +132,15 @@ struct ModelSelectView: View {
                     Text(effortLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
             }
         } label: {
             // 触发器（dsh :235-237）：模型名（effort 以说明字号随行）+ chevron。
             HStack(spacing: 4) {
-                Text(active?.model ?? "未选择模型")
+                Text(current?.model ?? "未选择模型")
                     .font(.caption)
                     .lineLimit(1)
-                if active?.reasoningEffort != nil {
+                if currentEffort != nil {
                     Text(effortLabel)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -155,6 +154,6 @@ struct ModelSelectView: View {
             .background(Color(.tertiarySystemFill))
             .clipShape(Capsule())
         }
-        .accessibilityLabel("选择模型，当前 \(active?.model ?? "未选择")，推理等级 \(effortLabel)")
+        .accessibilityLabel("选择模型，当前 \(current?.model ?? "未选择")，推理等级 \(effortLabel)")
     }
 }
