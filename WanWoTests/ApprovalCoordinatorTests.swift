@@ -89,10 +89,11 @@ final class ApprovalCoordinatorTests: XCTestCase {
         let requestId = presenter.presented[0]
         let accepted = coordinator.answer(requestId: requestId, outcome: .allowedOnce)
         XCTAssertTrue(accepted)
-        XCTAssertEqual(try await outcome, .allowedOnce)
+        let grantedOutcome = try await outcome
+        XCTAssertEqual(grantedOutcome, .allowedOnce)
 
         let audit = writer.events.filter {
-            $0.payload.wireType.hasPrefix("approval/")
+            $0.wireType.hasPrefix("approval/")
         }
         XCTAssertEqual(audit.count, 2, "asked + decided 恰成对")
         guard case .approvalAsked(let askedId, let tool, let reason) = audit[0].payload else {
@@ -130,7 +131,8 @@ final class ApprovalCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.answer(requestId: "unknown-id", outcome: .allowedOnce))
         // rogue 输入（非交互二值）拒绝。
         XCTAssertFalse(coordinator.answer(requestId: requestId, outcome: .unavailable))
-        XCTAssertEqual(try await outcome, .rejected)
+        let rejectedOutcome = try await outcome
+        XCTAssertEqual(rejectedOutcome, .rejected)
     }
 
     /// 桥关闭：在途待决一律 .unavailable（fail closed）且审计对完整。
@@ -146,7 +148,8 @@ final class ApprovalCoordinatorTests: XCTestCase {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         coordinator.bridgeClosed()
-        XCTAssertEqual(try await outcome, .unavailable)
+        let closedOutcome = try await outcome
+        XCTAssertEqual(closedOutcome, .unavailable)
         // 审计对仍完整（decided 恒随 asked——dsh index.ts:224）。
         let decided = writer.events.compactMap { event -> String? in
             if case .approvalDecided(_, let verdict) = event.payload { return verdict }

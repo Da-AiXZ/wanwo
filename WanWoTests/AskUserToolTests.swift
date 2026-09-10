@@ -258,6 +258,8 @@ final class AskUserToolTests: XCTestCase {
             workspace: WorkspaceFileAccess(sessionId: "test"),
             spill: SpillStore(root: FileManager.default.temporaryDirectory),
             onShellLine: { _, _ in },
-            completeLLM: { _, _ in "" })
+            completeLLM: { _, _ in "" },
+            sandboxMode: .workspaceWrite,
+            escalationApprover: nil)
     }
 }
