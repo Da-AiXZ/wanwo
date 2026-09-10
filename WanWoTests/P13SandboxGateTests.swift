@@ -230,22 +230,26 @@ final class P13SandboxGateTests: XCTestCase {
     }
 
     /// fs 门端到端：read-only 拒绝（marker+hint 逐字、isError）→ 提权重试
-    /// approved → 放行；提权被拒 → 逐字拒绝文案。
+    /// approved → 放行（携带 granted mode——P0-1 执行层兑现缝）；提权被拒 →
+    /// 逐字拒绝文案。
     func testFsGateDenyAndEscalate() async {
         let path = JSONValue.object(["file_path": .string("/etc/hosts")])
         // read-only standing → deny（marker + hint('operation')）。
         let denied = await SandboxGate.authorizeFsMutation(
             tool: "write", path: "/etc/hosts", args: path,
             standingMode: .readOnly, callId: "c1", approver: nil)
-        XCTAssertNotNil(denied)
-        XCTAssertEqual(denied?.isError, true)
-        XCTAssertEqual(denied?.errorCode, "FS_SANDBOX_DENIED")
-        XCTAssertEqual(denied?.text,
+        guard case .denied(let denial) = denied else {
+            return XCTFail("expected .denied, got \(denied)")
+        }
+        XCTAssertEqual(denial.isError, true)
+        XCTAssertEqual(denial.errorCode, "FS_SANDBOX_DENIED")
+        XCTAssertEqual(denial.text,
                        "Error: [sandbox: file access denied under read-only mode]\n"
                            + "[sandbox: escalation available — retry this exact operation once with "
                            + "sandbox_permissions (the narrowest wider mode that suffices) + justification; "
                            + "the approval prompt asks the user]")
-        // 带提权参数 + allowed-once → 放行（danger-full-access 越界路径直通）。
+        // 带提权参数 + allowed-once → 放行（danger-full-access 越界路径直通，
+        // granted mode 随行——工具体凭此打通执行层写入通道）。
         var promptedReason: String?
         let allow: SandboxEscalationApprover = { tool, callId, reason in
             promptedReason = "\(tool)|\(callId ?? "")|\(reason)"
@@ -259,7 +263,7 @@ final class P13SandboxGateTests: XCTestCase {
         let passed = await SandboxGate.authorizeFsMutation(
             tool: "write", path: "/etc/hosts", args: escalatedArgs,
             standingMode: .readOnly, callId: "c1", approver: allow)
-        XCTAssertNil(passed)
+        XCTAssertEqual(passed, .granted(.dangerFullAccess))
         XCTAssertEqual(promptedReason,
                        "write|c1|escalate sandbox to danger-full-access: append a host entry")
         // 提权被拒 → 逐字文案。
@@ -267,14 +271,58 @@ final class P13SandboxGateTests: XCTestCase {
         let rejected = await SandboxGate.authorizeFsMutation(
             tool: "write", path: "/etc/hosts", args: escalatedArgs,
             standingMode: .readOnly, callId: "c1", approver: reject)
-        XCTAssertEqual(rejected?.text,
+        guard case .denied(let rejection) = rejected else {
+            return XCTFail("expected .denied, got \(rejected)")
+        }
+        XCTAssertEqual(rejection.text,
                        "Error: the user rejected escalating this operation to \"danger-full-access\"")
-        XCTAssertEqual(rejected?.errorCode, "SANDBOX_ESCALATION_ERROR")
+        XCTAssertEqual(rejection.errorCode, "SANDBOX_ESCALATION_ERROR")
         // workspace-write 内路径放行。
         let inside = await SandboxGate.authorizeFsMutation(
             tool: "write", path: "notes.md", args: path,
             standingMode: .workspaceWrite, callId: "c1", approver: nil)
-        XCTAssertNil(inside)
+        XCTAssertEqual(inside, .granted(.workspaceWrite))
+    }
+
+    // MARK: - P0-1 提权批准后写入兑现（双层围栏打通）
+
+    /// 提权（danger-full-access）→ writeData 落在工作区外 guest 路径：
+    /// guest 绝对路径映射到注入的 guest 根（rootfs data 模拟），写入成功。
+    func testEscalatedWriteOutsideWorkspaceSucceeds() throws {
+        let guestRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("p24-guest-\(UUID().uuidString)", isDirectory: true)
+        let workspace = WorkspaceFileAccess(sessionId: "p24-\(UUID().uuidString)",
+                                            guestRoot: guestRoot)
+        defer { try? FileManager.default.removeItem(at: guestRoot) }
+        // danger-full-access：/etc/hosts 落在 guest 根/etc/hosts。
+        let url = try workspace.writeData("/etc/hosts", data: Data("127.0.0.1\n".utf8),
+                                          mode: .dangerFullAccess)
+        XCTAssertTrue(url.path.hasPrefix(guestRoot.standardizedFileURL.path))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "127.0.0.1\n")
+        // 同路径读放行（reads pass through）。
+        XCTAssertEqual(try workspace.readText("/etc/hosts"), "127.0.0.1\n")
+    }
+
+    /// workspace-write：/tmp 白名单兑现（gate 放行、执行层同墙兑现）；
+    /// /etc 越界仍拒绝（fail closed 不放宽）。
+    func testWorkspaceWriteTmpHonorAndEtcRejected() {
+        let guestRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("p24-guest-\(UUID().uuidString)", isDirectory: true)
+        let workspace = WorkspaceFileAccess(sessionId: "p24-\(UUID().uuidString)",
+                                            guestRoot: guestRoot)
+        defer { try? FileManager.default.removeItem(at: guestRoot) }
+        // /tmp 白名单：gate fsPathUnderWritableRoots 放行 → 执行层同样解析成功。
+        XCTAssertNoThrow(try workspace.writeData("/tmp/scratch.txt",
+                                                 data: Data("x".utf8),
+                                                 mode: .workspaceWrite))
+        // 越界：执行层拒绝（与 gate 判定一致）。
+        XCTAssertThrowsError(try workspace.writeData("/etc/passwd",
+                                                     data: Data("x".utf8),
+                                                     mode: .workspaceWrite))
+        // `..` 逃逸：即使 danger 模式也拦在 guest 根内（词法 containment）。
+        XCTAssertThrowsError(try workspace.writeData("/../escape.txt",
+                                                     data: Data("x".utf8),
+                                                     mode: .dangerFullAccess))
     }
 
     // MARK: - bash 启发式（A2 近似）

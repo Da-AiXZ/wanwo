@@ -133,11 +133,15 @@ struct FsWriteTool: AgentTool {
             return .failure("missing required parameters \"file_path\"/\"content\"", code: "INVALID_ARGS")
         }
         // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；dsh 逐字文案）。
-        if let denial = await SandboxGate.authorizeFsMutation(
+        // P0-1：放行携带 resolved mode——提权批准后写入通道按 granted mode
+        // 兑现（dsh resolvePolicy {...policy, mode: approvedMode} 语义）。
+        let grantedMode: SandboxMode
+        switch await SandboxGate.authorizeFsMutation(
             tool: name, path: path, args: args,
             standingMode: ctx.sandboxMode, callId: ctx.callId,
             approver: ctx.escalationApprover) {
-            return denial
+        case .granted(let mode): grantedMode = mode
+        case .denied(let denial): return denial
         }
         let workspace = ctx.workspace
         let existed = workspace.exists(path)
@@ -148,8 +152,8 @@ struct FsWriteTool: AgentTool {
         do {
             // dsh write 语义 =「创建或整体替换」：不走 mutate（read-match-write
             // 是 edit 族语义，对不存在的文件会读打开失败 → NSCocoaErrorDomain
-            // 260，ERR-013 真根因）。原子性由 writeData 的 .atomic + 独占并发保证。
-            _ = try workspace.writeData(path, data: Data(content.utf8))
+            // 260，ERR-013 真根因）。原子性由 writeAt 的 .atomic + 独占并发保证。
+            _ = try workspace.writeData(path, data: Data(content.utf8), mode: grantedMode)
         } catch {
             return .failure(String(describing: error), code: "WRITE_FAILED")
         }
@@ -215,11 +219,14 @@ struct FsEditTool: AgentTool {
                             code: "INVALID_ARGS")
         }
         // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；dsh 逐字文案）。
-        if let denial = await SandboxGate.authorizeFsMutation(
+        // P0-1：放行携带 resolved mode（同 write）。
+        let grantedMode: SandboxMode
+        switch await SandboxGate.authorizeFsMutation(
             tool: name, path: path, args: args,
             standingMode: ctx.sandboxMode, callId: ctx.callId,
             approver: ctx.escalationApprover) {
-            return denial
+        case .granted(let mode): grantedMode = mode
+        case .denied(let denial): return denial
         }
         guard !oldString.isEmpty else {
             return .failure("old_string must not be empty", code: "INVALID_ARGS")
@@ -230,7 +237,7 @@ struct FsEditTool: AgentTool {
             // G1：before 在 read-match-write 临界区内捕获（dsh editText outcome
             // 的 before/after 语义），编辑成功后随 meta 持久化 hunks。
             var before: String?
-            let next = try workspace.mutate(path) { current in
+            let next = try workspace.mutate(path, mode: grantedMode) { current in
                 before = current
                 let occurrences = current.components(separatedBy: oldString).count - 1
                 if occurrences == 0 {
@@ -378,11 +385,13 @@ struct FsGrepTool: AgentTool {
         let workspace = ctx.workspace
         var files: [URL]
         if let path = args.objectValue?["path"]?.stringValue {
-            if workspace.exists(path), let resolved = workspace.resolve(path),
+            // P0-1：读全域放行——单文件 grep 可落在工作区外 guest 路径
+            // （目录枚举仍工作区根，偏差登记）。
+            if workspace.exists(path), let resolved = workspace.resolveForRead(path),
                resolved.hasDirectoryPath {
                 files = workspace.recursiveFiles().filter { $0.path.hasPrefix(resolved.path) }
             } else {
-                files = [workspace.resolve(path)].compactMap { $0 }
+                files = [workspace.resolveForRead(path)].compactMap { $0 }
             }
         } else {
             files = workspace.recursiveFiles()
@@ -448,7 +457,9 @@ struct FsReadImageTool: AgentTool {
             return .failure("missing required parameter \"file_path\"", code: "INVALID_ARGS")
         }
         let workspace = ctx.workspace
-        guard let url = workspace.resolve(path), FileManager.default.fileExists(atPath: url.path) else {
+        // P0-1：读全域放行（fs-sandbox「Reads pass through untouched」）。
+        guard let url = workspace.resolveForRead(path),
+              FileManager.default.fileExists(atPath: url.path) else {
             return .failure("file not found: \(path)", code: "FILE_NOT_FOUND")
         }
         guard let data = try? Data(contentsOf: url) else {
@@ -523,12 +534,18 @@ struct FsStrReplaceEditorTool: AgentTool {
         let workspace = ctx.workspace
         // P1-3：沙箱门（resolvePolicy → checkedTarget → mapError；`view` 是
         // 只读命令——dsh fs-sandbox 头注「Reads pass through untouched」不设门）。
-        if command != "view",
-           let denial = await SandboxGate.authorizeFsMutation(
-               tool: name, path: path, args: args,
-               standingMode: ctx.sandboxMode, callId: ctx.callId,
-               approver: ctx.escalationApprover) {
-            return denial
+        // P0-1：放行携带 resolved mode（同 write）。
+        let grantedMode: SandboxMode
+        if command != "view" {
+            switch await SandboxGate.authorizeFsMutation(
+                tool: name, path: path, args: args,
+                standingMode: ctx.sandboxMode, callId: ctx.callId,
+                approver: ctx.escalationApprover) {
+            case .granted(let mode): grantedMode = mode
+            case .denied(let denial): return denial
+            }
+        } else {
+            grantedMode = ctx.sandboxMode
         }
         do {
             switch command {
@@ -561,7 +578,7 @@ struct FsStrReplaceEditorTool: AgentTool {
                 guard !workspace.exists(path) else {
                     return .failure("file already exists: \(path)", code: "ALREADY_EXISTS")
                 }
-                try workspace.writeText(path, content: fileText)
+                try workspace.writeText(path, content: fileText, mode: grantedMode)
                 return .success("File created: \(path) (\(fileText.utf8.count) bytes)")
 
             case "str_replace":
@@ -572,7 +589,7 @@ struct FsStrReplaceEditorTool: AgentTool {
                 guard !oldStr.isEmpty else {
                     return .failure("old_str must not be empty", code: "INVALID_ARGS")
                 }
-                _ = try workspace.mutate(path) { current in
+                _ = try workspace.mutate(path, mode: grantedMode) { current in
                     let occurrences = current.components(separatedBy: oldStr).count - 1
                     if occurrences != 1 {
                         throw FsToolFailure(
@@ -590,7 +607,7 @@ struct FsStrReplaceEditorTool: AgentTool {
                 guard insertLine >= 0 else {
                     return .failure("insert_line must be >= 0", code: "INVALID_ARGS")
                 }
-                _ = try workspace.mutate(path) { current in
+                _ = try workspace.mutate(path, mode: grantedMode) { current in
                     var lines = current.components(separatedBy: "\n")
                     let at = min(insertLine, lines.count)
                     lines.insert(newStr, at: at)

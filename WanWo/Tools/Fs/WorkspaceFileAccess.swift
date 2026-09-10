@@ -20,14 +20,18 @@ import Foundation
 final class WorkspaceFileAccess: @unchecked Sendable {
     let sessionId: String
     let rootURL: URL
+    /// guest / 的宿主映射根（alpine rootfs data 目录 = RootfsInstaller.dataPath；
+    /// P0-1 提权全域通道与 /tmp 白名单的解析落点。可注入以供测试）。
+    let guestRootURL: URL
     /// 读-改-写临界区（编辑族工具共享；glob/grep 只读遍历不走此锁）。
     private let mutationLock = NSLock()
 
     private static let fileManager = FileManager.default
 
-    init(sessionId: String) {
+    init(sessionId: String, guestRoot: URL? = nil) {
         self.sessionId = sessionId
         self.rootURL = WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
+        self.guestRootURL = guestRoot ?? RootfsInstaller.shared.dataPath
         try? Self.fileManager.createDirectory(at: rootURL,
                                               withIntermediateDirectories: true)
     }
@@ -65,39 +69,95 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         return candidate
     }
 
+    // MARK: - 提权感知解析（P0-1：围栏说什么，执行层兑现什么）
+
+    /// 按生效模式把 guest/相对路径解析为宿主 URL（dsh 语义：sandbox 策略是
+    /// 唯一边界——gate 放行的路径，执行通道必须能兑现。出处：
+    /// tool-fs/sandbox.ts:87-108 resolvePolicy 返回 {...policy, mode: approvedMode}；
+    /// fs-sandbox index.ts:1-27「Reads pass through untouched」）。
+    ///  - 相对路径与 `/var/wanwo/workspace/**`：工作区桶（既有语义，全模式）。
+    ///  - 其他 guest 绝对路径：
+    ///      · danger-full-access → guest 全域映射（rootfs data 目录 = guest /
+    ///        的宿主落点，RootfsInstaller.dataPath）；
+    ///      · workspace-write/read-only 且在 /tmp 白名单内（SandboxPolicy.
+    ///        writableRoots——gate 对 workspace-write 放行 /tmp）→ 同一 guest
+    ///        映射（修「gate 放行 /tmp、执行层拒绝」的同墙断点）；
+    ///      · 其余 → nil（fail closed 兜底；写侧此前已被 SandboxGate 拒绝）。
+    ///  `..` 逃逸防护与既有 resolve 同级：规范化后必须仍在映射根内。
+    func resolve(_ path: String, mode: SandboxMode) -> URL? {
+        // ① 工作区解析命中（workspace 桶 + 相对路径）→ 既有语义直用。
+        if let url = resolve(path) { return url }
+        var p = path.trimmingCharacters(in: .whitespaces)
+        guard p.hasPrefix("/") else { return nil }
+        switch mode {
+        case .dangerFullAccess:
+            return resolveUnderGuestRoot(p)
+        case .readOnly, .workspaceWrite:
+            guard p == "/tmp" || p.hasPrefix("/tmp/") else { return nil }
+            return resolveUnderGuestRoot(p)
+        }
+    }
+
+    /// 读放行解析（reads pass through：读不设模式门，guest 绝对路径映射全域）。
+    func resolveForRead(_ path: String) -> URL? {
+        resolve(path, mode: .dangerFullAccess)
+    }
+
+    /// guest 绝对路径 → rootfs data 映射根内的宿主 URL（词法 containment 防
+    /// `..` 逃逸，与既有 resolve 的 /private 前缀归一同源）。
+    private func resolveUnderGuestRoot(_ path: String) -> URL? {
+        let root = guestRootURL.standardizedFileURL
+        var candidate = root.appendingPathComponent(path).standardizedFileURL
+        let rootPath = root.path
+        var candidatePath = candidate.path
+        if candidatePath.hasPrefix("/private" + rootPath) {
+            candidatePath = String(candidatePath.dropFirst("/private".count))
+            candidate = URL(fileURLWithPath: candidatePath)
+        }
+        guard candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        return candidate
+    }
+
     func exists(_ path: String) -> Bool {
-        guard let url = resolve(path) else { return false }
+        guard let url = resolveForRead(path) else { return false }
         return Self.fileManager.fileExists(atPath: url.path)
     }
 
-    // MARK: - 读
+    // MARK: - 读（dsh fs-sandbox「Reads pass through untouched」：全模式全域放行）
 
     func readText(_ path: String) throws -> String {
-        guard let url = resolve(path) else {
+        guard let url = resolveForRead(path) else {
             throw WorkspaceError.pathOutsideRoot(path)
         }
         return try String(contentsOf: url, encoding: .utf8)
     }
 
     func readData(_ path: String) throws -> Data {
-        guard let url = resolve(path) else {
+        guard let url = resolveForRead(path) else {
             throw WorkspaceError.pathOutsideRoot(path)
         }
         return try Data(contentsOf: url)
     }
 
-    // MARK: - 写（原子）
+    // MARK: - 写（原子；P0-1：mode 决定解析根——gate granted mode 随行兑现）
 
     @discardableResult
-    func writeText(_ path: String, content: String) throws -> URL {
-        try writeData(path, data: Data(content.utf8))
+    func writeText(_ path: String, content: String, mode: SandboxMode) throws -> URL {
+        try writeData(path, data: Data(content.utf8), mode: mode)
     }
 
     @discardableResult
-    func writeData(_ path: String, data: Data) throws -> URL {
-        guard let url = resolve(path) else {
+    func writeData(_ path: String, data: Data, mode: SandboxMode) throws -> URL {
+        guard let url = resolve(path, mode: mode) else {
             throw WorkspaceError.pathOutsideRoot(path)
         }
+        return try writeAt(url, data: data)
+    }
+
+    /// 原子写核心（resolve 之后按宿主 URL 落盘；P0-1 从 writeData 抽出共用）。
+    private func writeAt(_ url: URL, data: Data) throws -> URL {
         let dir = url.deletingLastPathComponent()
         try Self.fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(".tmp-\(UUID().uuidString)")
@@ -122,15 +182,17 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     // MARK: - read-match-write 临界区（编辑族共享锁）
 
     /// 锁内完成 读 → 校验/变换 → 原子写。transform 抛错则整个调用失败，文件不动。
-    func mutate(_ path: String, transform: (_ current: String) throws -> String) throws -> String {
-        guard let url = resolve(path) else {
+    /// P0-1：mode 决定解析根（提权批准后可落在工作区外 guest 路径）。
+    func mutate(_ path: String, mode: SandboxMode,
+                transform: (_ current: String) throws -> String) throws -> String {
+        guard let url = resolve(path, mode: mode) else {
             throw WorkspaceError.pathOutsideRoot(path)
         }
         mutationLock.lock()
         defer { mutationLock.unlock() }
         let current = try String(contentsOf: url, encoding: .utf8)
         let next = try transform(current)
-        try writeData(path, data: Data(next.utf8))
+        try writeAt(url, data: Data(next.utf8))
         return next
     }
 

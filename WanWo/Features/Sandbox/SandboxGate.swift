@@ -129,28 +129,38 @@ enum SandboxGate {
         return false
     }
 
+    /// fs mutation 的门结果（P0-1：放行必须携带 resolved mode——dsh
+    /// tool-fs/sandbox.ts resolvePolicy 返回 {...policy, mode: approvedMode}，
+    /// 提权批准挡位 stamp 进本次调用，执行层按 granted mode 兑现写入通道）。
+    enum FsMutationGrant: Equatable {
+        case granted(SandboxMode)
+        case denied(ToolOutput)
+    }
+
     /// fs mutation 的完整门（resolvePolicy → checkedTarget → mapError）。
-    /// - Returns: nil = 放行（工具体继续）；非 nil = 合成错误结果（isError）。
+    /// - Returns: `.granted(mode)` = 放行（工具体把 mode 传给执行层——提权后
+    ///   guest 全域路径由 WorkspaceFileAccess 按模式映射兑现）；`.denied` =
+    ///   合成错误结果（isError）。
     static func authorizeFsMutation(tool: String,
                                     path: String,
                                     args: JSONValue,
                                     standingMode: SandboxMode,
                                     callId: String?,
-                                    approver: SandboxEscalationApprover?) async -> ToolOutput? {
+                                    approver: SandboxEscalationApprover?) async -> FsMutationGrant {
         let mode: SandboxMode
         switch await resolveMode(tool: tool, args: args, standingMode: standingMode,
                                  subject: "operation", callId: callId, approver: approver) {
         case .success(let resolved): mode = resolved
         case .failure(let failure):
-            return .failure(failure.message, code: "SANDBOX_ESCALATION_ERROR")
+            return .denied(.failure(failure.message, code: "SANDBOX_ESCALATION_ERROR"))
         }
         guard fsPathUnderWritableRoots(path, mode: mode) else {
             // dsh mapError（tool-fs sandbox.ts:124-130）：denial marker + hint
             // 逐字，原文案整体替换；isError 结果。
-            return .failure(sandboxDenialMarker(mode) + "\n" + escalationHintMarker("operation"),
-                            code: "FS_SANDBOX_DENIED")
+            return .denied(.failure(sandboxDenialMarker(mode) + "\n"
+                + escalationHintMarker("operation"), code: "FS_SANDBOX_DENIED"))
         }
-        return nil
+        return .granted(mode)
     }
 
     // MARK: bash 近似围栏（启发式写检测 · A2 不可抗力）
