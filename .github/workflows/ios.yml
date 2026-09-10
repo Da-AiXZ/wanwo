@@ -61,3 +61,25 @@ jobs:
           name: WanWo-ipa
           path: WanWo-*.ipa
           retention-days: 30
+
+      - name: Run unit tests (iOS Simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -scheme WanWo \
+            -configuration Release \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            test | tee test.log
+
+      - name: Upload test log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          retention-days: 14
