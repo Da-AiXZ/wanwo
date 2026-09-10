@@ -83,6 +83,7 @@ final class ConversationProjectorTests: XCTestCase {
         let (bubbles, _) = project(events)
         // 事件序：user → reasoning → text → toolCard（结算态）。
         XCTAssertEqual(bubbles.count, 4)
+        guard bubbles.count == 4 else { return }  // 下标防御：数量不符即止（越界会崩掉 runner）
         guard case .user(let userText) = bubbles[0].kind else {
             return XCTFail("bubble[0] 应为 user：\(bubbles[0].kind)")
         }
@@ -115,6 +116,7 @@ final class ConversationProjectorTests: XCTestCase {
         let (bubbles, _) = project(events)
         // 事件序：user, text(第一步), card, reasoning(第二步), text(第二步)。
         XCTAssertEqual(bubbles.count, 5)
+        guard bubbles.count == 5 else { return }  // 下标防御
         guard case .assistant(let first) = bubbles[1].kind else {
             return XCTFail("bubble[1] 应为第一步文本")
         }
@@ -168,6 +170,7 @@ final class ConversationProjectorTests: XCTestCase {
         ]
         let (bubbles, _) = project(events, previousCards: [previous])
         XCTAssertEqual(bubbles.count, 1)
+        guard bubbles.count == 1 else { return }  // 下标防御
         let card = toolCard(bubbles[0])
         XCTAssertEqual(card?.liveOutput, "line1\nline2", "liveOutput 应续接")
         XCTAssertEqual(card?.statusNote, "等待审批", "statusNote 应续接")
@@ -183,6 +186,11 @@ final class ConversationProjectorTests: XCTestCase {
             toolResultEvent(2, callId: "c1", content: "done"),
         ]
         let (bubbles, _) = project(events, previousCards: [previous])
+        // 按测试意图预期 2 泡且 [1] 为卡片；先锁数量再下标（防越界崩溃，
+        // 同时暴露主代码投影产出与预期的偏差）。
+        guard bubbles.count == 2, toolCard(bubbles[1]) != nil else {
+            return XCTFail("预期 count=2 且 [1]=卡片，实际 count=\(bubbles.count)")
+        }
         let card = toolCard(bubbles[1])
         XCTAssertEqual(card?.isRunning, false)
         XCTAssertEqual(card?.statusNote, nil, "成功结算应清空瞬态等待行")

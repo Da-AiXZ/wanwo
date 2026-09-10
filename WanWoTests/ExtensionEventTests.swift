@@ -146,9 +146,11 @@ final class ExtensionEventTests: XCTestCase {
     func testKindWireMismatchRejected() throws {
         let event = extEvent(0, "test/demo", demoPayload())
         var line = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
-        // 把 wire type 改成不匹配的 kind。
-        line = line.replacingOccurrences(of: "extension/test/demo",
-                                         with: "extension/test/other")
+        // 把 wire type 改成不匹配的 kind。注意 Apple JSONEncoder 会把 "/"
+        // 转义为 "\/"——必须匹配转义形态，否则替换静默不生效（与事件流
+        // grep 误诊同源的 JSON 转义斜杠坑）。
+        line = line.replacingOccurrences(of: "extension\\/test\\/demo",
+                                         with: "extension\\/test\\/other")
         XCTAssertThrowsError(try JSONDecoder().decode(SessionEvent.self,
                                                       from: Data(line.utf8)))
     }

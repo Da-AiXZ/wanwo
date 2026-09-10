@@ -181,11 +181,19 @@ enum SandboxGate {
         // ① 必需 sink 豁免（dsh read-only「仅必需 sinks 如 /dev/null」语义）：
         //    剥掉所有 `N> /dev/null` / `>/dev/null` 形态后再扫重定向。
         let devNull = try? NSRegularExpression(pattern: "[0-9]*>\\s*/dev/null")
-        let stripped = devNull.map {
+        //    fd 重定向（2>&1、>&2…）：写向既有文件描述符而非文件，同豁免
+        //    （否则 `command -v bash >/dev/null 2>&1` 这类无害命令被误拦）。
+        let fdRedirect = try? NSRegularExpression(pattern: "[0-9]*>&[0-9]+")
+        var stripped = devNull.map {
             $0.stringByReplacingMatches(in: command,
                                         range: NSRange(command.startIndex..., in: command),
                                         withTemplate: "")
         } ?? command
+        stripped = fdRedirect.map {
+            $0.stringByReplacingMatches(in: stripped,
+                                        range: NSRange(stripped.startIndex..., in: stripped),
+                                        withTemplate: "")
+        } ?? stripped
         // ② 重定向字符扫描兜底（fail closed：任何残余 `>` / `>>` 均视为写，
         //    包括 `2>`、`&>`、heredoc 到文件等复杂形态）。
         if stripped.contains(">") { return true }
