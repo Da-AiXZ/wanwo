@@ -22,6 +22,14 @@ struct ChatView: View {
     /// composer 座位 + 状态条 dock 的合计高度（P1-5：菜单锚定与捕获层开洞
     /// 的度量——「composer chrome」区段）。
     @State private var composerChromeHeight: CGFloat = 0
+    /// T2.7 件3：键盘收起代次（keyboardWillHide 通知 +1）——composer 工具行
+    /// 以 `.id(keyboardEpoch)` 挂接：键盘收起瞬间工具行身份重建，打开中的
+    /// SwiftUI Menu 弹层随锚点视图重建被确定性关闭，不再悬在半空。选型依据：
+    /// SwiftUI Menu 无 isPresented 句柄（无法按派单字面「先 dismiss」）、
+    /// 弹层在键盘 safe area 变化时不完整跟随锚点位移（用户截图），且自绘
+    /// 弹层被红线禁用——身份重建是唯一确定性关闭通道（选型呈报见 T2.7
+    /// 件3 汇报，含「键盘收起与菜单打开同帧竞态」降级预案）。
+    @State private var keyboardEpoch = 0
     // MARK: F042 附件（composer 输入侧三入口）
     /// 相册选取器选集（PhotosPicker）。
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -97,6 +105,12 @@ struct ChatView: View {
             }
         }
         .onPreferenceChange(ComposerChromeHeightKey.self) { composerChromeHeight = $0 }
+        // T2.7 件3：键盘收起 → 工具行身份代次 +1（见 keyboardEpoch 注；
+        // 弹出中的模型/推理等级/权限 Menu 随身份重建关闭）。
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardEpoch += 1
+        }
         // 待发送图原图预览（F042；dsh ImageLightbox 形态）。
         .fullScreenCover(isPresented: Binding(get: { draftPreview != nil },
                                              set: { if !$0 { draftPreview = nil } })) {
@@ -521,7 +535,10 @@ struct ChatView: View {
                             viewModel.send()
                         }
                     })
-                .equatable()
+                    .equatable()
+                    // T2.7 件3：键盘收起时重建工具行身份（keyboardEpoch），
+                    // 打开中的 Menu 弹层确定性关闭、不悬空。
+                    .id(keyboardEpoch)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
