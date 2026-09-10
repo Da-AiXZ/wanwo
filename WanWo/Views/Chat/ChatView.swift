@@ -282,57 +282,9 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - F042 附件（draft rail + intake 入口 helpers）
-
-    /// 待发送图 rail（dsh ComposerAttachments/AttachmentRail 形态：64pt 缩略
-    /// 图 + 移除钮 + 点击原图预览；remove 文案 image.remove「移除图片」）。
-    private var draftImageRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(viewModel.draftImages) { image in
-                    draftImageThumb(image)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-        }
-    }
-
-    /// T2.6 件5（用户 #19）：移除钮不可用修复——根因=①scaledToFill 的 Image
-    /// 溢出 frame，clipShape 只裁渲染不裁 hit-testing（P1-5 同源教训），溢出
-    /// 可点区覆盖 X 按钮周边；②X 按钮无 buttonStyle/contentShape，14pt 图标
-    /// hit 区极小，点偏即落 Image 溢出区→误开预览。修法=Image 以 contentShape
-    /// 把预览可点区钉回 64×64 圆角矩形 + 按钮扩 28pt hit 目标（zIndex 置顶）。
-    private func draftImageThumb(_ image: ChatViewModel.DraftImage) -> some View {
-        ZStack(alignment: .topTrailing) {
-            Group {
-                if let ui = UIImage(data: image.data) {
-                    Image(uiImage: ui)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Rectangle().fill(Color(.tertiarySystemFill))
-                }
-            }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .onTapGesture { draftPreview = UIImage(data: image.data) }
-            Button {
-                viewModel.removeDraftImage(id: image.id)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.white, .black.opacity(0.55))
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .zIndex(1)
-            .offset(x: 4, y: -4)
-            .accessibilityLabel("移除图片")
-        }
-    }
+    // MARK: - F042 附件（intake 入口 helpers；draft 呈现 = T2.7 件1 chip
+    // 形态，见 DraftImageChipsView.swift——原 64pt rail/thumb 已随用户指定
+    // 形态移除）
 
     /// 相册选取 intake（loadTransferable 读 Data；UTType → mediaType 白名单
     /// 映射——非白名单候选以 nil 类型进入预检，格式先行拒绝）。
@@ -489,10 +441,13 @@ struct ChatView: View {
                 .lineLimit(1...5)
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
-            // 待发送图片 rail（F042；dsh ComposerAttachments/AttachmentRail
-            // 形态——64pt 缩略图 + 移除钮 + 点看原图）。
+            // 待发送图片 chip（T2.7 件1：用户指定形态覆盖 dsh rail 缩略图——
+            // 登记为用户偏好；蓝色文件名 chip 横排可换行，点 chip=原图预览，
+            // 左滑/长按=移除；键盘删除键方案评估呈报见 T2.7 汇报）。
             if !viewModel.draftImages.isEmpty {
-                draftImageRail
+                DraftImageChipsView(images: viewModel.draftImages,
+                                    onPreview: { draftPreview = $0 },
+                                    onRemove: { viewModel.removeDraftImage(id: $0) })
             }
             // 底部工具行（dsh InputBar css.row：tools 左 / trailing 右）。
             HStack(spacing: 8) {
