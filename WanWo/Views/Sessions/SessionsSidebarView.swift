@@ -51,12 +51,12 @@ struct SessionsSidebarView: View {
         }
         // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
         // P2-⑫：呈现由 confirmationDialog 改居中模态（dsh SettingsRoot/
-        // WorkspaceBrowser 删除确认对话框形态——透明底全屏 + 居中卡片）。
-        // P1-6 未点名此遮罩（用户仅点两处完全权限确认框）——保持现状。
+        // WorkspaceBrowser 删除确认对话框形态）。
+        // T2.6 件1：去全屏遮罩（用户点名——与 P1-6 三处同族，dsh
+        // RiskConfirmation 挂 PopupSelectView 无全屏遮罩，仅居中确认卡）。
         .fullScreenCover(isPresented: Binding(get: { pendingDeleteOffsets != nil },
                                              set: { if !$0 { pendingDeleteOffsets = nil } })) {
             ZStack {
-                Color.black.opacity(0.35).ignoresSafeArea()
                 VStack(alignment: .leading, spacing: 14) {
                     Text("删除会话？该操作不可撤销。")
                         .font(.system(size: 17, weight: .semibold))
