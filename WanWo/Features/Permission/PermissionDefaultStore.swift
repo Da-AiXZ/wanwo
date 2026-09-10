@@ -21,7 +21,15 @@
 import Foundation
 
 /// App 级新会话默认权限预设（设置·权限行的持久宿主面）。
-final class PermissionDefaultStore: @unchecked Sendable {
+/// T2.4 P1-4：ObservableObject 变更通知——设置·权限行即时刷新（dsh
+/// PermissionRow 读 host settings 响应式，settings-store.ts:131-161 select()
+/// 写入即广播）。线程模型：写入口（setDefault）= 设置页 MainActor；
+/// 读侧（PermissionCoordinator 后台折叠缺省）走 NSLock，不经发布器。
+final class PermissionDefaultStore: ObservableObject, @unchecked Sendable {
+    /// 观察发布器（显式声明——写入口手动 send，避免 @Published 的
+    /// background-write 断言；读侧线程模型不变）。
+    let objectWillChange = ObservableObjectPublisher()
+
     private let lock = NSLock()
     private var valueStorage: String
     private let fileURL: URL
@@ -52,12 +60,16 @@ final class PermissionDefaultStore: @unchecked Sendable {
     }
 
     /// 设置新会话默认预设（非法名拒绝，返回 false——fail closed）。
+    /// MainActor 纪律：写入口恒在 UI 线程（设置页），objectWillChange 随写
+    /// 发送——订阅视图（PermissionDefaultsView）即时刷新。
+    @MainActor
     @discardableResult
     func setDefault(named name: String) -> Bool {
         guard PermissionPresets.spec(named: name) != nil else {
             Self.logger.warning("reject invalid default preset \"\(name)\"")
             return false
         }
+        objectWillChange.send()
         lock.lock()
         valueStorage = name
         lock.unlock()

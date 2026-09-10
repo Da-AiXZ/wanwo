@@ -21,13 +21,17 @@
 import SwiftUI
 
 /// 设置 · 权限（新会话默认预设选择器；PermissionRow.tsx 1:1）。
+/// T2.4 P1-4：store 改 ObservedObject 直持——setDefault 的 objectWillChange
+/// 即时联动本页（原读侧不经发布器，挡位显示要重进页面才刷新）。
 struct PermissionDefaultsView: View {
-    @ObservedObject var environment: AppEnvironment
+    @ObservedObject private var store: PermissionDefaultStore
 
     @State private var confirmingFullAccess = false
     @State private var acknowledged = false
 
-    private var store: PermissionDefaultStore { environment.permissionDefaults }
+    init(environment: AppEnvironment) {
+        _store = ObservedObject(wrappedValue: environment.permissionDefaults)
+    }
 
     /// 三挡选项（dsh settings schema 动态枚举对 defaultPreset 广播的三挡；
     /// 文案 = locales.ts:9-11 逐字）。
