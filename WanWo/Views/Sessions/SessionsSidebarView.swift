@@ -49,6 +49,9 @@ struct SessionsSidebarView: View {
         .onChange(of: environment.sessionsRevision) { _ in
             Task { await reload() }
         }
+        // T2.6 件4（用户 #16）：侧栏不参与键盘规避——对话 pane 弹键盘时
+        // SplitView 两 pane 同被顶起曾致侧栏整体上移；侧栏无输入面，恒满高。
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
         // P2-⑫：呈现由 confirmationDialog 改居中模态（dsh SettingsRoot/
         // WorkspaceBrowser 删除确认对话框形态）。

@@ -228,6 +228,10 @@ struct ChatView: View {
             .onChange(of: viewModel.streamingText) { _ in scrollToBottom(proxy) }
             // E2：只流思考（文本尚空）时同样跟随滚动。
             .onChange(of: viewModel.streamingReasoning) { _ in scrollToBottom(proxy) }
+            // T2.6 件4（用户 #16）：消息流不参与键盘规避——键盘弹出时滚动
+            // 区域不被压缩（对话不被挤没）；composer chrome 保持键盘安全位
+            // （输入可用硬要求）。规避责任只在 composer 侧。
+            .ignoresSafeArea(.keyboard, edges: .bottom)
         }
     }
 
