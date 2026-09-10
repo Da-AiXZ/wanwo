@@ -13,24 +13,25 @@ import SwiftUI
 import UIKit
 
 /// 消息气泡内图片（dsh ImageGallery 形态）：单图 singleFit 尺寸、
-/// 多图 64pt 方格；点击开全屏原图预览。
+/// 多图 64pt 方格；点击回传原图预览。
+/// 【T2.8 件2】lightbox 状态上提 ChatView 根层集中管理（对齐 draftPreview
+/// 的根层 cover 既有模式）——cover 挂在气泡内深层组件时，宿主视图身份在
+/// List/流式重建场景失效 → present 静默失败（SwiftUI 已知坑）；组件内
+/// @State lightbox + fullScreenCover 移除，改为 onPreview 回传。
 struct MessageImagesView: View {
     let images: [ImageAttachmentRef]
     let store: AttachmentStore?
-
-    @State private var lightbox: ImageAttachmentRef?
+    /// 点击图片回传（ChatView 根层统一挂载原图预览 cover）。
+    let onPreview: (ImageAttachmentRef) -> Void
 
     var body: some View {
         let single = images.count == 1
         VStack(alignment: .trailing, spacing: 4) {
             ForEach(0..<images.count, id: \.self) { index in
                 MessageImageCell(ref: images[index], store: store, isSingle: single)
-                    .onTapGesture { lightbox = images[index] }
+                    .onTapGesture { onPreview(images[index]) }
                     .accessibilityLabel(images[index].name ?? "图片")
             }
-        }
-        .fullScreenCover(item: $lightbox) { ref in
-            MessageLightboxView(ref: ref, store: store)
         }
     }
 }

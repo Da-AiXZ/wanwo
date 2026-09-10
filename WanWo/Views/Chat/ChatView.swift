@@ -38,6 +38,10 @@ struct ChatView: View {
     @State private var pasteboardBaseline = UIPasteboard.general.changeCount
     /// 待发送图原图预览（dsh ImageLightbox；rail 点击打开）。
     @State private var draftPreview: UIImage?
+    /// 消息气泡图片原图预览（T2.8 件2：lightbox 状态上提 ChatView 根层
+    /// 集中管理——cover 挂气泡内深层组件时宿主身份在流式重建场景失效→
+    /// present 静默失败；对齐 draftPreview 根层 cover 既有模式）。
+    @State private var messagePreview: ImageAttachmentRef?
 
     init(environment: AppEnvironment, sessionID: String) {
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
@@ -140,6 +144,12 @@ struct ChatView: View {
                 .padding(14)
                 .accessibilityLabel("关闭原图预览")
             }
+        }
+        // T2.8 件2：消息气泡图片原图预览（根层统一挂载；复用
+        // MessageLightboxView「原图预览」+ 关闭钮形态，dsh ImageLightbox
+        // 原语义不变；item 绑定=ImageAttachmentRef content-addressed 身份）。
+        .fullScreenCover(item: $messagePreview) { ref in
+            MessageLightboxView(ref: ref, store: viewModel.attachmentStore)
         }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
@@ -275,7 +285,8 @@ struct ChatView: View {
                     }
                     if !images.isEmpty {
                         MessageImagesView(images: images,
-                                          store: viewModel.attachmentStore)
+                                          store: viewModel.attachmentStore,
+                                          onPreview: { messagePreview = $0 })
                     }
                 }
             }
