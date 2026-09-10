@@ -30,7 +30,7 @@ final class CompressionLimiter: @unchecked Sendable {
     /// throws 非 async），用串行 gate（GCD FIFO）+ 计数信号量承载同一语义
     /// ——排队 FIFO、并发上限、槽位结算即移交。任务不得重入 limiter。
     func run<T: Sendable>(_ task: @escaping @Sendable () throws -> T) throws -> T {
-        gate.sync {
+        try gate.sync {
             semaphore.wait()
             defer { semaphore.signal() }
             return try task()

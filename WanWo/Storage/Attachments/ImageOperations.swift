@@ -106,7 +106,7 @@ enum ImageOperations {
         let carriesMetadata =
             properties[kCGImagePropertyExifDictionary] != nil
             || properties[kCGImagePropertyIPTCDictionary] != nil
-            || properties["{XMP}"] != nil  // kCGImagePropertyXMPDictionary 字面值（iOS SDK 常量不可见）
+            || properties["{XMP}" as CFString] != nil  // kCGImagePropertyXMPDictionary 字面值（iOS SDK 常量不可见）
             || properties[kCGImagePropertyTIFFDictionary] != nil
             || properties[kCGImagePropertyProfileName] != nil
             || properties[kCGImagePropertyOrientation] != nil
