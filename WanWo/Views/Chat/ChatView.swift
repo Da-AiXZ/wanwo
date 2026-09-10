@@ -243,16 +243,17 @@ struct ChatView: View {
                 Spacer(minLength: 48)
                 // F042：消息图片（dsh MessageImages/ImageGallery 形态——
                 // 单图 singleFit、多图 64pt 方格；点开原图预览）。
+                // T2.6 件7（用户 #22 后半）：气泡内调序为文字在上、图片在下。
                 VStack(alignment: .trailing, spacing: 6) {
-                    if !images.isEmpty {
-                        MessageImagesView(images: images,
-                                          store: viewModel.attachmentStore)
-                    }
                     if !text.isEmpty {
                         Text(text)
                             .padding(10)
                             .background(Color.accentColor.opacity(0.15))
                             .cornerRadius(8)
+                    }
+                    if !images.isEmpty {
+                        MessageImagesView(images: images,
+                                          store: viewModel.attachmentStore)
                     }
                 }
             }

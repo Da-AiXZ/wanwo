@@ -74,14 +74,16 @@ struct MessageImageCell: View {
         .task(id: attempt) { await load() }
     }
 
-    /// 呈现盒（MessageImage.tsx:45-57 singleFit 1:1）：单图长边 240、比率
+    /// 呈现盒（MessageImage.tsx:45-57 singleFit 对位）：单图长边 80、比率
     /// clamp [0.25,4]、不放大、极端比按 cover 裁切；tile = 64pt 方格。
+    /// 【用户指定覆盖 dsh 240】T2.6 件7（用户 #22 后半）：dsh singleFit=240
+    /// 是 dsh 原值；用户实测定长——80pt 视觉 B 档偏好覆盖，非对齐偏差。
     private var box: (width: CGFloat, height: CGFloat) {
         guard isSingle else { return (64, 64) }
         let natural = Double(max(1, ref.width)) / Double(max(1, ref.height))
         let ratio = min(4.0, max(0.25, natural))
-        let w: CGFloat = ratio >= 1 ? 240 : 240 * CGFloat(ratio)
-        let h: CGFloat = ratio >= 1 ? 240 / CGFloat(ratio) : 240
+        let w: CGFloat = ratio >= 1 ? 80 : 80 * CGFloat(ratio)
+        let h: CGFloat = ratio >= 1 ? 80 / CGFloat(ratio) : 80
         let scale = min(1.0,
                         Double(ref.width) / Double(w),
                         Double(ref.height) / Double(h))
