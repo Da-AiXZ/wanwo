@@ -22,6 +22,11 @@ OUTPUT_INCLUDE="$ROOT_DIR/Vendor/include"
 OUTPUT_RESOURCES="$ROOT_DIR/Vendor/resources"
 
 BUILD_TYPE="${1:-release}"
+# 平台变体：ios = 真机（默认，原行为逐字节不变）；ios-sim = 模拟器（CI 单测专用，
+# 因为 arm64 真机库与 arm64 模拟器是不同 Mach-O 平台，链接器拒绝混链）。
+PLATFORM="${2:-ios}"
+# ios-sim 时产物输出目录（不覆盖 Vendor/libs 真机库；空 = 用 Vendor/libs）。
+SIM_OUTPUT="${3:-}"
 ARCHS="arm64"
 IOS_DEPLOYMENT_TARGET="14.0"
 
@@ -49,7 +54,36 @@ check_prerequisites() {
 }
 
 setup_cross_compile() {
-    log_step "Setting up iOS cross compilation"
+    log_step "Setting up iOS cross compilation (platform=$PLATFORM)"
+    if [ "$PLATFORM" == "ios-sim" ]; then
+        BUILD_DIR="$ISH_DIR/build-ios-sim"
+        mkdir -p "$BUILD_DIR"
+        SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+        cat > "$BUILD_DIR/ios-sim-cross.txt" << EOF
+[binaries]
+c = ['clang', '-arch', 'arm64', '-target', 'arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator', '-isysroot', '$SIM_SDK']
+ar = 'ar'
+strip = 'strip'
+pkg-config = 'false'
+
+[host_machine]
+system = 'darwin'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+c_args = []
+c_link_args = ['-L$SIM_SDK/usr/lib']
+
+[properties]
+needs_exe_wrapper = true
+sys_root = '$SIM_SDK'
+library_dirs = ['$SIM_SDK/usr/lib']
+EOF
+        log_ok "cross file: $BUILD_DIR/ios-sim-cross.txt"
+        return
+    fi
     BUILD_DIR="$ISH_DIR/build-ios"
     mkdir -p "$BUILD_DIR"
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -114,6 +148,19 @@ build_ish() {
 }
 
 copy_outputs() {
+    # ios-sim 变体：只拷三库到指定目录（头文件/资源用真机步骤已就位的同一份，
+    # 纯 C 库对两平台共用了同一批头文件）。
+    if [ "$PLATFORM" == "ios-sim" ] && [ -n "$SIM_OUTPUT" ]; then
+        log_step "Copying simulator libs to $SIM_OUTPUT"
+        BUILD_DIR="$ISH_DIR/build-ios-sim"
+        mkdir -p "$SIM_OUTPUT"
+        cp "$BUILD_DIR/libish.a"     "$SIM_OUTPUT/"
+        cp "$BUILD_DIR/libish_emu.a" "$SIM_OUTPUT/"
+        cp "$BUILD_DIR/libfakefs.a"  "$SIM_OUTPUT/"
+        log_ok "sim libs copied"
+        ls -lh "$SIM_OUTPUT"/*.a
+        return
+    fi
     log_step "Copying outputs"
     BUILD_DIR="$ISH_DIR/build-ios"
 

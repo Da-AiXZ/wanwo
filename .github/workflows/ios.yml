@@ -65,6 +65,11 @@ jobs:
       - name: Run unit tests (iOS Simulator)
         run: |
           set -o pipefail
+          # iSH 库的平台变体：arm64 真机库与 arm64 模拟器是不同 Mach-O 平台，
+          # 链接器拒绝混链——真机 ipa 已打包上传，此处重编 sim 平台库覆盖工作
+          # 区副本供模拟器测试链接（真机产物路径与脚本默认行为零影响）。
+          ./scripts/build_ish.sh release ios-sim "$PWD/build/simlibs"
+          cp build/simlibs/*.a Vendor/libs/
           xcodebuild \
             -project WanWo.xcodeproj \
             -scheme WanWo \
