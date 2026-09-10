@@ -58,7 +58,13 @@ final class Compactor: @unchecked Sendable {
     }
 
     struct PressureInfo: Equatable, Sendable {
+        /// UI 呈现口径（T2.4 P0-2）：usage 锚点投影——provider 真实占用 +
+        /// 表面 signed movement（dsh context-occupancy usedTokens =
+        /// projectedTokens ?? pressureTokens；无 usage 锚点 → 退回表面估算）。
         var usedTokens: Int
+        /// 压缩触发口径：表面估算（M2 估算器；本批维持不动——dsh 触发面与
+        /// 呈现面在 WanWo 分属两口径，偏差呈报）。
+        var estimatedTokens: Int
         var thresholdTokens: Int
         /// 模型上下文窗（P1-5：dsh context-occupancy 占比分母——ContextMeter
         /// 环与面板以窗口为分母，阈值仅供压缩触发面使用）。
@@ -103,17 +109,53 @@ final class Compactor: @unchecked Sendable {
         return total
     }
 
+    // MARK: - usage 锚点投影（T2.4 P0-2：呈现面锚真实占用）
+
+    /// usage 锚点（dsh token-meter usage-projection.ts:77-79 pressureFrom =
+    /// uncached input + cacheRead + cacheWrite——provider 报告的最近请求 prompt
+    /// 规模）+ 锚点时刻的表面估算值（dsh :169-179：usage 样本 stamp 于同事件
+    /// 入表面之前，projected = 锚点 + 表面 signed movement——压缩影子化表面时
+    /// 投影同步收缩，provider 报不出压缩用量也能即时反应）。
+    struct UsageAnchor: Equatable, Sendable {
+        var pressureTokens: Int
+        var surfaceTokens: Int
+    }
+
+    /// 事件折叠：最后一条带 TokenUsage 的 assistant/message（last wins）。
+    /// WanWo 解析层 inputTokens = prompt_tokens − cacheRead（uncached 桶）、
+    /// 无 cacheWrite 桶（恒 0——dsh cacheWrite 桶缺席，P1-5 同口径登记）。
+    static func usageAnchor(in events: [SessionEvent]) -> UsageAnchor? {
+        var last: (pressure: Int, index: Int)?
+        for (index, event) in events.enumerated() {
+            if case .assistantMessage(_, _, _, let usage?, _) = event.payload {
+                let pressure = usage.inputTokens + (usage.cacheReadTokens ?? 0)
+                last = (pressure, index)
+            }
+        }
+        guard let last else { return nil }
+        return UsageAnchor(pressureTokens: last.pressure,
+                           surfaceTokens: estimateSession(Array(events[...last.index])))
+    }
+
     /// 当前压力（threshold = 窗口 × thresholdRatio；contextWindow 随行——
     /// P1-5 ContextMeter 占比口径）。header = 最新 request/header（P2-⑦
     /// breakdown 的 system/tools 计价源；nil = 尚无请求，两段为 0）。
     func pressure(events: [SessionEvent], model: String?,
                   header: EpochHeader? = nil) -> PressureInfo {
-        let used = Self.estimateSession(events)
+        let estimated = Self.estimateSession(events)
+        // usedTokens = usage 锚点投影（呈现面锚真实；dsh context-occupancy：
+        // usedTokens = projectedTokens ?? pressureTokens，无锚点退表面估算）。
+        let used: Int
+        if let anchor = Self.usageAnchor(in: events) {
+            used = max(0, anchor.pressureTokens + (estimated - anchor.surfaceTokens))
+        } else {
+            used = estimated
+        }
         let window = contextWindow(for: model)
         // breakdown（dsh breakdown-projection.ts:63-83 语义：system/tools
         // 取最新 header last-wins；message = 表面计价，与 usedTokens 同一折叠）。
         var breakdown = Breakdown()
-        breakdown.messageTokens = used
+        breakdown.messageTokens = estimated
         if let system = header?.system {
             // dsh estimateSystemTokens（estimate.ts:77-80）：文本计价 + 角色开销 4。
             breakdown.systemTokens = Self.estimateText(system) + 4
@@ -126,6 +168,7 @@ final class Compactor: @unchecked Sendable {
             }
         }
         return PressureInfo(usedTokens: used,
+                            estimatedTokens: estimated,
                             thresholdTokens: Int(Double(window) * policy.thresholdRatio),
                             contextWindow: window,
                             breakdown: breakdown)
@@ -144,11 +187,13 @@ final class Compactor: @unchecked Sendable {
 
     /// 步前压力检查：超阈值 → 先 prune 再摘要（事件全部落盘后返回 true）。
     /// 失败不抛穿 loop（调用方 catch 后继续回合，dsh「压缩失败继续 turn」语义）。
+    /// 触发口径 = estimatedTokens（表面估算；T2.4 P0-2——呈现面锚真实 usage，
+    /// 触发面维持 M2 估算不动，偏差呈报）。
     func compactIfNeeded(events: [SessionEvent], model: String?,
                          append: (SessionEvent.Payload, Bool) async throws -> Void) async -> Bool {
         let info = pressure(events: events, model: model)
-        guard info.usedTokens >= info.thresholdTokens else { return false }
-        Self.logger.info("compaction pressure: \(info.usedTokens) >= \(info.thresholdTokens)")
+        guard info.estimatedTokens >= info.thresholdTokens else { return false }
+        Self.logger.info("compaction pressure: \(info.estimatedTokens) >= \(info.thresholdTokens)")
         return (try? await compact(events: events, model: model,
                                    forceThreshold: false, append: append)) ?? false
     }

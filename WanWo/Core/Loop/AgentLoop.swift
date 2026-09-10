@@ -522,7 +522,9 @@ actor AgentLoop {
         let model = header?.config.model
         let info = deps.compactor.pressure(events: events, model: model, header: header)
         deps.callbacks.onTokenPressure(info)
-        guard info.usedTokens >= info.thresholdTokens else { return }
+        // T2.4 P0-2：触发口径 = estimatedTokens（表面估算）；usedTokens 已是
+        // usage 锚点投影（呈现面），不进触发判定——两口径分离（Compactor 头注）。
+        guard info.estimatedTokens >= info.thresholdTokens else { return }
         // 压缩失败不抛穿（dsh：继续回合）。
         let appendClosure: (SessionEvent.Payload, Bool) async throws -> Void = {
             [writer = deps.writer] payload, ignorable in

@@ -39,7 +39,9 @@ final class P2InteractionTests: XCTestCase {
             tools: [ToolSchemaEntry(name: "bash", description: "run",
                                     parameters: .object([:]))])
         let info = compactor.pressure(events: events, model: "test-model", header: header)
-        // message 段 = 表面折叠（与 usedTokens 同一折叠——dsh breakdown 语义）。
+        // message 段 = 表面折叠（启发式构成；本例无 usage 锚点 → usedTokens
+        // 退回表面估算，两值相等——有锚点时头行=真实占用、分项=构成近似，
+        // dsh projection.ts:50-57 明示不求和相等）。
         XCTAssertEqual(info.breakdown.messageTokens, Compactor.estimateSession(events))
         XCTAssertEqual(info.breakdown.messageTokens, info.usedTokens)
         // system 段 = 文本计价 + 角色开销 4（estimateSystemTokens 等义）。
@@ -59,6 +61,48 @@ final class P2InteractionTests: XCTestCase {
         XCTAssertEqual(info.breakdown.systemTokens, 0)
         XCTAssertEqual(info.breakdown.toolsTokens, 0)
         XCTAssertEqual(info.breakdown.messageTokens, Compactor.estimateSession(events))
+        // 无 usage 锚点 → usedTokens 退回表面估算（dsh projectedTokens ?? pressure
+        // 的 WanWo 形态：presented estimate fallback）。
+        XCTAssertEqual(info.usedTokens, Compactor.estimateSession(events))
+        XCTAssertEqual(info.estimatedTokens, Compactor.estimateSession(events))
+    }
+
+    // MARK: - T2.4 P0-2 usage 锚点投影
+
+    private func assistantEvent(_ text: String, usage: TokenUsage, at ms: Int64) -> SessionEvent {
+        event(.assistantMessage(turn: 1, step: 1,
+                                message: AssistantMessage(id: UUID().uuidString,
+                                                          provider: "test", model: "test-model",
+                                                          content: [.text(text)]),
+                                usage: usage, interrupted: false), at: ms)
+    }
+
+    /// 锚点折叠：最后一条带 usage 的事件 last wins；projected = 锚点真实占用 +
+    /// 锚点之后的表面增量（dsh usage-projection :169-179 signed movement 语义）。
+    func testUsageAnchorProjectedTokens() {
+        let compactor = makeCompactor()
+        let before = [event(.userMessage(text: "hello world"), at: 100)]
+        let anchorEvent = assistantEvent(
+            "a", usage: TokenUsage(inputTokens: 7_000, outputTokens: 50,
+                                   cacheReadTokens: 800), at: 200)
+        let after = [event(.userMessage(text: "and more surface after the sample"), at: 300)]
+        let events = before + [anchorEvent] + after
+        let info = compactor.pressure(events: events, model: "test-model")
+        // pressureFrom = uncached input + cacheRead + cacheWrite(无桶恒 0) = 7800。
+        let anchorSurface = Compactor.estimateSession(before + [anchorEvent])
+        let surfaceNow = Compactor.estimateSession(events)
+        XCTAssertEqual(info.usedTokens,
+                       7_800 + (surfaceNow - anchorSurface))
+        // 表面继续增长 → 投影随之增长（头行不再小于分项和——用户截图矛盾消除）。
+        XCTAssertGreaterThan(info.usedTokens, 7_800)
+        // 触发口径独立：表面估算原样保留。
+        XCTAssertEqual(info.estimatedTokens, surfaceNow)
+        // 锚点 last wins：第二个 usage 覆盖第一个（锚点在流尾 → 表面增量 0，
+        // projected = 9000）。
+        let second = assistantEvent(
+            "b", usage: TokenUsage(inputTokens: 9_000, outputTokens: 10), at: 400)
+        let info2 = compactor.pressure(events: events + [second], model: "test-model")
+        XCTAssertEqual(info2.usedTokens, 9_000)
     }
 
     func testContextBreakdownEmptyToolsPricesZero() {

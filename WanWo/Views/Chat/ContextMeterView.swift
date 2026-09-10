@@ -132,7 +132,8 @@ struct ContextMeterView: View {
                 }
                 .frame(height: 6)
                 // dl 行（dsh :151-163：swatch + label + ~value；三行恒在——
-                // WanWo breakdown 恒有值，message 段与 usedTokens 同源）。
+                // breakdown 三段=启发式构成（dsh projection.ts:50-57 明示不求和
+                // 等于锚定值，只呈现构成近似；头行 used=usage 锚点投影 T2.4 P0-2）。
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(rows) { row in
                         HStack(alignment: .firstTextBaseline) {
