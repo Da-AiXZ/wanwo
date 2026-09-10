@@ -185,7 +185,8 @@ final class AppEnvironment: ObservableObject {
 
     /// nonisolated adapter 工厂（AgentLoop/Compactor 的 @Sendable makeAdapter 缝用）。
     /// async：EndpointStore 为 MainActor 隔离，activeEndpoint/apiKey 需 await 跳主线程取用。
-    nonisolated func makeAgentAdapter(selection: SessionModelSelection? = nil) async throws -> OpenAICompatAdapter {
+    nonisolated func makeAgentAdapter(selection: SessionModelSelection? = nil,
+                                      attachmentStore: AttachmentStore? = nil) async throws -> OpenAICompatAdapter {
         // T2.4 P1-3：会话级选择优先（dsh ModelSelect per-session
         // ModelSelection 语义），缺省回落活动端点（App 级缺省）。
         guard let endpoint = await endpointStore.resolve(selection: selection?.get()) else {
@@ -196,7 +197,16 @@ final class AppEnvironment: ObservableObject {
             throw LLMError(message: "端点「\(endpoint.name)」未配置 API Key。",
                            code: "MISSING_CREDENTIAL")
         }
-        return OpenAICompatAdapter(endpoint: endpoint, apiKey: apiKey)
+        // F042：请求图片解析缝（带图 user 消息的请求变体经
+        // AttachmentStore.readRequestImage——variantId 缓存确定性）；nil = 不解析。
+        var resolver: (@Sendable (ImageAttachmentRef) async throws -> RequestImageAttachment)?
+        if let attachmentStore {
+            resolver = { ref in
+                try attachmentStore.readRequestImage(ref)
+            }
+        }
+        return OpenAICompatAdapter(endpoint: endpoint, apiKey: apiKey,
+                                   imageResolver: resolver)
     }
 
     // MARK: - Agent 栈装配（M2）
@@ -219,12 +229,13 @@ final class AppEnvironment: ObservableObject {
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
                   permission: PermissionCoordinator?,
-                  plan: PlanModeController?) {
+                  plan: PlanModeController?,
+                  attachmentStore: AttachmentStore?) {
         do {
             _ = try await makeAgentAdapter()
         } catch {
             let reason = (error as? LLMError)?.message ?? String(describing: error)
-            return (nil, reason, nil, nil, nil, nil)
+            return (nil, reason, nil, nil, nil, nil, nil)
         }
 
         // ERR-022：聊天执行链首次使用前幂等确保内核已 boot（App 启动已后台
@@ -233,8 +244,12 @@ final class AppEnvironment: ObservableObject {
             try await KernelBootCoordinator.ensureKernelBooted()
         } catch {
             return (nil, "内核启动失败：\((error as NSError).localizedDescription)",
-                    nil, nil, nil, nil)
+                    nil, nil, nil, nil, nil)
         }
+
+        // F042：本会话附件存储（session bucket attachments/；intake 与请求
+        // 变体共用一 store——content-addressed，同图跨会话各自隔离）。
+        let attachments = AttachmentStore(sessionId: sessionId)
 
         let registry = ToolRegistry()
         registry.register(ShellTool(sessionId: sessionId))
@@ -317,13 +332,15 @@ final class AppEnvironment: ObservableObject {
             compactor: compactor,
             spill: spill,
             injector: injector,
-            makeAdapter: { [weak self, modelSelection] in
+            makeAdapter: { [weak self, modelSelection, attachments] in
                 guard let self else {
                     throw LLMError(message: "environment released", code: "UNKNOWN")
                 }
                 // T2.4 P1-3：会话级模型选择（@Sendable 缝传值——holder 内
                 // NSLock 保护，请求时读取，per-session 生效）。
-                return try await self.makeAgentAdapter(selection: modelSelection)
+                // F042：附件解析缝随闭包捕获传入（请求变体确定性身份）。
+                return try await self.makeAgentAdapter(selection: modelSelection,
+                                                       attachmentStore: attachments)
             },
             callbacks: callbacks,
             // P1-3：本调用生效沙箱模式（四层解析：approved 显式 > 会话末条
@@ -333,6 +350,6 @@ final class AppEnvironment: ObservableObject {
             sandboxModeProvider: { [permission] in permission.knobs.sandbox },
             escalationApprover: escalationApprover)
         return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
-                planMode)
+                planMode, attachments)
     }
 }

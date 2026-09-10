@@ -29,12 +29,18 @@ struct OpenAICompatAdapter {
     let apiKey: String
     let providerName: String
     let streamIdleTimeout: TimeInterval
+    /// F042：请求图片解析缝（ref → 确定性请求变体；nil = 本 adapter 不解析
+    /// 图片——带图 user 消息在 wire 构造时 fail closed）。装配缝由
+    /// AppEnvironment.makeAgentAdapter 传入（AttachmentStore.readRequestImage）。
+    var imageResolver: (@Sendable (ImageAttachmentRef) async throws -> RequestImageAttachment)?
 
-    init(endpoint: EndpointConfig, apiKey: String, providerName: String? = nil) {
+    init(endpoint: EndpointConfig, apiKey: String, providerName: String? = nil,
+         imageResolver: (@Sendable (ImageAttachmentRef) async throws -> RequestImageAttachment)? = nil) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.providerName = providerName ?? endpoint.name
         self.streamIdleTimeout = Self.defaultStreamIdleTimeout
+        self.imageResolver = imageResolver
     }
 
     // MARK: - 流式调用
@@ -96,8 +102,9 @@ struct OpenAICompatAdapter {
     private func runChunks(_ request: LLMRequest,
                            tracker: ActivityTracker,
                            _ yield: (StreamChunk) -> Void) async throws {
-        // 1. wire 请求序列化（serialize.ts 语义：可选字段缺省不发 null）
-        let (urlRequest, bodyData) = try buildURLRequest(request)
+        // 1. wire 请求序列化（serialize.ts 语义：可选字段缺省不发 null）。
+        // F042：带图 user 消息的请求变体解析在此 await（缓存命中即磁盘读）。
+        let (urlRequest, bodyData) = try await buildURLRequest(request)
 
         // 2. 传输层修法 ← OpenMinis OAuthHTTPClient.swift:1426-1454（dataTask can
         //    lose httpBody + delegate 流式逐块接收）：
@@ -232,7 +239,8 @@ struct OpenAICompatAdapter {
 
     /// 返回 (请求, body 数据)。body 不放进 httpBody——由调用方走 uploadTask 显式上传
     /// （传输层修法 ← OpenMinis OAuthHTTPClient.swift:1426，dataTask can lose httpBody）。
-    private func buildURLRequest(_ request: LLMRequest) throws -> (URLRequest, Data) {
+    /// F042：async——带图 user 消息需 await 请求变体解析（readRequestImage）。
+    private func buildURLRequest(_ request: LLMRequest) async throws -> (URLRequest, Data) {
         var wireMessages: [WireMessage] = []
         if let system = request.system, !system.isEmpty {
             wireMessages.append(WireMessage(role: "system", content: system))
@@ -254,8 +262,27 @@ struct OpenAICompatAdapter {
                                                 toolCalls: nil,
                                                 toolCallID: message.toolCallID ?? ""))
             case .system, .user:
-                wireMessages.append(WireMessage(role: message.role.rawValue,
-                                                content: message.content))
+                // F042：user 带图 → OpenAI-compat vision 数组形态
+                // [text? | image_url]（dsh serialize 语义：image_url + base64
+                // data URL 进消息 content 数组）；文本消息维持纯字符串形态。
+                if message.role == .user, let images = message.images, !images.isEmpty {
+                    var parts: [WireContentPart] = []
+                    if !message.content.isEmpty {
+                        parts.append(WireContentPart(type: "text", text: message.content))
+                    }
+                    for ref in images {
+                        let variant = try await requestVariant(for: ref)
+                        parts.append(WireContentPart(
+                            type: "image_url",
+                            image_url: WireImageURL(
+                                url: "data:\(variant.mediaType.rawValue);base64,"
+                                    + variant.data.base64EncodedString())))
+                    }
+                    wireMessages.append(WireMessage(role: "user", content: .parts(parts)))
+                } else {
+                    wireMessages.append(WireMessage(role: message.role.rawValue,
+                                                    content: message.content))
+                }
             }
         }
 
@@ -312,6 +339,20 @@ struct OpenAICompatAdapter {
         urlRequest.setValue(nil, forHTTPHeaderField: "Content-Length")
         let bodyData = try JSONEncoder().encode(wire)
         return (urlRequest, bodyData)
+    }
+
+    /// 请求变体解析（F042）：AttachmentError 归一为 LLMError（code 原样透传
+    /// ——错误横幅按 image-labels.ts 同族 code 路由）；无 resolver fail closed。
+    private func requestVariant(for ref: ImageAttachmentRef) async throws -> RequestImageAttachment {
+        guard let imageResolver else {
+            throw LLMError(message: "当前端点未装配附件解析缝，无法发送图片。",
+                           code: "ATTACHMENT_PROJECTION_UNSUPPORTED")
+        }
+        do {
+            return try await imageResolver(ref)
+        } catch let error as AttachmentError {
+            throw LLMError(message: error.message, code: error.code)
+        }
     }
 }
 
@@ -496,15 +537,47 @@ private struct LineSplitter {
 
 // MARK: - wire 类型（dsh types.ts 词汇）
 
+/// F042：消息 content 双形态（OpenAI chat-completions wire——纯文本 string /
+/// vision 数组 [{type:"text"|…|image_url}]；dsh serialize 语义）。
+enum WireContent: Sendable {
+    case text(String)
+    case parts([WireContentPart])
+}
+
+/// F042：vision content part（text / image_url 二族——OpenAI wire 词汇）。
+struct WireContentPart: Codable {
+    var type: String
+    var text: String?
+    var image_url: WireImageURL?
+
+    init(type: String, text: String? = nil, image_url: WireImageURL? = nil) {
+        self.type = type
+        self.text = text
+        self.image_url = image_url
+    }
+}
+
+/// F042：image_url part 载荷（base64 data URL）。
+struct WireImageURL: Codable {
+    var url: String
+}
+
 struct WireMessage: Codable {
     var role: String
-    var content: String
+    var content: WireContent
     /// M2：assistant 消息携带的工具调用（OpenAI wire tool_calls）。
     var tool_calls: [WireToolCall]?
     /// M2：tool 结果消息的配对 id（OpenAI wire tool_call_id）。
     var tool_call_id: String?
 
+    /// 文本形态便捷构造（既有调用点不变）。
     init(role: String, content: String,
+         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil) {
+        self.init(role: role, content: .text(content),
+                  toolCalls: toolCalls, toolCallID: toolCallID)
+    }
+
+    init(role: String, content: WireContent,
          toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil) {
         self.role = role
         self.content = content
@@ -519,9 +592,26 @@ struct WireMessage: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(role, forKey: .role)
-        try container.encode(content, forKey: .content)
+        switch content {
+        case .text(let text):
+            try container.encode(text, forKey: .content)
+        case .parts(let parts):
+            try container.encode(parts, forKey: .content)
+        }
         try container.encodeIfPresent(tool_calls, forKey: .tool_calls)
         try container.encodeIfPresent(tool_call_id, forKey: .tool_call_id)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+        tool_calls = try container.decodeIfPresent([WireToolCall].self, forKey: .tool_calls)
+        tool_call_id = try container.decodeIfPresent(String.self, forKey: .tool_call_id)
+        if let text = try? container.decode(String.self, forKey: .content) {
+            content = .text(text)
+        } else {
+            content = .parts(try container.decode([WireContentPart].self, forKey: .content))
+        }
     }
 }
 

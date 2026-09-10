@@ -35,13 +35,30 @@ struct DeriveFold {
             }
         }
 
+        // 2.5 F042：attachment/images 引用收集（userMessage 专用 case 冻结——
+        // 附件引用随归属 userMessage 紧随走 E1 extensionEvent 通道，载荷声明
+        // 其归属 userMessage 的 seq；此处先收集 seq→refs 映射，折叠时挂回）。
+        // 解析失败 fail closed：该条引用集整体丢弃，userMessage 退化为纯文本
+        // ——模型可见面不含损坏引用。
+        var imagesBySeq: [Int: [ImageAttachmentRef]] = [:]
+        for event in events where !shadowed.contains(event.seq) {
+            if case .extensionEvent(let kind, let payload) = event.payload,
+               kind == AttachmentStore.imagesEventKind,
+               let parsed = AttachmentStore.refsFromPayload(payload),
+               !parsed.refs.isEmpty {
+                imagesBySeq[parsed.seq] = parsed.refs
+            }
+        }
+
         // 3. 线性折叠。
         var messages: [ChatMessage] = []
         for event in events {
             if shadowed.contains(event.seq) { continue }
             switch event.payload {
             case .userMessage(let text):
-                messages.append(ChatMessage(role: .user, content: text))
+                let images = imagesBySeq[event.seq]
+                messages.append(ChatMessage(role: .user, content: text,
+                                            images: images))
             case .assistantMessage(_, _, let message, _, _):
                 let text = message.content.compactMap { block -> String? in
                     if case .text(let t) = block { return t }

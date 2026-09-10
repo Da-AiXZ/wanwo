@@ -9,6 +9,8 @@
 //
 
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
@@ -20,6 +22,14 @@ struct ChatView: View {
     /// composer 座位 + 状态条 dock 的合计高度（P1-5：菜单锚定与捕获层开洞
     /// 的度量——「composer chrome」区段）。
     @State private var composerChromeHeight: CGFloat = 0
+    // MARK: F042 附件（composer 输入侧三入口）
+    /// 相册选取器选集（PhotosPicker）。
+    @State private var photoSelection: [PhotosPickerItem] = []
+    /// 剪贴板 changeCount 基线（粘贴检测——不自动读取，用户点按「粘贴图片」
+    /// 才触发系统粘贴确认，隐私模型最稳路径）。
+    @State private var pasteboardBaseline = UIPasteboard.general.changeCount
+    /// 待发送图原图预览（dsh ImageLightbox；rail 点击打开）。
+    @State private var draftPreview: UIImage?
 
     init(environment: AppEnvironment, sessionID: String) {
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
@@ -85,6 +95,30 @@ struct ChatView: View {
             }
         }
         .onPreferenceChange(ComposerChromeHeightKey.self) { composerChromeHeight = $0 }
+        // 待发送图原图预览（F042；dsh ImageLightbox 形态）。
+        .fullScreenCover(isPresented: Binding(get: { draftPreview != nil },
+                                             set: { if !$0 { draftPreview = nil } })) {
+            ZStack(alignment: .topTrailing) {
+                Color.black.ignoresSafeArea()
+                if let draftPreview {
+                    Image(uiImage: draftPreview)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(16)
+                }
+                Button {
+                    draftPreview = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(10)
+                        .background(Color.black.opacity(0.5), in: Circle())
+                }
+                .padding(14)
+                .accessibilityLabel("关闭原图预览")
+            }
+        }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewModel.open() }
@@ -200,13 +234,23 @@ struct ChatView: View {
     @ViewBuilder
     private func bubbleView(_ bubble: ChatViewModel.Bubble) -> some View {
         switch bubble.kind {
-        case .user(let text):
+        case .user(let text, let images):
             HStack {
                 Spacer(minLength: 48)
-                Text(text)
-                    .padding(10)
-                    .background(Color.accentColor.opacity(0.15))
-                    .cornerRadius(8)
+                // F042：消息图片（dsh MessageImages/ImageGallery 形态——
+                // 单图 singleFit、多图 64pt 方格；点开原图预览）。
+                VStack(alignment: .trailing, spacing: 6) {
+                    if !images.isEmpty {
+                        MessageImagesView(images: images,
+                                          store: viewModel.attachmentStore)
+                    }
+                    if !text.isEmpty {
+                        Text(text)
+                            .padding(10)
+                            .background(Color.accentColor.opacity(0.15))
+                            .cornerRadius(8)
+                    }
+                }
             }
         case .assistant(let text):
             Text(text)
@@ -231,6 +275,99 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
+    }
+
+    // MARK: - F042 附件（draft rail + intake 入口 helpers）
+
+    /// 待发送图 rail（dsh ComposerAttachments/AttachmentRail 形态：64pt 缩略
+    /// 图 + 移除钮 + 点击原图预览；remove 文案 image.remove「移除图片」）。
+    private var draftImageRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(viewModel.draftImages) { image in
+                    draftImageThumb(image)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+        }
+    }
+
+    private func draftImageThumb(_ image: ChatViewModel.DraftImage) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let ui = UIImage(data: image.data) {
+                    Image(uiImage: ui)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Rectangle().fill(Color(.tertiarySystemFill))
+                }
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onTapGesture { draftPreview = UIImage(data: image.data) }
+            Button {
+                viewModel.removeDraftImage(id: image.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white, .black.opacity(0.55))
+            }
+            .offset(x: 5, y: -5)
+            .accessibilityLabel("移除图片")
+        }
+    }
+
+    /// 相册选取 intake（loadTransferable 读 Data；UTType → mediaType 白名单
+    /// 映射——非白名单候选以 nil 类型进入预检，格式先行拒绝）。
+    private func intakePhotoSelection(_ items: [PhotosPickerItem]) async {
+        var candidates: [ChatViewModel.DraftImageCandidate] = []
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self) else {
+                continue
+            }
+            candidates.append(.init(data: data,
+                                    mediaType: Self.mediaType(of: item.supportedContentTypes),
+                                    name: nil))
+        }
+        viewModel.addDraftImages(candidates)
+    }
+
+    /// 拖放 intake（iPad 分屏拖入；loadDataRepresentation 读字节）。
+    private func intakeDrop(_ providers: [NSItemProvider]) async {
+        var candidates: [ChatViewModel.DraftImageCandidate] = []
+        for provider in providers {
+            let identifier = UTType.image.identifier
+            guard let data = try? await provider.loadDataRepresentation(
+                forTypeIdentifier: identifier) else { continue }
+            let mediaType = provider.registeredContentTypes
+                .compactMap { Self.mediaType(of: [$0]) }.first
+            candidates.append(.init(data: data, mediaType: mediaType, name: nil))
+        }
+        viewModel.addDraftImages(candidates)
+    }
+
+    /// 剪贴板 intake（点按 chip 触发；读图后重编码 PNG + 基线推进）。
+    private func pasteImagesFromPasteboard() {
+        let board = UIPasteboard.general
+        let candidates = (board.images ?? []).compactMap { ui -> ChatViewModel.DraftImageCandidate? in
+            guard let data = ui.pngData() else { return nil }
+            return .init(data: data, mediaType: .png, name: nil)
+        }
+        viewModel.addDraftImages(candidates)
+        pasteboardBaseline = board.changeCount
+    }
+
+    /// UTType → 媒体类型白名单映射（dsh mediaTypes 白名单的 iOS 对应物）。
+    nonisolated private static func mediaType(of types: [UTType]) -> ImageMediaType? {
+        for type in types {
+            if type.conforms(to: .png) { return .png }
+            if type.conforms(to: .jpeg) { return .jpeg }
+            if type.conforms(to: UTType("org.webpproject.webp") ?? .data) { return .webp }
+            if type.conforms(to: .gif) { return .gif }
+        }
+        return nil
     }
 
     // MARK: - 工具卡（P2-⑬：折叠语义移交 ToolCardView；图标随之内聚）
@@ -305,12 +442,26 @@ struct ChatView: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 8)
             }
+            // 附件拒绝横幅（F042；intake 预检/提交失败文案——dsh showToast）。
+            if let banner = viewModel.attachmentBanner {
+                Text(banner)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 6)
+            }
             // 文本面（占位文案随 plan 态切换——B12）。
             TextField(composerPlaceholder, text: $viewModel.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
+            // 待发送图片 rail（F042；dsh ComposerAttachments/AttachmentRail
+            // 形态——64pt 缩略图 + 移除钮 + 点看原图）。
+            if !viewModel.draftImages.isEmpty {
+                draftImageRail
+            }
             // 底部工具行（dsh InputBar css.row：tools 左 / trailing 右）。
             HStack(spacing: 8) {
                 // + 按钮 = 打开命令菜单（C7；InputBar.tsx:441-454——非附件）。
@@ -324,6 +475,36 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("指令")
+                // 添加图片（F042；PhotosPicker——相册/文件两源，intake 预检
+                // 整批拒绝）。
+                PhotosPicker(selection: $photoSelection,
+                             maxSelectionCount: 20,
+                             matching: .images) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .disabled(!viewModel.draftImages.isEmpty
+                          && viewModel.draftImages.count >= 20)
+                .accessibilityLabel("添加图片")
+                .onChange(of: photoSelection) { items in
+                    let picked = items
+                    photoSelection = []
+                    Task { await intakePhotoSelection(picked) }
+                }
+                // 粘贴图片 chip（F042 呈报形态：剪贴板有图且未消费时显示——
+                // 用户点按才读取，系统粘贴确认在用户手势下触发）。
+                if UIPasteboard.general.hasImages
+                    && UIPasteboard.general.changeCount != pasteboardBaseline {
+                    Button {
+                        pasteImagesFromPasteboard()
+                    } label: {
+                        Image(systemName: "doc.on.clipboard")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("粘贴图片")
+                }
                 // 权限挡位下拉（A3；PermissionSelect.tsx——提交走 /permission
                 // 命令同一写通路径；confirmed = 下拉内确认已过，双弹修复）。
                 if let permission = viewModel.currentPermissionPreset {
@@ -388,6 +569,12 @@ struct ChatView: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        // 拖放图片（F042；dsh drop 对应物——iPad 分屏拖入；intake 同一径）。
+        .onDrop(of: [UTType.image], isTargeted: nil) { providers in
+            guard viewModel.attachmentStore != nil else { return false }
+            Task { await intakeDrop(providers) }
+            return true
+        }
         // P1-5：菜单与捕获层已上移根层 ZStack（原卡上 .overlay 被 clipShape
         // 裁剪 hit-testing——点外关不掉的根因，见 body 注）。
         .padding(.horizontal, 12)

@@ -217,15 +217,20 @@ struct ChatMessage: Equatable, Sendable {
     var toolCalls: [ToolCallSpec]?
     /// tool 角色消息对应的调用 id（wire tool_call_id）。
     var toolCallID: String?
+    /// F042：user 消息携带的图片附件引用（DeriveFold 从 E1 attachment/images
+    /// 事件挂接；assistant/tool 恒 nil——wire 端仅 user 消息展开 image_url parts）。
+    var images: [ImageAttachmentRef]?
 
     init(role: Role,
          content: String,
          toolCalls: [ToolCallSpec]? = nil,
-         toolCallID: String? = nil) {
+         toolCallID: String? = nil,
+         images: [ImageAttachmentRef]? = nil) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
+        self.images = images
     }
 }
 

@@ -226,10 +226,11 @@ final class ConversationProjectorTests: XCTestCase {
         ]
         let (bubbles, _) = project(events)
         XCTAssertEqual(bubbles.count, 1)
-        guard case .user(let text) = bubbles[0].kind else {
+        guard case .user(let text, let images) = bubbles[0].kind else {
             return XCTFail("唯一气泡应为真实用户消息")
         }
         XCTAssertEqual(text, "真实消息")
+        XCTAssertTrue(images.isEmpty)
     }
 
     // MARK: callArgs 缓存随投影累积（presentResult 复现数据源）

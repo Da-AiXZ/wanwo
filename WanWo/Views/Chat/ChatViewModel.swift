@@ -50,6 +50,25 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var resumeBanner: String?
     @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
+    // MARK: F042 附件（composer 输入侧；dsh ComposerAttachments/InputBar intake 语义）
+    /// 待发送图片（本地 Data；发送时统一准入发布——dsh draftImages rail）。
+    struct DraftImage: Identifiable, Equatable {
+        let id: UUID
+        var data: Data
+        var mediaType: ImageMediaType
+        var name: String?
+    }
+    /// intake 候选（选择器/拖放/粘贴共用入口的数据形态）。
+    struct DraftImageCandidate {
+        var data: Data
+        var mediaType: ImageMediaType?
+        var name: String?
+    }
+    @Published private(set) var draftImages: [DraftImage] = []
+    /// 附件拒绝横幅（intake 预检/提交失败文案——dsh showToast → 横幅）。
+    @Published var attachmentBanner: String?
+    /// 附件存储缝（open() 时装配；nil = 会话未打开——intake fail closed）。
+    @Published private(set) var attachmentStore: AttachmentStore?
     // MARK: T2.4 P1-3 会话级模型选择（dsh ModelSelect per-session
     // ModelSelection：选择随会话，不落盘、不落事件；App 级缺省=活动端点）。
     /// 会话级选择值宿主（makeAdapter @Sendable 缝消费）。
@@ -143,6 +162,8 @@ final class ChatViewModel: ObservableObject {
                 self.questionService = stack.questionService
                 self.permission = stack.permission
                 self.plan = stack.plan
+                // F042：附件存储缝（本会话 bucket；intake/请求变体共用）。
+                self.attachmentStore = stack.attachmentStore
                 if let loop = stack.loop {
                     self.registry = loop.deps.registry
                     self.slashCommands = SlashCommandRegistry.makeDefault(
@@ -195,10 +216,14 @@ final class ChatViewModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         // .failed 也允许重发（错误状态条不是死锁——用户改完可直接重试）。
-        guard !text.isEmpty, canSendFromPhase, let loop = agentLoop else { return }
+        // F042：带图时允许空文本（image-only 消息）。
+        guard canSendFromPhase, let loop = agentLoop else { return }
+        let images = draftImages
+        guard !text.isEmpty || !images.isEmpty else { return }
         draft = ""
+        draftImages = []
 
-        if SlashCommandRegistry.isCommand(text) {
+        if images.isEmpty, SlashCommandRegistry.isCommand(text) {
             runningTask = Task { [weak self] in
                 await self?.runSlashCommand(text)
                 self?.runningTask = nil
@@ -206,8 +231,128 @@ final class ChatViewModel: ObservableObject {
             return
         }
         phase = .streaming
-        // AgentLoop 是 actor：submit 需 await（MainActor 上下文经 Task 跳转）。
-        Task { await loop.submit(text) }
+        // F042：先准入发布（AttachmentStore，CompressionLimiter 并发限界内
+        // 归一化）→ 引用随 submit 通道进 loop（userMessage 后 E1 落盘）。
+        // 准入失败整批拒绝：横幅 + 恢复 idle（fail closed，不半提交）。
+        let store = attachmentStore
+        Task { [weak self] in
+            var refs: [ImageAttachmentRef] = []
+            if !images.isEmpty {
+                guard let store else {
+                    await MainActor.run { [weak self] in
+                        self?.attachmentBanner =
+                            "附件功能未就绪，请重新打开会话后再试"
+                        self?.phase = .idle
+                    }
+                    return
+                }
+                do {
+                    refs = try store.saveImages(images.map {
+                        SaveImageAttachment(data: $0.data, mediaType: $0.mediaType,
+                                            name: $0.name)
+                    })
+                } catch let error as AttachmentError {
+                    await MainActor.run { [weak self] in
+                        self?.attachmentBanner = ChatViewModel.attachmentErrorText(
+                            code: error.code, limits: store.imageLimits)
+                        self?.phase = .idle
+                    }
+                    return
+                }
+            }
+            await loop.submit(text, images: refs)
+        }
+    }
+
+    // MARK: - F042 附件 intake（dsh InputBar.tsx:220-245 整批拒绝语义）
+
+    /// intake 预检（InputBar.tsx:220-245 1:1：格式先行——含非白名单类型的批
+    /// 先报格式问题；再数量/单图字节/聚合字节；整批拒绝、立即横幅、不入
+    /// rail。nonisolated 纯函数——单测直呼）。
+    nonisolated static func intakeRejection(existingCount: Int,
+                                            newCandidates: [DraftImageCandidate],
+                                            existingBytes: Int,
+                                            limits: ImageAttachmentLimits) -> String? {
+        // 格式先行（InputBar.tsx:224-229 注释原文语义：含非图片的批报格式
+        // 问题，而非它永远过不了的 count/size）。
+        if newCandidates.contains(where: { $0.mediaType == nil }) {
+            return attachmentErrorText(code: "UNSUPPORTED_IMAGE_TYPE", limits: limits)
+        }
+        if existingCount + newCandidates.count > limits.maxImagesPerMessage {
+            return attachmentErrorText(code: "TOO_MANY_IMAGES", limits: limits)
+        }
+        if newCandidates.contains(where: { $0.data.count > limits.maxImageBytes }) {
+            return attachmentErrorText(code: "IMAGE_TOO_LARGE", limits: limits)
+        }
+        let incomingBytes = newCandidates.reduce(0) { $0 + $1.data.count }
+        if existingBytes + incomingBytes > limits.maxMessageImageBytes {
+            return attachmentErrorText(code: "IMAGES_TOO_LARGE", limits: limits)
+        }
+        return nil
+    }
+
+    /// intake 入口（选择器/拖放/粘贴共用一径——one path）。
+    func addDraftImages(_ candidates: [DraftImageCandidate]) {
+        guard !candidates.isEmpty else { return }
+        guard let limits = attachmentStore?.imageLimits else {
+            attachmentBanner = "附件功能未就绪，请重新打开会话后再试"
+            return
+        }
+        if let rejected = Self.intakeRejection(
+                existingCount: draftImages.count,
+                newCandidates: candidates,
+                existingBytes: draftImages.reduce(0) { $0 + $1.data.count },
+                limits: limits) {
+            attachmentBanner = rejected
+            return
+        }
+        draftImages.append(contentsOf: candidates.map {
+            DraftImage(id: UUID(), data: $0.data,
+                       mediaType: $0.mediaType ?? .png, name: $0.name)
+        })
+        attachmentBanner = nil
+    }
+
+    /// 移除待发送图（dsh onRemoveImage；rail 移除钮）。
+    func removeDraftImage(id: UUID) {
+        draftImages.removeAll { $0.id == id }
+    }
+
+    /// 附件拒绝文案（dsh ui-conversation image-labels.ts:28-56
+    /// attachmentErrorText 1:1；zh 逐字——用户可解的报限额与出路，其余折入
+    /// sendFailed 带 reason code）。
+    nonisolated static func attachmentErrorText(code: String,
+                                                limits: ImageAttachmentLimits) -> String {
+        switch code {
+        case "MODEL_DOES_NOT_SUPPORT_IMAGES":
+            return "当前模型不支持图片，请切换支持图片的模型"
+        case "IMAGE_TOO_MANY_PIXELS":
+            return "图片分辨率过大，请压缩后重试"
+        case "IMAGE_DIMENSION_TOO_LARGE":
+            return "图片宽高不能超过 \(limits.maxImageDimension}px，请缩小后重试"
+        // Undecodable bytes 或声明与字节不符：可解 = 换文件/重新导出，读作
+        // 格式问题（image-labels.ts:39-43 注释原文语义）。
+        case "INVALID_IMAGE", "IMAGE_TYPE_MISMATCH":
+            return "仅支持 PNG、JPG、WebP、GIF 格式的图片"
+        case "TOO_MANY_IMAGES":
+            return "一条消息最多添加 \(limits.maxImagesPerMessage) 张图片"
+        case "IMAGE_TOO_LARGE":
+            return "单张图片不能超过 \(imageSizeText(limits.maxImageBytes))"
+        case "IMAGES_TOO_LARGE":
+            return "图片总大小超过 \(imageSizeText(limits.maxMessageImageBytes))，请移除部分图片"
+        default:
+            return "图片发送失败（\(code)），请重新添加图片后再试"
+        }
+    }
+
+    /// 字节 → 用户面 MB（image-labels.ts:12-15 imageSizeText 1:1：整数不带
+    /// 小数「10MB」、其余一位小数「2.5MB」）。
+    nonisolated static func imageSizeText(_ bytes: Int) -> String {
+        let mb = Double(bytes) / (1024 * 1024)
+        if mb.truncatingRemainder(dividingBy: 1) == 0 {
+            return "\(Int(mb))MB"
+        }
+        return String(format: "%.1fMB", mb)
     }
 
     func cancel() {
@@ -446,8 +591,11 @@ final class ChatViewModel: ObservableObject {
                     // 等）与投影层同一过滤纪律，不渲染；下一轮 reproject 以
                     // 事件流折叠产物整体替换（身份/文本同源收敛）。
                     guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    // F042：live 乐观气泡先纯文本（回调仅携带文本）；图片引用
+                    // 已随 E1 事件落盘，随下一轮 reproject 以事件流折叠产物
+                    // 整体替换上屏（身份/文本/图片同源收敛）。
                     self.bubbles.append(ChatViewModel.Bubble(
-                        id: "live-user-\(UUID().uuidString)", kind: .user(text)))
+                        id: "live-user-\(UUID().uuidString)", kind: .user(text, [])))
                 }
             })
     }

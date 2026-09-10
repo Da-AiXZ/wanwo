@@ -99,8 +99,15 @@ actor AgentLoop {
     nonisolated let deps: Dependencies
     nonisolated let config: Config
     private var phase: Phase
-    private var nextStepInbox: [String] = []    // steer/inject（本回合内消费）
-    private var nextTurnInbox: [String] = []    // followup（独立回合）
+    /// F042：inbox 条目（文本 + 可选图片引用——仅 submit 通道携带图片；
+    /// steer/inject/followup 纯文本）。
+    struct InboxEntry: Sendable {
+        var text: String
+        var images: [ImageAttachmentRef] = []
+    }
+
+    private var nextStepInbox: [InboxEntry] = []    // steer/inject（本回合内消费）
+    private var nextTurnInbox: [InboxEntry] = []    // followup（独立回合）
     private var cancelCause: CancelCause?
     /// 工具调度取消旗标（cancel 三源融合时置位；调度器子任务只读——
     /// 驱动器唤醒即复位，避免上一轮回合的残留置位污染新回合）。
@@ -220,26 +227,28 @@ actor AgentLoop {
 
     // MARK: - inbox 三级输入
 
-    /// 用户输入（idle → 新回合；非 idle → followup 排队）。
-    func submit(_ text: String) {
-        nextTurnInbox.append(text)
+    /// 用户输入（idle → 新回合；非 idle → followup 排队）。F042：images =
+    /// 随本条消息发送的已准入图片引用（AttachmentStore.saveImages 产物；
+    /// AgentLoop 不做准入——准入归 composer 提交路径，loop 只落盘引用）。
+    func submit(_ text: String, images: [ImageAttachmentRef] = []) {
+        nextTurnInbox.append(InboxEntry(text: text, images: images))
         wake()
     }
 
     /// steer：本回合下一步注入 + 唤醒（打断注入；dsh next-step + wakeup）。
     func steer(_ text: String) {
-        nextStepInbox.append(text)
+        nextStepInbox.append(InboxEntry(text: text))
         wake()
     }
 
     /// inject：本回合下一步注入，不唤醒（dsh inject）。
     func inject(_ text: String) {
-        nextStepInbox.append(text)
+        nextStepInbox.append(InboxEntry(text: text))
     }
 
     /// followup：排队独立回合 + 唤醒。
     func followup(_ text: String) {
-        nextTurnInbox.append(text)
+        nextTurnInbox.append(InboxEntry(text: text))
         wake()
     }
 
@@ -342,13 +351,13 @@ actor AgentLoop {
                 }
 
                 // claim inbox（dsh preStep：首步 next-turn，其后 next-step）。
-                var messages: [String] = []
+                var entries: [InboxEntry] = []
                 if stepIndex == 0 {
                     if !nextTurnInbox.isEmpty {
-                        messages = nextTurnInbox
+                        entries = nextTurnInbox
                         nextTurnInbox.removeAll()
                     } else if !nextStepInbox.isEmpty {
-                        messages = nextStepInbox
+                        entries = nextStepInbox
                         nextStepInbox.removeAll()
                     } else {
                         endReason = .completed
@@ -356,7 +365,7 @@ actor AgentLoop {
                     }
                 } else {
                     // 工具结果步：steer/inject 消息（可为空——模型消费工具结果）。
-                    messages = nextStepInbox
+                    entries = nextStepInbox
                     nextStepInbox.removeAll()
                 }
 
@@ -365,11 +374,20 @@ actor AgentLoop {
                 try await deps.writer.append(.stepStart(turn: turn, step: step))
 
                 // 上下文注入（F038/F039/F040）。
-                let injected = try await self.injectContexts(messages: messages)
-                for text in injected where !text.isEmpty {
-                    try await deps.writer.append(.userMessage(text: text))
+                let injected = try await self.injectContexts(entries: entries)
+                for entry in injected where !entry.text.isEmpty {
+                    let event = try await deps.writer.append(.userMessage(text: entry.text))
+                    // F042：附件引用随归属 userMessage 紧随落 E1 通道
+                    // （SessionEvent 专用 case 冻结——E1 纪律；载荷声明归属
+                    // seq，DeriveFold/ConversationProjector 按序挂接回消息）。
+                    if !entry.images.isEmpty,
+                       let payload = AttachmentStore.refsJSONPayload(
+                            seq: event.seq, refs: entry.images) {
+                        _ = try await deps.writer.append(.extensionEvent(
+                            kind: AttachmentStore.imagesEventKind, payload: payload))
+                    }
                     // P2-⑪ 消息即时上屏（落盘即发射；UI 侧过滤标记消息）。
-                    deps.callbacks.onUserMessageAppended(text)
+                    deps.callbacks.onUserMessageAppended(entry.text)
                 }
 
                 // 压力检查（dsh pre-step 压缩介入点；失败继续回合）。
@@ -484,9 +502,8 @@ actor AgentLoop {
 
     // MARK: - 上下文注入（F038/F039/F040）
 
-    private func injectContexts(messages: [String]) async throws -> [String] {
+    private func injectContexts(entries: [InboxEntry]) async throws -> [InboxEntry] {
         let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
-        var injected: [String] = []
 
         // F038'：runtime context 快照投影（ERR-024；dsh RuntimeContextProjection
         // 语义）。①每步刷新 retained（归属消息被压缩影子化 → 失效重注入）；
@@ -505,15 +522,19 @@ actor AgentLoop {
             runtimeProjection.commit(text: pending, seq: event.seq)
         }
 
-        // F040：@file 展开（首条用户消息）。
-        for (index, text) in messages.enumerated() {
-            if index == 0, let expanded = deps.injector.expandFileReferences(
+        // F040：@file 展开（首条用户消息）；F042：图片引用只归属首条真实
+        // 用户消息（后续条目均为注入/steer 词汇，无图）。
+        var expanded: [InboxEntry] = []
+        for (index, entry) in entries.enumerated() {
+            var text = entry.text
+            if index == 0, let injected = deps.injector.expandFileReferences(
                 in: text, workspace: workspace).injected {
-                injected.append(expanded)
+                text = injected
             }
-            injected.append(text)
+            expanded.append(InboxEntry(text: text,
+                                       images: index == 0 ? entry.images : []))
         }
-        return injected
+        return expanded
     }
 
     private func checkCompactionPressure() async {

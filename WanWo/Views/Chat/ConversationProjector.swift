@@ -42,7 +42,9 @@ enum ConversationProjector {
 
     struct Bubble: Identifiable, Equatable {
         enum Kind: Equatable {
-            case user(String)
+            /// F042：user 气泡携带图片引用（E1 attachment/images 挂接产物；
+            /// 空数组 = 纯文本消息）。
+            case user(String, [ImageAttachmentRef])
             case assistant(String)
             case reasoning(String)
             case tool(ToolCard)
@@ -83,7 +85,20 @@ enum ConversationProjector {
             switch event.payload {
             case .userMessage(let text):
                 guard !isMarkerMessage(text) else { continue }
-                result.append(Bubble(id: "u\(event.seq)", kind: .user(text)))
+                result.append(Bubble(id: "u\(event.seq)", kind: .user(text, [])))
+
+            case .extensionEvent(let kind, let payload)
+                where kind == AttachmentStore.imagesEventKind:
+                // F042：附件引用回填归属 userMessage 气泡（引用事件紧随其
+                // userMessage 落盘，载荷声明归属 seq）。未命中/解析失败即忽略
+                // ——呈现退化为纯文本（fail closed；live 乐观气泡先纯文本，
+                // 本回填发生在 reproject 或紧随的乐观气泡之后同轮投影）。
+                if let parsed = AttachmentStore.refsFromPayload(payload),
+                   !parsed.refs.isEmpty,
+                   let index = result.lastIndex(where: { $0.id == "u\(parsed.seq)" }),
+                   case .user(let text, _) = result[index].kind {
+                    result[index].kind = .user(text, parsed.refs)
+                }
 
             case .assistantMessage(_, _, let message, _, _):
                 // 思考/回复按块分立（E2）：块序 = content 数组序；气泡 id 锚定
