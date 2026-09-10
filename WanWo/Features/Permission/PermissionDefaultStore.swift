@@ -18,6 +18,7 @@
 //  线程模型：PermissionCoordinator 在后台线程读折叠缺省 → NSLock 保护。
 //
 
+import Combine
 import Foundation
 
 /// App 级新会话默认权限预设（设置·权限行的持久宿主面）。
