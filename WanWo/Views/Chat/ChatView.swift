@@ -297,6 +297,11 @@ struct ChatView: View {
         }
     }
 
+    /// T2.6 件5（用户 #19）：移除钮不可用修复——根因=①scaledToFill 的 Image
+    /// 溢出 frame，clipShape 只裁渲染不裁 hit-testing（P1-5 同源教训），溢出
+    /// 可点区覆盖 X 按钮周边；②X 按钮无 buttonStyle/contentShape，14pt 图标
+    /// hit 区极小，点偏即落 Image 溢出区→误开预览。修法=Image 以 contentShape
+    /// 把预览可点区钉回 64×64 圆角矩形 + 按钮扩 28pt hit 目标（zIndex 置顶）。
     private func draftImageThumb(_ image: ChatViewModel.DraftImage) -> some View {
         ZStack(alignment: .topTrailing) {
             Group {
@@ -310,6 +315,7 @@ struct ChatView: View {
             }
             .frame(width: 64, height: 64)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
             .onTapGesture { draftPreview = UIImage(data: image.data) }
             Button {
                 viewModel.removeDraftImage(id: image.id)
@@ -317,8 +323,12 @@ struct ChatView: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
                     .foregroundStyle(.white, .black.opacity(0.55))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
-            .offset(x: 5, y: -5)
+            .buttonStyle(.plain)
+            .zIndex(1)
+            .offset(x: 4, y: -4)
             .accessibilityLabel("移除图片")
         }
     }
