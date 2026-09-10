@@ -120,6 +120,12 @@ struct ChatView: View {
                     Image(uiImage: draftPreview)
                         .resizable()
                         .scaledToFit()
+                        // T2.8 件1：占满容器（脱离 topTrailing 对齐）——根因=
+                        // scaledToFit 理想尺寸=原图尺寸，被 topTrailing 对齐后
+                        // 从右上角向左下溢出→竖图（窄高）偏到右半屏、横图（宽）
+                        // 偏移小（偏移量随宽高比）。占满后 fit 内容居中
+                        // （MessageLightboxView :140 同款形态）。
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(16)
                 }
                 Button {
