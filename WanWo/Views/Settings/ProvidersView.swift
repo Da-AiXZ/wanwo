@@ -87,7 +87,6 @@ struct EndpointEditSheet: View {
     @State private var baseURL: String = ""
     @State private var model: String = ""
     @State private var apiKey: String = ""
-    @State private var thinkingEnabled = false
     @State private var loaded = false
     /// ERR-016：凭据保存结果透出（存储层/失败原因）——失败时留在页面显示，不再静默。
     @State private var credentialNotice: String?
@@ -119,13 +118,18 @@ struct EndpointEditSheet: View {
                             .foregroundStyle(notice.hasPrefix("Key 保存失败") ? .red : .secondary)
                     }
                 }
-                Section("DeepSeek 扩展（可选透传，09 #16）") {
-                    Toggle("thinking", isOn: $thinkingEnabled)
-                    // T2.4 P1-③：reasoning_effort 控件移除——配置页回归纯
-                    // 服务商配置（dsh 分层：settings models section 只管
-                    // provider/model 目录；推理等级在对话内 per-session 调整，
-                    // ModelSelect.tsx effort pane）。端点级字段废弃。
-                }
+                // T2.4 P1-③：reasoning_effort 控件移除——配置页回归纯
+                // 服务商配置（dsh 分层：settings models section 只管
+                // provider/model 目录；推理等级在对话内 per-session 调整，
+                // ModelSelect.tsx effort pane）。端点级字段废弃。
+                // T2.6 件3（用户 #10）：thinking Toggle 移除——dsh
+                // ui-settings-models 无 thinking 概念（grep 零命中），且开关
+                // 语义已被会话级 effort 完整承载（effort off→wire
+                // thinking:disabled、有值→enabled+档位，OpenAICompatAdapter
+                // resolveThinking 链）；端点级 Toggle=同一事实双宿主（one home
+                // per fact 违例）。EndpointConfig.thinking 字段+adapter 消费
+                // 链保留（解码兼容；新写入恒 nil→request.thinking nil→effort
+                // 决定 thinkingType）。
             }
             .navigationTitle(endpoint == nil ? "新增端点" : "编辑端点")
             .navigationBarTitleDisplayMode(.inline)
@@ -149,8 +153,8 @@ struct EndpointEditSheet: View {
             name = endpoint.name
             baseURL = endpoint.baseURL
             model = endpoint.model
-            thinkingEnabled = endpoint.thinking == "enabled"
             // T2.4 P1-③：reasoningEffort 不回读——端点级字段废弃。
+            // T2.6 件3：thinking 不回读（Toggle 已删；字段解码兼容恒 nil）。
             // Key 不回读显示（Keychain 值不进 UI 文本框；留空 = 保留）。
         }
     }
@@ -164,7 +168,8 @@ struct EndpointEditSheet: View {
         config.name = name
         config.baseURL = normalizedBase
         config.model = model
-        config.thinking = thinkingEnabled ? "enabled" : nil
+        // T2.6 件3：不再写 thinking（Toggle 已删——thinking 开/关语义由会话级
+        // effort 完整承载；编辑既有端点时旧值经 config 拷贝原样保留但语义废弃）。
         // T2.4 P1-③：不再写 reasoningEffort（端点级字段废弃；编辑既有端点时
         // 旧值经 config 拷贝原样保留但被会话级选择覆盖，新端点恒 nil）。
 
