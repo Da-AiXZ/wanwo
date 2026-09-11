@@ -45,7 +45,9 @@ struct MCPServersView: View {
             } footer: {
                 Text("Streamable HTTP 或 stdio 子进程接入（stdio 在 guest 内启动）。"
                     + "HTTP 凭据 Token 优先存 Keychain，不写入配置文件；"
-                    + "增删改在下一个会话栈构建时生效。")
+                    + "增删改在下一个会话栈构建时生效。"
+                    + "stdio 脚本请放在 /var/wanwo/shared/——MCP server 进程只可见全局目录，"
+                    + "会话工作区（/var/wanwo/workspace/ 等）对其不可见。")
             }
             // M4-B 场景2 取证（方案乙最小化）：诊断日志导出——JSONL 事件流
             // （激活/退出/回收/重连），环形 ~100KB，错误文案已净化（无凭据）。
@@ -200,6 +202,11 @@ struct MCPServerEditSheet: View {
                             .autocorrectionDisabled()
                     }
                     TextField("备注（可选）", text: $note)
+                } header: {
+                    Text("服务器")
+                } footer: {
+                    Text("stdio 脚本请放在 /var/wanwo/shared/——MCP server 进程只可见"
+                        + "全局目录，会话工作区（/var/wanwo/workspace/ 等）对其不可见。")
                 }
                 if !isStdio {
                     Section("凭据") {
