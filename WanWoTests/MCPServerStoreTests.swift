@@ -20,7 +20,9 @@ final class MCPServerStoreTests: XCTestCase {
 
     // MARK: fixture（逐测独立临时目录）
 
-    /// 写 servers.json → 建 store（@MainActor 调用点经 MainActor.run）。
+    /// 写 servers.json → 建 store（@MainActor 调用点经调用方法上 actor）。
+    /// @MainActor：MCPServerStore init 是 @MainActor 隔离（B9 首跑编译红自修）。
+    @MainActor
     private func makeFixture(_ json: String) throws -> (store: MCPServerStore,
                                                         url: URL) {
         let dir = FileManager.default.temporaryDirectory

@@ -29,6 +29,8 @@ final class MCPServerConfigToolTests: XCTestCase {
     private let httpServer = "web"
 
     /// 两形态 fixture：stdio（startupTimeoutSeconds=90）+ http。
+    /// @MainActor：MCPServerStore init 是 @MainActor 隔离（B9 首跑编译红自修）。
+    @MainActor
     private func makeStore() throws -> MCPServerStore {
         let json = #"""
         {"mcpServers":{"py":{"command":"/usr/bin/python3",
@@ -142,8 +144,11 @@ final class MCPServerConfigToolTests: XCTestCase {
     @MainActor
     func testMissingServerRejected() async throws {
         let (tool, _) = try makeTool()
-        for args in [.object([:] as [String: JSONValue]),
-                     .object(["server": .string("   ")])] {
+        // 显式 [JSONValue] 标注：数组字面量含 `as` 转换时编译器推断为 [Any]
+        //（B9 首跑编译红自修——:145/:146）。
+        let argCases: [JSONValue] = [.object([:]),
+                                     .object(["server": .string("   ")])]
+        for args in argCases {
             let output = try await tool.execute(
                 args, makeContext(sandboxMode: .readOnly, approver: nil))
             XCTAssertTrue(output.isError)
