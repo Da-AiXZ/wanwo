@@ -458,9 +458,11 @@ final class MCPElicitationManager: MCPElicitationHandling, @unchecked Sendable {
     /// 先于 insert 到达」的竞态窗口（取消早到→cancelPending 落空→insert 后
     /// 无人唤醒=永久悬挂；codex 无此窗口=await 点取消语义，呈报登记）。
     private static func awaitUserResponse(router: MCPElicitationRouter,
-                                          emitter: MCPElicitationEventEmitter,
+                                          emitter: @escaping MCPElicitationEventEmitter,
                                           payload: JSONValue,
                                           publicRequestID: String) async throws -> CreateElicitation.Result {
+        // @escaping：emitter 被 :442-453 事件投递 Task 闭包捕获（CI 工具链
+        // 实证——函数类型参数默认 non-escaping，Task 捕获需显式 escaping）。
         defer { router.cancelPending(publicRequestID: publicRequestID) }  // Drop 对应
         Task { await emitter(payload) }                                   // :442-453
         return try await withCheckedThrowingContinuation { continuation in
