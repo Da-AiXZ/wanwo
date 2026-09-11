@@ -12,10 +12,13 @@ import Foundation
 import Security
 
 enum KeychainStore {
-    private static let service = "com.wanwo.endpoint"
+    /// 端点凭据默认 service（既有语义不变；M4-A 件11 MCP server 凭据走
+    /// 独立 service com.wanwo.mcp——同形隔离，语义不交叉）。
+    private static let defaultService = "com.wanwo.endpoint"
 
     /// 保存（覆盖写）。
-    static func save(apiKey: String, account: String) throws {
+    static func save(apiKey: String, account: String,
+                     service: String = KeychainStore.defaultService) throws {
         guard let data = apiKey.data(using: .utf8) else {
             throw NSError(domain: "com.wanwo.keychain", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "无法编码 API Key"])
@@ -45,7 +48,8 @@ enum KeychainStore {
     }
 
     /// 读取（不存在返回 nil）。
-    static func load(account: String) -> String? {
+    static func load(account: String,
+                     service: String = KeychainStore.defaultService) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -60,7 +64,8 @@ enum KeychainStore {
     }
 
     /// 删除（不存在视为成功）。
-    static func delete(account: String) {
+    static func delete(account: String,
+                       service: String = KeychainStore.defaultService) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

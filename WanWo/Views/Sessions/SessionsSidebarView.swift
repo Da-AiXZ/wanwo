@@ -295,6 +295,10 @@ struct SessionsSidebarView: View {
             footButton("Providers", icon: "cpu") {
                 selection = .providers
             }
+            footButton("MCP", icon: "puzzlepiece.extension") {
+                // M4-A 件11：设置·MCP server 管理（配置存储+最小设置页）。
+                selection = .mcpServers
+            }
             footButton("权限", icon: "lock.shield") {
                 // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1；
                 // P1-4 后唯一权限入口——规则 CRUD 页随 F022 砍除）。

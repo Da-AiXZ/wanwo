@@ -119,4 +119,35 @@ final class McpClient: @unchecked Sendable {
     func releaseNamespace() {
         registry.release(ownerID: ownerID, serverName: config.serverName)
     }
+
+    // MARK: 连接缝转发（M4-A 件11 MCPResourceConnecting 实现）
+
+    /// 等待当前连接世代就绪并返回该世代 client（件8 readyClient 缝的实例
+    /// 转发半边）。未激活/已停用→抛；世代在就绪等待后下行→抛（fail closed
+    /// ——调用方按请求级失败路径处理）。
+    func readyClient() async throws -> Client {
+        lifecycleLock.lock()
+        let supervisor = connection
+        lifecycleLock.unlock()
+        guard let supervisor else {
+            throw MCPConfigurationError("\(label): not activated")
+        }
+        let outcome = await supervisor.awaitReady()
+        if let error = outcome.error {
+            throw error
+        }
+        guard let generation = supervisor.currentClient() else {
+            throw MCPConfigurationError(
+                "\(label): connection generation went down while awaiting readiness")
+        }
+        return generation
+    }
+
+    /// 请求级失败上报转发（件8 裁决①：监督器 isCurrent 守卫保证幂等）。
+    func reportRequestFailure(generation: Client) {
+        lifecycleLock.lock()
+        let supervisor = connection
+        lifecycleLock.unlock()
+        supervisor?.reportRequestFailure(generation: generation)
+    }
 }

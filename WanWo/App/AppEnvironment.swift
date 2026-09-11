@@ -20,6 +20,9 @@ enum RootSelection: Hashable {
     /// M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；P1-4 后唯一
     /// 权限入口——规则 CRUD 页随 F022 砍除）。
     case permissionDefaults
+    /// M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView 交互
+    /// 参照；配置存储 config/mcp-servers/servers.json）。
+    case mcpServers
     case none
 }
 
@@ -34,6 +37,12 @@ final class AppEnvironment: ObservableObject {
     /// 语义——App 级默认，与当前会话旋钮分离）。P1-4：规则库与规则 CRUD 页
     /// 砍除（F022）——权限宿主面只剩本默认源。
     let permissionDefaults: PermissionDefaultStore
+    /// M4-A 件11：MCP server 配置仓库（config/mcp-servers/servers.json；
+    /// OpenMinis MCPStore 格式为唯一参照，凭据入 Keychain 不入 JSON）。
+    let mcpServerStore: MCPServerStore
+    /// M4-A 件11：serverName 命名空间注册表（dsh 模块级 WeakMap 的 App 级
+    /// 单例对应——scope 级互斥、跨会话栈复用）。
+    let mcpNamespaces = MCPNamespaceRegistry()
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -100,6 +109,11 @@ final class AppEnvironment: ObservableObject {
         // P1-4：permission-rules.jsonl 规则库随 F022 砍除，不再装载。
         self.permissionDefaults = PermissionDefaultStore(
             fileURL: configDir.appendingPathComponent("permission-default.json"))
+        // M4-A 件11：MCP server 配置存储（Application Support 约定：config/
+        // mcp-servers/servers.json——OpenMinis 载体名语义，文件位置平台适配）。
+        self.mcpServerStore = MCPServerStore(
+            fileURL: configDir.appendingPathComponent("mcp-servers")
+                .appendingPathComponent("servers.json"))
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
@@ -294,6 +308,29 @@ final class AppEnvironment: ObservableObject {
             newSessionDefaults: { [permissionDefaults] in
                 permissionDefaults.newSessionKnobs()
             })
+
+        // M4-A 件11 装配（M4-A 收口）：MCP server 连接族——每 server 一实例
+        // （dsh apply 1:1），后台激活不等会话栈（呈报）；工具桥注册进本会话
+        // 注册表；资源三元经 connections 缝注册（件8 裁决①的请求级失败上报
+        // 收口随 runtime.reportRequestFailure 落位）。
+        let mcpResolved = mcpServerStore.resolvedClientConfigs()
+        for failure in mcpResolved.failures {
+            Self.logger.error("mcp config skipped: \(failure)")
+        }
+        let mcpRuntime = MCPRuntime(configs: mcpResolved.configs,
+                                    registry: registry,
+                                    namespaces: mcpNamespaces,
+                                    permission: permission,
+                                    writer: writer)
+        Task { await mcpRuntime.activateAll() }
+        for tool in MCPResourceTools.makeAll(connections: mcpRuntime) {
+            do {
+                _ = try registry.tryRegister(tool)
+            } catch {
+                Self.logger.error("mcp resource tool registration failed: " +
+                                  "\(String(describing: error))")
+            }
+        }
 
         let spill = SpillStore(
             root: WanWoPaths.persistentBase

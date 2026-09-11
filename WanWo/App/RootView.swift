@@ -37,6 +37,10 @@ struct RootView: View {
             // M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；P1-4 后
             // 唯一权限入口——规则 CRUD 页随 F022 砍除）。
             PermissionDefaultsView(environment: environment)
+        case .mcpServers:
+            // M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView
+            // 交互参照；配置→MCPRuntime 装配收口）。
+            MCPServersView(environment: environment)
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()

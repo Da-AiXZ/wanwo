@@ -382,6 +382,14 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         generationDown(generation)
     }
 
+    /// 当前世代只读快照（M4-A 件11 McpClient.readyClient 的取数半边；
+    /// down/disposed 后为 nil——调用方 fail closed 抛错）。
+    func currentClient() -> Client? {
+        lock.lock()
+        defer { lock.unlock() }
+        return client
+    }
+
     // MARK: 内部：世代守卫与下行
 
     /// dsh :152-153——世代只在「仍是当前世代且插件存活」时可行动。
