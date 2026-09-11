@@ -280,9 +280,13 @@ final class ChatViewModel: ObservableObject {
                                             existingBytes: Int,
                                             limits: ImageAttachmentLimits) -> String? {
         // 格式先行（InputBar.tsx:224-229 注释原文语义：含非图片的批报格式
-        // 问题，而非它永远过不了的 count/size）。
+        // 问题，而非它永远过不了的 count/size）。dsh net 语义：委托权威
+        // addImages 拒绝 → apply.ts:315 UnsupportedImageMediaTypeError →
+        // t('image.unsupportedType')（locales.ts:41）——直返等价文案；不走
+        // attachmentErrorText（UNSUPPORTED_IMAGE_TYPE 在 dsh image-labels.ts
+        // switch 无 case，会误落 sendFailed 折入分支）。
         if newCandidates.contains(where: { $0.mediaType == nil }) {
-            return attachmentErrorText(code: "UNSUPPORTED_IMAGE_TYPE", limits: limits)
+            return "仅支持 PNG、JPG、WebP、GIF 格式的图片"
         }
         if existingCount + newCandidates.count > limits.maxImagesPerMessage {
             return attachmentErrorText(code: "TOO_MANY_IMAGES", limits: limits)
@@ -335,7 +339,7 @@ final class ChatViewModel: ObservableObject {
         case "IMAGE_TOO_MANY_PIXELS":
             return "图片分辨率过大，请压缩后重试"
         case "IMAGE_DIMENSION_TOO_LARGE":
-            return "图片宽高不能超过 \(limits.maxImageDimension)}px，请缩小后重试"
+            return "图片宽高不能超过 \(limits.maxImageDimension)px，请缩小后重试"
         // Undecodable bytes 或声明与字节不符：可解 = 换文件/重新导出，读作
         // 格式问题（image-labels.ts:39-43 注释原文语义）。
         case "INVALID_IMAGE", "IMAGE_TYPE_MISMATCH":
