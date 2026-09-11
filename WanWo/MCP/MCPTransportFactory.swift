@@ -157,7 +157,7 @@ enum MCPTransportFactory {
                 // attemptFailure 日志 + MCPLastActivationStore（userFacing-
                 // Summary 直通本仓错误文案）→ 设置页"上次激活"直读定位。
                 let reason: String
-                switch ISHShellExecutorError(rawValue: spawnError) {
+                switch ISHShellExecutorError(rawValue: Int(spawnError)) {
                 case .execFailed:
                     reason = "the start command was not found or is not executable " +
                         "— check the command path (e.g. /usr/bin/python3)"
