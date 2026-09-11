@@ -83,7 +83,11 @@ final class MCPElicitationTests: XCTestCase {
         let fields = try objectFields(payload)
         XCTAssertNil(fields["meta"])
         XCTAssertEqual(fields["mode"], .string("form"))
-        XCTAssertEqual(fields["requestedSchema"], .object([:]))
+        // SDK RequestSchema 全字段编码（CI 实证）：type 恒在场（默认 object）、
+        // properties 恒在场（空表）。
+        XCTAssertEqual(fields["requestedSchema"],
+                       .object(["type": .string("object"),
+                                "properties": .object([:])]))
     }
 
     /// url 型全字段（codex :396-399 + :404-410 的 E1 形态）。

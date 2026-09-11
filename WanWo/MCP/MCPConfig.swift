@@ -73,16 +73,30 @@ extension MCPReconnectConfig: Codable {
         case enabled, initialDelayMs, maxDelayMs, maxAttempts
     }
 
+    /// 动态键容器：`container(keyedBy: Keys.self).allKeys` 只含**已知键**
+    /// （CI 工具链实证——一次性验证跑拦截的首个真缺陷），未知键不可见；
+    /// dsh 未知键拒绝必须用动态键容器枚举全部 JSON 键。
+    private struct DynamicCodingKeys: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    private static let knownKeys: Set<String> = [
+        "enabled", "initialDelayMs", "maxDelayMs", "maxAttempts"]
+
     /// dsh connection.ts:66-70 语义 1:1：未知键=配置错误，加载即抛
     /// （「程序化构造可能绕过 schema，每个键都要再判」）。Codable 合成解码
     /// 会静默忽略未知键、与 dsh「加载即报错」相悖，故逐键核对。
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: Keys.self)
-        for key in container.allKeys where Keys(rawValue: key.stringValue) == nil {
+        let dynamic = try decoder.container(keyedBy: DynamicCodingKeys.self)
+        for key in dynamic.allKeys where !Self.knownKeys.contains(key.stringValue) {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
                 debugDescription: "\(key.stringValue) is not a reconnect option"))
         }
+        let container = try decoder.container(keyedBy: Keys.self)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
         initialDelayMs = try container.decodeIfPresent(Int.self, forKey: .initialDelayMs)
         maxDelayMs = try container.decodeIfPresent(Int.self, forKey: .maxDelayMs)

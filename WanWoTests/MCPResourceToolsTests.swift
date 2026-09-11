@@ -76,12 +76,13 @@ final class MCPResourceToolsTests: XCTestCase {
     }
 
     /// 页数上限：恰好 100 次 fetch 后硬失败（:44-48——第 101 轮入口判定）。
+    /// 每页 cursor 唯一（静态 cursor 会在第 2 轮先触发重复环防护——CI 实证）。
     func testCollectFailsAtPageLimit() async {
         let counter = FetchCounter()
         do {
             _ = try await collect { _ in
                 counter.increment()
-                return ([.string("x")], "next")
+                return ([.string("x")], "page-\(counter.value)")
             }
             XCTFail("expected pagination page-limit failure")
         } catch {
