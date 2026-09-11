@@ -24,6 +24,18 @@ enum MCPConstants {
     /// dsh 全局定时器上限（schedule runtime.ts:22 MAX_TIMER_DELAY_MS）——
     /// reconnect 延迟的校验上界（connection.ts:76-81）。
     static let maxTimerDelayMs = 2_147_483_647
+
+    /// 世代关闭等待上限（connection.ts:50 GENERATION_CLOSE_TIMEOUT_MS）。
+    /// dsh 取值依据：stdio 传输自带两个 2s 终止宽限期 + 1s 进程关闭事件
+    /// 余量；等待超时 = fail closed（停止重连/记错误），宁可停也不重叠
+    /// server 子进程。
+    static let generationCloseTimeoutMs = 5_000
+
+    /// 连接看门狗超时（M4-A 裁决②自建常量——Swift SDK 0.12.1 的 connect
+    /// 无内建超时，Node SDK 侧的 initialize 默认超时不可移植；量级参照
+    /// codex DEFAULT_STARTUP_TIMEOUT）。触发条件/复位条件/超时后动作的
+    /// 正式语义定义见件3 汇报与台账（McpConnectionSupervisor.connectWithWatchdog）。
+    static let connectWatchdogTimeoutMs = 30_000
 }
 
 // MARK: - 配置错误
