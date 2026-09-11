@@ -124,14 +124,30 @@ final class MCPServerStore: ObservableObject {
             var args: [String] = []
             if let raw = obj["args"] as? [Any] {
                 for item in raw {
-                    if let item = item as? String { args.append(item) }
+                    if let item = item as? String {
+                        args.append(item)
+                    } else {
+                        // B1 登记① 兑现（B8）：非 String 项丢弃+警告不静默
+                        // （读侧「忽略+警告」纪律=startupTimeoutSeconds 同款）。
+                        logger.warning(
+                            "mcp-server '\(name)': dropping non-string args entry \(item)")
+                    }
                 }
+            } else if obj["args"] != nil {
+                logger.warning("mcp-server '\(name)': args is not an array — ignoring")
             }
             var env: [String: String] = [:]
             if let raw = obj["env"] as? [String: Any] {
                 for (key, value) in raw {
-                    if let value = value as? String { env[key] = value }
+                    if let value = value as? String {
+                        env[key] = value
+                    } else {
+                        logger.warning(
+                            "mcp-server '\(name)': dropping non-string env value for '\(key)'")
+                    }
                 }
+            } else if obj["env"] != nil {
+                logger.warning("mcp-server '\(name)': env is not an object — ignoring")
             }
             let cwd = obj["cwd"] as? String
             let startup = Self.resolvedStartupTimeout(obj, name: name)

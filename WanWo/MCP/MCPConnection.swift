@@ -256,6 +256,20 @@ final class McpConnectionSupervisor: @unchecked Sendable {
 
     private static let logger = AppLogger(category: "McpConnection")
 
+    /// 连接超时的模型可读提示（纯函数；internal=可测性放宽先例=件12
+    /// collectPaginated）。stdio=慢启动指引（B7 返工文案：config 是会话栈
+    /// 构建时捕获的快照——重连读旧 startupTimeoutMs，新值只对新会话栈生效，
+    /// 文案必须指到「新会话」而非「reconnect」，否则模型引导用户重连→
+    /// 仍超时→困惑循环）；http 恒 nil（http 超时语义不同，不指向配置工具
+    /// ——文案不变锚点）。
+    static func connectTimeoutHint(for transport: MCPTransport) -> String? {
+        guard case .stdio = transport else { return nil }
+        return "if this MCP server is slow to start (e.g. it compiles " +
+            "or downloads dependencies on first run), increase its " +
+            "startup_timeout_seconds via mcp_server_config, then start " +
+            "a new session to apply it"
+    }
+
     // ---- 不变状态（构造即定，无锁读）----
     private let config: MCPClientConfig
     private let policy: MCPReconnectPolicy
@@ -671,14 +685,7 @@ final class McpConnectionSupervisor: @unchecked Sendable {
             // B5：stdio 读 config.startupTimeoutMs（用户裁决③平台层启动
             // 超时），http 恒默认 30s。B7：stdio 超时错误附模型可读提示
             //（慢启动→mcp_server_config 调大重试的反馈闭环）。
-            let timeoutHint: String?
-            if case .stdio = config.transport {
-                timeoutHint = "if this MCP server is slow to start (e.g. it compiles " +
-                    "or downloads dependencies on first run), increase its " +
-                    "startup_timeout_seconds via mcp_server_config and reconnect"
-            } else {
-                timeoutHint = nil
-            }
+            let timeoutHint = Self.connectTimeoutHint(for: config.transport)
             let connectResult = await connectWithWatchdog(
                 generation, transport: transport, timeoutMs: config.startupTimeoutMs,
                 timeoutHint: timeoutHint)

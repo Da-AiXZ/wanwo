@@ -18,9 +18,10 @@
 //      standing danger-full-access 过 fence（「danger 直通」）。
 //    · http 条目写入拒绝（fail closed——startup_timeout_seconds 是平台层
 //      stdio 字段，对 streamable-http 无语义）。
-//    · 生效语义：写入只落 servers.json（MCPServerStore.upsert），对新会话栈
-//      /重连生效——既有已激活会话不变；结果文案向模型明示，避免其误判
-//      立即生效。
+//    · 生效语义（B7 返工修正）：config 是会话栈构建时捕获的快照
+//      （supervisor.config let）——写入只落 servers.json（MCPServerStore.
+//      upsert），仅对新会话栈生效，重连不拾取新值；结果文案向模型明示，
+//      避免其引导用户重连→仍超时→困惑循环。
 //    · 反馈闭环（B7 块2 配套）：stdio 慢启动超时错误的 hint 指向本工具
 //      （MCPConnection.swift hint 文案）——模型看到超时→查本工具（含
 //      lastActivation 的 spawn 失败原因，MCPLastActivationStore 直通本仓
@@ -45,8 +46,9 @@ struct MCPServerConfigTool: AgentTool {
         "server failed to start). Provide 'startup_timeout_seconds' (1-900) to " +
         "update a stdio server's startup timeout — useful when a server times " +
         "out during startup. The change is persisted and takes effect for newly " +
-        "spawned sessions and reconnects; already-activated sessions are not " +
-        "affected. Updating a configuration is a sandboxed mutation: it is " +
+        "spawned sessions only (configuration is captured as a snapshot when a " +
+        "session stack is built — reconnecting does not pick it up). Updating a " +
+        "configuration is a sandboxed mutation: it is " +
         "denied in read-only mode and may require user approval via " +
         "sandbox_permissions."
 
@@ -216,10 +218,10 @@ struct MCPServerConfigTool: AgentTool {
             "transport": .string("stdio"),
             "startupTimeoutSeconds": .int(seconds),
             "effectiveStartupTimeoutSeconds": .int(seconds),
-            "takesEffect": .string("for newly spawned sessions and reconnects; " +
-                                   "already-activated sessions keep their " +
-                                   "current timeout — reconnect or start a new " +
-                                   "session to apply"),
+            "takesEffect": .string("for newly spawned sessions only — the " +
+                                   "configuration is captured as a snapshot when " +
+                                   "a session stack is built; start a new session " +
+                                   "to apply"),
         ])))
     }
 
