@@ -43,6 +43,8 @@ final class T24ModelSelectionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = EndpointStore(
             fileURL: dir.appendingPathComponent("endpoints.json"))
+        // 出厂播种默认端点（init 文件缺失时播种——M3 有意演进）为目录基线。
+        let seeded = store.endpoints[0]
         let first = EndpointConfig(name: "DeepSeek",
                                    baseURL: "https://api.deepseek.com",
                                    model: "deepseek-v4-flash",
@@ -53,8 +55,8 @@ final class T24ModelSelectionTests: XCTestCase {
         store.add(first)
         store.add(second)
 
-        // 无选择 → 活动端点（App 级缺省）。
-        XCTAssertEqual(store.resolve(selection: nil)?.id, first.id)
+        // 无选择 → 活动端点（首启用项 = 播种默认端点）。
+        XCTAssertEqual(store.resolve(selection: nil)?.id, seeded.id)
         // 会话选择 second → 解析为 second 且 effort=provider default（nil）。
         let plain = store.resolve(selection: .init(endpointID: second.id,
                                                    reasoningEffort: nil))
@@ -75,18 +77,23 @@ final class T24ModelSelectionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = EndpointStore(
             fileURL: dir.appendingPathComponent("endpoints.json"))
+        // 出厂播种默认端点（init 文件缺失时播种——M3 有意演进）为目录基线。
+        let seeded = store.endpoints[0]
         let only = EndpointConfig(name: "DeepSeek",
                                   baseURL: "https://api.deepseek.com",
                                   model: "deepseek-v4-flash")
         store.add(only)
-        // 选择指向不存在的端点 → 回落活动端点。
+        // 选择指向不存在的端点 → 回落活动端点（首启用项 = 播种默认端点）。
         XCTAssertEqual(store.resolve(selection: .init(endpointID: UUID(),
                                                       reasoningEffort: "low"))?.id,
-                       only.id)
-        // 选择指向已停用的端点 → 回落活动端点（fail closed 到可用目录）。
+                       seeded.id)
+        // 选择指向已停用的端点 → 回落活动端点（仍是可用的播种默认端点）。
         store.setEnabled(false, for: only)
-        XCTAssertNil(store.resolve(selection: .init(endpointID: only.id,
-                                                    reasoningEffort: nil)))
+        XCTAssertEqual(store.resolve(selection: .init(endpointID: only.id,
+                                                      reasoningEffort: nil))?.id,
+                       seeded.id)
+        // 可用目录全空（播种默认也停用）→ nil（fail closed 到空）。
+        store.setEnabled(false, for: seeded)
         XCTAssertNil(store.resolve(selection: nil))
     }
 }

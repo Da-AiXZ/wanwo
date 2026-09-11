@@ -39,13 +39,14 @@ final class T25AttachmentTests: XCTestCase {
     }
 
     func testRequestImageDimensionsInwardDecrementLoop() {
-        // round() 上取整导致首轮超预算 → 宽度逐像素递减直至达标：
-        // 3000×1001、预算 2,000,000：pw=2449,ph=817→2,000,833 超；
-        // pw=2448,ph=817→2,000,016 超；pw=2447,ph=817→1,999,199 达标。
+        // round() 上取整导致首轮超预算 → 宽度逐像素递减且**逐次重算短边**直至
+        // 达标（request-projection.ts:23-26 / RequestProjection.swift:52-56）：
+        // 3000×1001、预算 2,000,000：pw=2448, ph=round(816.816)=817→2,000,016 超；
+        // pw=2447, ph=round(816.482)=816→1,996,752 达标。
         let projected = RequestProjection.requestImageDimensions(
             width: 3000, height: 1001, maxPixels: 2_000_000)
         XCTAssertEqual(projected.width, 2447)
-        XCTAssertEqual(projected.height, 817)
+        XCTAssertEqual(projected.height, 816)
         XCTAssertLessThanOrEqual(projected.width * projected.height, 2_000_000)
     }
 
@@ -126,9 +127,10 @@ final class T25AttachmentTests: XCTestCase {
             existingCount: 0, newCandidates: [oversized],
             existingBytes: 0, limits: limits),
             "单张图片不能超过 0.0MB")
-        // 聚合字节（maxMessageImageBytes=2048 → 0.0MB）。
+        // 聚合字节（maxMessageImageBytes=2048 → 0.0MB；数量关须先通过——
+        // dsh InputBar.tsx 顺序为数量先于聚合，existingCount 取 0）。
         XCTAssertEqual(ChatViewModel.intakeRejection(
-            existingCount: 1, newCandidates: [ok, ok],
+            existingCount: 0, newCandidates: [ok, ok],
             existingBytes: 1900, limits: limits),
             "图片总大小超过 0.0MB，请移除部分图片")
         // 通过。
@@ -196,12 +198,16 @@ final class T25AttachmentTests: XCTestCase {
         XCTAssertEqual(ref.mediaType, .png)
         XCTAssertEqual(ref.width, 4)
         XCTAssertEqual(ref.height, 4)
-        XCTAssertEqual(ref.bytes, png.count)
+        // 存储对象 = 归一化字节（store.ts prepareImageFile「归一化+digest」语义）：
+        // ref.bytes 指向归一化产物而非原始输入——夹具 PNG 含 CGImageDestination
+        // 元数据 chunk、不满足 canPassThrough（ImageOperations.swift:142-152）→
+        // 重编码 PNG 单档；断言以归一化字节为基线（读回互洽 + digest 互洽）。
+        let stored = try store.readImage(ref)
         XCTAssertEqual(ref.name, "测试 图.png")
         XCTAssertNil(ref.originalDimensions)
-        // 读回 digest + 头探测回核。
-        let stored = try store.readImage(ref)
-        XCTAssertEqual(stored.data, png)
+        XCTAssertEqual(ref.bytes, stored.data.count)
+        XCTAssertEqual(AttachmentStore.sha256Hex(stored.data),
+                       String(ref.attachmentId.dropFirst("sha256:".count)))
         // 同图重存 → 去重同引用。
         let ref2 = try store.saveImage(SaveImageAttachment(data: png, mediaType: .png, name: nil))
         XCTAssertEqual(ref2.attachmentId, ref.attachmentId)
@@ -227,25 +233,26 @@ final class T25AttachmentTests: XCTestCase {
     }
 
     func testBatchPolicyAndByteLimit() throws {
+        // 数量超限（index.ts validateImageBatch 语义—— 任一失败整批拒；数量
+        // 检查先于字节，须注入 maxImagesPerMessage=2——默认 20 张 3 张不超）。
         var tight = ImageAttachmentLimits()
         tight.maxImageBytes = 8
         tight.maxImagesPerMessage = 2
         tight.maxMessageImageBytes = 10
-        let store = makeStore()  // 部署限制用默认；批次策略直接调 validateImageBatch
         let png = try makePNGData()
         let input = SaveImageAttachment(data: png, mediaType: .png, name: nil)
-        // 数量超限（index.ts validateImageBatch 语义—— 任一失败整批拒）。
-        XCTAssertThrowsError(try store.validateImageBatch([input, input, input])) { error in
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("t25-\(UUID().uuidString)", isDirectory: true)
+        let tightStore = AttachmentStore(root: root, limits: tight)
+        XCTAssertThrowsError(try tightStore.validateImageBatch([input, input, input])) { error in
             XCTAssertEqual((error as? AttachmentError)?.code, "TOO_MANY_IMAGES")
         }
         // 单图字节帽（prepareImageFile :104 顺序：字节帽先于解码）。
-        let tightStore = AttachmentStore(root: store.root.appendingPathComponent("tight"),
-                                         limits: tight)
         XCTAssertThrowsError(try tightStore.saveImage(input)) { error in
             XCTAssertEqual((error as? AttachmentError)?.code, "IMAGE_TOO_LARGE")
         }
         // 聚合字节帽。
-        let cappedStore = AttachmentStore(root: store.root.appendingPathComponent("agg"),
+        let cappedStore = AttachmentStore(root: root.appendingPathComponent("agg"),
                                           limits: ImageAttachmentLimits(
                                             maxImageBytes: 1024 * 1024,
                                             maxImagesPerMessage: 20,
