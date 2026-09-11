@@ -17,6 +17,9 @@ settings:
 # 远程包声明于本 packages: 节，非本地包）：
 #   - GRDB.swift ^7.0（MIT）：SQLite 投影索引
 #   - swift-collections ^1.1（Apache-2.0）：Deque（流缓冲）
+# M4-A 追加（用户拍板底座，红线 R2 版本锁定）：
+#   - mcp-swift-sdk exact 0.12.1（MIT）：MCP 官方 Swift SDK（product MCP，
+#     规范 2025-11-25）——WanWo = Swift 官方 SDK 底座 + 自建语义层（dsh 同构）
 packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
@@ -24,6 +27,9 @@ packages:
   swift-collections:
     url: https://github.com/apple/swift-collections
     from: "1.1.0"
+  mcp-swift-sdk:
+    url: https://github.com/modelcontextprotocol/swift-sdk
+    exactVersion: "0.12.1"
 
 targets:
   WanWo:
@@ -68,6 +74,9 @@ targets:
       - package: GRDB
       - package: swift-collections
         product: Collections
+      # M4-A：MCP 官方 Swift SDK 底座（F029/F032；版本锁 0.12.1，红线 R2）
+      - package: mcp-swift-sdk
+        product: MCP
     info:
       path: WanWo/Info.plist
       properties:
