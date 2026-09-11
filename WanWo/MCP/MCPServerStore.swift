@@ -262,7 +262,9 @@ final class MCPServerStore: ObservableObject {
             return MCPClientConfig(
                 transport: .stdio(command: command, args: entry.args,
                                   env: entry.env, cwd: entry.cwd),
-                serverName: entry.id)
+                serverName: entry.id,
+                startupTimeoutMs: (entry.startupTimeoutSeconds
+                    ?? MCPConstants.defaultStartupTimeoutSeconds) * 1000)
         }
         guard let urlString = entry.url,
               let url = URL(string: urlString),

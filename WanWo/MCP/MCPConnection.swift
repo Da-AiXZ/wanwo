@@ -352,6 +352,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         closeSignal = nil                                     // :336
         lock.unlock()
         timer?.cancel()                                       // clearTimeout
+        // B5：dispose 直达（插件 reload/停用）可能未经 generationDown——
+        // stdio guest 进程组在此终结（先杀→后断开：transport 收 EOF，
+        // disconnect 与 5s 竞速立刻获胜）。重 spawn 前的 factory reap 幂等。
+        reapStdioSession(reason: "disposed")
         if let current {
             // :338 close 吞错 → Swift：后台断开+finish（HTTP 断开时长不受
             // 控，主路径若 inline await 将失去 5s 竞速上限；平台适配见汇报）。
@@ -399,6 +403,26 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         return client
     }
 
+    // MARK: 内部：stdio 世代进程回收（M4-B B5 监督面）
+
+    /// stdio guest 进程组回收（ledger 三段分工的 B5 段）：generationDown/
+    /// dispose/giveUp/失败世代兜底四落点经 ledger.reap 终结 guest 进程组
+    /// 并关闭双 fd。dsh 同构：TS SDK StdioClientTransport 的 close 会杀
+    /// child（stdio.ts:202-206 abort 链）——Swift StdioTransport 是 fd 注入
+    /// 形态、无进程所有权（B4 三坑①），kill 归属在 WanWo。
+    /// 行为链（核① 5s 竞速的兑现路径）：reap→terminate（closeStdin→
+    /// SIGTERM→200ms→SIGKILL，minis 坑位④优雅+回退压缩形态）→guest 死→
+    /// stdout EOF→StdioTransport readLoop 退出→Client 消息循环退出→
+    /// disconnect 完成→signal.finish——waitForClose 的 5s 竞速在正常内核
+    /// 下宽裕获胜；内核僵死时 5s 上限兜底（既有语义不变）。
+    /// http 条目无 ledger 记录，reap 返回 false——日志只在真实回收时打。
+    private func reapStdioSession(reason: String) {
+        let reaped = MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
+        if reaped {
+            Self.logger.info("\(self.label): stdio server process terminated (\(reason))")
+        }
+    }
+
     // MARK: 内部：世代守卫与下行
 
     /// dsh :152-153——世代只在「仍是当前世代且插件存活」时可行动。
@@ -439,6 +463,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
                 signal.finish()
             }
         }
+        // B5：stdio guest 进程组随世代下行终结（dsh 同构——TS transport
+        // close 杀 child）。isCurrent 守卫已过=本世代进程仍登记在 ledger；
+        // 重连新世代 spawn 前 factory 会再次 reap（幂等 no-op）。
+        reapStdioSession(reason: "generation down")
         scheduleReconnect()                    // :177
     }
 
@@ -538,6 +566,11 @@ final class McpConnectionSupervisor: @unchecked Sendable {
                 for dispose in d.values { dispose() }
                 self.withLock { self.disposers = [:] }
             }
+            // B5：giveUp 只注销工具不杀进程——kill 责任在 generationDown
+            // （giveUp 必经其 scheduleReconnect 到达，彼时已 reap）。此处
+            // 幂等兜底 no-op，防未来路径演化漏杀（职责分工：disposers 排
+            // 链=工具注销；ledger.reap=进程组终结）。
+            reapStdioSession(reason: "give-up backstop")
             // :213
             Self.logger.error(
                 "\(self.label): giving up after " +
@@ -627,7 +660,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
             // :272——每次尝试全新 transport（dsh createTransport(config)）。
             let transport = try MCPTransportFactory.makeTransport(for: config)
             // 裁决②：连接看门狗（initialize 挂起无内建超时且不响应取消）。
-            let connectResult = await connectWithWatchdog(generation, transport: transport)
+            // B5：stdio 读 config.startupTimeoutMs（用户裁决③平台层启动
+            // 超时），http 恒默认 30s。
+            let connectResult = await connectWithWatchdog(
+                generation, transport: transport, timeoutMs: config.startupTimeoutMs)
             switch connectResult {
             case .success:
                 break
@@ -695,6 +731,11 @@ final class McpConnectionSupervisor: @unchecked Sendable {
                 client = nil
                 closeSignal = nil
             }
+            // B5：此路径不走 generationDown（重连已停）——stdio guest 进程
+            // 若仍在（如 initialize 悬置）将成为孤儿，就地终结；kill 同时
+            // 让悬置 transport 立即收 EOF，"overlapping server processes"
+            // 的顾虑源头上消除。
+            reapStdioSession(reason: "failed generation did not close — killing stdio server")
             Self.logger.error(                                          // :291
                 "\(self.label): failed generation did not close within " +
                 "\(MCPConstants.generationCloseTimeoutMs)ms — reconnect stopped to avoid " +
@@ -706,19 +747,24 @@ final class McpConnectionSupervisor: @unchecked Sendable {
 
     // MARK: 内部：连接看门狗（M4-A 裁决②）
 
-    /// 语义定义（正式版，已落台账）：
-    /// - 常量：`MCPConstants.connectWatchdogTimeoutMs = 30_000`；
+    /// 语义定义（正式版，已落台账；M4-B B5 stdio 变体修订）：
+    /// - 常量：http 条目恒 `MCPConstants.connectWatchdogTimeoutMs = 30_000`；
+    ///   stdio 条目=`config.startupTimeoutMs`（startupTimeoutSeconds，空=
+    ///   60s 默认，值域 1-900——用户裁决③平台层启动超时，锚点 minis
+    ///   config.py:32/:34；guest 进程启动+initialize 全程在该窗口 settle）；
     /// - 触发条件：单次连接尝试中 `client.connect(transport)`（含传输建立
-    ///   + initialize 往返）30s 内未 settle（成功或抛错）；
-    /// - 复位条件：connect 在 30s 内 settle——看门狗 Task 立即取消，结果箱
+    ///   + initialize 往返）超时窗内未 settle（成功或抛错）；
+    /// - 复位条件：connect 在窗口内 settle——看门狗 Task 立即取消，结果箱
     ///   settle-once 保证先到方获胜、后到方 no-op；
     /// - 超时后动作：本尝试按失败处理，走 attemptFailure 同路径（warn →
     ///   后台 disconnect + 关闭竞速 → generationDown → scheduleReconnect
-    ///   退避）。悬置的 connect 任务不强杀（Swift 无此能力）：attemptFailure
+    ///   退避；stdio 的 guest 进程组由 generationDown 的 ledger.reap 终结）。
+    ///   悬置的 connect 任务不强杀（Swift 无此能力）：attemptFailure
     ///   的 disconnect 会 resume 其 initialize continuation（Client.swift:287
     ///   resume 全部 pendingRequests），任务随后自然结束；悬置窗口零 CPU。
     private func connectWithWatchdog(_ generation: Client,
-                                     transport: any Transport) async -> Result<Initialize.Result, any Error> {
+                                     transport: any Transport,
+                                     timeoutMs: Int) async -> Result<Initialize.Result, any Error> {
         let box = MCPSettleOnce<Result<Initialize.Result, any Error>>()
         let connectTask = Task {
             do {
@@ -729,10 +775,8 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         }
         let watchdogTask = Task { [label] in
             // 睡眠响应取消（connect 先 settle 时立即退出）。
-            try? await Task.sleep(
-                nanoseconds: UInt64(MCPConstants.connectWatchdogTimeoutMs) * 1_000_000)
-            box.settle(.failure(MCPConnectTimeoutError(
-                label: label, timeoutMs: MCPConstants.connectWatchdogTimeoutMs)))
+            try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+            box.settle(.failure(MCPConnectTimeoutError(label: label, timeoutMs: timeoutMs)))
         }
         let result = await box.wait()   // 有界：watchdog 必在超时点 settle
         watchdogTask.cancel()

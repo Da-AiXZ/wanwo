@@ -58,13 +58,17 @@ final class MCPStdioSessionLedger: @unchecked Sendable {
 
     /// 取消记录并终结旧会话+关闭双 fd（Best-effort close，errno 不深究——
     /// guest 已死时 close 收 EINTR/EINVAL 属常态）。世代下行/重 spawn 前调用。
-    func reap(serverName: String) {
+    /// - Returns: 是否实际回收了一条记录（http 条目/已回收= false——调用方
+    ///   据此降噪日志，避免 stdio 专属事件在 http 路径刷屏）。
+    @discardableResult
+    func reap(serverName: String) -> Bool {
         lock.lock()
         let old = entries.removeValue(forKey: serverName)
         lock.unlock()
-        guard let old else { return }
+        guard let old else { return false }
         old.session.terminate()
         if old.stdinWriteFd >= 0 { close(old.stdinWriteFd) }
         if old.stdoutReadFd >= 0 { close(old.stdoutReadFd) }
+        return true
     }
 }

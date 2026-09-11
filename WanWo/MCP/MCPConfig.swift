@@ -208,6 +208,13 @@ struct MCPClientConfig: Sendable, Equatable {
     var failOnStartupError: Bool = false
     /// 自动重连策略；nil = 全默认（index.ts:93-94/133）。
     var reconnect: MCPReconnectConfig? = nil
+    /// 连接看门狗超时 ms（单次连接尝试 client.connect 含传输建立+initialize
+    /// 往返的上限；M4-A 裁决②自建——dsh 无对应物，Node SDK initialize 默认
+    /// 超时不可移植）。http 条目取默认 30s 恒定；stdio 条目=startupTimeout-
+    /// Seconds（空=60s 默认，值域 1-900 已在 entry() 解析层校验）——guest
+    /// 进程启动+initialize 全程须在该窗口 settle，看门狗读该值即平台层启动
+    /// 超时（M4-B 用户裁决③，锚点 minis config.py:32/:34；B5 传递路径兑现）。
+    var startupTimeoutMs: Int = MCPConstants.connectWatchdogTimeoutMs
 
     /// serverName 形态校验（index.ts:38 SERVER_NAME_PATTERN =
     /// `^[A-Za-z0-9_-]{1,32}$`，刻意小于公共工具名预算 64）。
