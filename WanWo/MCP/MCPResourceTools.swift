@@ -2,46 +2,55 @@
 //  MCPResourceTools.swift
 //  WanWo
 //
-//  【M4-A 件8 · resources 三元元工具】参照物=codex 资源桥（dsh 无此件——
-//  dsh mcp-client 只同步 tools；gap3 缺口 3 的补齐形态，analysis/
-//  06-codex-gap3-mcp-full-primitives.md §4.7+§八.2/§八.7）：
-//    · list_mcp_resources(server?, cursor?)——不指定 server 时聚合全部
-//      server 并按名排序（codex ListMcpResourcesHandler 形态），指定时
-//      cursor 透传翻页；
-//    · list_mcp_resource_templates(server?)——聚合/单 server 均拉全页
-//      （codex handler 无 cursor 参数）；
-//    · read_mcp_resource(server, uri)——双必填，contents JSON 透出
-//      （codex：输出 JSON 序列化后按截断策略截断——截断归 WanWo 管线
-//      spill（F037），本件不截）。
-//  防护常量（codex pagination §4.3/§七.9）：100 页/2048 项/cursor 64KB
-//  硬上限+默认分页超时 30s——恶意或失控 server 不拖死宿主。
-//  协议方法（MCP 规范 2025-06-18）：resources/list / resources/templates/
-//  list / resources/read。wire 解码沿用件5 信任边界纪律（宽松 Value?+
-//  缺失/非数组→空，z.record 哲学同款）。
-//  平台适配/设计呈报（汇报逐项）：连接访问缝 MCPResourceConnecting（实现
-//  归多 server 装配）；请求级失败经 reportRequestFailure 回传监督器（裁决①
-//  语义，isCurrent 幂等）；聚合模式 cursor 不支持（要求显式 server）；错误
-//  码/描述文案自创（codex 原文未收录）；output JSON 信封 {server, resource}
-//  自创（read 需 server 寻址，列表必须携带来源）；isConcurrencySafe 默认
-//  false（与 MCP 工具族一致，fail closed）。
+//  【M4-A 件8 · resources 三元元工具】参照物=codex 资源桥源码（dsh 无此件；
+//  repos/codex-rust-v0.153.0-alpha.6 逐文件取证，件8 review 五处返工后重对拍）：
+//    · core/src/tools/handlers/mcp_resource.rs——args 规范化 :326-344
+//      （normalize_optional_string=trim+空归无 / normalize_required_string=
+//      trim 后空→"<field> must be provided"）、cursor 无 server 拒绝 :89-91、
+//      信封 :132-194（单 server 顶层 server 字段 :143-149；read {server,uri,
+//      flatten(result)} :188-194；camelCase :133）、官方 description/schema
+//      属性文案 mcp_resource_spec.rs :25/:53/:82（1:1 adopt，替代初版自创）；
+//    · mcp_resource/{list_mcp_resources,list_mcp_resource_templates}.rs——
+//      两 list 共用 ListResourceArgs.target：**templates 同样暴露 cursor 且
+//      单 server 透传翻页**（gap3 笔记「templates 无 cursor」有误，源码纠正）；
+//      单 server 失败文案 "resources/list failed: {err}"（list :81、
+//      templates :82、read :86）；
+//    · codex-mcp/src/binding_clients.rs:80-156——聚合=逐 server
+//      collect_paginated，单 server 失败 warn! 日志+静默跳过（:147-149），
+//      无 errors 数组（件8 review 返工 1）；
+//    · codex-mcp/src/pagination.rs——防护常量 :9-13（100 页/2048 项/cursor
+//      64KB/默认分页超时 30s）、collect_paginated :27-80：页数超限 Err :44-48、
+//      条目超限 Err :54-58（**per-collect=per-server 预算**，非全局）、
+//      nextCursor 64KB 跟随前校验 :64-68（返工 4）、**重复 cursor 环检测
+//      :69-71**、整段 collect 30s 超时 :76-79；超限=硬失败非 truncated
+//      （pagination_tests.rs 实证，返工 2）。
+//  平台差异登记（lead 裁决保留）：条目信封嵌套 {server, resource|template}
+//  （codex serde flatten 平铺——信息等价，形态差异）；聚合并发 JoinSet→串行
+//  （每请求已有看门狗，性能非语义）；错误码 MCP_* 走 ToolOutput.failure
+//  既有通道（codex RespondToModel 纯文案）；截断归管线 spill（F037）。
+//  连接访问缝 MCPResourceConnecting：实现归多 server 装配（M4-B/件11）；
+//  请求级失败（MCPRequestLevelFailure 标记）→ reportRequestFailure 转监督器
+//  （裁决①，isCurrent 幂等）后 rethrow；超时/取消不报。lead 裁决：工具调用
+//  路径 M4-B 装配时同款收口。
 //
 
 import Foundation
 import MCP
 
-// MARK: - 防护常量（codex pagination §4.3/§七.9）
+// MARK: - 防护常量（codex pagination.rs:9-13 1:1）
 
 /// 分页/条目/cursor 硬上限（codex MAX_MCP_CATALOG_PAGES=100 /
-/// MAX_MCP_CATALOG_ITEMS=2048 / cursor 64KB；30s=codex 默认分页超时）。
+/// MAX_MCP_CATALOG_ITEMS=2048 / MAX_MCP_PAGINATION_CURSOR_BYTES=64KB /
+/// DEFAULT_MCP_PAGINATION_TIMEOUT=30s）。条目预算 per-collect（per-server）。
 enum MCPResourceGuard {
-    /// 单 server 单次列取的最大页数。
+    /// 单 server 单次 collect 的最大页数（pagination.rs:9）。
     static let maxPages = 100
-    /// 单次聚合列取的最大条目数（超出截断，truncated 标记）。
+    /// 单 server 单次 collect 的最大条目数（pagination.rs:10；per-collect）。
     static let maxItems = 2048
-    /// cursor 参数最大字节数（UTF-8）。
+    /// cursor 参数与 server 返回 nextCursor 的最大字节数（UTF-8）。
     static let maxCursorBytes = 64 * 1024
-    /// 单请求看门狗超时（codex 默认分页超时 30s；=AgentTool.timeoutMs，
-    /// 双层预算一致=件5 惯例）。
+    /// 默认分页超时（pagination.rs:13；=AgentTool.timeoutMs 双层一致，
+    /// 件5 惯例；fetch-all 路径=整段 collect 预算、单页路径=单请求看门狗）。
     static let requestTimeoutMs = 30_000
 }
 
@@ -121,6 +130,8 @@ enum RawReadResource: Method {
 /// server 工具世代重建）。
 enum MCPResourceTools {
 
+    private static let logger = AppLogger(category: "MCPResourceTools")
+
     /// 构建三元（顺序即 codex handler 清单序）。注册归装配点。
     static func makeAll(connections: MCPResourceConnecting) -> [AgentTool] {
         [ListMcpResourcesTool(connections: connections),
@@ -128,11 +139,22 @@ enum MCPResourceTools {
          ReadMcpResourceTool(connections: connections)]
     }
 
+    // MARK: 参数规范化（codex mcp_resource.rs:326-344 1:1）
+
+    /// normalize_optional_string：trim 后空串归无（codex :326-335）。
+    /// required 语义（normalize_required_string :337-344）=归一化后空即拒，
+    /// 文案 "<field> must be provided" 由调用点按字段名合成。
+    static func normalizeOptional(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
     // MARK: 公共执行底座
 
-    /// 单请求看门狗竞速（件5 callToolUncached 同款形态，泛型化；双层预算
-    /// =requestTimeoutMs）。请求级失败以 MCPRequestLevelFailure 标记包裹，
-    /// 供调用方分类上报。
+    /// 单请求看门狗竞速（件5 callToolUncached 同款形态，泛型化；单页路径
+    /// 预算=requestTimeoutMs）。请求级失败以 MCPRequestLevelFailure 标记
+    /// 包裹，供调用方分类上报。
     private static func requestWithTimeout<M: Method>(_ client: Client,
                                                       _ request: Request<M>,
                                                       timeoutMs: Int) async throws -> M.Result {
@@ -176,6 +198,57 @@ enum MCPResourceTools {
         }
     }
 
+    /// codex collect_paginated（pagination.rs:27-80）的 Swift 移植：单 server
+    /// 全页拉取，四重防护=硬失败（Err 语义，非截断）——页数上限 :44-48、
+    /// 条目上限（per-collect）:54-58、nextCursor 64KB 跟随前校验 :64-68、
+    /// 重复 cursor 环检测 :69-71；整段 collect 预算=requestTimeoutMs（:76-79
+    /// tokio::time::timeout 对应=逐轮 deadline 检查，串行平台等价形态）。
+    /// - Parameter fetch: 单页取回（cursor→[条目], nextCursor）。
+    private static func collectPaginated(connections: MCPResourceConnecting,
+                                         serverName: String,
+                                         method: String,
+                                         fetch: @escaping @Sendable (String?) async throws
+                                             -> ([JSONValue], String?)) async throws -> [JSONValue] {
+        let deadline = Date().addingTimeInterval(
+            TimeInterval(MCPResourceGuard.requestTimeoutMs) / 1000)
+        var collected: [JSONValue] = []
+        var cursor: String? = nil
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        while true {
+            if pageCount == MCPResourceGuard.maxPages {                          // :44-48
+                throw MCPConfigurationError(
+                    "mcp-client(\(serverName)): \(method) exceeded the pagination " +
+                    "limit of \(MCPResourceGuard.maxPages) pages")
+            }
+            pageCount += 1
+            if Date() > deadline {                                               // :76-79
+                throw MCPConfigurationError(
+                    "mcp-client(\(serverName)): \(method) pagination timed out " +
+                    "after \(MCPResourceGuard.requestTimeoutMs)ms")
+            }
+            let (items, nextCursor) = try await fetch(cursor)                    // :53
+            if items.count > MCPResourceGuard.maxItems - collected.count {       // :54-58
+                throw MCPConfigurationError(
+                    "mcp-client(\(serverName)): \(method) exceeded the catalog " +
+                    "limit of \(MCPResourceGuard.maxItems) items")
+            }
+            collected += items
+            guard let nextCursor else { return collected }                       // :61-63
+            if nextCursor.utf8.count > MCPResourceGuard.maxCursorBytes {         // :64-68
+                throw MCPConfigurationError(
+                    "mcp-client(\(serverName)): \(method) returned a pagination " +
+                    "cursor exceeding \(MCPResourceGuard.maxCursorBytes) bytes")
+            }
+            if !seenCursors.insert(nextCursor).inserted {                        // :69-71
+                throw MCPConfigurationError(
+                    "mcp-client(\(serverName)): \(method) returned a repeated " +
+                    "pagination cursor")
+            }
+            cursor = nextCursor
+        }
+    }
+
     /// Value? → [JSONValue]（宽松：缺失/null→空、非数组→空——件5 信任边界
     /// 哲学同款，声明 required 的字段在 server 有 bug 时可能缺席）。
     private static func items(_ raw: Value?) throws -> [JSONValue] {
@@ -185,7 +258,8 @@ enum MCPResourceTools {
         return []
     }
 
-    /// JSONValue → 单行 JSON 文本（codex「输出 JSON 序列化」形态）。
+    /// JSONValue → 单行 JSON 文本（codex serialize_function_output :353 的
+    /// 序列化面；截断归管线 spill F037，本件不截）。
     private static func jsonText(_ value: JSONValue) -> String {
         guard let data = try? JSONEncoder().encode(value),
               let text = String(data: data, encoding: .utf8) else {
@@ -194,8 +268,9 @@ enum MCPResourceTools {
         return text
     }
 
-    /// cursor 参数校验（64KB 硬上限；聚合模式禁 cursor——cursor 是 server
-    /// 不透明页游标，跨 server 无意义，fail closed 拒绝而非静默忽略）。
+    /// cursor 参数校验（64KB 硬上限；聚合模式禁 cursor——codex :89-91 原生
+    /// 语义「cursor can only be used when a server is specified」，文案形态
+    /// 保留本件版本，lead 件8 review 确认）。
     private static func validateCursor(_ cursor: String?) -> ToolOutput? {
         guard let cursor else { return nil }
         if cursor.utf8.count > MCPResourceGuard.maxCursorBytes {
@@ -215,20 +290,29 @@ enum MCPResourceTools {
 
     struct ListMcpResourcesTool: AgentTool {
         let name = "list_mcp_resources"
+        /// codex mcp_resource_spec.rs:25 官方 description 1:1。
         let description =
-            "List resources exposed by connected MCP servers. Omit 'server' to " +
-            "aggregate resources from every server (sorted by server name; the " +
-            "server owning each resource is included per entry), or pass 'server' " +
-            "to list a single server with pagination via 'cursor'. Use " +
-            "'read_mcp_resource' to fetch a resource's contents."
+            "Lists resources provided by MCP servers. Resources allow servers " +
+            "to share data that provides context to language models, such as " +
+            "files, database schemas, or application-specific information. " +
+            "Prefer resources over web search when possible."
+        /// schema 属性文案=codex spec :9-20 1:1。
         let parameters: JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
-                "server": .object(["type": .string("string")]),
-                "cursor": .object(["type": .string("string")]),
+                "server": .object([
+                    "type": .string("string"),
+                    "description": .string("MCP server name. Omit to list resources " +
+                                           "from every configured server."),
+                ]),
+                "cursor": .object([
+                    "type": .string("string"),
+                    "description": .string("Opaque cursor from a previous " +
+                                           "list_mcp_resources call; omit for the first page."),
+                ]),
             ]),
         ])
-        /// 协作式预算（F019）=内部看门狗同值（双层一致=件5 惯例）。
+        /// 协作式预算（F019）=collect 预算同值（双层一致=件5 惯例）。
         let timeoutMs: Int? = MCPResourceGuard.requestTimeoutMs
 
         private let connections: MCPResourceConnecting
@@ -239,89 +323,66 @@ enum MCPResourceTools {
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
             let params = Self.argsObject(args)
-            let server = params["server"]?.stringValue
-            let cursor = params["cursor"]?.stringValue
-            if let rejection = Self.validateCursor(cursor) { return rejection }
-            // 聚合模式禁 cursor（fail closed，见 validateCursor 注）。
+            // codex ListResourceArgs.normalized()（:69-74）——trim+空归无。
+            let server = MCPResourceTools.normalizeOptional(params["server"]?.stringValue)
+            let cursor = MCPResourceTools.normalizeOptional(params["cursor"]?.stringValue)
+            if let rejection = MCPResourceTools.validateCursor(cursor) { return rejection }
+            // codex :89-91——cursor 无 server 拒绝。
             if server == nil, cursor != nil {
                 return .failure("mcp-client: 'cursor' requires 'server' — aggregate " +
                                 "listing fetches every page up to the guard limits",
                                 code: "MCP_CURSOR_REQUIRES_SERVER", name: "McpResourceError")
             }
 
-            if let server {
-                // 单 server：cursor 透传翻页（codex「指定时支持翻页」）。
-                guard connections.serverNames().contains(server) else {
-                    return .failure("mcp-client: unknown MCP server \"\(server)\"",
-                                    code: "MCP_UNKNOWN_SERVER", name: "McpResourceError")
-                }
-                do {
-                    let page = try await Self.call(connections, serverName: server,
-                                                   request: RawListResources.request(
-                                                       RawCursorParams(cursor: cursor)))
-                    let entries = try Self.items(page.resources).map { item in
-                        JSONValue.object(["server": .string(server), "resource": item])
+            guard let server else {
+                // 聚合（codex list_all_resources，binding_clients.rs:80-106）：
+                // 逐 server collect_paginated，按 server 名排序拼接；单 server
+                // 失败=warn 日志+静默跳过（collect_resource_results :147-149）。
+                var entries: [JSONValue] = []
+                for name in connections.serverNames().sorted() {
+                    do {
+                        let items = try await MCPResourceTools.collectAllResources(
+                            connections, serverName: name)
+                        entries += items.map { item in
+                            JSONValue.object(["server": .string(name), "resource": item])
+                        }
+                    } catch {
+                        MCPResourceTools.logger.warning(
+                            "Failed to list resources for MCP server '\(name)': " +
+                            "\(String(describing: error))")
                     }
-                    var result: [String: JSONValue] = ["resources": .array(entries)]
-                    if let nextCursor = page.nextCursor {
-                        result["nextCursor"] = .string(nextCursor)
-                    }
-                    return .success(Self.jsonText(.object(result)))
-                } catch {
-                    return .failure("mcp-client(\(server)): \(String(describing: error))",
-                                    code: "MCP_RESOURCE_REQUEST_FAILED", name: "McpResourceError")
                 }
+                // codex from_all_servers（:151-158）：server/nextCursor 缺省省略。
+                return .success(MCPResourceTools.jsonText(.object(
+                    ["resources": .array(entries)])))
             }
 
-            // 聚合：全部 server 按名排序，逐 server 拉全页（页数/条目双上限）；
-            // 单 server 失败记入 errors 继续（部分结果可见，模型可对指定 server
-            // 重试）。
-            var entries: [JSONValue] = []
-            var errors: [JSONValue] = []
-            var truncated = false
-            fetchLoop: for name in connections.serverNames().sorted() {
-                var cursor: String? = nil
-                var pages = 0
-                while true {
-                    if pages >= MCPResourceGuard.maxPages {
-                        truncated = true
-                        errors.append(.object([
-                            "server": .string(name),
-                            "error": .string("listing stopped after " +
-                                             "\(MCPResourceGuard.maxPages) pages (guard limit)"),
-                        ]))
-                        continue fetchLoop
-                    }
-                    pages += 1
-                    let page: RawListResources.Result
-                    do {
-                        page = try await Self.call(connections, serverName: name,
-                                                   request: RawListResources.request(
-                                                       RawCursorParams(cursor: cursor)))
-                    } catch {
-                        errors.append(.object([
-                            "server": .string(name),
-                            "error": .string(String(describing: error)),
-                        ]))
-                        continue fetchLoop
-                    }
-                    for item in (try? Self.items(page.resources)) ?? [] {
-                        if entries.count >= MCPResourceGuard.maxItems {
-                            truncated = true
-                            break fetchLoop
-                        }
-                        entries.append(.object(["server": .string(name), "resource": item]))
-                    }
-                    cursor = page.nextCursor
-                    if cursor == nil { break }
-                }
+            // 单 server（codex :76-86）：cursor 透传单页翻页，顶层 server 字段
+            // （from_single_server :143-149），nextCursor camelCase 透传。
+            guard connections.serverNames().contains(server) else {
+                return .failure("mcp-client: unknown MCP server \"\(server)\"",
+                                code: "MCP_UNKNOWN_SERVER", name: "McpResourceError")
             }
-            let result: [String: JSONValue] = [
-                "resources": .array(entries),
-                "errors": .array(errors),
-                "truncated": .bool(truncated),
-            ]
-            return .success(Self.jsonText(.object(result)))
+            do {
+                let page = try await MCPResourceTools.call(
+                    connections, serverName: server,
+                    request: RawListResources.request(RawCursorParams(cursor: cursor)))
+                let entries = try MCPResourceTools.items(page.resources).map { item in
+                    JSONValue.object(["server": .string(server), "resource": item])
+                }
+                var payload: [String: JSONValue] = [
+                    "server": .string(server),
+                    "resources": .array(entries),
+                ]
+                if let nextCursor = page.nextCursor {
+                    payload["nextCursor"] = .string(nextCursor)
+                }
+                return .success(MCPResourceTools.jsonText(.object(payload)))
+            } catch {
+                // codex :81 文案 1:1（"resources/list failed: {err}"）。
+                return .failure("resources/list failed: \(String(describing: error))",
+                                code: "MCP_RESOURCE_REQUEST_FAILED", name: "McpResourceError")
+            }
         }
     }
 
@@ -329,15 +390,30 @@ enum MCPResourceTools {
 
     struct ListMcpResourceTemplatesTool: AgentTool {
         let name = "list_mcp_resource_templates"
+        /// codex mcp_resource_spec.rs:53 官方 description 1:1。
         let description =
-            "List resource templates (parameterized URI schemes) exposed by " +
-            "connected MCP servers. Omit 'server' to aggregate templates from " +
-            "every server (sorted by server name; the owning server is included " +
-            "per entry), or pass 'server' to list a single server's templates."
+            "Lists resource templates provided by MCP servers. Parameterized " +
+            "resource templates allow servers to share data that takes parameters " +
+            "and provides context to language models, such as files, database " +
+            "schemas, or application-specific information. Prefer resource " +
+            "templates over web search when possible."
+        /// schema 属性文案=codex spec :36-47 1:1。cursor 与 resources 同款
+        /// （源码纠正：gap3 笔记「templates 无 cursor」有误——共用
+        /// ListResourceArgs.target，单 server 透传翻页）。
         let parameters: JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
-                "server": .object(["type": .string("string")]),
+                "server": .object([
+                    "type": .string("string"),
+                    "description": .string("MCP server name. Omit to list resource " +
+                                           "templates from every configured server."),
+                ]),
+                "cursor": .object([
+                    "type": .string("string"),
+                    "description": .string("Opaque cursor from a previous " +
+                                           "list_mcp_resource_templates call; omit for " +
+                                           "the first page."),
+                ]),
             ]),
         ])
         let timeoutMs: Int? = MCPResourceGuard.requestTimeoutMs
@@ -349,77 +425,60 @@ enum MCPResourceTools {
         }
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-            // codex handler 无 cursor 参数——单/聚合模式均拉全页（上限封顶）。
             let params = Self.argsObject(args)
-            let server = params["server"]?.stringValue
-
-            if let server {
-                guard connections.serverNames().contains(server) else {
-                    return .failure("mcp-client: unknown MCP server \"\(server)\"",
-                                    code: "MCP_UNKNOWN_SERVER", name: "McpResourceError")
-                }
-                do {
-                    let templates = try await Self.fetchAllTemplates(connections,
-                                                                     serverName: server)
-                    let entries = templates.map { item in
-                        JSONValue.object(["server": .string(server), "template": item])
-                    }
-                    return .success(Self.jsonText(.object(["templates": .array(entries)])))
-                } catch {
-                    return .failure("mcp-client(\(server)): \(String(describing: error))",
-                                    code: "MCP_RESOURCE_REQUEST_FAILED", name: "McpResourceError")
-                }
+            let server = MCPResourceTools.normalizeOptional(params["server"]?.stringValue)
+            let cursor = MCPResourceTools.normalizeOptional(params["cursor"]?.stringValue)
+            if let rejection = MCPResourceTools.validateCursor(cursor) { return rejection }
+            if server == nil, cursor != nil {
+                return .failure("mcp-client: 'cursor' requires 'server' — aggregate " +
+                                "listing fetches every page up to the guard limits",
+                                code: "MCP_CURSOR_REQUIRES_SERVER", name: "McpResourceError")
             }
 
-            var entries: [JSONValue] = []
-            var errors: [JSONValue] = []
-            var truncated = false
-            fetchLoop: for name in connections.serverNames().sorted() {
-                do {
-                    let templates = try await Self.fetchAllTemplates(connections,
-                                                                     serverName: name)
-                    for item in templates {
-                        if entries.count >= MCPResourceGuard.maxItems {
-                            truncated = true
-                            break fetchLoop
+            guard let server else {
+                var entries: [JSONValue] = []
+                for name in connections.serverNames().sorted() {
+                    do {
+                        let items = try await MCPResourceTools.collectAllTemplates(
+                            connections, serverName: name)
+                        entries += items.map { item in
+                            JSONValue.object(["server": .string(name), "template": item])
                         }
-                        entries.append(.object(["server": .string(name), "template": item]))
+                    } catch {
+                        MCPResourceTools.logger.warning(
+                            "Failed to list resource templates for MCP server '\(name)': " +
+                            "\(String(describing: error))")
                     }
-                } catch {
-                    errors.append(.object([
-                        "server": .string(name),
-                        "error": .string(String(describing: error)),
-                    ]))
                 }
+                return .success(MCPResourceTools.jsonText(.object(
+                    ["resourceTemplates": .array(entries)])))
             }
-            let result: [String: JSONValue] = [
-                "templates": .array(entries),
-                "errors": .array(errors),
-                "truncated": .bool(truncated),
-            ]
-            return .success(Self.jsonText(.object(result)))
-        }
 
-        /// 单 server 全页拉取（页数上限封顶；条目上限由调用侧聚合统计）。
-        private static func fetchAllTemplates(
-            _ connections: MCPResourceConnecting, serverName: String
-        ) async throws -> [JSONValue] {
-            var collected: [JSONValue] = []
-            var cursor: String? = nil
-            var pages = 0
-            while true {
-                if pages >= MCPResourceGuard.maxPages {
-                    throw MCPConfigurationError(
-                        "mcp-client(\(serverName)): template listing stopped after " +
-                        "\(MCPResourceGuard.maxPages) pages (guard limit)")
+            guard connections.serverNames().contains(server) else {
+                return .failure("mcp-client: unknown MCP server \"\(server)\"",
+                                code: "MCP_UNKNOWN_SERVER", name: "McpResourceError")
+            }
+            do {
+                let page = try await MCPResourceTools.call(
+                    connections, serverName: server,
+                    request: RawListResourceTemplates.request(RawCursorParams(cursor: cursor)))
+                let entries = try MCPResourceTools.items(page.templates).map { item in
+                    JSONValue.object(["server": .string(server), "template": item])
                 }
-                pages += 1
-                let page = try await Self.call(connections, serverName: serverName,
-                                               request: RawListResourceTemplates.request(
-                                                   RawCursorParams(cursor: cursor)))
-                collected += try Self.items(page.templates)
-                cursor = page.nextCursor
-                if cursor == nil { return collected }
+                var payload: [String: JSONValue] = [
+                    "server": .string(server),
+                    // codex ListResourceTemplatesPayload 字段名（camelCase :133/:165）。
+                    "resourceTemplates": .array(entries),
+                ]
+                if let nextCursor = page.nextCursor {
+                    payload["nextCursor"] = .string(nextCursor)
+                }
+                return .success(MCPResourceTools.jsonText(.object(payload)))
+            } catch {
+                // codex :82 文案 1:1。
+                return .failure(
+                    "resources/templates/list failed: \(String(describing: error))",
+                    code: "MCP_RESOURCE_REQUEST_FAILED", name: "McpResourceError")
             }
         }
     }
@@ -428,16 +487,25 @@ enum MCPResourceTools {
 
     struct ReadMcpResourceTool: AgentTool {
         let name = "read_mcp_resource"
+        /// codex mcp_resource_spec.rs:82 官方 description 1:1。
         let description =
-            "Read the contents of one MCP resource. 'server' (the owning server " +
-            "name as reported by 'list_mcp_resources') and 'uri' (the resource URI) " +
-            "are both required. Returns the resource contents as JSON (text " +
-            "contents carry 'text'; binary contents carry base64 'blob')."
+            "Read a specific resource from an MCP server given the server name " +
+            "and resource URI."
+        /// schema 属性文案=codex spec :64-75 1:1。
         let parameters: JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
-                "server": .object(["type": .string("string")]),
-                "uri": .object(["type": .string("string")]),
+                "server": .object([
+                    "type": .string("string"),
+                    "description": .string("MCP server name exactly as configured. " +
+                                           "Must match the 'server' field returned by " +
+                                           "list_mcp_resources."),
+                ]),
+                "uri": .object([
+                    "type": .string("string"),
+                    "description": .string("Resource URI to read. Must be one of the " +
+                                           "URIs returned by list_mcp_resources."),
+                ]),
             ]),
             "required": .array([.string("server"), .string("uri")]),
         ])
@@ -451,9 +519,16 @@ enum MCPResourceTools {
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
             let params = Self.argsObject(args)
-            guard let server = params["server"]?.stringValue, !server.isEmpty,
-                  let uri = params["uri"]?.stringValue, !uri.isEmpty else {
-                return .failure("mcp-client: 'server' and 'uri' are both required",
+            // codex normalize_required_string（:337-344）：归一化（trim+空归
+            // 无）后空即拒，文案 "<field> must be provided"。
+            guard let server = MCPResourceTools.normalizeOptional(
+                params["server"]?.stringValue) else {
+                return .failure("server must be provided",
+                                code: "MCP_INVALID_ARGUMENTS", name: "McpResourceError")
+            }
+            guard let uri = MCPResourceTools.normalizeOptional(
+                params["uri"]?.stringValue) else {
+                return .failure("uri must be provided",
                                 code: "MCP_INVALID_ARGUMENTS", name: "McpResourceError")
             }
             guard connections.serverNames().contains(server) else {
@@ -461,20 +536,49 @@ enum MCPResourceTools {
                                 code: "MCP_UNKNOWN_SERVER", name: "McpResourceError")
             }
             do {
-                let result = try await Self.call(connections, serverName: server,
-                                                 request: RawReadResource.request(
-                                                     RawReadResourceParams(uri: uri)))
-                // contents 信封自创（呈报）：{server, contents:[...]}——模型
-                // 需 server+uri 二元组才能续读，来源随行。
-                let contents = (try? Self.items(result.contents)) ?? []
-                return .success(Self.jsonText(.object([
+                let result = try await MCPResourceTools.call(
+                    connections, serverName: server,
+                    request: RawReadResource.request(RawReadResourceParams(uri: uri)))
+                // codex ReadResourcePayload（:188-194）：{server, uri, flatten
+                // (result)}——uri 输入回显（件8 review 返工 3）；flatten→WanWo
+                // contents 显式键（嵌套形态差异已登记）。
+                let contents = (try? MCPResourceTools.items(result.contents)) ?? []
+                return .success(MCPResourceTools.jsonText(.object([
                     "server": .string(server),
+                    "uri": .string(uri),
                     "contents": .array(contents),
                 ])))
             } catch {
-                return .failure("mcp-client(\(server)): \(String(describing: error))",
+                // codex :86 文案 1:1。
+                return .failure("resources/read failed: \(String(describing: error))",
                                 code: "MCP_RESOURCE_REQUEST_FAILED", name: "McpResourceError")
             }
+        }
+    }
+
+    // MARK: collect 调用面（单 server fetch-all）
+
+    /// 单 server 资源全页拉取（collectPaginated 实例化：resources/list）。
+    private static func collectAllResources(_ connections: MCPResourceConnecting,
+                                            serverName: String) async throws -> [JSONValue] {
+        try await collectPaginated(connections: connections, serverName: serverName,
+                                   method: "resources/list") { cursor in
+            let page = try await call(connections, serverName: serverName,
+                                      request: RawListResources.request(
+                                          RawCursorParams(cursor: cursor)))
+            return (try items(page.resources), page.nextCursor)
+        }
+    }
+
+    /// 单 server 模板全页拉取（collectPaginated 实例化：resources/templates/list）。
+    private static func collectAllTemplates(_ connections: MCPResourceConnecting,
+                                            serverName: String) async throws -> [JSONValue] {
+        try await collectPaginated(connections: connections, serverName: serverName,
+                                   method: "resources/templates/list") { cursor in
+            let page = try await call(connections, serverName: serverName,
+                                      request: RawListResourceTemplates.request(
+                                          RawCursorParams(cursor: cursor)))
+            return (try items(page.templates), page.nextCursor)
         }
     }
 }
