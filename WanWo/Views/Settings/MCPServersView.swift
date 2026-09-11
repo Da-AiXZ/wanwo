@@ -166,7 +166,7 @@ struct MCPServerEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("服务器") {
+                Section {
                     TextField("名称（[A-Za-z0-9_-]{1,32}）", text: $name)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
