@@ -340,6 +340,18 @@ final class AppEnvironment: ObservableObject {
                                   "\(String(describing: error))")
             }
         }
+        // M4-B B7 块1：mcp_server_config（AI 配置工具）——查询无门、写入走
+        // 审批缝（SandboxGate.resolveMode + escalationApprover）。注册面与
+        // 资源三元同款：环境级稳定注册（不随 server 工具世代重建），冲突
+        // tryRegister 可捕获路径同纪律。
+        do {
+            _ = try registry.tryRegister(
+                MCPServerConfigTool(store: mcpServerStore,
+                                    lastActivation: mcpLastActivation))
+        } catch {
+            Self.logger.error("mcp server config tool registration failed: " +
+                              "\(String(describing: error))")
+        }
 
         let spill = SpillStore(
             root: WanWoPaths.persistentBase

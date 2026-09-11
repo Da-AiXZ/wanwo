@@ -264,7 +264,9 @@ enum MCPResourceTools {
 
     /// JSONValue → 单行 JSON 文本（codex serialize_function_output :353 的
     /// 序列化面；截断归管线 spill F037，本件不截）。
-    private static func jsonText(_ value: JSONValue) -> String {
+    /// internal：M4-B B7 mcp_server_config 复用（可测性/复用放宽先例=件12
+    /// collectPaginated，语义零变更）。
+    static func jsonText(_ value: JSONValue) -> String {
         guard let data = try? JSONEncoder().encode(value),
               let text = String(data: data, encoding: .utf8) else {
             return String(describing: value)

@@ -228,7 +228,15 @@ final class MCPSerialTaskChain: @unchecked Sendable {
 struct MCPConnectTimeoutError: Error, CustomStringConvertible {
     let label: String
     let timeoutMs: Int
-    var description: String { "\(label): connection attempt timed out after \(timeoutMs)ms" }
+    /// M4-B B7：stdio 变体的模型可读提示（http 恒 nil——文案不变）。模型
+    /// 据此从超时错误文本推断"server 可能慢启动"并选择 mcp_server_config
+    /// 调大 startup_timeout_seconds 重试（用户决策③的反馈闭环）。
+    var hint: String?
+    var description: String {
+        var text = "\(label): connection attempt timed out after \(timeoutMs)ms"
+        if let hint { text += " — \(hint)" }
+        return text
+    }
 }
 
 /// 首次连接尝试的结果（connection.ts:93-96 ConnectionOutcome 1:1）。
@@ -661,9 +669,19 @@ final class McpConnectionSupervisor: @unchecked Sendable {
             let transport = try MCPTransportFactory.makeTransport(for: config)
             // 裁决②：连接看门狗（initialize 挂起无内建超时且不响应取消）。
             // B5：stdio 读 config.startupTimeoutMs（用户裁决③平台层启动
-            // 超时），http 恒默认 30s。
+            // 超时），http 恒默认 30s。B7：stdio 超时错误附模型可读提示
+            //（慢启动→mcp_server_config 调大重试的反馈闭环）。
+            let timeoutHint: String?
+            if case .stdio = config.transport {
+                timeoutHint = "if this MCP server is slow to start (e.g. it compiles " +
+                    "or downloads dependencies on first run), increase its " +
+                    "startup_timeout_seconds via mcp_server_config and reconnect"
+            } else {
+                timeoutHint = nil
+            }
             let connectResult = await connectWithWatchdog(
-                generation, transport: transport, timeoutMs: config.startupTimeoutMs)
+                generation, transport: transport, timeoutMs: config.startupTimeoutMs,
+                timeoutHint: timeoutHint)
             switch connectResult {
             case .success:
                 break
@@ -764,7 +782,8 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     ///   resume 全部 pendingRequests），任务随后自然结束；悬置窗口零 CPU。
     private func connectWithWatchdog(_ generation: Client,
                                      transport: any Transport,
-                                     timeoutMs: Int) async -> Result<Initialize.Result, any Error> {
+                                     timeoutMs: Int,
+                                     timeoutHint: String?) async -> Result<Initialize.Result, any Error> {
         let box = MCPSettleOnce<Result<Initialize.Result, any Error>>()
         let connectTask = Task {
             do {
@@ -773,10 +792,11 @@ final class McpConnectionSupervisor: @unchecked Sendable {
                 box.settle(.failure(error))
             }
         }
-        let watchdogTask = Task { [label] in
+        let watchdogTask = Task { [label, timeoutHint] in
             // 睡眠响应取消（connect 先 settle 时立即退出）。
             try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-            box.settle(.failure(MCPConnectTimeoutError(label: label, timeoutMs: timeoutMs)))
+            box.settle(.failure(MCPConnectTimeoutError(label: label, timeoutMs: timeoutMs,
+                                                       hint: timeoutHint)))
         }
         let result = await box.wait()   // 有界：watchdog 必在超时点 settle
         watchdogTask.cancel()

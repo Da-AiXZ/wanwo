@@ -176,15 +176,20 @@ typedef void (^ISHShellLongLivedExitHandler)(int exitCode, ISHShellExecutorError
 ///        write end (-1 on failure)
 /// @param stdoutReadFdOut Required out-param: receives the guest's stdout
 ///        read end (-1 on failure)
+/// @param spawnErrorOut Required out-param: receives 0 on success, or the
+///        ISHShellExecutorError code on failure (M4-B B7：spawn 失败原因
+///        具象化——"command not found or not executable" 级别的模型/用户
+///        可读映射，替代只看 ISHShellExecutor logs)
 + (nullable ISHShellLongLivedSession *)spawnLongLivedRawStdioExecutable:(NSString *)executable
                                                               arguments:(nullable NSArray<NSString *> *)arguments
                                                             environment:(nullable NSDictionary<NSString *, NSString *> *)environment
                                                               fsContext:(uint64_t)fsContext
                                                            stdinWriteFd:(int *)stdinWriteFdOut
                                                            stdoutReadFd:(int *)stdoutReadFdOut
+                                                             spawnError:(int *)spawnErrorOut
                                                      stderrLineCallback:(nullable ISHShellLineCallback)lineCallback
                                                            exitHandler:(nullable ISHShellLongLivedExitHandler)exitHandler
-        NS_SWIFT_NAME(spawnLongLivedRawStdioExecutable(_:arguments:environment:fsContext:stdinWriteFd:stdoutReadFd:stderrLineCallback:exitHandler:));
+        NS_SWIFT_NAME(spawnLongLivedRawStdioExecutable(_:arguments:environment:fsContext:stdinWriteFd:stdoutReadFd:spawnError:stderrLineCallback:exitHandler:));
 
 /// Execute a shell command and wait synchronously for completion
 /// @param command Shell command to execute

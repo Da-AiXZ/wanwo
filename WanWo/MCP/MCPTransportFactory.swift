@@ -37,6 +37,13 @@ import MCP
 /// B2：buildChildEnv 落位（transport.ts:21-23 1:1，本文件 stdio 分支消费）。
 enum MCPTransportFactory {
 
+    /// stderr 行日志汇（B4 登记①兑现——方案乙 AppLogger 接线）。行文本
+    /// 原样+server 名前缀定位。日志量控制：executor 侧长驻 reader 已有
+    /// 10min 空闲降频（B3）；行级不做采样——stderr 是 server 自述诊断面，
+    /// 丢行=定位面缺口（诊断 fail closed 优先于日志量），os.log 环形缓冲
+    /// 即节流边界。
+    private static let stderrLogger = AppLogger(category: "MCPServerStderr")
+
     /// dsh transport.ts:21-23 buildChildEnv 的 WanWo 形态（M4-B B2 接线）：
     /// 子进程环境 = scrub 后 ambient 基座 + 显式 env 合并——extra 在基座
     /// 之上 = 用户显式值优先（transport.ts:22 展开顺序 1:1）。dsh 1:1
@@ -107,25 +114,31 @@ enum MCPTransportFactory {
                     "mcp-client(\(config.serverName)): stdio cwd is not supported " +
                     "by the iSH spawn path (guest default cwd is used) — remove the cwd value")
             }
-            // envp 长度预检（lead B3 裁决①）：executor envp_buf 8192 字节
-            //（ISHShellExecutor.m:716），ENVP_APPEND 宏 headroom 256（:722
-            // 同款），基座固定条目约 300B——自定义合并块上界取 7500B。超限
-            // fail loud（executor 侧是静默丢条目——server 行为诡异的难查
-            // 根因，必须在入口侧拦下）。
+            // envp 长度预检（lead B3 裁决①；B4 登记②分项计量兑现）：
+            // executor envp_buf 8192 字节（ISHShellExecutor.m:716），ENVP_APPEND
+            // 宏 headroom 256（:722 同款），基座固定条目约 300B——自定义合并
+            // 块上界取 7500B。超限 fail loud，文案分开报父环境基线与用户
+            // env 占比（大头常来自前者——指引模型缩 user env 而非无从下手）。
             let childEnv = buildChildEnv(env)
-            let customEnvBytes = childEnv.reduce(0) {
+            let totalEnvBytes = childEnv.reduce(0) {
                 $0 + $1.key.utf8.count + $1.value.utf8.count + 2
             }
-            guard customEnvBytes <= 7500 else {
+            let userEnvBytes = env.reduce(0) {
+                $0 + $1.key.utf8.count + $1.value.utf8.count + 2
+            }
+            guard totalEnvBytes <= 7500 else {
                 throw MCPConfigurationError(
                     "mcp-client(\(config.serverName)): stdio env block too large " +
-                    "(\(customEnvBytes) bytes > 7500 limit) — trim env entries")
+                    "(\(totalEnvBytes) bytes > 7500 limit; ambient parent environment " +
+                    "contributes \(totalEnvBytes - userEnvBytes) bytes, user env " +
+                    "\(userEnvBytes) bytes) — trim user env entries")
             }
             // 世代替换防泄漏：同 server 重 spawn（重连=新世代）前终结旧
             // 进程+关旧 fd（正式监督面=B5；此处只挡无界进程累积）。
             MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
             var stdinWriteFd: Int32 = -1
             var stdoutReadFd: Int32 = -1
+            var spawnError: Int32 = 0
             guard let session = ISHShellExecutor.spawnLongLivedRawStdioExecutable(
                 command,
                 arguments: args,
@@ -133,11 +146,28 @@ enum MCPTransportFactory {
                 fsContext: 0,
                 stdinWriteFd: &stdinWriteFd,
                 stdoutReadFd: &stdoutReadFd,
-                stderrLineCallback: nil,   // stderr AppLogger 聚合=M4-B B7
+                spawnError: &spawnError,
+                stderrLineCallback: { [serverName = config.serverName] line, _ in
+                    // M4-B B7：stderr 行原样进 AppLogger（方案乙接线）。
+                    stderrLogger.warning("mcp-server \(serverName) stderr: \(line)")
+                },
                 exitHandler: nil) else {
+                // [M4-B B7 块3] spawn 失败原因具象化（URLError 不覆盖的
+                // stdio 面——command not found/ENOEXEC/权限）。文案进
+                // attemptFailure 日志 + MCPLastActivationStore（userFacing-
+                // Summary 直通本仓错误文案）→ 设置页"上次激活"直读定位。
+                let reason: String
+                switch ISHShellExecutorError(rawValue: spawnError) {
+                case .execFailed:
+                    reason = "the start command was not found or is not executable " +
+                        "— check the command path (e.g. /usr/bin/python3)"
+                case .processCreationFailed:
+                    reason = "process creation failed (kernel not booted, or pipe/task setup failed)"
+                default:
+                    reason = "unknown error (code \(spawnError))"
+                }
                 throw MCPConfigurationError(
-                    "mcp-client(\(config.serverName)): stdio spawn failed " +
-                    "(see ISHShellExecutor logs)")
+                    "mcp-client(\(config.serverName)): stdio spawn failed — \(reason)")
             }
             guard stdinWriteFd >= 0, stdoutReadFd >= 0 else {
                 session.terminate()

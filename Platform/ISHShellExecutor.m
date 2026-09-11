@@ -1147,19 +1147,22 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
                                                               fsContext:(uint64_t)fsContext
                                                            stdinWriteFd:(int *)stdinWriteFdOut
                                                            stdoutReadFd:(int *)stdoutReadFdOut
+                                                             spawnError:(int *)spawnErrorOut
                                                      stderrLineCallback:(ISHShellLineCallback)lineCallback
                                                            exitHandler:(ISHShellLongLivedExitHandler)exitHandler {
-    if (!stdinWriteFdOut || !stdoutReadFdOut) {
-        NSLog(@"ISHShellExecutor[long-lived]: raw-stdio spawn requires non-NULL fd out-params");
+    if (!stdinWriteFdOut || !stdoutReadFdOut || !spawnErrorOut) {
+        NSLog(@"ISHShellExecutor[long-lived]: raw-stdio spawn requires non-NULL out-params");
         return nil;
     }
     if (!ISHKernel.shared.isBooted) {
         NSLog(@"ISHShellExecutor[long-lived]: kernel not booted — refusing to spawn %@", executable);
         *stdinWriteFdOut = -1;
         *stdoutReadFdOut = -1;
+        *spawnErrorOut = ISHShellExecutorErrorProcessCreationFailed;
         return nil;
     }
     __block ISHShellLongLivedSession *session = nil;
+    *spawnErrorOut = 0;
     int pid = [self executeExecutableInternal:executable
                                     arguments:arguments
                                   environment:environment
@@ -1173,6 +1176,11 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
                                    completion:[self longLivedCompletionForExitHandler:exitHandler]];
     if (pid < 0 || session == nil) {
         NSLog(@"ISHShellExecutor[long-lived]: raw-stdio spawn failed (pid=%d) for %@", pid, executable);
+        // [M4-B B7] 失败原因具象化：internal 以负 pid 返回 ISHShellExecutorError
+        // 代码（-1=ProcessCreationFailed / -2=ExecFailed——exec 失败覆盖
+        // command not found/ENOEXEC/权限）；session 缺失而 pid>=0 属内部
+        // 不一致，兜底 ExecFailed。调用方（factory）映射为模型/用户可读文案。
+        *spawnErrorOut = (pid < 0) ? pid : ISHShellExecutorErrorExecFailed;
         // fd out-params are only written on the success branch (after
         // task_start there is no failure path), so both still hold whatever
         // we seeded — normalise defensively in case that invariant changes.
