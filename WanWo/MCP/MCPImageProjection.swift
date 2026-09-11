@@ -59,6 +59,9 @@ typealias MCPImageRouteResolving = @Sendable (ToolExecutionContext) async -> MCP
 struct MCPImageAdmissionRefusal: Error, CustomStringConvertible {
     let message: String
     var description: String { message }
+    /// dsh `new Error(message)` 调用形态 1:1（无标签构造；memberwise 只有
+    /// `init(message:)`——CI 工具链实证）。
+    init(_ message: String) { self.message = message }
 }
 
 // MARK: - 投影器（tools.ts:434-488 prepareImageProjection 1:1）
@@ -125,7 +128,8 @@ final class MCPImageProjector: MCPImageProjecting, Sendable {
         let store: AttachmentStore
         do {
             store = try await Self.resolveImageAdmission(
-                attachmentStore: attachmentStore, routeResolver: routeResolver)
+                attachmentStore: attachmentStore, routeResolver: routeResolver,
+                context: context)
         } catch {
             let reason = Self.errorMessage(error)
             let text = Self.projectedText(content, rawName: rawName) { block, _ in
@@ -174,12 +178,13 @@ final class MCPImageProjector: MCPImageProjecting, Sendable {
     /// 五条拒绝文案逐字（:402/:408/:414/:417/:419）。
     private static func resolveImageAdmission(
         attachmentStore: AttachmentStore?,
-        routeResolver: MCPImageRouteResolving
+        routeResolver: MCPImageRouteResolving,
+        context: ToolExecutionContext
     ) async throws -> AttachmentStore {
         guard let attachments = attachmentStore else {
             throw MCPImageAdmissionRefusal("no attachment store is mounted")    // :402
         }
-        switch await routeResolver() {                                          // :403-412
+        switch await routeResolver(context) {                                   // :403-412
         case .unresolved:
             throw MCPImageAdmissionRefusal(
                 "the current model route could not be resolved")                // :408

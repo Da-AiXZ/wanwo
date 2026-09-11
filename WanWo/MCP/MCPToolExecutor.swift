@@ -44,7 +44,9 @@ protocol MCPImageProjecting: Sendable {
 /// dsh 宽松 tools/call 结果的 Swift Method 形态：顶层必须是 object、字段值
 /// 任意 JSON——不经 SDK 类型化 content 解码（dsh :80-96 raw request 绕行
 /// 1:1；Method/Request/Client.send 均为 SDK 公开 API，非 fork）。
-enum RawCallTool: Method {
+enum RawCallTool: MCP.Method {
+    // MCP.Method 限定：桥接头把 ObjC runtime.h 的 `Method`（typedef struct
+    // objc_method *）泄入模块——CI 工具链实证裸名歧义，SDK 协议须限定。
     static let name = "tools/call"                  // dsh :88 method 1:1
     typealias Parameters = CallTool.Parameters      // SDK 公开参数类型
 
@@ -207,7 +209,9 @@ final class MCPToolExecutor: MCPToolExecuting {
         // call 任务无需引用保持（Task 自调度）；悬置回收=response/disconnect。
         Task {
             do {
-                let context = try client.send(request)
+                // Client 是 actor：send 须 await（CI 工具链实证；SDK 0.12.1
+                // send 本体 throws → RequestContext，.value 再 await）。
+                let context = try await client.send(request)
                 box.settle(.success(try await context.value))
             } catch {
                 box.settle(.failure(error))
@@ -245,7 +249,11 @@ final class MCPToolExecutor: MCPToolExecuting {
     static func projectContent(_ content: [JSONValue],
                                toolName: String,
                                image: (JSONValue, Int) -> String
-                                   = { MCPToolExecutor.imageDiagnostic($0, "this result was not admitted to durable model context") }
+                                   = { block, _ in
+                                       MCPToolExecutor.imageDiagnostic(
+                                           block,
+                                           "this result was not admitted to durable model context")
+                                   }
     ) -> [String] {
         var projected: [String] = []
         var textRun: [String] = []

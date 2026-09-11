@@ -327,7 +327,7 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     /// Swift 侧 generationDown 由请求失败驱动（异步入口），恢复后锁内读
     /// client，同构成立。
     func awaitReady() async -> MCPConnectionOutcome {
-        _ = await initialSettlingTask.value
+        _ = await initialSettlingTask?.value
         lock.lock()
         let current = client
         let firstError = firstAttemptError
@@ -357,12 +357,21 @@ final class McpConnectionSupervisor: @unchecked Sendable {
             // 控，主路径若 inline await 将失去 5s 竞速上限；平台适配见汇报）。
             let signal = currentClosed
             Task { await current.disconnect(); signal?.finish() }
-            // :339-341
-            if let currentClosed, !(currentClosed.isClosed || await waitForClose(currentClosed)) {
-                Self.logger.error(
-                    "\(self.label): generation did not close within " +
-                    "\(MCPConstants.generationCloseTimeoutMs)ms during disposal — " +
-                    "server shutdown may be incomplete")
+            // :339-341——isClosed 快路径与 await 竞速拆开写（`||` 右侧 await
+            // 落 autoclosure，CI 工具链实证不支持并发）。
+            if let currentClosed {
+                let quiesced: Bool
+                if currentClosed.isClosed {
+                    quiesced = true
+                } else {
+                    quiesced = await waitForClose(currentClosed)
+                }
+                if !quiesced {
+                    Self.logger.error(
+                        "\(self.label): generation did not close within " +
+                        "\(MCPConstants.generationCloseTimeoutMs)ms during disposal — " +
+                        "server shutdown may be incomplete")
+                }
             }
         }
         // :343-344 静默而非仅请求：在飞尝试 settle 前必已入队其同步，
@@ -671,8 +680,14 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         }
         // :284-285——close 吞错 + 关闭竞速。Swift：断开放后台（时长不受控），
         // 主路径 await waitForClose 保 5s 上限（平台适配，汇报登记）。
+        // isClosed 快路径与 await 竞速拆开写（`||` 右侧 await 落 autoclosure）。
         Task { await generation.disconnect(); signal.finish() }
-        let quiesced = signal.isClosed || await waitForClose(signal)    // :285
+        let quiesced: Bool                                            // :285
+        if signal.isClosed {
+            quiesced = true
+        } else {
+            quiesced = await waitForClose(signal)
+        }
         // :286 attemptSettled 仅被 onclose 消费（Swift 无 onclose——省略，汇报登记）。
         guard isCurrent(generation) else { return }                     // :287
         if !quiesced {                                                  // :288
@@ -707,7 +722,7 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         let box = MCPSettleOnce<Result<Initialize.Result, any Error>>()
         let connectTask = Task {
             do {
-                box.settle(.success(try await generation.connect(transport)))
+                box.settle(.success(try await generation.connect(transport: transport)))
             } catch {
                 box.settle(.failure(error))
             }

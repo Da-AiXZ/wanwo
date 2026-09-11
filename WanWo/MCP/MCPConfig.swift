@@ -45,6 +45,9 @@ enum MCPConstants {
 struct MCPConfigurationError: Error, CustomStringConvertible {
     let message: String
     var description: String { message }
+    /// dsh `new Error(message)` 调用形态 1:1（无标签构造——CI 工具链实证
+    /// memberwise init 只产 `init(message:)`，全模块 ~40 个调用点统一走此）。
+    init(_ message: String) { self.message = message }
 }
 
 // MARK: - 重连配置（connection.ts:27-45）

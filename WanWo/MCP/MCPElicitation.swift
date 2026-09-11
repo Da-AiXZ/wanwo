@@ -476,9 +476,10 @@ final class MCPElicitationManager: MCPElicitationHandling, @unchecked Sendable {
 
     private func metaValue(_ params: CreateElicitation.Parameters,
                            _ key: String) -> JSONValue? {
+        // 件4 internal 桥（throws）——try? 容错语义=原局部桥的 .null 兜底。
         switch params {
-        case .form(let form): return form._meta?.fields[key].map { JSONValue($0) }
-        case .url(let url): return url._meta?.fields[key].map { JSONValue($0) }
+        case .form(let form): return form._meta?.fields[key].flatMap { try? JSONValue($0) }
+        case .url(let url): return url._meta?.fields[key].flatMap { try? JSONValue($0) }
         }
     }
 
@@ -532,19 +533,6 @@ final class MCPElicitationManager: MCPElicitationHandling, @unchecked Sendable {
     }
 }
 
-// MARK: - Value→JSONValue 局部桥（Metadata 字段读取用）
-
-private extension JSONValue {
-    init(_ value: MCP.Value) {
-        if let converted = try? JSONValue.bridges(value) {
-            self = converted
-        } else {
-            self = .null
-        }
-    }
-
-    private static func bridges(_ value: MCP.Value) throws -> JSONValue {
-        let data = try JSONEncoder().encode(value)
-        return try JSONDecoder().decode(JSONValue.self, from: data)
-    }
-}
+// JSONValue 桥复用件4 的 internal `JSONValue(_ value: MCP.Value) throws`
+// （MCPToolBridge.swift）——本文件不得再声明同名 init（CI 工具链实证：
+// 重载仅差 throws 亦构成 invalid redeclaration）。

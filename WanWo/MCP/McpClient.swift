@@ -20,6 +20,7 @@
 //
 
 import Foundation
+import MCP  // Client 类型（件11 MCPResourceConnecting 缝签名面；CI 工具链实证）
 
 /// 单个 MCP server 的受监督客户端（dsh connection.ts ConnectionHandle 的
 /// WanWo 形态；世代模型见 MCPConnection.swift）。

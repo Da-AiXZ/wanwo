@@ -83,18 +83,18 @@ protocol MCPResourceConnecting: Sendable {
 // MARK: - 宽松 wire 类型（件5 信任边界纪律同款）
 
 /// resources/list、resources/templates/list 的 params（MCP 规范
-/// {cursor?: string}；synthesized Codable 缺省省略 null 字段）。
-struct RawCursorParams: Codable, Sendable {
+/// {cursor?: string}；Hashable=Method.Parameters 要求，CI 工具链实证）。
+struct RawCursorParams: Codable, Hashable, Sendable {
     let cursor: String?
 }
 
 /// resources/read 的 params（MCP 规范 {uri: string} 必填）。
-struct RawReadResourceParams: Codable, Sendable {
+struct RawReadResourceParams: Codable, Hashable, Sendable {
     let uri: String
 }
 
 /// resources/list 宽松结果（resources 数组缺失/null/非数组→工具侧空集）。
-enum RawListResources: Method {
+enum RawListResources: MCP.Method {
     static let name = "resources/list"
     typealias Parameters = RawCursorParams
     struct Result: Codable, Hashable, Sendable {
@@ -104,7 +104,7 @@ enum RawListResources: Method {
 }
 
 /// resources/templates/list 宽松结果。
-enum RawListResourceTemplates: Method {
+enum RawListResourceTemplates: MCP.Method {
     static let name = "resources/templates/list"
     typealias Parameters = RawCursorParams
     struct Result: Codable, Hashable, Sendable {
@@ -115,7 +115,7 @@ enum RawListResourceTemplates: Method {
 
 /// resources/read 宽松结果（contents: TextResourceContents|BlobResourceContents
 /// 数组；文本块 {uri, mimeType?, text?}、blob 块 {uri, mimeType?, blob?}）。
-enum RawReadResource: Method {
+enum RawReadResource: MCP.Method {
     static let name = "resources/read"
     typealias Parameters = RawReadResourceParams
     struct Result: Codable, Hashable, Sendable {
@@ -155,13 +155,15 @@ enum MCPResourceTools {
     /// 单请求看门狗竞速（件5 callToolUncached 同款形态，泛型化；单页路径
     /// 预算=requestTimeoutMs）。请求级失败以 MCPRequestLevelFailure 标记
     /// 包裹，供调用方分类上报。
-    private static func requestWithTimeout<M: Method>(_ client: Client,
-                                                      _ request: Request<M>,
-                                                      timeoutMs: Int) async throws -> M.Result {
+    private static func requestWithTimeout<M: MCP.Method>(_ client: Client,
+                                                           _ request: Request<M>,
+                                                           timeoutMs: Int) async throws -> M.Result {
         let box = MCPSettleOnce<Result<M.Result, any Error>>()
         Task {
             do {
-                let context = try client.send(request)
+                // Client 是 actor：send 须 await（CI 工具链实证；SDK 0.12.1
+                // send 本体 throws → RequestContext，.value 再 await）。
+                let context = try await client.send(request)
                 box.settle(.success(try await context.value))
             } catch {
                 box.settle(.failure(MCPRequestLevelFailure(underlying: error)))
@@ -185,7 +187,7 @@ enum MCPResourceTools {
 
     /// 请求+失败上报收口：请求级失败→reportRequestFailure（裁决①）后原样
     /// rethrow；超时/取消直通不报（连接健康信号只认请求级）。
-    private static func call<M: Method>(_ connections: MCPResourceConnecting,
+    private static func call<M: MCP.Method>(_ connections: MCPResourceConnecting,
                                         serverName: String,
                                         request: Request<M>) async throws -> M.Result {
         let client = try await connections.readyClient(named: serverName)
@@ -324,7 +326,7 @@ enum MCPResourceTools {
         }
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-            let params = Self.argsObject(args)
+            let params = MCPResourceTools.argsObject(args)
             // codex ListResourceArgs.normalized()（:69-74）——trim+空归无。
             let server = MCPResourceTools.normalizeOptional(params["server"]?.stringValue)
             let cursor = MCPResourceTools.normalizeOptional(params["cursor"]?.stringValue)
@@ -427,7 +429,7 @@ enum MCPResourceTools {
         }
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-            let params = Self.argsObject(args)
+            let params = MCPResourceTools.argsObject(args)
             let server = MCPResourceTools.normalizeOptional(params["server"]?.stringValue)
             let cursor = MCPResourceTools.normalizeOptional(params["cursor"]?.stringValue)
             if let rejection = MCPResourceTools.validateCursor(cursor) { return rejection }
@@ -520,7 +522,7 @@ enum MCPResourceTools {
         }
 
         func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-            let params = Self.argsObject(args)
+            let params = MCPResourceTools.argsObject(args)
             // codex normalize_required_string（:337-344）：归一化（trim+空归
             // 无）后空即拒，文案 "<field> must be provided"。
             guard let server = MCPResourceTools.normalizeOptional(
