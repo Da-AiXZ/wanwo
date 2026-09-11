@@ -13,6 +13,12 @@
 //    · read-match-write 临界区：编辑类工具（edit / str_replace_editor / write）
 //      经同一 NSLock 串行化读-改-写，防并行调用交错损坏（M2.5 验收项）。
 //    · 写一律临时文件 + rename 原子替换。
+//  P13 回归修复（2026-09-11）：resolve(path, mode:) ①步原对任意输入无条件调
+//  resolve(path)，裸 guest 绝对路径被前导斜杠剥离吞成工作区相对路径、mode 分支
+//  不可达——danger 写 /etc/hosts 落工作区桶、workspace-write 写 /etc/passwd 不抛。
+//  由 M4-A 一次性验证跑（CI run 34584060097）P13SandboxGateTests 拦截，lead 亲验
+//  WorkspaceFileAccess 源码复核判定；修向=①步按 resolve 输入契约收紧（相对路径
+//  或 /var/wanwo/workspace/** 才进工作区解析，其余 guest 绝对路径落 mode 分支）。
 //
 
 import Foundation
@@ -75,7 +81,8 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     /// 唯一边界——gate 放行的路径，执行通道必须能兑现。出处：
     /// tool-fs/sandbox.ts:87-108 resolvePolicy 返回 {...policy, mode: approvedMode}；
     /// fs-sandbox index.ts:1-27「Reads pass through untouched」）。
-    ///  - 相对路径与 `/var/wanwo/workspace/**`：工作区桶（既有语义，全模式）。
+    ///  - 相对路径与 `/var/wanwo/workspace/**`：工作区桶（既有语义，全模式；
+    ///    ①步按 resolve 输入契约收紧——P13 回归修复，见方法内注释）。
     ///  - 其他 guest 绝对路径：
     ///      · danger-full-access → guest 全域映射（rootfs data 目录 = guest /
     ///        的宿主落点，RootfsInstaller.dataPath）；
@@ -86,8 +93,19 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     ///  `..` 逃逸防护与既有 resolve 同级：规范化后必须仍在映射根内。
     func resolve(_ path: String, mode: SandboxMode) -> URL? {
         // ① 工作区解析命中（workspace 桶 + 相对路径）→ 既有语义直用。
-        if let url = resolve(path) { return url }
-        var p = path.trimmingCharacters(in: .whitespaces)
+        //    P13 回归修复（2026-09-11 CI 一次性验证跑拦截、lead 亲验复核）：
+        //    此前①步对任意输入无条件调 resolve(path)——裸 guest 绝对路径被
+        //    resolve 的前导斜杠剥离（:53）吞成工作区相对路径直接命中并 return，
+        //    mode 分支不可达：danger 写 /etc/hosts 落工作区桶、workspace-write
+        //    写 /etc/passwd 不抛（fail closed 失守）。现按 resolve 的输入契约
+        //    （:42 注释：相对路径或 /var/wanwo/workspace/**）收紧——仅这两类
+        //    进①步，其余 guest 绝对路径原样落 mode 分支。
+        let p0 = path.trimmingCharacters(in: .whitespaces)
+        let wsPrefix = WanWoPaths.workspaceLinuxDir
+        let isWorkspaceScoped = !p0.hasPrefix("/")
+            || p0 == wsPrefix || p0.hasPrefix(wsPrefix + "/")
+        if isWorkspaceScoped, let url = resolve(path) { return url }
+        var p = p0
         guard p.hasPrefix("/") else { return nil }
         switch mode {
         case .dangerFullAccess:
