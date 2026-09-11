@@ -44,6 +44,12 @@ enum MCPTransportFactory {
     /// 即节流边界。
     private static let stderrLogger = AppLogger(category: "MCPServerStderr")
 
+    /// 会话生命周期日志（M4-B 场景2 取证 · 探针 A）：guest 退出事件——
+    /// 三态判读：error=0 正常退出（exitCode=脚本退出码）/ error=-4
+    /// Cancelled=reap 杀（对照 "stdio server process terminated (reason)"
+    /// 时刻定落点）/ error=-5 ExitUnknown=孤儿回收（sweeper）。
+    private static let lifecycleLogger = AppLogger(category: "MCPServerLifecycle")
+
     /// dsh transport.ts:21-23 buildChildEnv 的 WanWo 形态（M4-B B2 接线）：
     /// 子进程环境 = scrub 后 ambient 基座 + 显式 env 合并——extra 在基座
     /// 之上 = 用户显式值优先（transport.ts:22 展开顺序 1:1）。dsh 1:1
@@ -151,7 +157,27 @@ enum MCPTransportFactory {
                     // M4-B B7：stderr 行原样进 AppLogger（方案乙接线）。
                     stderrLogger.warning("mcp-server \(serverName) stderr: \(line)")
                 },
-                exitHandler: nil) else {
+                exitHandler: { [serverName = config.serverName] exitCode, error in
+                    // M4-B 场景2 取证（探针 A）：guest 死因直读——此前
+                    // exitHandler 传 nil，进程退出在 Swift 侧不可见（executor
+                    // 层 finalize 静默），"transport 已死"只能靠请求失败反推。
+                    // 三态判读见 lifecycleLogger 头注；pid 不在 completion
+                    // 载荷（仅 exitCode/error），经 ISHShellExecutor[reader]
+                    // 日志（idle 心跳带 pid）按时刻对齐。
+                    // 【探针 B 实测落点登记】"transport 死亡"判定源的可见化
+                    // 实测**已存在**，无需新增：executor 层 reader 退出点日志
+                    // 齐全（readPipe 退出点——EOF :1511 / pipe closed :1470 /
+                    // poll error :1448 / read error :1517 / idle 心跳 :1460
+                    // 长驻 10min 降频 / 寿命帽 :1436，全带 pid；raw-stdio 档
+                    // stdout reader 跳过但 stderr reader 照常派发 :893-895，
+                    // stderr 读端 EOF=进程死亡的同刻信号）。Console 过滤
+                    // "ISHShellExecutor[reader]" 即得死亡时刻+pid。SDK
+                    // StdioTransport readLoop（SPM 远程包 0.12.1）不可插桩
+                    // ——executor 层 stderr EOF 与其同刻，取证面等价。
+                    lifecycleLogger.info(
+                        "mcp-server \(serverName) guest exited " +
+                        "exitCode=\(exitCode) error=\(error.rawValue)")
+                }) else {
                 // [M4-B B7 块3] spawn 失败原因具象化（URLError 不覆盖的
                 // stdio 面——command not found/ENOEXEC/权限）。文案进
                 // attemptFailure 日志 + MCPLastActivationStore（userFacing-
