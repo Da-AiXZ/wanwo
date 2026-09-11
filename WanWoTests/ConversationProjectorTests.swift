@@ -84,10 +84,13 @@ final class ConversationProjectorTests: XCTestCase {
         // 事件序：user → reasoning → text → toolCard（结算态）。
         XCTAssertEqual(bubbles.count, 4)
         guard bubbles.count == 4 else { return }  // 下标防御：数量不符即止（越界会崩掉 runner）
-        guard case .user(let userText) = bubbles[0].kind else {
+        guard case .user(let userText, let images) = bubbles[0].kind else {
             return XCTFail("bubble[0] 应为 user：\(bubbles[0].kind)")
         }
+        // T2.8 起 user 气泡携带附件位（ConversationProjector.swift:47）——
+        // 无附件 user 事件 → 空表。
         XCTAssertEqual(userText, "帮我跑一下")
+        XCTAssertTrue(images.isEmpty)
         guard case .reasoning(let reasoning) = bubbles[1].kind else {
             return XCTFail("bubble[1] 应为 reasoning：\(bubbles[1].kind)")
         }
