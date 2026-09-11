@@ -8,8 +8,9 @@
 //  （ProvidersView 同款：List+行内 Toggle/编辑/删除按钮+sheet Form）。
 //  最小功能集（lead 派单）：server 列表（名称/URL/启用）+添加/编辑/删除+
 //  状态展示；不做 OAuth/JSON 导入/.secret 移交（OpenMinis 有但非最小集）。
-//  状态展示口径：行首状态点=启用态（OpenMinis row 同款）；实时连接状态随
-//  会话栈建立，呈现归 M4-B/M9（呈报）。
+//  状态展示口径：行首状态点=启用态（OpenMinis row 同款）；M4-A 验收增补
+//  （方案甲）：行尾"上次激活 ✓/✗"直显最近一次激活结果（实时连接状态仍归
+//  M4-B/M9——呈报）。
 //
 
 import SwiftUI
@@ -17,6 +18,10 @@ import SwiftUI
 struct MCPServersView: View {
     @ObservedObject var environment: AppEnvironment
     @ObservedObject private var store: MCPServerStore
+    /// M4-A 验收增补（方案甲）：上次激活状态直显——激活链失败原本只落
+    /// AppLogger/os.log（App 内零导出面），用户独自持机无法定位
+    /// "为什么 mcp__* 工具不在"；现每 server 行尾直读最近一次激活结果。
+    @ObservedObject private var lastActivation: MCPLastActivationStore
 
     @State private var showingAddSheet = false
     @State private var editingEntry: MCPServerEntry?
@@ -24,6 +29,7 @@ struct MCPServersView: View {
     init(environment: AppEnvironment) {
         self.environment = environment
         _store = ObservedObject(wrappedValue: environment.mcpServerStore)
+        _lastActivation = ObservedObject(wrappedValue: environment.mcpLastActivation)
     }
 
     var body: some View {
@@ -80,6 +86,12 @@ struct MCPServersView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            if let activation = lastActivation.entry(for: server.id) {
+                Text(Self.activationText(activation))
+                    .font(.caption2)
+                    .foregroundStyle(activation.succeeded ? Color.green : Color.red)
+                    .lineLimit(2)
+            }
             HStack {
                 Button("编辑") { editingEntry = server }
                     .buttonStyle(.bordered)
@@ -90,6 +102,17 @@ struct MCPServersView: View {
                 Spacer()
             }
         }
+    }
+
+    /// 激活状态用户可读文案（lead 要求③——不暴露内部枚举名；失败原因取
+    /// 本仓错误文案或 URLError 系统本地化描述，已过 sanitized 净化）。
+    private static func activationText(_ entry: MCPLastActivationStore.Entry) -> String {
+        let time = entry.time.formatted(.dateTime.hour().minute())
+        if entry.succeeded {
+            return "上次激活：✓ \(time)"
+        }
+        let reason = entry.message.map { " · \($0)" } ?? ""
+        return "上次激活：✗ \(time)\(reason)"
     }
 }
 

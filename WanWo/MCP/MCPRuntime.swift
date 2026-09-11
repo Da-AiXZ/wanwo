@@ -62,17 +62,22 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
     private var instances: [Instance] = []
     /// elicitation 决策链（件9；本会话栈内单例——router 供 M4-B UI 投递）。
     let elicit: MCPElicitationManager
+    /// 激活状态记录器（App 级共享；写侧跳主 actor——@Published 主线程纪律）。
+    private let lastActivation: MCPLastActivationStore
     /// - Parameters:
     ///   - configs: 已解析启用的连接配置（MCPServerStore.resolvedClientConfigs）。
     ///   - registry: 本会话工具注册表（工具桥注册目标）。
     ///   - namespaces: App 级命名空间注册表（dsh 模块级 WeakMap 对应）。
     ///   - permission: 本会话权限协调器（elicitation authority 读取面）。
     ///   - writer: 本会话事件写柄（E1 mcp/elicitation 事件汇）。
+    ///   - lastActivation: 激活状态记录器（M4-A 验收增补方案甲——设置页
+    ///     "上次激活"直显；每次会话栈构建都覆盖写最新结果）。
     init(configs: [MCPClientConfig],
          registry: ToolRegistry,
          namespaces: MCPNamespaceRegistry,
          permission: PermissionCoordinator,
-         writer: SessionWriter) {
+         writer: SessionWriter,
+         lastActivation: MCPLastActivationStore) {
         // E1 事件汇：写侧门（SessionWriter.append 内 schema 校验）fail closed
         // ——写入失败仅降级审计（AppLogger.warning），不影响决策链应答。
         let emitter: MCPElicitationEventEmitter = { [weak writer] payload in
@@ -90,6 +95,7 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
             router: MCPElicitationRouter(),
             authority: MCPSessionElicitationAuthority(permission: permission),
             eventEmitter: emitter)
+        self.lastActivation = lastActivation
         var built: [Instance] = []
         for config in configs {
             do {
@@ -120,14 +126,26 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
     func activateAll() async {
         await withTaskGroup(of: Void.self) { group in
             for instance in instances {
-                group.addTask { [elicit] in
+                group.addTask { [elicit, lastActivation] in
                     do {
                         try await instance.client.activate(toolSync: instance.bridge,
                                                            elicit: elicit)
+                        // 激活成功记录（覆盖写=最新一次会话栈构建的结果）。
+                        let name = instance.config.serverName
+                        Task { @MainActor in
+                            lastActivation.recordSuccess(serverName: name)
+                        }
                     } catch {
+                        let name = instance.config.serverName
+                        let summary = MCPLastActivationStore.userFacingSummary(error)
                         Self.logger.error(
-                            "mcp-server \(instance.config.serverName): " +
+                            "mcp-server \(name): " +
                             "activation failed: \(String(describing: error))")
+                        // 激活失败记录（用户可读摘要；设置页直读定位根因）。
+                        Task { @MainActor in
+                            lastActivation.recordFailure(serverName: name,
+                                                         message: summary)
+                        }
                     }
                 }
             }

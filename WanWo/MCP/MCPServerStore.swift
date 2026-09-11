@@ -141,15 +141,17 @@ final class MCPServerStore: ObservableObject {
     }
 
     /// 启用条目的连接配置解析（逐条容忍：非法条目跳过并给出失败原因——
-    /// 读侧 FIX 1 纪律在配置消费面的延伸）。
-    func resolvedClientConfigs() -> (configs: [MCPClientConfig], failures: [String]) {
+    /// 读侧 FIX 1 纪律在配置消费面的延伸）。failures 结构化携带 server 名
+    /// （M4-A 验收增补：MCPLastActivationStore 逐 server 记录失败原因）。
+    func resolvedClientConfigs()
+        -> (configs: [MCPClientConfig], failures: [(server: String, reason: String)]) {
         var configs: [MCPClientConfig] = []
-        var failures: [String] = []
+        var failures: [(server: String, reason: String)] = []
         for entry in servers where entry.enabled {
             do {
                 configs.append(try clientConfig(for: entry))
             } catch {
-                failures.append(String(describing: error))
+                failures.append((entry.id, String(describing: error)))
             }
         }
         return (configs, failures)

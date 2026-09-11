@@ -40,6 +40,10 @@ final class AppEnvironment: ObservableObject {
     /// M4-A 件11：MCP server 配置仓库（config/mcp-servers/servers.json；
     /// OpenMinis MCPStore 格式为唯一参照，凭据入 Keychain 不入 JSON）。
     let mcpServerStore: MCPServerStore
+    /// M4-A 验收增补（lead 批准方案甲）：MCP 激活状态记录器——设置页 MCP 行
+    /// "上次激活"直显，config skipped 与 activation failed 双落点覆盖写
+    /// （每次会话栈构建都刷新=呈现最新一次结果）。
+    let mcpLastActivation = MCPLastActivationStore()
     /// M4-A 件11：serverName 命名空间注册表（dsh 模块级 WeakMap 的 App 级
     /// 单例对应——scope 级互斥、跨会话栈复用）。
     let mcpNamespaces = MCPNamespaceRegistry()
@@ -315,13 +319,18 @@ final class AppEnvironment: ObservableObject {
         // 收口随 runtime.reportRequestFailure 落位）。
         let mcpResolved = mcpServerStore.resolvedClientConfigs()
         for failure in mcpResolved.failures {
-            Self.logger.error("mcp config skipped: \(failure)")
+            Self.logger.error("mcp config skipped: mcp-server \"\(failure.server)\": " +
+                              "\(failure.reason)")
+            // 配置侧失败记录（URL 打错等用户可自助修正的原因直显设置页）。
+            mcpLastActivation.recordFailure(serverName: failure.server,
+                                            message: failure.reason)
         }
         let mcpRuntime = MCPRuntime(configs: mcpResolved.configs,
                                     registry: registry,
                                     namespaces: mcpNamespaces,
                                     permission: permission,
-                                    writer: writer)
+                                    writer: writer,
+                                    lastActivation: mcpLastActivation)
         Task { await mcpRuntime.activateAll() }
         for tool in MCPResourceTools.makeAll(connections: mcpRuntime) {
             do {
