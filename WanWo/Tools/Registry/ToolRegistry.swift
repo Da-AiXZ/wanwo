@@ -120,6 +120,13 @@ enum ToolExposure: String, Sendable {
     case direct, deferred, hidden
 }
 
+/// 注册冲突错误（tryRegister 的可捕获路径；装配期 register 的 fatalError
+/// 语义保留不动——错误类型通用，不属 MCP 域）。
+struct ToolRegistryConflictError: Error, CustomStringConvertible {
+    let name: String
+    var description: String { "tool \"\(name)\" is already registered" }
+}
+
 // MARK: - 执行模式
 
 /// 一笔待执行调度的并发模式（dsh ToolExecutionMode）。
@@ -156,6 +163,32 @@ final class ToolRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return tools[name]
+    }
+
+    /// 注册工具，重名抛错并返回注销器（dsh ctx.tools.register 语义 1:1：
+    /// NamedEntries 唯一性抛错 + 返回 disposer——M4-A 件4 两阶段换手的
+    /// 「冲突整代回滚」依赖可捕获错误与逐工具注销；装配期 fatalError 路径
+    /// 经 register 保留不动，两者共存）。
+    /// - Returns: 幂等注销器（dsh register disposer）。
+    @discardableResult
+    func tryRegister(_ tool: AgentTool) throws -> @Sendable () -> Void {
+        lock.lock()
+        defer { lock.unlock() }
+        if tools[tool.name] != nil {
+            throw ToolRegistryConflictError(name: tool.name)
+        }
+        tools[tool.name] = tool
+        Self.logger.info("tool registered: \(tool.name)")
+        let name = tool.name
+        return { [weak self] in self?.unregister(name) }
+    }
+
+    /// 注销一个工具（幂等；dsh register disposer 的执行语义）。
+    func unregister(_ name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard tools.removeValue(forKey: name) != nil else { return }
+        Self.logger.info("tool unregistered: \(name)")
     }
 
     /// 注册单调 guard（dsh ToolRuntime.guard）。
