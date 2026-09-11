@@ -9,7 +9,10 @@
 //      影响已存在实例）；
 //    ③activate（index.ts:173-184）：启动连接监督并等待首次连接+工具同步
 //      settle；failOnStartupError=true 且失败时上抛（:185-187——调用方
-//      决定实例失败，对应 Cordis 回滚语义）；
+//      决定实例失败，对应 Cordis 回滚语义）；返回首次尝试 outcome——
+//      吞错场景（failOnStartupError=false）错误不上抛，由调用方据 outcome
+//      判定记录成败（场景2 根因修复：dsh await ready promise 的 reason
+//      在 WanWo 曾被丢弃，"activate() 未抛出"被误记成功）；
 //    ④deactivate（index.ts:175-177 + :167）：Cordis 逆序 dispose——连接
 //      监督 dispose 在先（世代关闭/静默/工具注销），命名空间释放在后。
 //  工具同步经 MCPToolSyncing 缝注入（件4 提供实现；dsh 直接 import 的
@@ -79,10 +82,13 @@ final class McpClient: @unchecked Sendable {
     /// - Parameter toolSync: 工具同步缝（件4 实现）。
     /// - Parameter elicit: elicitation 决策链缝（件9；nil=不声明能力——
     ///   fail closed，件5 imageProjector 同款装配纪律）。
+    /// - Returns: 首次尝试 outcome（error 非 nil = 首次 connect+初始同步
+    ///   未成功——吞错场景调用方据此记失败，场景2 根因修复的测试锚语义）。
     /// - Throws: 重复激活（fail closed，dsh apply 每实例一次）；或
     ///   failOnStartupError 语义下的首次失败（index.ts:186 文案 1:1）。
+    @discardableResult
     func activate(toolSync: MCPToolSyncing,
-                  elicit: MCPElicitationHandling? = nil) async throws {
+                  elicit: MCPElicitationHandling? = nil) async throws -> MCPConnectionOutcome {
         let supervisor: McpConnectionSupervisor
         lifecycleLock.lock()
         if connection != nil {
@@ -101,6 +107,9 @@ final class McpClient: @unchecked Sendable {
                 "\(label): initial connection or tool synchronization failed " +
                 "(cause: \(String(describing: error)))")
         }
+        // 吞错场景（failOnStartupError=false）错误随 outcome 返回——不再
+        // 静默丢弃（dsh await ready promise reason 的 WanWo 对应消费点）。
+        return outcome
     }
 
     /// 停用（index.ts:175-177 connection effect + :167 serverName effect）：

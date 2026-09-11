@@ -119,25 +119,58 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
 
     // MARK: - 激活/停用
 
+    /// 激活结果记录判定（internal 纯函数=测试锚）：outcome.error 非 nil =
+    /// 首次 connect+初始同步未成功——吞错场景（failOnStartupError=false，
+    /// MCPConfig.swift:208 默认）必记失败。场景2 根因修复：此前"activate()
+    /// 未抛出"被误记 ✓——真机实证诊断日志 "activation succeeded" 与 exit 512
+    /// crash-loop 交错（3 次栈构建的首尝试 settle 行），设置页"上次激活 ✓"
+    /// 误导用户以为激活成功过。
+    static func activationSucceeded(_ outcome: MCPConnectionOutcome) -> Bool {
+        outcome.error == nil
+    }
+
     /// 后台激活全部实例（每实例 activate=连接+初始工具同步 settle；失败仅
     /// 记日志——failOnStartupError 语义下该 server 无工具，会话栈继续，
     /// 平台适配呈报：dsh 使实例加载失败即插件失败，WanWo 会话栈不因单个
-    /// MCP server 失败而整体降级）。
+    /// MCP server 失败而整体降级）。激活成败判定以 outcome 为准（吞错
+    /// 场景记 ✗ 而非 ✓——场景2 根因修复，见 activationSucceeded）。
     func activateAll() async {
         await withTaskGroup(of: Void.self) { group in
             for instance in instances {
                 group.addTask { [elicit, lastActivation] in
                     do {
-                        try await instance.client.activate(toolSync: instance.bridge,
-                                                           elicit: elicit)
-                        // 激活成功记录（覆盖写=最新一次会话栈构建的结果）。
+                        // 场景2 根因修复：activate 返回首次尝试 outcome——
+                        // 吞错不再误记成功（dsh await ready promise reason
+                        // 的对应消费点，McpClient.activate 文案锚）。
+                        let outcome = try await instance.client.activate(
+                            toolSync: instance.bridge, elicit: elicit)
                         let name = instance.config.serverName
-                        // 方案乙最小化：激活结果落诊断文件（设置页导出取回）。
-                        MCPDiagnosticsLog.shared.record(
-                            level: "info", category: "MCPRuntime", server: name,
-                            event: "activation succeeded")
-                        Task { @MainActor in
-                            lastActivation.recordSuccess(serverName: name)
+                        if Self.activationSucceeded(outcome) {
+                            // 激活成功记录（覆盖写=最新一次会话栈构建的结果）。
+                            // 方案乙最小化：激活结果落诊断文件（设置页导出取回）。
+                            MCPDiagnosticsLog.shared.record(
+                                level: "info", category: "MCPRuntime", server: name,
+                                event: "activation succeeded")
+                            Task { @MainActor in
+                                lastActivation.recordSuccess(serverName: name)
+                            }
+                        } else {
+                            // 吞错场景：首次尝试失败但激活面不上抛（dsh
+                            // index.ts:185-187 语义 1:1——错误归监督器记日志，
+                            // 重连循环自主运转）——激活记录面按失败呈现。
+                            let error = outcome.error
+                                ?? MCPConfigurationError("\(name): activation failed")
+                            let summary = MCPLastActivationStore.userFacingSummary(error)
+                            Self.logger.error(
+                                "mcp-server \(name): activation did not connect: " +
+                                "\(String(describing: error))")
+                            MCPDiagnosticsLog.shared.record(
+                                level: "error", category: "MCPRuntime", server: name,
+                                event: "activation failed: \(summary)")
+                            Task { @MainActor in
+                                lastActivation.recordFailure(serverName: name,
+                                                             message: summary)
+                            }
                         }
                     } catch {
                         let name = instance.config.serverName
