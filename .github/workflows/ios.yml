@@ -67,3 +67,9 @@ jobs:
   # 2026-09-11 用户裁决追加：一次性验证跑（B）——workflow_dispatch-only 的
   # test.yml 承载件12 测试首次 CI 编译+运行验证，跑完即拆（不建常驻轨道，
   # 本 push 主流水线行为零变化）。
+  # 2026-09-11 终局留痕：一次性验证跑已执行完毕——run 34588157219 全绿
+  # （197 tests, 0 failures），期间拦截并修复三个真问题：件1 真缺陷
+  # （MCPReconnectConfig 未知键拒绝空转）、P13 沙箱安全回归
+  # （WorkspaceFileAccess.resolve(mode:) 裸 guest 绝对路径被斜杠剥离吞没）、
+  # 附件文案笔误+intake 格式分支走错信封。验证面按裁决 B 拆除
+  # （test.yml 删除）；WanWoTests 代码保留备日后重启。
