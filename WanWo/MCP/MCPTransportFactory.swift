@@ -19,7 +19,10 @@
 //
 
 import Foundation
-import SystemPackage
+// StdioTransport 的 fd 形参是 System.FileDescriptor（SDK 源码 #if canImport
+// (System) 分支——Apple 平台恒走 System 而非 SystemPackage；CI 实证两模块
+// 类型不同名不互换，import 必须对齐 SDK 的选择）。
+import System
 import MCP
 
 /// MCP 传输工厂（dsh transport.ts createTransport 的 WanWo 形态；
