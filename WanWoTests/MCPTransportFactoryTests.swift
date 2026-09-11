@@ -33,11 +33,11 @@ final class MCPTransportFactoryTests: XCTestCase {
             for: makeConfig(url: "https:///path")))
     }
 
-    /// 合法绝对 http(s) URL → 产出未连接 transport。
+    /// 合法绝对 http(s) URL → 构造成功（HTTPClientTransport 无公开连接
+    /// 状态面——isConnected 为 SDK private，CI 工具链实证；构造不抛即锚点）。
     func testAcceptsAbsoluteHTTPSURL() throws {
-        let transport = try MCPTransportFactory.makeTransport(
+        _ = try MCPTransportFactory.makeTransport(
             for: makeConfig(url: "https://example.com/mcp"))
-        XCTAssertFalse(transport.isConnected)
     }
 
     func testAcceptsAbsoluteHTTPURL() throws {

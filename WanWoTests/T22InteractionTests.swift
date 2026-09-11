@@ -12,6 +12,9 @@
 import XCTest
 @testable import WanWo
 
+// @MainActor：PermissionDefaultStore 主线程隔离（CI 工具链实证——测试轨道
+// 拆除期间源码演进，首次重编译暴露；类级标注一次性覆盖 setUp/断言/助手）。
+@MainActor
 final class T22InteractionTests: XCTestCase {
 
     override func setUp() {

@@ -51,8 +51,10 @@ final class MCPToolNameTests: XCTestCase {
         let raw = String(repeating: "r", count: 26)
         let name = publicToolName(serverName: server, rawName: raw)
         XCTAssertEqual(name.count, 64)
-        // keep = 64 - 12 - 1 = 51（tools.ts:117）。
-        XCTAssertEqual(name.prefix(51), String("mcp__\(server)__\(raw)".prefix(51)))
+        // keep = 64 - 12 - 1 = 51（tools.ts:117）。两侧显式 String 归一
+        // （Substring 字面量推断歧义——CI 工具链实证）。
+        XCTAssertEqual(String(name.prefix(51)),
+                       String("mcp__\(server)__\(raw)".prefix(51)))
         XCTAssertEqual(name[..<name.index(name.startIndex, offsetBy: 52)].last, "_")
     }
 
