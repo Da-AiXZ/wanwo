@@ -98,6 +98,10 @@ targets:
       - path: WanWoTests
     dependencies:
       - target: WanWo
+      # M4-A 件12：单测直接 import MCP 类型（CreateElicitation/Value 等
+      # SDK 面）——test target 需显式声明包依赖。
+      - package: mcp-swift-sdk
+        product: MCP
 
 # 测试 scheme（本地 xcodebuild test 用；主流水线构建路径不受影响）。
 schemes:

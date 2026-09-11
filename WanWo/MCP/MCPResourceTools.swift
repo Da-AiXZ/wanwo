@@ -204,7 +204,9 @@ enum MCPResourceTools {
     /// 重复 cursor 环检测 :69-71；整段 collect 预算=requestTimeoutMs（:76-79
     /// tokio::time::timeout 对应=逐轮 deadline 检查，串行平台等价形态）。
     /// - Parameter fetch: 单页取回（cursor→[条目], nextCursor）。
-    private static func collectPaginated(connections: MCPResourceConnecting,
+    /// internal：件12 单测经 fetch 注入确定性多页序列（Client 无法离线伪造
+    /// ——可见性放宽为可测性，语义零变更，呈报）。
+    static func collectPaginated(connections: MCPResourceConnecting,
                                          serverName: String,
                                          method: String,
                                          fetch: @escaping @Sendable (String?) async throws
@@ -270,8 +272,8 @@ enum MCPResourceTools {
 
     /// cursor 参数校验（64KB 硬上限；聚合模式禁 cursor——codex :89-91 原生
     /// 语义「cursor can only be used when a server is specified」，文案形态
-    /// 保留本件版本，lead 件8 review 确认）。
-    private static func validateCursor(_ cursor: String?) -> ToolOutput? {
+    /// 保留本件版本，lead 件8 review 确认）。internal=件12 单测（可测性放宽）。
+    static func validateCursor(_ cursor: String?) -> ToolOutput? {
         guard let cursor else { return nil }
         if cursor.utf8.count > MCPResourceGuard.maxCursorBytes {
             return .failure("mcp-client: cursor exceeds the \(MCPResourceGuard.maxCursorBytes) byte limit",
