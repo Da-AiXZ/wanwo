@@ -111,6 +111,12 @@ final class MCPServerConfigToolTests: XCTestCase {
         let activation = try XCTUnwrap(root["lastActivation"] as? [String: Any])
         XCTAssertEqual(activation["succeeded"] as? Bool, false)
         XCTAssertNotNil(activation["message"] as? String)
+        // B9 验收反馈修正锚：time 为带时区的 ISO8601（roundtrip 可解析，
+        // 且解析回记录的绝对时刻——本地时区展示，非 UTC 恒定值误导）。
+        let timeText = try XCTUnwrap(activation["time"] as? String)
+        let roundtrip = try XCTUnwrap(ISO8601DateFormatter().date(from: timeText))
+        XCTAssertLessThan(abs(roundtrip.timeIntervalSinceNow), 300,
+                          "activation time must round-trip to the record moment")
         // 查询注记（模型区分查询/写入）。
         XCTAssertTrue(output.text.contains("query"), "unexpected: \(output.text)")
     }

@@ -240,19 +240,33 @@ struct MCPServerConfigTool: AgentTool {
 
     // MARK: - 私有序列化
 
-    /// lastActivation 条目 → JSONValue（无记录=null；时间 ISO8601；message
-    /// 已是 MCPLastActivationStore.sanitized 产物——spawn 失败原因直通本仓
-    /// 错误文案，模型可直接据此决定是否调大 startup_timeout_seconds）。
+    /// lastActivation 条目 → JSONValue（无记录=null；时间本地时区 ISO8601
+    /// 带偏移；message 已是 MCPLastActivationStore.sanitized 产物——spawn
+    /// 失败原因直通本仓错误文案，模型可直接据此决定是否调大
+    /// startup_timeout_seconds）。
     private static func activationJSON(_ entry: MCPLastActivationStore.Entry?) -> JSONValue {
         guard let entry else { return .null }
         var payload: [String: JSONValue] = [
             "succeeded": .bool(entry.succeeded),
-            "time": .string(entry.time.formatted(.iso8601)),
+            "time": .string(localTimestamp(entry.time)),
         ]
         if let message = entry.message {
             payload["message"] = .string(message)
         }
         return .object(payload)
+    }
+
+    /// 展示层本地时区时间戳（B9 验收反馈修正）：`.formatted(.iso8601)` 恒
+    /// UTC——本地 00:49 显示 16:49，用户误判为旧记录。Entry.time 存储保持
+    /// Date（绝对时刻）不变，仅此序列化点转本地时区+显式偏移（设置页
+    /// MCPServersView 走 .dateTime FormatStyle 本地时区，无此问题）。
+    /// 每调用现建 formatter（避免 static 非 Sendable 缓存；工具结果序列化
+    /// 频度可忽略）。带偏移的 ISO8601 对模型同样可解析（不会引入歧义）。
+    private static func localTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = .current
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
     }
 
     /// JSONValue → 单行 JSON 文本（复用 MCPResourceTools.jsonText——internal
