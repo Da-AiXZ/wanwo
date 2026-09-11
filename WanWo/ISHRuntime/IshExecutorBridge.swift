@@ -32,11 +32,15 @@ struct ISHCommandResult {
 enum ISHCoordinatorError: Error, LocalizedError {
     case kernelNotBooted
     case noSession
+    /// M4-B B3：长驻 spawn 失败（ISHShellExecutor 返回 nil——内核未启动/
+    /// 管道或任务创建/execve 失败，具体原因见 ISHShellExecutor 日志）。
+    case spawnFailed
 
     var errorDescription: String? {
         switch self {
         case .kernelNotBooted: return "iSH kernel is not booted"
         case .noSession: return "No session ID provided"
+        case .spawnFailed: return "Failed to spawn long-lived process"
         }
     }
 }
@@ -969,5 +973,84 @@ actor IshExecutorBridge {
 
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
         logger.info("MOUNT batchEnsureFakefsMetadata: \(entries.count) checked, \(inserted) inserted")
+    }
+}
+
+// MARK: - M4-B B3 长驻进程缝（stdio MCP server 执行面）
+
+/// 长驻 guest 进程句柄（M4-B B3）——Platform/ISHShellExecutor 常驻档 spawn
+/// 的 Swift 面。句柄方法全部同步、无 actor 依赖：
+///   · writeStdin/closeStdin 在 per-session 串行队列排队，调用线程不阻塞；
+///   · terminate 即杀即收（killProcessGroup + finalize），不经 actor——
+///     [T-shell-stop-blocked-by-actor] 纪律：停止路径不得依赖 actor 可调度性。
+struct ISHLongLivedProcess {
+    /// guest 根进程 PID。
+    let pid: Int32
+
+    private let session: ISHShellLongLivedSession
+
+    fileprivate init(pid: Int32, session: ISHShellLongLivedSession) {
+        self.pid = pid
+        self.session = session
+    }
+
+    /// 写 guest stdin（per-session 串行队列异步；closeStdin 后写入被丢弃）。
+    func writeStdin(_ data: Data) {
+        session.writeToStdin(data)
+    }
+
+    /// 关 stdin 写端——guest fd0 见 EOF（stdio MCP server 的优雅停机信号）。
+    func closeStdin() {
+        session.closeStdin()
+    }
+
+    /// 杀整进程组并立即终结会话（exitHandler 以 Cancelled 收尾）。
+    /// B6 deactivate 消费面。
+    func terminate() {
+        session.terminate()
+    }
+}
+
+extension IshExecutorBridge {
+    /// Spawn a long-lived guest process（M4-B B3 缝，形态 B 宿主直连管道的
+    /// Swift 调用面——B4 MCP stdio transport / B5 监督面消费）。
+    ///
+    /// 与 runCommand（run-to-completion）的关系：互不干扰。长驻会话不进
+    /// perSessionInflight（非 session 域命令、无 stop/抢占语义——B6 经句柄
+    /// terminate 停止），fsContext 缺省 0=全局视图（/var/wanwo/mcp-servers
+    /// 已由静态挂载层覆盖，performMount subdirs）。
+    ///
+    /// - Parameters:
+    ///   - lineCallback: stdout/stderr 行流（isStdErr 区分——方案乙 stderr
+    ///     聚合 AppLogger 的挂点）；main queue 回调。
+    ///   - exitHandler: 恰好一次的终结回调（正常退出=真实 exitCode；孤儿
+    ///     回收=ExitUnknown；terminate=Cancelled）；队列不保证，需要特定
+    ///     队列自行 hop。
+    func spawnLongLivedProcess(
+        executable: String,
+        arguments: [String],
+        environment: [String: String],
+        fsContext: UInt64 = 0,
+        lineCallback: @escaping (String, Bool) -> Void,
+        exitHandler: @escaping (Int32, ISHShellExecutorError) -> Void
+    ) async throws -> ISHLongLivedProcess {
+        guard ISHKernel.shared.isBooted else {
+            throw ISHCoordinatorError.kernelNotBooted
+        }
+        guard let session = ISHShellExecutor.spawnLongLivedExecutable(
+            executable,
+            arguments: arguments,
+            environment: environment.isEmpty ? nil : environment,
+            fsContext: fsContext,
+            lineCallback: { line, isStdErr in
+                lineCallback(line, isStdErr)
+            },
+            exitHandler: { exitCode, error in
+                exitHandler(exitCode, error)
+            }) else {
+            throw ISHCoordinatorError.spawnFailed
+        }
+        logger.info("Long-lived process spawned. pid=\(session.pid), executable=\(executable)")
+        return ISHLongLivedProcess(pid: Int32(session.pid), session: session)
     }
 }

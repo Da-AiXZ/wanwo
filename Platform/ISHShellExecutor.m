@@ -84,6 +84,17 @@ static const NSTimeInterval ISHShellExecutorStaleContextAge = 7200.0; // 2h
 /// paths cannot both finalise the same context. See +finalizeContext:.
 @property (atomic) BOOL didFinalize;
 
+/// [M4-B B3 常驻档] Long-lived session marker (spawned via
+/// spawnLongLivedExecutable:). Changes three behaviours that are tuned for
+/// bounded one-shot commands:
+///   - readers skip the 1h lifetime cap (the process is *expected* to run
+///     indefinitely; a live server keeps both pipes open),
+///   - output is NOT aggregated into stdout/stderrBuffer (a days-running
+///     server would otherwise grow the buffers without bound),
+///   - the stale-context sweeper never age-reclaims it; it is reclaimed only
+///     as an orphan (both readers EOF'd = guest died, notification missed).
+@property (atomic) BOOL isLongLived;
+
 - (int *)stdoutPipe;
 - (int *)stderrPipe;
 - (BOOL)closePipesIfNoReaders;
@@ -176,6 +187,133 @@ static const NSTimeInterval ISHShellExecutorStaleContextAge = 7200.0; // 2h
 
 @end
 
+#pragma mark - Long-Lived Session (M4-B B3)
+
+@interface ISHShellExecutor ()
+/// Internal finalisation with an explicit error (the -terminate path). Same
+/// single-shot semantics as finalizeTimedOutPid: — a no-op when the context
+/// is already gone (a normal exit won the race) or was finalised before.
++ (void)finalizeLongLivedPid:(int)pid error:(ISHShellExecutorError)error;
+@end
+
+@interface ISHShellLongLivedSession ()
+@property (nonatomic) int pid;
+/// stdin 管道写端——会话是唯一所有者，-1 = 已关闭。有效性校验经
+/// @synchronized(self)；实际 write/close 在 per-session 串行队列上排队，
+/// 阻塞写不占 _readerQueue 的并发 worker 槽（T-ish-thread-leak 同族防线：
+/// 卡死的写不会耗尽共享线程池）。
+@property (nonatomic) int stdinWriteFd;
+@property (nonatomic, strong) dispatch_queue_t stdinQueue;
++ (instancetype)sessionWithPid:(int)pid stdinWriteFd:(int)fd;
+@end
+
+@implementation ISHShellLongLivedSession
+
++ (instancetype)sessionWithPid:(int)pid stdinWriteFd:(int)fd {
+    ISHShellLongLivedSession *session = [[self alloc] init];
+    session.pid = pid;
+    session.stdinWriteFd = fd;
+    session.stdinQueue = dispatch_queue_create("com.ish.shellexecutor.stdin",
+                                               DISPATCH_QUEUE_SERIAL);
+    return session;
+}
+
+- (void)writeToStdin:(NSData *)data {
+    if (data.length == 0) return;
+    NSData *copied = [data copy];
+    int guestPid = self.pid;
+    dispatch_async(self.stdinQueue, ^{
+        [self writeBytesOnQueue:copied guestPid:guestPid];
+    });
+}
+
+/// Blocking write on the session's own serial queue. Ordering contract:
+/// closeStdin enqueues on the same queue, so a write enqueued before a close
+/// runs first; one enqueued after re-validates the fd under the lock and is
+/// dropped — a stale fd number is never written to (recycled-fd hazard, same
+/// class as the closePipesIfNoReaders double-close note).
+- (void)writeBytesOnQueue:(NSData *)data guestPid:(int)guestPid {
+    int fd;
+    @synchronized(self) {
+        fd = _stdinWriteFd;
+    }
+    if (fd < 0) {
+        NSLog(@"ISHShellExecutor[stdin]: dropping %lu bytes for pid=%d — stdin already closed",
+              (unsigned long)data.length, guestPid);
+        return;
+    }
+    // SIGPIPE containment: a guest that closed its stdin read end turns
+    // write() into EPIPE plus a SIGPIPE whose default disposition kills the
+    // host process. Block it around the writes and check errno instead.
+    sigset_t pipeSet, oldSet;
+    sigemptyset(&pipeSet);
+    sigaddset(&pipeSet, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipeSet, &oldSet);
+    const uint8_t *bytes = data.bytes;
+    size_t remaining = data.length;
+    while (remaining > 0) {
+        ssize_t written = write(fd, bytes, remaining);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            NSLog(@"ISHShellExecutor[stdin]: write failed (errno=%d) for pid=%d — "
+                  @"%zu of %lu bytes delivered",
+                  errno, guestPid, data.length - remaining, (unsigned long)data.length);
+            break;
+        }
+        bytes += written;
+        remaining -= (size_t)written;
+    }
+    pthread_sigmask(SIG_SETMASK, &oldSet, NULL);
+    if (remaining == 0) {
+        NSLog(@"ISHShellExecutor[stdin]: wrote %lu bytes to pid=%d",
+              (unsigned long)data.length, guestPid);
+    }
+}
+
+- (void)closeStdin {
+    dispatch_async(self.stdinQueue, ^{
+        int fd;
+        @synchronized(self) {
+            fd = _stdinWriteFd;
+            _stdinWriteFd = -1;
+        }
+        if (fd >= 0) {
+            close(fd);
+            NSLog(@"ISHShellExecutor[stdin]: write end closed — EOF signalled to guest pid=%d",
+                  self.pid);
+        }
+    });
+}
+
+- (void)terminate {
+    // [T-shell-stop-blocked-by-actor] 纪律对位：terminate 是同步调用，不经
+    // 任何 actor/队列可调度性——会话句柄直接驱动 kill+finalize，停止路径
+    // 在协调者被卡死时依然可用。
+    // [T-ish-thread-leak] killProcessGroup 扫 pgid+后代（SIGTERM→SIGKILL
+    // 升级），不裸杀根 pid。
+    // [T-ish-shell-timeout-leak] 杀完自 finalize（error=Cancelled），不等
+    // ISHProcessExitedNotification 的配合——被杀任务可能已被收割为僵尸、
+    // 通知永不到达；didFinalize 保证 racing 的通知路径成 no-op。
+    int pid = self.pid;
+    NSLog(@"ISHShellExecutor[long-lived]: terminating session pid=%d", pid);
+    [self closeStdin];
+    [ISHShellExecutor killProcessGroup:pid];
+    [ISHShellExecutor finalizeLongLivedPid:pid error:ISHShellExecutorErrorCancelled];
+}
+
+- (void)dealloc {
+    // Last resort: the stdin queue retains self while queued work exists, so
+    // by the time we dealloc the queue is idle and no writer can be polling.
+    int fd;
+    @synchronized(self) {
+        fd = _stdinWriteFd;
+        _stdinWriteFd = -1;
+    }
+    if (fd >= 0) close(fd);
+}
+
+@end
+
 #pragma mark - Executor Implementation
 
 @implementation ISHShellExecutor
@@ -242,6 +380,7 @@ static int32_t _sweptContexts = 0;
 
 + (void)sweepStaleContexts {
     NSMutableArray<ISHShellExecutionContext *> *stale = [NSMutableArray array];
+    NSMutableArray<ISHShellExecutionContext *> *longLivedOrphans = [NSMutableArray array];
 
     // Collect under the lock, finalise outside it. finalizeContext: invokes
     // the caller's completion block, and running arbitrary caller code while
@@ -250,10 +389,32 @@ static int32_t _sweptContexts = 0;
     @synchronized(_activeExecutions) {
         for (NSNumber *key in _activeExecutions) {
             ISHShellExecutionContext *ctx = _activeExecutions[key];
+            // [M4-B B3 常驻档改档] 长驻上下文永不按 2h 年龄回收——正在服务
+            // 的 MCP server 在注册表里坐得越久越是常态，年龄判据会把活会话
+            // 误杀。唯一回收判据=孤儿：两个 reader 都已 EOF 退出（写端全关
+            // =guest 已死）而退出通知又未到达（僵尸收割任务的同款洞，
+            // [T-ish-shell-timeout-leak] 家族）。活会话 reader 恒在，
+            // liveReaders == 0 不可能成立——判据精确，无误杀面。
+            if (ctx.isLongLived) {
+                if (ctx.liveReaders == 0) {
+                    [longLivedOrphans addObject:ctx];
+                }
+                continue;
+            }
             NSTimeInterval age = -[ctx.startTime timeIntervalSinceNow];
             if (age > ISHShellExecutorStaleContextAge) {
                 [stale addObject:ctx];
             }
+        }
+    }
+
+    if (longLivedOrphans.count > 0) {
+        NSLog(@"ISHShellExecutor[sweep]: reclaiming %lu long-lived orphan(s) — "
+              @"guest exited but ISHProcessExitedNotification never arrived",
+              (unsigned long)longLivedOrphans.count);
+        for (ISHShellExecutionContext *ctx in longLivedOrphans) {
+            OSAtomicIncrement32(&_sweptContexts);
+            [self finalizeContext:ctx exitCode:-1 error:ISHShellExecutorErrorExitUnknown];
         }
     }
 
@@ -322,13 +483,14 @@ static int32_t _sweptContexts = 0;
                stdinData:(NSData *)stdinData
             lineCallback:(ISHShellLineCallback)lineCallback
               completion:(ISHShellCompletionCallback)completion {
-    return [self executeExecutable:executable
-                         arguments:arguments
-                       environment:environment
-                         stdinData:stdinData
-                         fsContext:0
-                      lineCallback:lineCallback
-                        completion:completion];
+    return [self executeExecutableInternal:executable
+                                 arguments:arguments
+                               environment:environment
+                                 stdinData:stdinData
+                                 fsContext:0
+                                 longLived:NULL
+                              lineCallback:lineCallback
+                                completion:completion];
 }
 
 + (int)executeExecutable:(NSString *)executable
@@ -338,6 +500,31 @@ static int32_t _sweptContexts = 0;
                fsContext:(uint64_t)fsContext
             lineCallback:(ISHShellLineCallback)lineCallback
               completion:(ISHShellCompletionCallback)completion {
+    return [self executeExecutableInternal:executable
+                                 arguments:arguments
+                               environment:environment
+                                 stdinData:stdinData
+                                 fsContext:fsContext
+                                 longLived:NULL
+                              lineCallback:lineCallback
+                                completion:completion];
+}
+
+/// Internal spawn routine shared by every public execute* entry point.
+/// M4-B B3: `sessionOut` non-NULL selects the long-lived tier — stdin becomes
+/// a pipe whose write end is handed to a ISHShellLongLivedSession instead of
+/// being written-and-closed (or /dev/null), and the context is marked
+/// isLongLived (reader cap / aggregation / sweeper exemptions — see the
+/// isLongLived property comments). The rest of the spawn path is shared with
+/// the bounded-command path, so one incident fix covers both tiers.
++ (int)executeExecutableInternal:(NSString *)executable
+                       arguments:(NSArray<NSString *> *)arguments
+                     environment:(NSDictionary<NSString *, NSString *> *)environment
+                       stdinData:(NSData *)stdinData
+                       fsContext:(uint64_t)fsContext
+                       longLived:(ISHShellLongLivedSession *__nullable *__nullable)sessionOut
+                    lineCallback:(ISHShellLineCallback)lineCallback
+                      completion:(ISHShellCompletionCallback)completion {
 
     // Bail out if the iSH kernel hasn't booted yet. become_new_init_child()
     // calls pid_get_task(1) and then assert(init != NULL); on a non-booted
@@ -353,6 +540,10 @@ static int32_t _sweptContexts = 0;
     ctx.lineCallback = lineCallback;
     ctx.completion = completion;
     ctx.startTime = [NSDate date];
+    // [M4-B B3 常驻档] 长驻标记随会话出参在场性判定——下游三处改档依据：
+    // reader 1h 寿命帽豁免（readPipe）、输出聚合豁免（processLines/EOF
+    // flush）、sweeper 2h 年龄回收豁免（sweepStaleContexts）。
+    ctx.isLongLived = (sessionOut != NULL);
 
     // Create pipes for stdout and stderr
     if (pipe([ctx stdoutPipe]) < 0 || pipe([ctx stderrPipe]) < 0) {
@@ -386,9 +577,13 @@ static int32_t _sweptContexts = 0;
         task->group->fs_context = fsContext;
     }
 
-    // Setup stdin: pipe if stdinData provided, /dev/null otherwise
+    // Setup stdin: pipe if stdinData provided or long-lived, /dev/null otherwise.
+    // [M4-B B3 常驻档] 长驻模式：stdin 恒为管道且写端不随启动写入关闭——
+    // 写端所有权移交 ISHShellLongLivedSession（下方 sessionOut 赋值处），
+    // 经其 writeToStdin:/closeStdin: 暴露写入与 EOF 信号（用户裁决①）。
+    BOOL keepStdinPipe = (sessionOut != NULL);
     int stdinPipe[2] = {-1, -1};
-    if (stdinData) {
+    if (stdinData || keepStdinPipe) {
         if (pipe(stdinPipe) < 0) {
             NSLog(@"ISHShellExecutor[stdin]: pipe() failed: %s", strerror(errno));
             current = saved_current;
@@ -396,25 +591,27 @@ static int32_t _sweptContexts = 0;
             return ISHShellExecutorErrorProcessCreationFailed;
         }
         NSLog(@"ISHShellExecutor[stdin]: pipe created (read=%d, write=%d), stdinData=%lu bytes",
-              stdinPipe[0], stdinPipe[1], (unsigned long)stdinData.length);
+              stdinPipe[0], stdinPipe[1],
+              (unsigned long)(stdinData ? stdinData.length : 0));
     } else {
         NSLog(@"ISHShellExecutor[stdin]: no stdinData, will use /dev/null");
     }
     struct fd *stdin_fd = adhoc_fd_create(&realfs_fdops);
     if (stdin_fd) {
-        int real_fd = stdinData ? dup(stdinPipe[0]) : open("/dev/null", O_RDONLY);
+        int real_fd = (stdinData || keepStdinPipe) ? dup(stdinPipe[0]) : open("/dev/null", O_RDONLY);
         if (real_fd < 0) {
             NSLog(@"ISHShellExecutor[stdin]: fd creation failed: %s", strerror(errno));
-            if (stdinData) { close(stdinPipe[0]); close(stdinPipe[1]); }
+            if (stdinData || keepStdinPipe) { close(stdinPipe[0]); close(stdinPipe[1]); }
             current = saved_current;
             [ctx cleanup];
             return ISHShellExecutorErrorProcessCreationFailed;
         }
         stdin_fd->real_fd = real_fd;
-        NSLog(@"ISHShellExecutor[stdin]: fd0 real_fd=%d (source=%s)", stdin_fd->real_fd, stdinData ? "pipe" : "/dev/null");
+        NSLog(@"ISHShellExecutor[stdin]: fd0 real_fd=%d (source=%s)", stdin_fd->real_fd,
+              (stdinData || keepStdinPipe) ? "pipe" : "/dev/null");
         task->files->files[0] = stdin_fd;
     }
-    if (stdinData) {
+    if (stdinData || keepStdinPipe) {
         close(stdinPipe[0]);
         stdinPipe[0] = -1;
     }
@@ -633,6 +830,15 @@ static int32_t _sweptContexts = 0;
             NSLog(@"ISHShellExecutor[stdin]: pipe write complete and closed — wrote %zu/%lu bytes for pid=%d",
                   totalWritten, (unsigned long)dataToWrite.length, guestPid);
         });
+    } else if (keepStdinPipe && stdinPipe[1] >= 0) {
+        // [M4-B B3 常驻档] 写端不关——所有权移交会话（用户裁决①：持 stdin
+        // 写端、暴露写入接口）。sessionOut 在返回前同步赋值（本方法此后
+        // 无失败路径），spawnLongLivedExecutable:… 经此拿回会话对象。
+        *sessionOut = [ISHShellLongLivedSession sessionWithPid:ctx.guestPid
+                                                  stdinWriteFd:stdinPipe[1]];
+        stdinPipe[1] = -1; // ownership transferred
+        NSLog(@"ISHShellExecutor[long-lived]: session created for pid=%d "
+              @"(stdin write fd held by session)", ctx.guestPid);
     } else if (!stdinData) {
         NSLog(@"ISHShellExecutor[stdin]: stdin is /dev/null for pid=%d", ctx.guestPid);
     }
@@ -830,6 +1036,60 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
         }
         unlock(&pids_lock);
     });
+}
+
+#pragma mark - Long-Lived Spawn (M4-B B3)
+
++ (nullable ISHShellLongLivedSession *)spawnLongLivedExecutable:(NSString *)executable
+                                                      arguments:(NSArray<NSString *> *)arguments
+                                                    environment:(NSDictionary<NSString *, NSString *> *)environment
+                                                      fsContext:(uint64_t)fsContext
+                                                   lineCallback:(ISHShellLineCallback)lineCallback
+                                                    exitHandler:(ISHShellLongLivedExitHandler)exitHandler {
+    if (!ISHKernel.shared.isBooted) {
+        NSLog(@"ISHShellExecutor[long-lived]: kernel not booted — refusing to spawn %@", executable);
+        return nil;
+    }
+    __block ISHShellLongLivedSession *session = nil;
+    int pid = [self executeExecutableInternal:executable
+                                    arguments:arguments
+                                  environment:environment
+                                    stdinData:nil
+                                    fsContext:fsContext
+                                    longLived:&session
+                                 lineCallback:lineCallback
+                                   completion:^(ISHShellExecutionResult *result) {
+        // Every finalisation path funnels through this completion:
+        //   normal exit — ISHProcessExitedNotification → 200ms drain →
+        //                 finalizeContext (real exit code),
+        //   orphan      — sweeper reclaim (liveReaders == 0, notification
+        //                 missed) → finalizeContext (ExitUnknown),
+        //   -terminate  — finalizeLongLivedPid (Cancelled).
+        // [T-ish-continuation-double-resume] 形态对位：didFinalize 单点守卫
+        // 保证 completion 恰触发一次——exitHandler 由此天然单次，无需再设
+        // claimResume（本路径无 continuation 可双 resume）。
+        if (exitHandler) exitHandler(result.exitCode, result.error);
+    }];
+    if (pid < 0 || session == nil) {
+        NSLog(@"ISHShellExecutor[long-lived]: spawn failed (pid=%d) for %@", pid, executable);
+        return nil;
+    }
+    return session;
+}
+
++ (void)finalizeLongLivedPid:(int)pid error:(ISHShellExecutorError)error {
+    ISHShellExecutionContext *ctx;
+    @synchronized(_activeExecutions) {
+        ctx = _activeExecutions[@(pid)];
+    }
+    if (!ctx) {
+        // Already finalised — the guest exited normally just before, or this
+        // is a second call. Nothing to do.
+        return;
+    }
+    NSLog(@"ISHShellExecutor[long-lived]: finalising pid=%d error=%ld (readers=%d)",
+          pid, (long)error, ctx.liveReaders);
+    [self finalizeContext:ctx exitCode:-1 error:error];
 }
 
 #pragma mark - Finalisation
@@ -1049,11 +1309,16 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
     // for a long time; ISHShellExecutorReaderMaxLifetime is far beyond any
     // timeout a caller passes, so in practice only a stranded reader reaches
     // it. Hitting it at all is a bug, so it logs loudly.
-    NSDate *readerDeadline = [NSDate dateWithTimeIntervalSinceNow:
-                              ISHShellExecutorReaderMaxLifetime];
+    // [M4-B B3 常驻档] 长驻 reader 豁免 1h 寿命帽：帽的存在意义是给「有界
+    // 命令」兜底，而长驻进程被期待无限期运行、活会话两端管道恒开。豁免后
+    // reader 的自然出口仍是 EOF（guest 死）/isCompleted（finalize）——与
+    // 短命令相同的收敛机制，只是没有人为期限。代价登记：常驻 reader 在
+    // 并发 GCD 队列占 2 个 worker 槽/server，上界=用户配置的 server 数。
+    NSDate *readerDeadline = ctx.isLongLived ? nil :
+        [NSDate dateWithTimeIntervalSinceNow: ISHShellExecutorReaderMaxLifetime];
 
     while (!ctx.isCompleted) {
-        if ([readerDeadline timeIntervalSinceNow] <= 0) {
+        if (readerDeadline && [readerDeadline timeIntervalSinceNow] <= 0) {
             NSLog(@"ISHShellExecutor[reader]: %s hit the %.0fs lifetime cap for pid=%d "
                   @"(isCompleted=%d) — abandoning to protect the thread pool",
                   streamName, (double)ISHShellExecutorReaderMaxLifetime,
@@ -1073,8 +1338,11 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
         if (pr == 0) {
             // Timeout — just loop back to check isCompleted
             idlePollCount++;
-            // Log every 10s (20 x 500ms) of idle
-            if (idlePollCount % 20 == 0) {
+            // Log every 10s (20 x 500ms) of idle.
+            // [M4-B B3 常驻档] 长驻 reader 空闲日志降频到 10 分钟一次
+            // （1200 x 500ms）——空闲 server 才是常态，10s 一条一天上万行。
+            NSInteger idleLogModulo = ctx.isLongLived ? 1200 : 20;
+            if (idlePollCount % idleLogModulo == 0) {
                 NSLog(@"ISHShellExecutor[reader]: %s idle for %ds, pid=%d still running (no output, no exit)",
                       streamName, idlePollCount / 2, ctx.guestPid);
             }
@@ -1149,8 +1417,11 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
 
     // Process any remaining partial line
     if (lineBuffer.length > 0) {
-        @synchronized(outputBuffer) {
-            [outputBuffer appendString:lineBuffer];
+        // [M4-B B3 常驻档] 聚合豁免同 processLines。
+        if (!ctx.isLongLived) {
+            @synchronized(outputBuffer) {
+                [outputBuffer appendString:lineBuffer];
+            }
         }
 
         if (ctx.lineCallback) {
@@ -1178,10 +1449,15 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
         // Remove processed line from buffer
         [lineBuffer deleteCharactersInRange:NSMakeRange(0, newlineRange.location + 1)];
 
-        // Add to output buffer
-        @synchronized(outputBuffer) {
-            [outputBuffer appendString:line];
-            [outputBuffer appendString:@"\n"];
+        // Add to output buffer.
+        // [M4-B B3 常驻档] 长驻上下文不聚合——日级运行的 server 会令
+        // NSMutableString 无界增长（内存泄漏面）；流式挂钩（lineCallback）
+        // 才是长驻的输出契约，聚合仅服务一次性 completion。
+        if (!ctx.isLongLived) {
+            @synchronized(outputBuffer) {
+                [outputBuffer appendString:line];
+                [outputBuffer appendString:@"\n"];
+            }
         }
 
         // Call line callback

@@ -15,6 +15,10 @@ typedef NS_ENUM(NSInteger, ISHShellExecutorError) {
     ISHShellExecutorErrorExecFailed = -2,
     ISHShellExecutorErrorTimeout = -3,
     ISHShellExecutorErrorCancelled = -4,
+    /// Long-lived session ended with no observable exit code (M4-B B3): the
+    /// guest died but ISHProcessExitedNotification never arrived and the
+    /// sweeper reclaimed the orphan context.
+    ISHShellExecutorErrorExitUnknown = -5,
 };
 
 @interface ISHShellExecutionResult : NSObject
@@ -47,6 +51,39 @@ typedef void (^ISHShellLineCallback)(NSString *line, BOOL isStdErr);
 /// Completion callback block: called when process exits
 /// @param result Execution result containing exit code and outputs
 typedef void (^ISHShellCompletionCallback)(ISHShellExecutionResult *result);
+
+/// Exit handler for long-lived sessions (M4-B B3): invoked exactly once when
+/// the session finalises — via the normal exit notification (real exit code),
+/// the sweeper's orphan reclaim (ExitUnknown), or an explicit -terminate
+/// (Cancelled). May fire on any queue; hop if you need a specific one.
+typedef void (^ISHShellLongLivedExitHandler)(int exitCode, ISHShellExecutorError error);
+
+/// A long-lived guest process session (M4-B B3) — a spawn whose stdin write
+/// end is retained for later writes instead of being written-and-closed.
+/// Unlike the bounded execute* family, the context is exempt from the reader
+/// lifetime cap and the sweeper's age-based reclaim (see ISHShellExecutor.m
+/// 常驻档 comments), and output is streamed to the line callback only — no
+/// aggregation.
+@interface ISHShellLongLivedSession : NSObject
+
+/// Guest PID of the spawned root process.
+@property (nonatomic, readonly) int pid;
+
+/// Write data to the guest's stdin. Asynchronous: bytes are queued on the
+/// session's private serial queue (in order with closeStdin), so the caller
+/// never blocks on a full pipe. A write after closeStdin is dropped.
+- (void)writeToStdin:(NSData *)data NS_SWIFT_NAME(writeToStdin(_:));
+
+/// Close the stdin write end. The guest sees EOF on its fd 0 — the graceful
+/// shutdown signal (an MCP stdio server is expected to exit in response).
+- (void)closeStdin NS_SWIFT_NAME(closeStdin());
+
+/// Kill the whole process group (SIGTERM→SIGKILL escalation, pgid+ancestry
+/// sweep) and finalise the session immediately, invoking the exit handler
+/// with ISHShellExecutorErrorCancelled. Synchronous; safe from any thread.
+- (void)terminate NS_SWIFT_NAME(terminate());
+
+@end
 
 @interface ISHShellExecutor : NSObject
 
@@ -100,6 +137,27 @@ typedef void (^ISHShellCompletionCallback)(ISHShellExecutionResult *result);
                fsContext:(uint64_t)fsContext
             lineCallback:(nullable ISHShellLineCallback)lineCallback
               completion:(nullable ISHShellCompletionCallback)completion;
+
+/// Spawn a LONG-LIVED guest process (M4-B B3 — stdio MCP server execution
+/// face). Unlike executeExecutable:, the stdin pipe's write end is retained
+/// by the returned session (writeToStdin:/closeStdin:), the context is exempt
+/// from the reader lifetime cap and sweeper age reclaim, and output streams
+/// to lineCallback without aggregation.
+/// @param executable Guest path to the executable (e.g., "/usr/bin/python3")
+/// @param arguments Array of arguments, passed verbatim (no shell)
+/// @param environment Extra environment variables (nil = defaults only)
+/// @param fsContext Opaque fakefs context value (0 = default global view)
+/// @param lineCallback Called for each stdout/stderr line (on main queue), can be nil
+/// @param exitHandler Invoked exactly once when the session finalises, can be nil
+/// @return Session object, or nil on spawn failure (kernel not booted /
+///         pipe failure / exec failure — see ISHShellExecutor logs)
++ (nullable ISHShellLongLivedSession *)spawnLongLivedExecutable:(NSString *)executable
+                                                      arguments:(nullable NSArray<NSString *> *)arguments
+                                                    environment:(nullable NSDictionary<NSString *, NSString *> *)environment
+                                                      fsContext:(uint64_t)fsContext
+                                                   lineCallback:(nullable ISHShellLineCallback)lineCallback
+                                                    exitHandler:(nullable ISHShellLongLivedExitHandler)exitHandler
+        NS_SWIFT_NAME(spawnLongLivedExecutable(_:arguments:environment:fsContext:lineCallback:exitHandler:));
 
 /// Execute a shell command and wait synchronously for completion
 /// @param command Shell command to execute
