@@ -150,7 +150,9 @@ final class MCPGenerationCloseSignal: @unchecked Sendable {
 /// await wait()（挂起在 continuation 上，5s/30s 内必有 settle 方，
 /// 有界）；与 taskgroup 竞速的区别在于兼容「挂起不响应取消」的一侧
 /// （connect 的 initialize continuation），避免组退出被卡。
-private final class MCPSettleOnce<Value>: @unchecked Sendable {
+/// internal：件5 的 callToolUncached 超时竞速复用同一形态（dsh
+/// RequestOptions.timeout 的 Swift 侧无内建对应物）。
+final class MCPSettleOnce<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Never>?
     private var value: Value?
