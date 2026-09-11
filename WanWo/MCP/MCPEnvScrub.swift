@@ -18,11 +18,14 @@
 //      （平台差异登记；将来 WanWo 做代理功能需补此位）。
 //  消费形态旁证：mcp-client/transport.ts:21-23 buildChildEnv =
 //  { ...scrubbedParentEnv(), ...extra }——scrub 只清 ambient，显式覆盖在
-//  合并侧保留，本件不交付合并。
+//  合并侧保留（合并已由 M4-B B2 落于 MCPTransportFactory.buildChildEnv，
+//  1:1 同形；本文件保持纯 scrub 定义本体，不做合并）。
 //  WanWo 形态（呈报逐项见 project 汇报）：
 //    ①纯函数入参化——dsh scrubbedParentEnv() 无参读 process.env，WanWo
 //      无全局 process.env 形态且单测需注入父环境（件12 锚点），父环境作
-//      参数；ProcessInfo 取样归调用侧（M4-B stdio 接线，红线 R6）。
+//      参数；ProcessInfo 取样归调用侧（红线 R6）——M4-B B2 兑现：取样缝
+//      =MCPTransportFactory.buildChildEnv(parent: nil) 缺省路径，全局环境
+//      读取全局只此一处。
 //    ②前缀适配 DSH_* → WANWO_*（简报已批的平台适配）。
 //    ③落点 WanWo/MCP/（本批消费面=MCP stdio）；dsh 本体属 subprocess
 //      seam、dsh-shell re-export 共享——shell 消费出现时上移 ISHRuntime。

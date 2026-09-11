@@ -89,4 +89,47 @@ final class MCPEnvScrubTests: XCTestCase {
         XCTAssertEqual(merged["TOKEN"], "explicit")
         XCTAssertEqual(merged["PATH"], "/bin")
     }
+
+    // MARK: M4-B B2 buildChildEnv（dsh transport.ts:21-23 合并路径）
+
+    /// 合并顺序 1:1：extra 在 scrub 基座之上（transport.ts:22 展开顺序——
+    /// 显式值优先）。正常 ambient 保留、敏感 ambient 擦除、显式覆盖胜出。
+    func testBuildChildEnvMergesExplicitOverScrubbedAmbient() {
+        let child = MCPTransportFactory.buildChildEnv(
+            ["PATH": "/explicit/path", "MY_FLAG": "1"],
+            parent: ["PATH": "/usr/bin", "GITHUB_TOKEN": "leak", "HOME": "/root"])
+        XCTAssertEqual(child["PATH"], "/explicit/path")  // extra 覆盖基座
+        XCTAssertEqual(child["MY_FLAG"], "1")
+        XCTAssertEqual(child["HOME"], "/root")           // 正常 ambient 保留
+        XCTAssertNil(child["GITHUB_TOKEN"])              // 敏感 ambient 擦除
+        XCTAssertEqual(child.count, 3)
+    }
+
+    /// dsh 1:1 语义：显式 env 可重新引入敏感名键（buildChildEnv 不做二次
+    /// 过滤——scrub 定义本体只清 ambient，transport.ts:22 extra 无条件
+    /// 展开在上；过拦属上游行为变更，不修）。
+    func testExplicitEnvCanReintroduceSensitiveNamedKey() {
+        let child = MCPTransportFactory.buildChildEnv(
+            ["API_KEY": "explicit"],
+            parent: ["API_KEY": "leak", "PATH": "/bin"])
+        XCTAssertEqual(child["API_KEY"], "explicit")
+        XCTAssertEqual(child["PATH"], "/bin")
+    }
+
+    /// 默认路径（parent 缺省）= 调用侧 ProcessInfo 取样（MCPEnvScrub.swift
+    /// 头注预留点兑现，红线 R6）：通用断言——进程环境里任何命中 scrub
+    /// 规则的键不得出现在结果中（对任意 CI/本机环境均成立）。
+    func testDefaultSamplingScrubsProcessEnvironment() {
+        let child = MCPTransportFactory.buildChildEnv([:])
+        for (name, _) in ProcessInfo.processInfo.environment
+        where MCPEnvScrub.isScrubbed(name) {
+            XCTAssertNil(child[name], "\(name) must be scrubbed from child env")
+        }
+    }
+
+    /// 空入参边界：extra 空且父环境空 → 空字典（键省略语义）。
+    func testBuildChildEnvEmptyInputs() {
+        let child = MCPTransportFactory.buildChildEnv([:], parent: [:])
+        XCTAssertTrue(child.isEmpty)
+    }
 }

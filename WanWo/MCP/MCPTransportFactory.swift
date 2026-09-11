@@ -22,8 +22,37 @@ import Foundation
 import MCP
 
 /// MCP 传输工厂（dsh transport.ts createTransport 的 WanWo 形态；
-/// M4-B B1 起 stdio 分支为过渡 fail loud——连接面 B4 接通）。
+/// M4-B B1 起 stdio 分支为过渡 fail loud——连接面 B4 接通。
+/// B2：buildChildEnv 落位（transport.ts:21-23 1:1，B4 stdio 分支消费））。
 enum MCPTransportFactory {
+
+    /// dsh transport.ts:21-23 buildChildEnv 的 WanWo 形态（M4-B B2 接线）：
+    /// 子进程环境 = scrub 后 ambient 基座 + 显式 env 合并——extra 在基座
+    /// 之上 = 用户显式值优先（transport.ts:22 展开顺序 1:1）。dsh 1:1
+    /// 语义登记：显式 env 可重新引入敏感名键（buildChildEnv 不做二次
+    /// 过滤——scrub 定义本体只清 ambient，extra 无条件展开在上）。
+    /// 父环境取样缝（MCPEnvScrub.swift 头注预留点兑现，红线 R6）：dsh
+    /// 的 buildChildEnv 经 scrubbedParentEnv() 无参读 process.env，取样
+    /// 对位在调用侧——此处 parent 缺省即 ProcessInfo 取样；单测经入参
+    /// 注入父环境（纯函数可测）。
+    ///
+    /// - Parameters:
+    ///   - extra: 条目级显式 env（MCPServerEntry.env，entry() 解析层已
+    ///     类型收窄为 [String: String]）。
+    ///   - parent: 父环境注入缝（单测入参化）；nil = 调用侧 ProcessInfo
+    ///     取样（红线 R6：全局环境读取只此一处）。
+    /// - Returns: 合并后的子进程环境（键冲突时 extra 胜出）。
+    static func buildChildEnv(
+        _ extra: [String: String],
+        parent: [String: String]? = nil
+    ) -> [String: String] {
+        let ambient = MCPEnvScrub.scrubbedParentEnv(
+            parent ?? ProcessInfo.processInfo.environment)
+        // transport.ts:22 展开顺序 1:1：{ ...scrubbedParentEnv(), ...extra }
+        // ——JS spread 后者胜出，merging 闭包返回 extra 值同形。
+        return ambient.merging(extra) { _, explicit in explicit }
+    }
+
     /// 按 streamable-http 配置构造全新 transport。
     ///
     /// - Parameter config: 已通过件1 加载校验的客户端配置。

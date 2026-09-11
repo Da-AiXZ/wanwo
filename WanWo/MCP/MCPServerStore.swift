@@ -43,7 +43,8 @@ struct MCPServerEntry: Identifiable, Equatable, Sendable {
     /// 参数直传无 shell 插值（index.ts:61 注释原文语义；minis main.py:420
     /// 空格切分同款）。
     var args: [String]
-    /// 额外环境变量（与 scrub 后父环境合并=transport.ts:21-23，B2 接线）。
+    /// 额外环境变量（与 scrub 后父环境合并=transport.ts:21-23；合并已由
+    /// M4-B B2 落于 MCPTransportFactory.buildChildEnv，B4 spawn 缝消费）。
     var env: [String: String]
     /// 子进程工作目录（平台差异登记：dsh StdioConfig.cwd 必填，minis 实际
     /// 未传——WanWo 取可选，nil=guest 默认工作目录）。
