@@ -515,6 +515,11 @@ final class MCPElicitationManager: MCPElicitationHandling, @unchecked Sendable {
             "requestId": .string(publicRequestID),
             "message": fields["message"] ?? .string(""),
         ]
+        // codex :382-385（Form）/:396-399（Url）——事件载荷携带 meta（E1 消费
+        // 方需策略键上下文）；缺失省略（Option 语义），非必填故不进注册 schema。
+        if let meta = fields["_meta"] {
+            payload["meta"] = meta
+        }
         if case .url(let url) = params {
             payload["mode"] = .string("url")
             payload["url"] = fields["url"] ?? .string("")
