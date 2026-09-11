@@ -347,10 +347,12 @@ final class MCPServerConfigToolTests: XCTestCase {
             .objectValue)
         XCTAssertEqual(seconds["maximum"], .int(MCPConstants.maxStartupTimeoutSeconds))
         let required = try XCTUnwrap(tool.parameters.field("required")?.arrayValue)
-        XCTAssertEqual(required, [.string("server")])
+        // 枚举放行（场景2 修复）：server 可选——required 为空表。
+        XCTAssertEqual(required, [])
     }
 
-    /// 待执行卡意图（纯函数）：写入展示新值，查询只展示 server。
+    /// 待执行卡意图（纯函数）：写入展示新值，查询只展示 server，枚举展示
+    /// "all servers"。
     @MainActor
     func testPresentCallPureFunction() throws {
         let (tool, _) = try makeTool()
@@ -360,6 +362,74 @@ final class MCPServerConfigToolTests: XCTestCase {
         XCTAssertEqual(write?.detail, "py → startup 120s")
         let query = tool.presentCall(.object(["server": .string(stdioServer)]))
         XCTAssertEqual(query?.detail, stdioServer)
+        let enumerate = tool.presentCall(.object([:]))
+        XCTAssertEqual(enumerate?.detail, "all servers")
+    }
+
+    // MARK: 枚举（server 省略 = 全量名单；场景2 "AI 猜名"修复）
+
+    /// 枚举形态：双形态混存（stdio+http）逐条 name/transport/enabled/
+    /// startupTimeout/effective/lastActivation；count 对齐；按名排序。
+    @MainActor
+    func testEnumerationListsAllServers() async throws {
+        let (tool, _) = try makeTool()
+        let output = try await tool.execute(
+            .object([:]),
+            makeContext(sandboxMode: .readOnly, approver: nil))
+        XCTAssertFalse(output.isError, "unexpected: \(output.text)")
+        let root = try parse(output.text)
+        let servers = try XCTUnwrap(root["servers"] as? [[String: Any]])
+        XCTAssertEqual(root["count"] as? Int, 2)
+        XCTAssertEqual(servers.count, 2)
+        // 按名排序：py < web。
+        XCTAssertEqual(servers[0]["name"] as? String, stdioServer)
+        XCTAssertEqual(servers[0]["transport"] as? String, "stdio")
+        XCTAssertEqual(servers[0]["enabled"] as? Bool, true)
+        XCTAssertEqual(servers[0]["startupTimeoutSeconds"] as? Int, 90)
+        let pyActivation = try XCTUnwrap(servers[0]["lastActivation"] as? [String: Any])
+        XCTAssertEqual(pyActivation["succeeded"] as? Bool, false)
+        XCTAssertNotNil(pyActivation["message"] as? String)
+        XCTAssertEqual(servers[1]["name"] as? String, httpServer)
+        XCTAssertEqual(servers[1]["transport"] as? String, "http")
+        XCTAssertNil(servers[1]["startupTimeoutSeconds"] as? Int)
+        XCTAssertTrue(servers[1]["lastActivation"] is NSNull)
+    }
+
+    /// 空表：servers.json 无条目 → servers=[] count=0（AI 可知"没配置任何
+    /// server"而非猜名）。
+    @MainActor
+    func testEnumerationEmptyStore() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wanwo-mcp-config-tool-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir,
+                                                withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("servers.json")
+        try Data(#"{"mcpServers":{}}"#.utf8).write(to: url)
+        let tool = MCPServerConfigTool(
+            store: MCPServerStore(fileURL: url),
+            lastActivation: try makeLastActivation())
+        let output = try await tool.execute(
+            .object([:]),
+            makeContext(sandboxMode: .readOnly, approver: nil))
+        XCTAssertFalse(output.isError, "unexpected: \(output.text)")
+        let root = try parse(output.text)
+        XCTAssertEqual(root["count"] as? Int, 0)
+        let servers = try XCTUnwrap(root["servers"] as? [Any])
+        XCTAssertTrue(servers.isEmpty)
+    }
+
+    /// 写入路径 fail closed：startup_timeout_seconds 在场但无目标 server →
+    /// 拒（不做无目标写入）。
+    @MainActor
+    func testWriteWithoutServerRejected() async throws {
+        let (tool, _) = try makeTool()
+        let output = try await tool.execute(
+            .object(["startup_timeout_seconds": .int(120)]),
+            makeContext(sandboxMode: .workspaceWrite, approver: nil))
+        XCTAssertTrue(output.isError)
+        XCTAssertEqual(output.errorCode, "MCP_INVALID_ARGUMENTS")
+        XCTAssertTrue(output.text.contains("server must be provided"),
+                      "unexpected: \(output.text)")
     }
 
     // MARK: B7 返工后 hint 断言（stdio 有 / http 无）

@@ -40,7 +40,11 @@ struct MCPServerConfigTool: AgentTool {
     let name = "mcp_server_config"
     let description =
         "View or update the local configuration of a configured MCP server. " +
-        "Without 'startup_timeout_seconds' this is a read-only query returning " +
+        "Omit 'server' to list every configured server with its transport, " +
+        "enabled state, startup timeout, and last activation result (including " +
+        "the spawn failure reason when a server failed to start) — never guess " +
+        "server names, list them first. Without 'startup_timeout_seconds' this " +
+        "is a read-only query returning " +
         "the server's transport, configured and effective startup timeout, and " +
         "the last activation result (including the spawn failure reason when the " +
         "server failed to start). Provide 'startup_timeout_seconds' (1-900) to " +
@@ -61,7 +65,8 @@ struct MCPServerConfigTool: AgentTool {
         var properties: [String: JSONValue] = [
             "server": .object([
                 "type": .string("string"),
-                "description": .string("MCP server name exactly as configured."),
+                "description": .string("MCP server name exactly as configured. " +
+                                       "Omit to list every configured server."),
             ]),
             "startup_timeout_seconds": .object([
                 "type": .string("integer"),
@@ -80,7 +85,9 @@ struct MCPServerConfigTool: AgentTool {
         return .object([
             "type": .string("object"),
             "properties": .object(properties),
-            "required": .array([.string("server")]),
+            // M4-B 场景2 修复（枚举放行）：server 可选——省略=列出全部已配置
+            // server（治"AI 猜名"：本轮真机复现 AI 把脚本文件名当服务名乱猜）。
+            "required": .array([]),
         ])
     }
 
@@ -100,13 +107,12 @@ struct MCPServerConfigTool: AgentTool {
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         let params = args.objectValue ?? [:]
-        // codex normalize_required_string 语义同款（MCPResourceTools.swift:147
-        // ——trim+空归无，归一化后空即拒）。
-        guard let server = MCPResourceTools.normalizeOptional(
-            params["server"]?.stringValue) else {
-            return .failure("server must be provided",
-                            code: "MCP_INVALID_ARGUMENTS", name: "McpConfigError")
-        }
+        // server 可选（M4-B 场景2 修复）：省略=枚举全部已配置 server（查询
+        // 无门——治"AI 猜名"：真机复现 AI 把脚本文件名当服务名乱猜）；
+        // 归一化后空同省略。写入路径 server 仍必填（fail closed，不做无目标
+        // 写入）。
+        let server = MCPResourceTools.normalizeOptional(
+            params["server"]?.stringValue)
         // 参数形态：null 视同省略（模型传 null 表示「不写」——宽松 wire
         // 类型纪律）；在场必须整型（浮点/字符串=参数失当，fail closed 拒绝
         // ——不静默降级为查询，否则模型误判写入已生效）。
@@ -121,6 +127,36 @@ struct MCPServerConfigTool: AgentTool {
                 "mcp-client: startup_timeout_seconds must be an integer between 1 " +
                 "and \(MCPConstants.maxStartupTimeoutSeconds)",
                 code: "MCP_INVALID_ARGUMENTS", name: "McpConfigError")
+        }
+
+        // ── 枚举路径（server 省略；查询无门）──────────────────────────
+        // fail closed：写入参数在场但无目标 server → 拒（不做无目标写入）。
+        guard let server else {
+            guard requestedSeconds == nil else {
+                return .failure("server must be provided",
+                                code: "MCP_INVALID_ARGUMENTS", name: "McpConfigError")
+            }
+            let serversPayload = await MainActor.run { () -> [JSONValue] in
+                store.servers.sorted { $0.id < $1.id }.map { entry in
+                    var item: [String: JSONValue] = [
+                        "name": .string(entry.id),
+                        "transport": .string(entry.isStdio ? "stdio" : "http"),
+                        "enabled": .bool(entry.enabled),
+                        "startupTimeoutSeconds":
+                            entry.startupTimeoutSeconds.map { .int($0) } ?? .null,
+                        "effectiveStartupTimeoutSeconds":
+                            .int(entry.startupTimeoutSeconds
+                                 ?? MCPConstants.defaultStartupTimeoutSeconds),
+                    ]
+                    item["lastActivation"] =
+                        Self.activationJSON(lastActivation.entry(for: entry.id))
+                    return JSONValue.object(item)
+                }
+            }
+            return .success(Self.jsonText(.object([
+                "servers": .array(serversPayload),
+                "count": .int(serversPayload.count),
+            ])))
         }
 
         // MainActor 快照（读）：条目 + 最近激活结果。查询无门——任何 standing
@@ -225,12 +261,14 @@ struct MCPServerConfigTool: AgentTool {
         ])))
     }
 
-    /// 待执行卡意图（纯函数：依赖且仅依赖 args）。写入调用展示目标 server
-    /// 与新值；查询只展示 server。
+    /// 待执行卡意图（纯函数：依赖且仅依赖 args）。枚举调用展示 "all servers"；
+    /// 写入调用展示目标 server 与新值；单 server 查询只展示 server。
     func presentCall(_ args: JSONValue) -> ToolCardIntent? {
         let params = args.objectValue ?? [:]
         guard let server = MCPResourceTools.normalizeOptional(
-            params["server"]?.stringValue) else { return nil }
+            params["server"]?.stringValue) else {
+            return ToolCardIntent(kind: .generic, title: name, detail: "all servers")
+        }
         if let seconds = params["startup_timeout_seconds"]?.intValue {
             return ToolCardIntent(kind: .generic, title: name,
                                   detail: "\(server) → startup \(seconds)s")
