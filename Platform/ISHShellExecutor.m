@@ -816,6 +816,14 @@ static int32_t _sweptContexts = 0;
             const uint8_t *bytes = dataToWrite.bytes;
             size_t remaining = dataToWrite.length;
             size_t totalWritten = 0;
+            // SIGPIPE containment（M4-B B3 安全增补，lead 裁决②）：guest 提前
+            // 关 stdin 读端时 write() 产生 EPIPE+SIGPIPE，默认处置杀宿主进程
+            // ——与 ISHShellLongLivedSession.writeBytesOnQueue 同款
+            // pthread_sigmask 线程级包裹，不污染全局信号处置。
+            sigset_t pipeSet, oldSet;
+            sigemptyset(&pipeSet);
+            sigaddset(&pipeSet, SIGPIPE);
+            pthread_sigmask(SIG_BLOCK, &pipeSet, &oldSet);
             while (remaining > 0) {
                 ssize_t written = write(writeFd, bytes, remaining);
                 if (written <= 0) {
@@ -826,6 +834,7 @@ static int32_t _sweptContexts = 0;
                 remaining -= written;
                 totalWritten += written;
             }
+            pthread_sigmask(SIG_SETMASK, &oldSet, NULL);
             close(writeFd);
             NSLog(@"ISHShellExecutor[stdin]: pipe write complete and closed — wrote %zu/%lu bytes for pid=%d",
                   totalWritten, (unsigned long)dataToWrite.length, guestPid);
