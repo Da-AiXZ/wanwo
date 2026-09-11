@@ -22,7 +22,7 @@ import Foundation
 import MCP
 
 /// MCP 传输工厂（dsh transport.ts createTransport 的 WanWo 形态；
-/// 本批仅 streamable-http 分支，stdio 随 M4-B）。
+/// M4-B B1 起 stdio 分支为过渡 fail loud——连接面 B4 接通）。
 enum MCPTransportFactory {
     /// 按 streamable-http 配置构造全新 transport。
     ///
@@ -52,6 +52,12 @@ enum MCPTransportFactory {
                     }
                     return request
                 })
+        case .stdio:
+            // M4-B B4 落地前的过渡分支（fail loud——不静默吞）：B1 已让
+            // stdio 配置可解析/可持久化，连接面在 B4 接通（SDK Transport
+            // 包 guest 子进程管道，返回类型届时放宽 any Transport）。
+            throw MCPConfigurationError(
+                "mcp-client(\(config.serverName)): stdio transport is not wired yet (lands with M4-B B4)")
         }
     }
 }

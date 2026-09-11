@@ -7,7 +7,7 @@
 //  ^[A-Za-z0-9_-]{1,32}$、:113-134 Config schema 默认值）+ connection.ts
 //  :27-90（ReconnectConfig / RECONNECT_DEFAULTS / resolveReconnectPolicy
 //  显式校验——重连配置错误在加载时使该实例失败，不影响已存在实例）。
-//  本批仅 streamable-http 变体（stdio 分支归 M4-B，红线 R6）。
+//  M4-B B1 起 stdio 变体落位（MCPTransport.stdio——字段结构见该 case 注释）。
 //  常量 MAX_TIMER_DELAY_MS = 2_147_483_647 取自 dsh schedule runtime.ts:22
 //  （全仓唯一定义，dsh-timeout 出口同名常量）。
 //
@@ -36,6 +36,19 @@ enum MCPConstants {
     /// codex DEFAULT_STARTUP_TIMEOUT）。触发条件/复位条件/超时后动作的
     /// 正式语义定义见件3 汇报与台账（McpConnectionSupervisor.connectWithWatchdog）。
     static let connectWatchdogTimeoutMs = 30_000
+
+    // MARK: 平台层常量（dsh 无对应物——R1 边界标注）
+
+    /// stdio server 启动超时默认值（平台层——dsh 无 startup timeout 概念；
+    /// 锚点=minis config.py:32 DEFAULT_STARTUP_TIMEOUT=60）。用户裁决③：
+    /// per-server startupTimeoutSeconds 覆盖连接看门狗（仅 stdio；http 恒
+    /// 30s 不变），字段缺省=60s。
+    static let defaultStartupTimeoutSeconds = 60
+
+    /// stdio 启动超时上界（平台层——锚点=minis config.py:34
+    /// MAX_STARTUP_TIMEOUT=900；越界值忽略+警告，minis resolve_startup_timeout
+    /// config.py:134-137 语义）。
+    static let maxStartupTimeoutSeconds = 900
 }
 
 // MARK: - 配置错误
@@ -166,13 +179,20 @@ enum MCPReconnectResolver {
     }
 }
 
-// MARK: - 客户端配置（index.ts:75-98 streamable-http 分支）
+// MARK: - 客户端配置（index.ts:75-98 streamable-http / :50-73 stdio 分支）
 
-/// 传输变体（dsh index.ts:97-98 Config 联合；本批只有 streamable-http，
-/// stdio 分支随 M4-B 追加）。
+/// 传输变体（dsh index.ts:97-98 Config 联合；stdio 变体 M4-B 追加——
+/// 结构=index.ts:50-73 StdioConfig 1:1：command 必填、args 无 shell 插值
+/// 直传（index.ts:61 注释原文语义）、env 为额外环境变量（与 scrub 后的
+/// 父环境合并=transport.ts:21-23 buildChildEnv，B2 接线）、cwd 可空
+/// （平台差异登记：dsh StdioConfig.cwd 必填 string，minis Popen 实际未传
+/// cwd（daemon.py:76-85）——WanWo 取可选，nil=guest 默认工作目录）。
 enum MCPTransport: Sendable, Equatable {
     /// Streamable HTTP（SSE）（index.ts:75-95 StreamableHttpConfig）。
     case streamableHTTP(url: String, headers: [String: String])
+    /// stdio 子进程传输（index.ts:50-73 StdioConfig；形态 B——spawn 由
+    /// Platform 层长驻 API 承担，B3/B4 落地）。
+    case stdio(command: String, args: [String], env: [String: String], cwd: String?)
 }
 
 /// 单个 MCP server 的连接配置（index.ts:76-95 StreamableHttpConfig 的

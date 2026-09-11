@@ -39,7 +39,8 @@ struct MCPServersView: View {
                     serverRow(server)
                 }
             } footer: {
-                Text("Streamable HTTP 接入。凭据 Token 优先存 Keychain，不写入配置文件；"
+                Text("Streamable HTTP 或 stdio 子进程接入（stdio 在 guest 内启动）。"
+                    + "HTTP 凭据 Token 优先存 Keychain，不写入配置文件；"
                     + "增删改在下一个会话栈构建时生效。")
             }
         }
@@ -76,7 +77,7 @@ struct MCPServersView: View {
                     set: { enabled in store.setEnabled(enabled, id: server.id) }))
                     .labelsHidden()
             }
-            Text(server.url)
+            Text(Self.targetSummary(server))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -104,6 +105,16 @@ struct MCPServersView: View {
         }
     }
 
+    /// 行摘要：http=url、stdio=命令+参数（OpenMinis MCPIntegrationsView row
+    /// 「url or command」target 摘要同款语义，issue-ledger:411 daemon list 行）。
+    private static func targetSummary(_ server: MCPServerEntry) -> String {
+        if let command = server.command {
+            let argText = server.args.isEmpty ? "" : " " + server.args.joined(separator: " ")
+            return command + argText
+        }
+        return server.url ?? ""
+    }
+
     /// 激活状态用户可读文案（lead 要求③——不暴露内部枚举名；失败原因取
     /// 本仓错误文案或 URLError 系统本地化描述，已过 sanitized 净化）。
     private static func activationText(_ entry: MCPLastActivationStore.Entry) -> String {
@@ -123,7 +134,13 @@ struct MCPServerEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
+    @State private var isStdio = false
     @State private var url: String = ""
+    @State private var command: String = ""
+    @State private var argsText: String = ""
+    @State private var envText: String = ""
+    @State private var cwdText: String = ""
+    @State private var startupText: String = ""
     @State private var note: String = ""
     @State private var token: String = ""
     @State private var loaded = false
@@ -137,25 +154,62 @@ struct MCPServerEditSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .disabled(entry != nil)
-                    TextField("URL（https://example.com/mcp）", text: $url)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    // 传输形态（M4-B B1）：编辑态锁定（形态变更=删旧建新，
+                    // 与「名称即主键不可改」同一纪律）。
+                    Picker("类型", selection: $isStdio) {
+                        Text("Streamable HTTP").tag(false)
+                        Text("stdio 子进程").tag(true)
+                    }
+                    .disabled(entry != nil)
+                    if isStdio {
+                        TextField("命令（guest 内路径，如 /usr/bin/python3）", text: $command)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("参数（空格分隔，可选）", text: $argsText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("环境变量（每行 K=V，可选）", text: $envText, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .lineLimit(1...4)
+                            .font(.caption)
+                        TextField("工作目录（可选）", text: $cwdText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("启动超时秒（可选，默认 60，上限 900）", text: $startupText)
+                            .keyboardType(.numberPad)
+                    } else {
+                        TextField("URL（https://example.com/mcp）", text: $url)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                     TextField("备注（可选）", text: $note)
                 }
-                Section("凭据") {
-                    SecureField("Bearer Token（可选）", text: $token)
-                    if let entry, store.hasAuthToken(for: entry.id) {
-                        Text("已存有 Token；留空保留，清除用下方按钮。")
+                if !isStdio {
+                    Section("凭据") {
+                        SecureField("Bearer Token（可选）", text: $token)
+                        if let entry, store.hasAuthToken(for: entry.id) {
+                            Text("已存有 Token；留空保留，清除用下方按钮。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("清除已存 Token", role: .destructive) {
+                                store.clearAuthToken(for: entry.id)
+                            }
+                        }
+                        Text("Token 存 Keychain（service com.wanwo.mcp），不写入配置文件。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("清除已存 Token", role: .destructive) {
-                            store.clearAuthToken(for: entry.id)
-                        }
                     }
-                    Text("Token 存 Keychain（service com.wanwo.mcp），不写入配置文件。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                }
+                if isStdio {
+                    Section {
+                        Text("stdio server 在 guest（iSH）内启动；启动超时按 server 配置"
+                            + "（默认 60s，慢启动 server 如 uvx 首次装包可调大）。"
+                            + "增删改在下一个会话栈构建时生效。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let errorText {
                     Section {
@@ -180,7 +234,14 @@ struct MCPServerEditSheet: View {
                 loaded = true
                 if let entry {
                     name = entry.id
-                    url = entry.url
+                    isStdio = entry.isStdio
+                    url = entry.url ?? ""
+                    command = entry.command ?? ""
+                    argsText = entry.args.joined(separator: " ")
+                    envText = entry.env.sorted { $0.key < $1.key }
+                        .map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+                    cwdText = entry.cwd ?? ""
+                    startupText = entry.startupTimeoutSeconds.map(String.init) ?? ""
                     note = entry.note ?? ""
                 }
             }
@@ -189,23 +250,69 @@ struct MCPServerEditSheet: View {
 
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard MCPClientConfig.isValidServerName(trimmedName) else {
             errorText = "名称必须匹配 [A-Za-z0-9_-]{1,32}。"
             return
         }
-        guard !trimmedURL.isEmpty else {
-            errorText = "URL 不能为空。"
-            return
+        var updated: MCPServerEntry
+        if isStdio {
+            // stdio 形态（dsh index.ts:50-73 StdioConfig；args 切分=minis
+            // main.py:420 空格切分同款；env 逐行 K=V）。
+            let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedCommand.isEmpty else {
+                errorText = "命令不能为空。"
+                return
+            }
+            let args = argsText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            var env: [String: String] = [:]
+            for line in envText.split(whereSeparator: { $0.isNewline }) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                guard let eq = trimmed.firstIndex(of: "="), eq != trimmed.startIndex else {
+                    errorText = "环境变量行必须是 K=V 形态：\(trimmed)"
+                    return
+                }
+                env[String(trimmed[..<eq])] = String(trimmed[trimmed.index(after: eq)...])
+            }
+            let trimmedCwd = cwdText.trimmingCharacters(in: .whitespacesAndNewlines)
+            var startup: Int?
+            let trimmedStartup = startupText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedStartup.isEmpty {
+                guard let parsed = Int(trimmedStartup),
+                      (1...MCPConstants.maxStartupTimeoutSeconds).contains(parsed) else {
+                    errorText = "启动超时必须是 1-\(MCPConstants.maxStartupTimeoutSeconds) 的整数。"
+                    return
+                }
+                startup = parsed
+            }
+            // 编辑态：名称即主键不可改（改名=删旧建新，最小集不做改名迁移）。
+            updated = entry ?? MCPServerEntry(id: trimmedName, url: nil, enabled: true,
+                                              note: nil, headers: [:], command: trimmedCommand,
+                                              args: args, env: env,
+                                              cwd: trimmedCwd.isEmpty ? nil : trimmedCwd,
+                                              startupTimeoutSeconds: startup)
+            updated.command = trimmedCommand
+            updated.args = args
+            updated.env = env
+            updated.cwd = trimmedCwd.isEmpty ? nil : trimmedCwd
+            updated.startupTimeoutSeconds = startup
+        } else {
+            let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedURL.isEmpty else {
+                errorText = "URL 不能为空。"
+                return
+            }
+            updated = entry ?? MCPServerEntry(id: trimmedName, url: trimmedURL,
+                                              enabled: true, note: nil, headers: [:],
+                                              command: nil, args: [], env: [:],
+                                              cwd: nil, startupTimeoutSeconds: nil)
+            updated.url = trimmedURL
         }
-        // 编辑态：名称即主键不可改（改名=删旧建新，最小集不做改名迁移）。
-        var updated = entry ?? MCPServerEntry(id: trimmedName, url: trimmedURL,
-                                              enabled: true, note: nil, headers: [:])
-        updated.url = trimmedURL
         updated.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
         if updated.note?.isEmpty == true { updated.note = nil }
         do {
-            if !token.isEmpty {
+            // Token 仅 http 形态（stdio 凭据走 env 字段，不入 Keychain token 面）。
+            if !isStdio, !token.isEmpty {
                 try store.setAuthToken(token, for: updated.id)
             }
         } catch {
