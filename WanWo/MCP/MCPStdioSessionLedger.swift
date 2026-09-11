@@ -12,7 +12,11 @@
 //    · B4（本件）：世代替换防泄漏——同 server 重 spawn 前 reap 旧会话；
 //    · B5：监督面消费 entry（startup 看门狗读 startupTimeoutSeconds、
 //      世代下行信号=StdioTransport EOF）；
-//    · B6：deactivate 经 entry.session.terminate() 杀进程组。
+//    · B6：deactivate 收尾——核对结论（零新增代码）：deactivate→
+//      supervisor.dispose→reapStdioSession("disposed")（MCPConnection
+//      dispose 顶部，B5 落点）→ledger.reap→session.terminate() 杀进程组
+//      +双 fd close，链路已闭合；MCPRuntime.deactivateAll/deinit 均经
+//      McpClient.deactivate 到达同一链。
 //  线程模型：NSLock 守护字典（factory 在 connection actor 上调用、reap 的
 //  terminate 是同步 ObjC 调用可从任意线程发起——T-shell-stop-blocked-by-actor
 //  纪律，停止路径不经 actor）。

@@ -268,6 +268,17 @@ final class MCPElicitationRouter: @unchecked Sendable {
     init() {}
 
     // codex auto_deny 开关（:119-125）。
+    // 【M4-B B6 备案项核对处置（ledger:457）——生产恒 false，无调用点】
+    // codex 生产调用点全景（codex-rs 0.153.0-alpha.6 实证）：①session/
+    // mod.rs:1808-1824 set_app_server_client_info（app-server 客户端信息
+    // 握手携带布尔）；②turn_processor.rs:1656 xcode_26_4_mcp_elicitations_
+    // auto_deny（Xcode 26.4 兼容 hack——该客户端线在 elicitation 请求对
+    // 客户端可见之前发布，无法呈现→自动拒绝）。语义=「宿主 UI 无法呈现
+    // 请求时的能力门控」，非停机钩子（codex 停机=Drop，无 auto_deny 钩
+    // 子）。WanWo 无 app-server 多客户端形态：宿主 App 即唯一客户端、
+    // elicitation 呈现由件9 决策链+M4-B UI 投递侧承担，不存在「看不到请
+    // 求」的客户端——处置=不接线，setter 保留（API 面完整+语义登记）。
+    // WanWo 停机面=deactivate→dispose→ledger.reap（B5 闭合），与本题无关。
     var autoDeny: Bool {
         get { lock.lock(); defer { lock.unlock() }; return autoDenyNow }
         set { lock.lock(); autoDenyNow = newValue; lock.unlock() }
