@@ -132,6 +132,10 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
                                                            elicit: elicit)
                         // 激活成功记录（覆盖写=最新一次会话栈构建的结果）。
                         let name = instance.config.serverName
+                        // 方案乙最小化：激活结果落诊断文件（设置页导出取回）。
+                        MCPDiagnosticsLog.shared.record(
+                            level: "info", category: "MCPRuntime", server: name,
+                            event: "activation succeeded")
                         Task { @MainActor in
                             lastActivation.recordSuccess(serverName: name)
                         }
@@ -142,6 +146,10 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
                             "mcp-server \(name): " +
                             "activation failed: \(String(describing: error))")
                         // 激活失败记录（用户可读摘要；设置页直读定位根因）。
+                        // 方案乙最小化：失败摘要同落诊断文件（sanitized 已过）。
+                        MCPDiagnosticsLog.shared.record(
+                            level: "error", category: "MCPRuntime", server: name,
+                            event: "activation failed: \(summary)")
                         Task { @MainActor in
                             lastActivation.recordFailure(serverName: name,
                                                          message: summary)

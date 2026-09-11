@@ -442,6 +442,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         let reaped = MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
         if reaped {
             Self.logger.info("\(self.label): stdio server process terminated (\(reason))")
+            // 方案乙最小化：回收落点事件落诊断文件（reason 直接指认归属路径）。
+            MCPDiagnosticsLog.shared.record(
+                level: "info", category: "MCPConnection", server: config.serverName,
+                event: "stdio server process terminated (\(reason))")
         }
     }
 
@@ -598,12 +602,22 @@ final class McpConnectionSupervisor: @unchecked Sendable {
                 "\(self.label): giving up after " +
                 "\(self.policy.maxAttempts) consecutive failed reconnect attempts — " +
                 "tools unregistered; reload the plugin or restart the Host to reconnect")
+            // 方案乙最小化：giveUp 事件落诊断文件（世代循环终点）。
+            MCPDiagnosticsLog.shared.record(
+                level: "error", category: "MCPConnection", server: config.serverName,
+                event: "giving up after \(self.policy.maxAttempts) consecutive " +
+                       "failed reconnect attempts — tools unregistered")
         case .retry(let delayMs, let lost, let attempts):
             // :217-218
             let action = lost ? "connection lost; reconnecting" : "connection failed; retrying"
             Self.logger.warning(
                 "\(self.label): \(action) in \(delayMs)ms " +
                 "(attempt \(attempts)/\(self.policy.maxAttempts))")
+            // 方案乙最小化：重连循环事件落诊断文件（世代节奏时间线）。
+            MCPDiagnosticsLog.shared.record(
+                level: "warn", category: "MCPConnection", server: config.serverName,
+                event: "\(action) in \(delayMs)ms (attempt \(attempts)/" +
+                       "\(self.policy.maxAttempts))")
             // :219-224——Timer → Task.sleep（unref 语义无对应物，平台适配）。
             let task = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)

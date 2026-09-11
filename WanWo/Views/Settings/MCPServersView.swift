@@ -25,11 +25,15 @@ struct MCPServersView: View {
 
     @State private var showingAddSheet = false
     @State private var editingEntry: MCPServerEntry?
+    /// 方案乙最小化：诊断文件 URL（ShareLink 导出；init 时一次性取定——
+    /// 文件路径 App 生命周期内不变）。
+    private let diagnosticsFileURL: URL
 
     init(environment: AppEnvironment) {
         self.environment = environment
         _store = ObservedObject(wrappedValue: environment.mcpServerStore)
         _lastActivation = ObservedObject(wrappedValue: environment.mcpLastActivation)
+        diagnosticsFileURL = MCPDiagnosticsLog.shared.url
     }
 
     var body: some View {
@@ -43,8 +47,19 @@ struct MCPServersView: View {
                     + "HTTP 凭据 Token 优先存 Keychain，不写入配置文件；"
                     + "增删改在下一个会话栈构建时生效。")
             }
+            // M4-B 场景2 取证（方案乙最小化）：诊断日志导出——JSONL 事件流
+            // （激活/退出/回收/重连），环形 ~100KB，错误文案已净化（无凭据）。
+            Section {
+                ShareLink(item: diagnosticsFileURL) {
+                    Label("导出诊断日志", systemImage: "square.and.arrow.up")
+                }
+            } footer: {
+                Text("最近一次复现的 MCP 事件流（激活/进程退出/回收/重连），"
+                    + "供问题定位；不含凭据。")
+            }
         }
         .navigationTitle("MCP")
+        .onAppear { MCPDiagnosticsLog.shared.ensureFile() }
         .toolbar {
             Button {
                 showingAddSheet = true

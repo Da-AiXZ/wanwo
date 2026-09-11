@@ -177,6 +177,13 @@ enum MCPTransportFactory {
                     lifecycleLogger.info(
                         "mcp-server \(serverName) guest exited " +
                         "exitCode=\(exitCode) error=\(error.rawValue)")
+                    // 方案乙最小化：死因直读事件同步落诊断文件（用户无 Mac
+                    // 连线条件——设置页导出取回）。
+                    MCPDiagnosticsLog.shared.record(
+                        level: "info", category: "MCPServerLifecycle",
+                        server: serverName,
+                        event: "guest exited exitCode=\(exitCode) " +
+                               "error=\(error.rawValue)")
                 }) else {
                 // [M4-B B7 块3] spawn 失败原因具象化（URLError 不覆盖的
                 // stdio 面——command not found/ENOEXEC/权限）。文案进
