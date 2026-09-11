@@ -64,3 +64,6 @@ jobs:
   # 2026-09-11 用户裁决：拆除 CI 测试轨道（92 用例首轮拦截 1 缺陷，收益不抵
   # 维护成本）。WanWoTests 代码与 build_ish.sh 的 ios-sim 变体保留——日后重启
   # 轨道的历史方案见 analysis/t24-scope-brief.md 末节与本文件 git 历史。
+  # 2026-09-11 用户裁决追加：一次性验证跑（B）——workflow_dispatch-only 的
+  # test.yml 承载件12 测试首次 CI 编译+运行验证，跑完即拆（不建常驻轨道，
+  # 本 push 主流水线行为零变化）。
