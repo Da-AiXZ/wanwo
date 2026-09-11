@@ -718,7 +718,7 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     ///   的 disconnect 会 resume 其 initialize continuation（Client.swift:287
     ///   resume 全部 pendingRequests），任务随后自然结束；悬置窗口零 CPU。
     private func connectWithWatchdog(_ generation: Client,
-                                     transport: HTTPClientTransport) async -> Result<Initialize.Result, any Error> {
+                                     transport: any Transport) async -> Result<Initialize.Result, any Error> {
         let box = MCPSettleOnce<Result<Initialize.Result, any Error>>()
         let connectTask = Task {
             do {

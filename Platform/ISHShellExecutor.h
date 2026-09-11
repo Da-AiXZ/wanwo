@@ -159,6 +159,33 @@ typedef void (^ISHShellLongLivedExitHandler)(int exitCode, ISHShellExecutorError
                                                     exitHandler:(nullable ISHShellLongLivedExitHandler)exitHandler
         NS_SWIFT_NAME(spawnLongLivedExecutable(_:arguments:environment:fsContext:lineCallback:exitHandler:));
 
+/// Spawn a long-lived guest process with RAW stdio pipes (M4-B B4 — the MCP
+/// stdio transport face). Same long-lived tier as spawnLongLivedExecutable:
+/// with three ownership differences:
+///  - stdout is NOT line-read by the executor: the raw pipe read end is
+///    handed to the caller via *stdoutReadFdOut (newline-delimited JSON-RPC
+///    needs byte-exact framing; the executor's line reader would destroy it),
+///  - the stdin write end is likewise handed to the caller via
+///    *stdinWriteFdOut instead of being held by the session — the session
+///    keeps only terminate/finalise responsibilities (writeToStdin: on it
+///    becomes a no-op),
+///  - the caller owns both fds and must close them when the transport
+///    disconnects (the MCP SDK's StdioTransport never closes injected fds).
+/// stderr keeps the normal line callback (AppLogger hook — M4-B B7).
+/// @param stdinWriteFdOut Required out-param: receives the guest's stdin
+///        write end (-1 on failure)
+/// @param stdoutReadFdOut Required out-param: receives the guest's stdout
+///        read end (-1 on failure)
++ (nullable ISHShellLongLivedSession *)spawnLongLivedRawStdioExecutable:(NSString *)executable
+                                                              arguments:(nullable NSArray<NSString *> *)arguments
+                                                            environment:(nullable NSDictionary<NSString *, NSString *> *)environment
+                                                              fsContext:(uint64_t)fsContext
+                                                           stdinWriteFd:(int *)stdinWriteFdOut
+                                                           stdoutReadFd:(int *)stdoutReadFdOut
+                                                     stderrLineCallback:(nullable ISHShellLineCallback)lineCallback
+                                                           exitHandler:(nullable ISHShellLongLivedExitHandler)exitHandler
+        NS_SWIFT_NAME(spawnLongLivedRawStdioExecutable(_:arguments:environment:fsContext:stdinWriteFd:stdoutReadFd:stderrLineCallback:exitHandler:));
+
 /// Execute a shell command and wait synchronously for completion
 /// @param command Shell command to execute
 /// @param timeout Maximum wait time in seconds (0 = no timeout)

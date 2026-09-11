@@ -19,11 +19,19 @@
 //
 
 import Foundation
+import SystemPackage
 import MCP
 
 /// MCP 传输工厂（dsh transport.ts createTransport 的 WanWo 形态；
-/// M4-B B1 起 stdio 分支为过渡 fail loud——连接面 B4 接通。
-/// B2：buildChildEnv 落位（transport.ts:21-23 1:1，B4 stdio 分支消费））。
+/// M4-B B4 起 stdio 分支接通：spawn 长驻 guest 进程（raw-stdio 档）+
+/// SDK StdioTransport 包 fd，返回类型放宽 any Transport。
+/// 世代语义（connection.ts:228 注释原文）：一个 Client 一生一个 transport，
+/// 重连=新建世代——本工厂每次调用产出全新 transport 实例，件3 的
+/// connectGeneration 每次连接尝试各自调用、不复用实例；stdio 变体的
+/// 「全新实例」=全新 guest 进程（spawnLongLivedRawStdioExecutable），
+/// 旧世代进程与双 fd 的终结经 MCPStdioSessionLedger.reap（B5 监督面
+/// 正式接管）。
+/// B2：buildChildEnv 落位（transport.ts:21-23 1:1，本文件 stdio 分支消费）。
 enum MCPTransportFactory {
 
     /// dsh transport.ts:21-23 buildChildEnv 的 WanWo 形态（M4-B B2 接线）：
@@ -53,16 +61,22 @@ enum MCPTransportFactory {
         return ambient.merging(extra) { _, explicit in explicit }
     }
 
-    /// 按 streamable-http 配置构造全新 transport。
+    /// 按 transport 变体构造全新 transport（dsh transport.ts:31-50 1:1）。
     ///
     /// - Parameter config: 已通过件1 加载校验的客户端配置。
-    /// - Returns: 未连接的 `HTTPClientTransport`（streaming=true——独立 GET
-    ///   事件流 + POST 响应 SSE，简报件2 指定形态）。
-    /// - Throws: `MCPConfigurationError` 当 url 不是合法绝对 URL——dsh
-    ///   `new URL(config.url)`（transport.ts:46）对非绝对 URL 抛 TypeError
-    ///   使 connect 失败走世代判负；Swift `URL(string:)` 对缺 scheme/host
-    ///   的字符串宽松通过，故显式校验 scheme+host 保持 fail closed 同形。
-    static func makeTransport(for config: MCPClientConfig) throws -> HTTPClientTransport {
+    /// - Returns: 未连接的 transport——streamable-http 为 `HTTPClient-
+    ///   Transport`（streaming=true——独立 GET 事件流 + POST 响应 SSE，
+    ///   简报件2 指定形态）；stdio 为 SDK `StdioTransport`（fd 注入形态，
+    ///   init(input:output:)——input=guest stdout 读端、output=guest stdin
+    ///   写端，M4-B B4 raw-stdio spawn 产物）。
+    /// - Throws: `MCPConfigurationError`——http：url 不是合法绝对 URL（dsh
+    ///   `new URL(config.url)` transport.ts:46 对非绝对 URL 抛 TypeError 使
+    ///   connect 失败走世代判负；Swift `URL(string:)` 宽松故显式校验保持
+    ///   fail closed 同形）；stdio：cwd 非空（lead 裁决：nil=guest 默认目录，
+    ///   spawn 路径不支持工作目录——fail loud 不静默忽略）、env 块超限
+    ///   （executor envp_buf 8192 字节静默丢条目，入口侧预检 fail loud）、
+    ///   spawn 失败。
+    static func makeTransport(for config: MCPClientConfig) throws -> any Transport {
         switch config.transport {
         case .streamableHTTP(let urlString, let headers):
             guard let endpoint = URL(string: urlString),
@@ -81,12 +95,68 @@ enum MCPTransportFactory {
                     }
                     return request
                 })
-        case .stdio:
-            // M4-B B4 落地前的过渡分支（fail loud——不静默吞）：B1 已让
-            // stdio 配置可解析/可持久化，连接面在 B4 接通（SDK Transport
-            // 包 guest 子进程管道，返回类型届时放宽 any Transport）。
-            throw MCPConfigurationError(
-                "mcp-client(\(config.serverName)): stdio transport is not wired yet (lands with M4-B B4)")
+        case .stdio(let command, let args, let env, let cwd):
+            // cwd fail closed（lead 裁决：维持 nil=guest 默认目录）：spawn
+            // 路径无工作目录形态（平台差异登记 B1/B3），非空值显式拒绝——
+            // 静默忽略会让用户配置与实际行为不一致。
+            if let cwd, !cwd.isEmpty {
+                throw MCPConfigurationError(
+                    "mcp-client(\(config.serverName)): stdio cwd is not supported " +
+                    "by the iSH spawn path (guest default cwd is used) — remove the cwd value")
+            }
+            // envp 长度预检（lead B3 裁决①）：executor envp_buf 8192 字节
+            //（ISHShellExecutor.m:716），ENVP_APPEND 宏 headroom 256（:722
+            // 同款），基座固定条目约 300B——自定义合并块上界取 7500B。超限
+            // fail loud（executor 侧是静默丢条目——server 行为诡异的难查
+            // 根因，必须在入口侧拦下）。
+            let childEnv = buildChildEnv(env)
+            let customEnvBytes = childEnv.reduce(0) {
+                $0 + $1.key.utf8.count + $1.value.utf8.count + 2
+            }
+            guard customEnvBytes <= 7500 else {
+                throw MCPConfigurationError(
+                    "mcp-client(\(config.serverName)): stdio env block too large " +
+                    "(\(customEnvBytes) bytes > 7500 limit) — trim env entries")
+            }
+            // 世代替换防泄漏：同 server 重 spawn（重连=新世代）前终结旧
+            // 进程+关旧 fd（正式监督面=B5；此处只挡无界进程累积）。
+            MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
+            var stdinWriteFd: Int32 = -1
+            var stdoutReadFd: Int32 = -1
+            guard let session = ISHShellExecutor.spawnLongLivedRawStdioExecutable(
+                command,
+                arguments: args,
+                environment: childEnv,
+                fsContext: 0,
+                stdinWriteFd: &stdinWriteFd,
+                stdoutReadFd: &stdoutReadFd,
+                stderrLineCallback: nil,   // stderr AppLogger 聚合=M4-B B7
+                exitHandler: nil) else {
+                throw MCPConfigurationError(
+                    "mcp-client(\(config.serverName)): stdio spawn failed " +
+                    "(see ISHShellExecutor logs)")
+            }
+            guard stdinWriteFd >= 0, stdoutReadFd >= 0 else {
+                session.terminate()
+                throw MCPConfigurationError(
+                    "mcp-client(\(config.serverName)): stdio spawn did not hand out pipes")
+            }
+            // 台账登记（B5 监督面/B6 deactivate 消费）：进程与双 fd 的
+            // 所有权记账——SDK disconnect 不关注入 fd（三坑①），close 归属
+            // 在 WanWo（ledger.reap）。
+            MCPStdioSessionLedger.shared.register(
+                serverName: config.serverName,
+                entry: MCPStdioSessionLedger.Entry(
+                    session: session,
+                    pid: Int32(session.pid),
+                    stdinWriteFd: stdinWriteFd,
+                    stdoutReadFd: stdoutReadFd))
+            // EOF→世代下行信号源：guest 死→stdout 读端 EOF→StdioTransport
+            // readLoop 退出→messageContinuation finish→Client 消息循环退出
+            //（SDK 源码 :147-150/:176）——B5 监督面据此判世代下行。
+            return StdioTransport(
+                input: FileDescriptor(rawValue: stdoutReadFd),
+                output: FileDescriptor(rawValue: stdinWriteFd))
         }
     }
 }
