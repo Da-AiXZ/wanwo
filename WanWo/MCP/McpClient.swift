@@ -13,7 +13,8 @@
 //    ④deactivate（index.ts:175-177 + :167）：Cordis 逆序 dispose——连接
 //      监督 dispose 在先（世代关闭/静默/工具注销），命名空间释放在后。
 //  工具同步经 MCPToolSyncing 缝注入（件4 提供实现；dsh 直接 import 的
-//  syncTools，装配形态差异）。资源三元随件8；elicitation 随件9。
+//  syncTools，装配形态差异）。资源三元随件8；elicitation 决策链随件9
+//  （activate(elicit:)——nil=不声明能力=fail closed）。
 //  一个 McpClient 一生服务一个 server（dsh index.ts:4-5 每实例一连一
 //  server 的语义）。
 //
@@ -75,9 +76,12 @@ final class McpClient: @unchecked Sendable {
     /// 否则错误已被监督器记日志、重连循环自主运转。
     ///
     /// - Parameter toolSync: 工具同步缝（件4 实现）。
+    /// - Parameter elicit: elicitation 决策链缝（件9；nil=不声明能力——
+    ///   fail closed，件5 imageProjector 同款装配纪律）。
     /// - Throws: 重复激活（fail closed，dsh apply 每实例一次）；或
     ///   failOnStartupError 语义下的首次失败（index.ts:186 文案 1:1）。
-    func activate(toolSync: MCPToolSyncing) async throws {
+    func activate(toolSync: MCPToolSyncing,
+                  elicit: MCPElicitationHandling? = nil) async throws {
         let supervisor: McpConnectionSupervisor
         lifecycleLock.lock()
         if connection != nil {
@@ -85,7 +89,7 @@ final class McpClient: @unchecked Sendable {
             throw MCPConfigurationError("\(label): activate called twice — instance already active")
         }
         supervisor = McpConnectionSupervisor(
-            config: config, policy: reconnectPolicy, toolSync: toolSync)
+            config: config, policy: reconnectPolicy, toolSync: toolSync, elicit: elicit)
         connection = supervisor
         lifecycleLock.unlock()
         // index.ts:184 await connection.ready。

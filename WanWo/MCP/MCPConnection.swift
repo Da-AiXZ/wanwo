@@ -259,6 +259,9 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     private let startupOpts: MCPToolBridgeOptions
     /// 工具同步缝（dsh 直接 import 的 syncTools；WanWo 经协议注入）。
     private let toolSync: MCPToolSyncing
+    /// elicitation 决策链缝（件9；nil=不声明 elicitation 能力——fail closed，
+    /// 件5 imageProjector 同款装配纪律）。
+    private let elicit: MCPElicitationHandling?
     /// 同步串行链（connection.ts:161）。
     private let chain = MCPSerialTaskChain()
 
@@ -292,11 +295,13 @@ final class McpConnectionSupervisor: @unchecked Sendable {
 
     /// 构造即启动首次连接尝试（dsh :308 `settling = connectGeneration(true)`
     /// ——状态声明后立即执行）。
-    init(config: MCPClientConfig, policy: MCPReconnectPolicy, toolSync: MCPToolSyncing) {
+    init(config: MCPClientConfig, policy: MCPReconnectPolicy, toolSync: MCPToolSyncing,
+         elicit: MCPElicitationHandling? = nil) {
         self.config = config
         self.policy = policy
         self.label = "mcp-client(\(config.serverName))"
         self.toolSync = toolSync
+        self.elicit = elicit
         var regular = MCPToolBridgeOptions(
             registrationFailure: .contain,
             serverName: config.serverName,
@@ -557,12 +562,29 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     private func connectGeneration(startup: Bool) async {
         // :238-241——client info 照抄 dsh 值（平台适配：标识不变更）；
         // Capabilities() 默认全 nil = 不声明能力（dsh capabilities: {}）。
+        // elicitation 能力仅当决策链在场时声明（件9；SDK Capabilities.Elicitation
+        // init 默认 form 在场、url 需显式——Client.swift:117，两型都声明）。
+        let capabilities: Client.Capabilities
+        if elicit != nil {
+            capabilities = Client.Capabilities(
+                elicitation: .init(form: .init(), url: .init()))
+        } else {
+            capabilities = Client.Capabilities()
+        }
         let generation = Client(name: "dsh-mcp-client", version: "0.0.1",
-                                capabilities: Client.Capabilities())
+                                capabilities: capabilities)
         let signal = MCPGenerationCloseSignal()            // :242 closed
         withLock {                                         // :246-247
             client = generation
             closeSignal = signal
+        }
+        // 件9：elicitation handler 注册先于 connect（SDK withMethodHandler
+        // actor 注册，Client.swift:826-843；与 onNotification 同位纪律——
+        // 早期 elicitation/create 请求不落空）。
+        if let elicit {
+            await generation.withElicitationHandler { [elicit, serverName = config.serverName] params in
+                try await elicit.handle(serverName: serverName, params: params)
+            }
         }
         // :255-270——ToolListChanged 注册先于 connect：初始同步期间的列表
         // 变化排队在其后而非丢失。
