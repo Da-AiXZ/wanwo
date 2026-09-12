@@ -689,6 +689,19 @@ final class ChatViewModel: ObservableObject {
         bubbles = projected
         streamingText = ""
         streamingReasoning = ""
+        // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
+        // 不清则迟到的 0.2s flushTimer 在清面之后把最后一个 flush 窗口压着
+        // 的本 step 尾部 delta 倒回 streaming 行——工具等待期（多秒 bash/
+        // ask_user_question/审批）流式行持续显示 step-1 思考+回复尾部=
+        // 「幽灵回合」，新 step 流式追加其上=「被新内容覆盖」观感。安全性：
+        // ①reproject 全部调用点执行时本 step delta 已落盘（assistant/message
+        // 先于 tool/call 的落盘契约），pending 是持久化内容的纯重复，投影自
+        // 事件流渲染已含全文，丢弃无损；②delta 与 reproject 全经 Task
+        // @MainActor 按发射序 FIFO，同 step 内无后到污染。pendingShellLines
+        // 已有续接面（上方 carried 带入卡片），text/reasoning 无续接面——
+        // 对称补齐。
+        pendingTextChunks.removeAll()
+        pendingReasoningChunks.removeAll()
         // T2.2 派生状态刷新（plan chip 镜像 + 状态条折叠 + 权限挡位镜像）。
         planActive = plan?.isActive ?? false
         currentPermissionPreset = permission?.knobs.currentPresetName()
