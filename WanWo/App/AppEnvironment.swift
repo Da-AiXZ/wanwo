@@ -54,6 +54,10 @@ final class AppEnvironment: ObservableObject {
     /// 的 try? 静默吞掉异常，用户看到行「消失又回来」、重试怎么点都没用。
     /// 非 nil 时由 SessionsSidebarView 以 alert 呈现，呈现后清零。
     @Published var sessionActionError: String?
+    /// f②（bug f-1，lead 批准）：事件流 replay 结果缓存——key=会话 id +
+    /// sessionsRevision 快照双键失效（删除/新增会话即失效），进过一次的
+    /// 会话秒开、消除重复 replay 堆积。容量 2（插入序淘汰），MainActor 域。
+    let eventStreamReplayCache = EventStreamReplayCache()
     @Published var selection: RootSelection = .none
     /// 待决交互镜像（侧栏琥珀点数据源；dsh 2026-07-23 笔记——sidebar mirrors
     /// every blocked interaction with an amber warning dot，优先级高于运行中圆环）。

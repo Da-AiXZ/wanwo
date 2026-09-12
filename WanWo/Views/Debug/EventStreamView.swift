@@ -43,6 +43,53 @@
 import SwiftUI
 import UIKit   // UIPasteboard（M2.9 剪贴板导出）
 
+// MARK: - replay 结果缓存（bug f-1 修复②，lead 批准 f①+f②）
+
+/// 事件流 replay 结果缓存：key=会话 id，条目绑定 sessionsRevision 快照——
+/// 读时 revision 不匹配即失效（删除/新建会话都推进 revision，双键失效
+/// 语义由「revision 快照比对」达成）。容量上限 2（插入序淘汰）——防大会话
+/// rows 数组常驻内存累积。全链 MainActor（AppEnvironment/EventStream-
+/// ViewModel 同域），无需加锁。
+@MainActor
+final class EventStreamReplayCache {
+    private struct Entry {
+        let sessionsRevision: Int
+        let output: EventStreamLoader.Output
+        /// 导出副本路径（f② 收益：缓存命中时复用，不重复复制文件）。
+        let exportURL: URL?
+    }
+
+    private var entries: [String: Entry] = [:]
+    private var insertionOrder: [String] = []
+    private let capacity = 2
+
+    /// 命中返回 (replay 输出, 导出副本)；revision 已推进/无条目= nil
+    /// （顺手清掉过期条目，防陈旧引用滞留）。
+    func get(sessionID: String,
+             sessionsRevision: Int) -> (output: EventStreamLoader.Output, exportURL: URL?)? {
+        guard let entry = entries[sessionID] else { return nil }
+        guard entry.sessionsRevision == sessionsRevision else {
+            entries[sessionID] = nil
+            insertionOrder.removeAll { $0 == sessionID }
+            return nil
+        }
+        return (entry.output, entry.exportURL)
+    }
+
+    func put(sessionID: String, sessionsRevision: Int,
+             output: EventStreamLoader.Output, exportURL: URL?) {
+        if entries[sessionID] == nil {
+            insertionOrder.append(sessionID)
+        }
+        entries[sessionID] = Entry(sessionsRevision: sessionsRevision,
+                                   output: output, exportURL: exportURL)
+        while insertionOrder.count > capacity {
+            let oldest = insertionOrder.removeFirst()
+            entries[oldest] = nil
+        }
+    }
+}
+
 // MARK: - 只读加载器
 
 /// 事件流只读加载器：SessionLogScanner 同款 replay，纯 Data 读取、零写句柄。
@@ -567,6 +614,18 @@ final class EventStreamViewModel: ObservableObject {
     @Published private(set) var exportFileURL: URL?
     /// M2.9 复制/加载结果提示（toast 文案；nil = 不显示，2.5s 自动消失）。
     @Published private(set) var toastMessage: String?
+    /// f①（行分块，lead 批准 N=200 起步）：当前渲染的行数上限——首屏只
+    /// 渲染尾部 N 行（够诊断用且秒开），「加载更早」每次步进 N；全量数字
+    /// 仍由计数行对照（诊断语义不缩水）。
+    @Published private(set) var visibleRowCount = EventStreamViewModel.initialVisibleRows
+
+    static let initialVisibleRows = 200
+    static let visibleRowStep = 200
+
+    /// f①：向更早步进一块（时间线语义：更早的行在上方）。
+    func showEarlierRows() {
+        visibleRowCount += Self.visibleRowStep
+    }
 
     private var toastTask: Task<Void, Never>?
     private let environment: AppEnvironment
@@ -591,14 +650,32 @@ final class EventStreamViewModel: ObservableObject {
         selectedSessionID = sessions.first?.id
     }
 
-    /// 手动刷新：全量 replay + 聚合投影（扫描/聚合放后台，主线程只收结果）。
-    func loadEvents() async {
+    /// 全量 replay + 聚合投影（扫描/聚合放后台，主线程只收结果）。
+    /// - Parameter force: false=允许缓存命中（进入页面/切换会话，f② 秒开
+    ///   且消除重复 replay 堆积）；true=绕缓存强制重放（下拉刷新/刷新钮——
+    ///   用户主动刷新必须拿最新盘面，尽管诊断页不持写柄、同 revision 内
+    ///   流理论不变，fail-open 交给用户手势）。
+    func loadEvents(force: Bool = false) async {
         guard let id = selectedSessionID else {
             rows = []
             rawEventCount = 0
             errorMessage = sessions.isEmpty ? "暂无会话" : nil
             scanIssue = nil
             exportFileURL = nil
+            lastLoadedAt = Date()
+            return
+        }
+        let revision = environment.sessionsRevision
+        // f②：缓存命中——直接复用（含导出副本路径，不重复复制文件）。
+        if !force,
+           let cached = environment.eventStreamReplayCache.get(
+            sessionID: id, sessionsRevision: revision) {
+            rows = cached.output.rows
+            rawEventCount = cached.output.rawEventCount
+            scanIssue = cached.output.issue
+            errorMessage = nil
+            exportFileURL = cached.exportURL
+            visibleRowCount = Self.initialVisibleRows
             lastLoadedAt = Date()
             return
         }
@@ -617,12 +694,18 @@ final class EventStreamViewModel: ObservableObject {
             exportFileURL = await Task.detached(priority: .utility) {
                 EventStreamLoader.makeExportCopy(sessionID: id)
             }.value
+            // f②：写入缓存（双键失效=revision 快照比对；容量 2 插入序淘汰）。
+            environment.eventStreamReplayCache.put(
+                sessionID: id, sessionsRevision: revision,
+                output: output, exportURL: exportFileURL)
+            visibleRowCount = Self.initialVisibleRows
         case .failure(let error):
             rows = []
             rawEventCount = 0
             scanIssue = nil
             errorMessage = "读取失败：\(error)"
             exportFileURL = nil
+            visibleRowCount = Self.initialVisibleRows
         }
         lastLoadedAt = Date()
     }
@@ -696,7 +779,7 @@ struct EventStreamView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("事件流")
         .toolbar { debugToolbar }
-        .refreshable { await model.loadEvents() }
+        .refreshable { await model.loadEvents(force: true) }
         .task { await model.onAppear() }
         .onChange(of: model.selectedSessionID) { _ in
             Task { await model.loadEvents() }
@@ -749,7 +832,19 @@ struct EventStreamView: View {
                 Text("该会话暂无事件")
                     .foregroundStyle(.secondary)
             }
-            ForEach(model.rows) { row in
+            // f①（行分块）：首屏只渲染尾部 N 行，更早的行在顶部步进加载
+            // （时间线语义=向上翻更早）。已知取舍（呈报登记）：点击加载后
+            // 上方插入行会把视口内容下推，不做滚动锚定（诊断页可接受）。
+            // 计数行「共 X 事件 · 聚合后 Y 行」恒为全量数字，对照不缩水。
+            if model.rows.count > model.visibleRowCount {
+                Button {
+                    model.showEarlierRows()
+                } label: {
+                    Text("加载更早（还有 \(model.rows.count - model.visibleRowCount) 行）")
+                        .font(.footnote)
+                }
+            }
+            ForEach(Array(model.rows.suffix(model.visibleRowCount))) { row in
                 EventStreamRowView(row: row)
             }
         }
@@ -791,7 +886,8 @@ struct EventStreamView: View {
         }
         ToolbarItem(placement: .navigationBarTrailing) {
             Button {
-                Task { await model.loadEvents() }
+                // 刷新钮=用户主动刷新：绕缓存强制重放（f② 语义）。
+                Task { await model.loadEvents(force: true) }
             } label: {
                 if model.isLoading {
                     ProgressView()
