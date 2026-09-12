@@ -41,10 +41,11 @@ final class ToolSearchActivationTests: XCTestCase {
     }
 
     /// C1 输出形态的 spec JSON 数组文本（单条）。
-    private func specText(_ name: String, description: String = "desc \(name)") -> String {
+    private func specText(_ name: String, description: String? = nil) -> String {
+        let desc = description ?? "desc \(name)"
         let params = "{\"additionalProperties\":false,\"properties\":{},"
             + "\"required\":[],\"type\":\"object\"}"
-        return "[{\"description\":\"\(description)\",\"name\":\"\(name)\","
+        return "[{\"description\":\"\(desc)\",\"name\":\"\(name)\","
             + "\"parameters\":\(params)}]"
     }
 
@@ -323,6 +324,9 @@ final class ToolSearchActivationTests: XCTestCase {
         init(name: String, description: String) {
             self.name = name
             self.description = description
+        }
+        func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+            .success("stub")
         }
     }
 }

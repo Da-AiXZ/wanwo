@@ -22,6 +22,9 @@ private struct StubDirectTool: AgentTool {
     let name: String
     var description: String { "stub direct tool \(name)" }
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        .success("stub")
+    }
 }
 
 /// deferred 桩工具（C3 形态：覆写 exposure + 可选 sourceInfo）。
@@ -32,6 +35,9 @@ private struct StubDeferredTool: AgentTool {
     let exposure: ToolExposure = .deferred
     let source: ToolSearchSourceInfo?
     var toolSearchSourceInfo: ToolSearchSourceInfo? { source }
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        .success("stub")
+    }
 }
 
 /// hidden 桩工具（侧会话写类工具形态）。
@@ -40,6 +46,9 @@ private struct StubHiddenTool: AgentTool {
     var description: String { "stub hidden tool \(name)" }
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
     let exposure: ToolExposure = .hidden
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        .success("stub")
+    }
 }
 
 /// MCPToolExecuting 桩（C3 身份断言不触执行面）。

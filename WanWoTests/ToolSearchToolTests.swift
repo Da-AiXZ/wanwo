@@ -146,6 +146,9 @@ final class ToolSearchToolTests: XCTestCase {
             let name = "stub_tool"
             let description = "stub"
             let parameters = JSONValue.schemaObject(properties: [:], required: [])
+            func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+                .success("stub")
+            }
         }
         XCTAssertEqual(StubTool().exposure, .direct,
                        "AgentTool 协议默认值必须保持 .direct（ToolRegistry.swift:111 不动）")
