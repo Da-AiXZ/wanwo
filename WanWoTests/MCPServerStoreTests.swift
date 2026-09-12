@@ -131,47 +131,17 @@ final class MCPServerStoreTests: XCTestCase {
         XCTAssertEqual(config.startupTimeoutMs, 30_000)
     }
 
-    // MARK: 场景2 根因修复（选项 b）—— stdio 脚本路径 fence
+    // MARK: 场景2 根因修复（fs_context 补课）—— 会话工作区脚本路径合法
 
-    /// args 指向会话级目录（发现①实测路径形态）→ fail closed 拒，
-    /// 错误文案含指路 /var/wanwo/shared/（经 resolvedClientConfigs failures
-    /// 进 MCPLastActivationStore——设置页"上次激活"直读定位）。
+    /// 反回归锚：fs_context 补课（dcfdca1，10-design:647 兑现）后 MCP spawn
+    /// 与会话共用同一翻译视图——会话工作区路径（发现①实测形态）在配置面
+    /// 合法，clientConfig 正常构造 stdio config（a70b581 的 fence 已随设计
+    /// 对齐撤销）。
     @MainActor
-    func testStdioPerSessionScriptPathRejected() throws {
+    func testStdioWorkspaceScriptPathAccepted() throws {
         let json = #"""
         {"mcpServers":{"echo":{"command":"/usr/bin/python3",
             "args":["/var/wanwo/workspace/mcp-echo-server.py"]}}}
-        """#
-        let (store, _) = try makeFixture(json)
-        let entry = try XCTUnwrap(store.servers.first { $0.id == "echo" })
-        XCTAssertThrowsError(try store.clientConfig(for: entry)) { error in
-            let text = String(describing: error)
-            XCTAssertTrue(text.contains("/var/wanwo/shared/"),
-                          "denial must point the user to /var/wanwo/shared/")
-            XCTAssertTrue(text.contains("/var/wanwo/workspace/"),
-                          "denial must name the violated path")
-        }
-    }
-
-    /// command 本体指向会话级目录同样拒绝（fence 覆盖 command+args 两值）。
-    @MainActor
-    func testStdioCommandInPerSessionPathRejected() throws {
-        let json = #"""
-        {"mcpServers":{"echo":{"command":"/var/wanwo/workspace/srv.py"}}}
-        """#
-        let (store, _) = try makeFixture(json)
-        let entry = try XCTUnwrap(store.servers.first { $0.id == "echo" })
-        XCTAssertThrowsError(try store.clientConfig(for: entry)) { error in
-            XCTAssertTrue(String(describing: error).contains("/var/wanwo/shared/"))
-        }
-    }
-
-    /// 全局目录（/var/wanwo/shared/，legacy 表双侧可见）正常通过。
-    @MainActor
-    func testStdioSharedScriptPathAllowed() throws {
-        let json = #"""
-        {"mcpServers":{"echo":{"command":"/usr/bin/python3",
-            "args":["/var/wanwo/shared/mcp-echo-server.py"]}}}
         """#
         let (store, _) = try makeFixture(json)
         let entry = try XCTUnwrap(store.servers.first { $0.id == "echo" })
@@ -179,25 +149,5 @@ final class MCPServerStoreTests: XCTestCase {
         guard case .stdio = config.transport else {
             return XCTFail("expected stdio transport")
         }
-    }
-
-    /// fence 纯函数边界：前缀目录名部分重合不误伤（workspaceX ≠ workspace/
-    /// ——hasPrefix 以「目录+/」为锚）；返回值=首个违规项原文。
-    @MainActor
-    func testScriptPathViolationPureFunctionBoundaries() {
-        XCTAssertNil(MCPServerStore.stdioScriptPathViolation(
-            command: "/usr/bin/python3",
-            args: ["/var/wanwo/workspaceX/foo.py", "/var/wanwo/shared/ok.py"]),
-            "similar-but-different directory names must not trip the fence")
-        XCTAssertEqual(
-            MCPServerStore.stdioScriptPathViolation(
-                command: nil,
-                args: ["/var/wanwo/shared/ok.py", "/var/wanwo/browser/late.py"]),
-            "/var/wanwo/browser/late.py",
-            "first violated value is returned verbatim")
-        XCTAssertEqual(
-            MCPServerStore.stdioScriptPathViolation(
-                command: "/var/wanwo/offloads/srv.py", args: []),
-            "/var/wanwo/offloads/srv.py")
     }
 }

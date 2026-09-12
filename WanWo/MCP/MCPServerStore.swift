@@ -16,9 +16,11 @@
 //  Config（dsh connection.ts:66-70 1:1）；OAuth/JSON 导入/createdAt/updatedAt/
 //  session overrides/云同步/stdio reconnect 字段不做——读侧容忍但不回写
 //  （WanWo 为唯一写者、无 CLI 共写者，round-trip 丢未知键呈报）。
-//  场景2 根因修复（选项 b，lead 批准）：stdio 脚本路径 fence——command/args
-//  指向会话级目录（per-session 桶）即 fail closed 拒+指路 /var/wanwo/shared/
-//  （MCP spawn 全局视图下会话级脚本不可见=发现①，python exit 2 秒退）。
+//  场景2 根因修复（fs_context 补课，dcfdca1）：MCP spawn 带会话令牌
+//  （10-design:647 设计原文"guest 侧路径由 fs_context 翻译"）——会话工作区
+//  路径对 MCP 进程合法可见，a70b581 的"拒 workspace 路径"fence 随之撤销
+//  （其前提"spawn 全局视图"已被设计对齐修复推翻）。登记：fence 曾为选项 b
+//  （全局目录专用）的组成部分，设计原文实证后方案改向，fence 语义作废。
 //
 
 import Foundation
@@ -262,34 +264,6 @@ final class MCPServerStore: ObservableObject {
         return (configs, failures)
     }
 
-    // MARK: - stdio 脚本路径 fence（场景2 根因修复·选项 b，lead 批准）
-
-    /// 会话级目录前缀（与 FsContextRouter.perSessionBuckets 同源——WanWoPaths
-    /// 单一事实源；memory/skills/shared 是全局目录不在此列）。前缀以「目录+/」
-    /// 为锚，防止 workspaceX 之类的同形名误伤。
-    private static let perSessionScriptPrefixes: [String] = [
-        WanWoPaths.workspaceLinuxDir + "/",
-        WanWoPaths.offloadsLinuxDir + "/",
-        WanWoPaths.attachmentsLinuxDir + "/",
-        WanWoPaths.browserLinuxDir + "/",
-    ]
-
-    /// stdio 脚本路径 fence 纯函数（internal=测试锚）：command/args 任一值
-    /// 指向会话级目录 → 返回首个违规值原文（nil=通过）。
-    /// 背景（发现①）：MCP spawn 走全局文件视图（MCPTransportFactory fsContext=0
-    /// → legacy g_bind_mounts 表，FsContextRouter.translate guard 0 直通），
-    /// 会话级目录（per-session 桶）对 MCP server 进程不可见——脚本放会话
-    /// 工作区必然 python exit 2（512）秒退 crash-loop。fail closed：违规即拒，
-    /// 指路 /var/wanwo/shared/（全局目录，AI 会话侧与 MCP spawn 侧双侧可见）。
-    static func stdioScriptPathViolation(command: String?, args: [String]) -> String? {
-        for candidate in [command].compactMap({ $0 }) + args {
-            if perSessionScriptPrefixes.contains(where: { candidate.hasPrefix($0) }) {
-                return candidate
-            }
-        }
-        return nil
-    }
-
     // MARK: - 配置→连接配置（凭据注入缝）
 
     /// serverName/url/command 形态校验 + Keychain token 注入 Authorization 头
@@ -305,16 +279,6 @@ final class MCPServerStore: ObservableObject {
             guard !command.isEmpty else {
                 throw MCPConfigurationError(
                     "mcp-server \"\(entry.id)\": command 不能为空")
-            }
-            // 脚本路径 fence（场景2 根因修复·选项 b）：会话级目录对 MCP 进程
-            // 不可见，违规 fail closed 拒+指路。本 throw 经 resolvedClientConfigs
-            // failures 进 MCPLastActivationStore——设置页"上次激活"直读定位。
-            if let violated = Self.stdioScriptPathViolation(command: command,
-                                                            args: entry.args) {
-                throw MCPConfigurationError(
-                    "mcp-server \"\(entry.id)\": stdio 脚本路径 \"\(violated)\" 位于会话级目录"
-                        + "（/var/wanwo/{workspace,offloads,attachments,browser}）——MCP server 进程"
-                        + "只可见全局目录，请把脚本放入 /var/wanwo/shared/ 并更新 command/args")
             }
             return MCPClientConfig(
                 transport: .stdio(command: command, args: entry.args,
