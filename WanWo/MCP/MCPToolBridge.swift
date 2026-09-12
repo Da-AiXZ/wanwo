@@ -15,6 +15,9 @@
 //  MCPToolSyncing 缝同一工作模式。装配差异：dsh 直接 import ToolRuntime
 //  与 cordis ctx；WanWo 由实现自带对接 ToolRegistry 与 AppLogger
 //  （件3 汇报已登记的形态差异，类型语义不动）。
+//  C4 追加（M4-C 收官）：Phase1 世代构建施加 MCP 工具 spec 字节预算护栏
+//  （codex mcp_tool_exposure.rs:19-20/:121-141 语义端口，判定的纯函数与
+//  差异登记见 MCPToolExposure.swift；超限工具 exposure=.hidden 仍注册）。
 //
 
 import Foundation
@@ -85,7 +88,11 @@ struct WanWoMCPServerTool: AgentTool {
     let parameters: JSONValue
     /// F023：MCP 工具默认 deferred（C3 覆写；C2a schemas() 只直出 direct，
     /// 本字段落位后 MCP 工具名从请求 tools 数组消失、由 tool_search 承载）。
-    let exposure: ToolExposure = .deferred
+    /// C4：预算超限（单 spec > 8KB 或世代累计 > 64KB）时由 syncTools 判定为
+    /// .hidden——仍注册但不进 schemas()/deferredTools() 语料、dispatch 拒绝
+    /// （fail closed 更严，与 codex「Hidden 可 dispatch」的差异判定见
+    /// MCPToolExposure.swift 文件头）。
+    let exposure: ToolExposure
     /// C2c：tool_search 来源信息（server 名；可选描述当前恒 nil——
     /// MCPClientConfig 无 server description 字段，上游缺口呈报登记）。
     var toolSearchSourceInfo: ToolSearchSourceInfo? {
@@ -104,6 +111,7 @@ struct WanWoMCPServerTool: AgentTool {
     init(publicName: String,
          description: String,
          parameters: JSONValue,
+         exposure: ToolExposure = .deferred,
          timeoutMs: Int?,
          client: Client,
          rawName: String,
@@ -113,6 +121,7 @@ struct WanWoMCPServerTool: AgentTool {
         self.name = publicName
         self.description = description
         self.parameters = parameters
+        self.exposure = exposure
         self.timeoutMs = timeoutMs
         self.client = client
         self.rawName = rawName
@@ -154,6 +163,10 @@ final class MCPToolBridge: MCPToolSyncing {
         // 数组保留 server 列表序（dsh Map 插入序 1:1——Phase2 按序注册）。
         var definitions: [(name: String, tool: AgentTool)] = []
         var seenNames = Set<String>()
+        // C4：累计预算面（codex mcp_tool_exposure.rs:96 agent_plugin_bytes 等
+        // 价运行面；按本 server 单世代施加——平台结构差异登记见
+        // MCPToolExposure.swift 文件头）。
+        var budget = MCPToolExposureAccumulator()
         var cursor: String? = nil
         repeat {
             // :154——Swift SDK listTools 每次 send 全量解码、无 TS 侧 per-page
@@ -167,9 +180,21 @@ final class MCPToolBridge: MCPToolSyncing {
                         "mcp-client(\(options.serverName)): server listed tool " +
                         "\"\(tool.name)\" more than once — invalid tool list")
                 }
+                // inputSchema lossless 桥接（原 makeDefinition 内面随 C4 上提：
+                // 预算判定须在定义构建前取 spec 字节；SDK Value 即 JSON 值类型，
+                // 转换失败按 fetch 失败抛出→保持上一代不动，fail closed 不变）。
+                let schema = try JSONValue(tool.inputSchema)
+                // C4 预算护栏（codex mcp_tool_exposure.rs:121-141 逐式；WanWo
+                // 施加于全部 MCP 工具——拍板项 2 条文直读）：超限工具仍注册但
+                // exposure=.hidden（语义自洽性判定见 MCPToolExposure.swift 头）。
+                let exposure = budget.exposure(specBytes: MCPToolExposureBudget.modelSpecBytes(
+                    name: publicName,
+                    description: tool.description ?? "",
+                    parameters: schema))
                 definitions.append((publicName, try makeDefinition(
                     client: client, tool: tool,
-                    publicName: publicName, options: options)))                      // :162-172
+                    publicName: publicName, schema: schema, exposure: exposure,
+                    options: options)))                                              // :162-172
             }
             cursor = page.nextCursor                                                 // :174
         } while cursor != nil                                                        // :175
@@ -199,22 +224,23 @@ final class MCPToolBridge: MCPToolSyncing {
         return disposers
     }
 
-    /// dsh :162-172 createDefinition 调用的定义构建（注册面 1:1；执行面=缝）。
+    /// dsh :162-172 createDefinition 调用的定义构建（注册面 1:1；执行面=缝；
+    /// C4：schema/exposure 由 syncTools 上提传入——预算判定先于定义构建）。
     private func makeDefinition(client: Client,
                                 tool: Tool,
                                 publicName: String,
+                                schema: JSONValue,
+                                exposure: ToolExposure,
                                 options: MCPToolBridgeOptions) throws -> AgentTool {
         // SDK 0.12.1 的 Tool 未建模 execution.taskSupport（Tool 结构无该字段，
         // 上游缺口已呈报登记）→ taskRequired 信息不可得，本批恒 false；
         // 件5 的拒绝路径完整保留（当前不可达），SDK 升级后由真实值驱动。
         let taskRequired = false
-        // inputSchema lossless 桥接（SDK Value 即 JSON 值类型；转换失败按
-        // fetch 失败抛出→保持上一代不动，fail closed）。
-        let schema = try JSONValue(tool.inputSchema)
         return WanWoMCPServerTool(
             publicName: publicName,
             description: tool.description ?? "",                                     // :167
             parameters: schema,
+            exposure: exposure,
             timeoutMs: options.toolCallTimeoutMs,
             client: client,
             rawName: tool.name,

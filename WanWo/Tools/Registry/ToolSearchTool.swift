@@ -6,8 +6,11 @@
 //  （ToolSearchHandler：handle_call :191-227 逐式对拍——query 非空校验 :206-211、
 //  limit 默认 8 :212、limit>0 校验 :214-218、零语料回空 :220-222、search+输出
 //  :224-226；ToolSearchHandlerCache :50-130——简化为语料全等缓存）+
-//  handlers/tool_search_spec.rs:16-105（create_tool_search_tool：基座 description
-//  与 parameters schema 逐字端口；来源清单 512KB 渲染 = C7，本件取 Omit 变体基座）+
+//  handlers/tool_search_spec.rs:16-105（create_tool_search_tool：parameters
+//  schema 逐字端口；C7 起 description 动态化 = 基座 + 来源清单渲染段——
+//  Include 变体，WanWo 无 DeferredToolWorldState 特性词汇 → spec_plan.rs
+//  :1396-1404 门控恒走 Include，取证见 ToolSearchSourceListing.swift 头；
+//  渲染端口亦在彼文件）+
 //  tools/src/tool_discovery.rs:7（TOOL_SEARCH_DEFAULT_LIMIT = 8）。
 //  F023 语义（10-design:397-403/:648）：Deferred 工具注册即可执行，不进请求
 //  tools 数组；模型经本元工具（本地 BM25）按需发现，命中 spec 回注后下一轮
@@ -29,13 +32,27 @@ import Foundation
 final class ToolSearchTool: AgentTool, @unchecked Sendable {
 
     let name = "tool_search"
-    /// 基座 description（codex tool_search_spec.rs:93-95 Omit 变体逐字端口；
-    /// C7 在其后追加来源清单段）。
-    let description = "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes "
-        + "matching tools for the next model call.\n\nSome of the tools may not have been provided to you "
-        + "upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP "
-        + "tool discovery, always use `tool_search` instead of `list_mcp_resources` or "
-        + "`list_mcp_resource_templates`."
+    /// description 三段式（codex tool_search_spec.rs:93-95 逐字拆解）：
+    /// base + sourceSection（C7 来源清单渲染，codex :86-88 逐字）+
+    /// discoveryInstructions。注意 Include 形态下 sourceSection 尾 \n 直接
+    /// 衔接指引段（codex :87 format! 无额外空行）。
+    private static let baseDescription =
+        "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes "
+        + "matching tools for the next model call."
+    private static let discoveryInstructions =
+        "Some of the tools may not have been provided to you upfront, and you should use this "
+        + "tool (`tool_search`) to search for the required tools. For MCP tool discovery, always "
+        + "use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`."
+    /// 动态 description（缓存读取面）。死锁防线：ToolRegistry.schemas() 持
+    /// registry 锁内调用本属性——缓存保证锁内零 registry 访问（corpusProvider
+    /// → deferredTools() 会 NSLock 重入死锁，故 description 绝不现算）；
+    /// 刷新只发生在语料换手时（= 来源集变化时，低频），同一注册集字节稳定
+    /// （缓存前缀纪律：渲染纯函数 + 按名字节序，ToolSearchSourceListing）。
+    var description: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return cachedDescription
+    }
     /// parameters schema（codex tool_search_spec.rs:21-32 逐字端口）。
     let parameters = JSONValue.schemaObject(
         properties: [
@@ -60,9 +77,16 @@ final class ToolSearchTool: AgentTool, @unchecked Sendable {
     private let lock = NSLock()
     private var cachedCorpus: [ToolSearchInfo] = []
     private var cachedEngine: ToolSearchEngine?
+    /// C7：当前 description 渲染缓存（与 cachedCorpus 同源同手换新）。
+    private var cachedDescription: String = ""
 
     init(corpusProvider: @escaping @Sendable () -> [ToolSearchInfo]) {
         self.corpusProvider = corpusProvider
+        // C7：初始 description 由组装时语料快照渲染（init 在 registry 锁外
+        // 调 provider——refresh() 组装序）。
+        let initial = corpusProvider()
+        self.cachedCorpus = initial
+        self.cachedDescription = Self.makeDescription(initial)
     }
 
     /// codex ToolSearchHandler.supports_parallel_tool_calls → true。
@@ -111,8 +135,30 @@ final class ToolSearchTool: AgentTool, @unchecked Sendable {
         let engine = ToolSearchEngine(texts: corpus.map { $0.entry.searchText })
         cachedCorpus = corpus
         cachedEngine = engine
+        // C7：语料换手即 description 换新（来源集变化只发生在语料变化时）。
+        cachedDescription = Self.makeDescription(corpus)
         Self.logger.info("tool_search engine rebuilt (corpus=\(corpus.count))")
         return engine
+    }
+
+    /// C7：description 三段合成（纯函数，同语料字节稳定）。
+    private static func makeDescription(_ corpus: [ToolSearchInfo]) -> String {
+        baseDescription
+            + ToolSearchSourceListing.sourceSection(from: corpus.compactMap { $0.sourceInfo })
+            + discoveryInstructions
+    }
+
+    /// C7：组装步随手同步（ToolSearchAssembly.refresh 每步以 registry 语料
+    /// 快照调用；语料变化即同手刷新 description 缓存并失效引擎缓存——渲染
+    /// 不滞后于注册面换代）。本方法锁内零 registry 访问，锁序 registry→tool
+    /// 单向，无反转死锁面。
+    func syncCorpus(_ corpus: [ToolSearchInfo]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard cachedCorpus != corpus else { return }
+        cachedCorpus = corpus
+        cachedEngine = nil
+        cachedDescription = Self.makeDescription(corpus)
     }
 
     /// 命中输出渲染：function spec object 的 JSON 数组文本（JSONValue 编码

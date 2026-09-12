@@ -23,6 +23,9 @@
 //    · 语料构建（AgentTool → ToolSearchInfo.from + sourceInfo）在本类收口；
 //      sourceInfo：MCP 工具带 server 名（MCPClientConfig 无 server description
 //      字段，可选描述当前恒 nil——上游缺口已呈报），内置工具 nil。
+//    · C7：description 缓存随手——refresh 每步把 registry 语料快照喂给已注册
+//      的 ToolSearchTool（syncCorpus，registry 锁外），来源集变化时渲染同手
+//      收敛、无一步滞后；渲染端口见 ToolSearchSourceListing.swift。
 //
 
 import Foundation
@@ -67,8 +70,15 @@ final class ToolSearchAssembly: @unchecked Sendable {
             return
         }
         // 已注册即不再换手：语料新鲜度由 provider 实时读 registry +
-        // ToolSearchTool 引擎全等缓存承接（平台差异登记，见文件头）。
-        guard disposer == nil else { return }
+        // ToolSearchTool 引擎全等缓存承接（平台差异登记，见文件头）；C7 起
+        // description 缓存随本步语料快照同手刷新（registry 锁外调用，防渲染
+        // 滞后一步；快照即 refresh 开头 corpus）。
+        if disposer != nil {
+            if let tool = registry.get("tool_search") as? ToolSearchTool {
+                tool.syncCorpus(corpus)
+            }
+            return
+        }
         let tool = ToolSearchTool(corpusProvider: { [weak registry] in
             guard let registry else { return [] }
             return Self.infos(from: registry)

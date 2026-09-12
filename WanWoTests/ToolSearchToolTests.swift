@@ -2,10 +2,11 @@
 //  ToolSearchToolTests.swift
 //  WanWoTests
 //
-//  【M4-C1 测试锚】ToolSearchTool / ToolSearchInfo 行为锚——对拍基准 =
+//  【M4-C1/C7 测试锚】ToolSearchTool / ToolSearchInfo 行为锚——对拍基准 =
 //  codex-rs core/src/tools/handlers/tool_search.rs handle_call（:191-227 逐式）
 //  + tool_search_spec.rs create_tool_search_tool（Omit 变体基座）+
-//  tools/src/tool_search.rs 语料构建。
+//  tools/src/tool_search.rs 语料构建 + tool_search_spec.rs:34-89/:93-95
+//  （C7 动态 description：来源清单渲染段、Include 形态、字节稳定性与换手）。
 //  纪律：不真连 MCP（MCPServerStoreTests 头注同款）——语料以 ToolSearchInfo
 //  手工构造；判定面 = 纯函数 + execute 输出，端到端由真机验收覆盖。
 //
@@ -258,5 +259,60 @@ final class ToolSearchToolTests: XCTestCase {
         let newHit = try await tool.execute(
             .object(["query": .string("read file")]), makeContext())
         XCTAssertEqual(try parseArray(newHit.text).first?["name"] as? String, "fs_read_file")
+    }
+
+    // MARK: C7 — 动态 description（来源清单渲染）
+
+    /// description = 基座 + 来源清单段 + 发现指引（codex tool_search_spec.rs
+    /// :93-95 Include 形态；WanWo 无 DeferredToolWorldState 门控 → 恒 Include）。
+    func testDescriptionIncludesSourceListing() {
+        let tool = makeTool([makeCorpusEntry("cal_create_event", "Create events")])
+        XCTAssertTrue(tool.description.hasPrefix(
+            "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes "
+            + "matching tools for the next model call.\n\nYou have access to tools from the "
+            + "following sources:\n- calendar: Calendar server\n"),
+            "unexpected: \(tool.description)")
+        XCTAssertTrue(tool.description.contains(
+            "\nSome of the tools may not have been provided to you upfront"),
+            "Include 形态下指引段紧随清单尾 \\n（codex :87 无额外空行）")
+    }
+
+    /// 零来源（语料全为内置形态）→ "None currently enabled."（codex :48-49）。
+    func testDescriptionWithoutSourcesUsesPlaceholder() {
+        let info = ToolSearchInfo.from(name: "t", description: "d",
+                                       parameters: .object([:]), sourceInfo: nil)
+        let tool = makeTool([info])
+        XCTAssertTrue(tool.description.contains(
+            "You have access to tools from the following sources:\nNone currently enabled.\n"))
+    }
+
+    /// 同一语料下 description 字节稳定（红线：缓存前缀纪律）。
+    func testDescriptionIsByteStableForSameCorpus() {
+        let tool = makeTool([makeCorpusEntry("cal_create_event", "Create events")])
+        XCTAssertEqual(tool.description, tool.description)
+    }
+
+    /// 来源集变化 → description 换手（syncCorpus 同手刷新；引擎缓存同步失效，
+    /// 执行面语料换新——同一实例，无重注册）。
+    func testDescriptionFollowsSourceSetChanges() async throws {
+        final class CorpusBox: @unchecked Sendable {
+            var items: [ToolSearchInfo]
+            init(_ items: [ToolSearchInfo]) { self.items = items }
+        }
+        let box = CorpusBox([makeCorpusEntry("cal_create_event", "Create events")])
+        let tool = ToolSearchTool(corpusProvider: { box.items })
+        XCTAssertTrue(tool.description.contains("- calendar: Calendar server"))
+
+        // 换代：来源消失（新语料无 sourceInfo）→ description 收敛到占位文案。
+        box.items = [ToolSearchInfo.from(name: "fs_read_file", description: "Read files",
+                                         parameters: .object([:]), sourceInfo: nil)]
+        tool.syncCorpus(box.items)
+        XCTAssertTrue(tool.description.contains("None currently enabled."))
+        XCTAssertFalse(tool.description.contains("Calendar server"))
+        // 执行面语料同步换新（缓存失效重建语义不受 C7 影响）。
+        let output = try await tool.execute(
+            .object(["query": .string("read file")]), makeContext())
+        XCTAssertEqual(try parseArray(output.text).first?["name"] as? String,
+                       "fs_read_file")
     }
 }
