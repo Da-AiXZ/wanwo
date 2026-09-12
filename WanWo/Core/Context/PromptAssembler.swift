@@ -124,10 +124,14 @@ final class PromptAssembler: @unchecked Sendable {
     // MARK: - 组装
 
     /// 组装请求头（system 渲染 + 工具 schema 排序）。
+    /// - Parameter knownNames: toolOrder 校验名集（M4-C6：registry.knownNames
+    ///   全集，含 deferred/hidden——收窄集会把 toolOrder 合法列出的 MCP deferred
+    ///   工具名误判为未注册；nil = 回落 schema 收窄集，dsh 原语义）。
     /// - Throws: 未知/畸形 {{var}} 引用（严格插值，dsh renderPrompt 语义）。
-    func assemble(toolSchemas: [ToolSchemaEntry]) throws -> (system: String,
-                                                             contextSnapshot: String,
-                                                             tools: [ToolSchemaEntry]) {
+    func assemble(toolSchemas: [ToolSchemaEntry],
+                  knownNames: [String]? = nil) throws -> (system: String,
+                                                           contextSnapshot: String,
+                                                           tools: [ToolSchemaEntry]) {
         lock.lock()
         let sectionSnapshot = sections.values.sorted {
             $0.order != $1.order ? $0.order < $1.order : $0.name < $1.name

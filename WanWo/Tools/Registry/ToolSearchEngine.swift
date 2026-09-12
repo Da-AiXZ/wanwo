@@ -386,7 +386,7 @@ struct ToolSearchEngine: Sendable {
             var score = 0.0
             let values = docTokenValues[id]
             for token in queryTokens {
-                score += idf(token) * (values?[token] ?? 0.0)
+                score += idf(token) * (values[token] ?? 0.0)
             }
             if score > 0 {
                 hits.append(Hit(id: id, score: score))
