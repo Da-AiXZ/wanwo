@@ -271,9 +271,14 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     }
 
     // ---- 不变状态（构造即定，无锁读）----
+    /// 连接配置（resolve 后只读）。
     private let config: MCPClientConfig
     private let policy: MCPReconnectPolicy
     private let label: String
+    /// ledger 归属身份（发现②）：本 supervisor 的栈 UUID + 被替代 stand down
+    /// 回调——takeover/register/reap 全链核对键。weak 捕获本类（台账不持强
+    /// 引用，栈释放后回调 no-op）。
+    private let ledgerOwner: MCPStdioLedgerOwner
     /// fs_context 会话令牌（10-design:647——guest 侧路径由 fs_context 翻译；
     /// 全部世代共用同一令牌：令牌按 sid 幂等（FsContextRouter.context(for:)），
     /// 重连=同视图换进程。场景2 根因修复：B4 曾传 0=绕过翻译，脚本在
@@ -296,6 +301,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     private let lock = NSLock()
     /// connection.ts:137 disposed。
     private var disposed = false
+    /// 被新栈替代旗标（发现②）：takeover 异主回收触发 onSuperseded 后置位
+    /// ——置位后拒绝一切新 spawn（connectGeneration 入口守卫），旧栈收敛为
+    /// dispose，绝不进重试循环反杀新栈健康进程（测3/测4 杀球循环根因）。
+    private var superseded = false
     /// connection.ts:139 当前世代（连接中或已连接；退避等待与最终失败后为 nil）。
     private var client: Client?
     /// connection.ts:141 与 client 配对的关闭信号（dispose 前捕获）。
@@ -338,6 +347,15 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         // connection.ts:133-135：仅首次同步在 failOnStartupError 下用严格模式。
         if config.failOnStartupError { regular.registrationFailure = .throwError }
         self.startupOpts = regular
+        // 发现②：ledger 归属身份——UUID 唯一 + 被替代 stand down 回调
+        // （weak 捕获本类；回调在 ledger 锁外发起，经 Task 桥接异步执行，
+        // 避免在回收路径上同步重入 supervisor 锁）。
+        self.ledgerOwner = MCPStdioLedgerOwner(
+            id: UUID(),
+            onSuperseded: { [weak self] in
+                guard let self else { return }
+                Task { await self.standDown() }
+            })
         let first = Task { [weak self] in
             guard let self else { return }
             await self.connectGeneration(startup: true)
@@ -417,6 +435,27 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         for dispose in final.values { dispose() }
     }
 
+    /// 被新栈替代的收敛路径（发现②）：置位旗标后走 dispose——停止重连、
+    /// 关闭活世代、等在飞尝试静默。此刻本栈 ledger 条目已被新栈 takeover
+    /// 回收（新栈负责杀进程+关 fd），本路径 reap(expecting: self) 恒 no-op
+    /// ——不触碰新栈健康进程。幂等：旗标置位即守卫，重复通知只收敛一次。
+    func standDown() async {
+        let first = withLock {
+            guard !superseded, !disposed else { return false }
+            superseded = true
+            return true
+        }
+        guard first else { return }
+        Self.logger.warning(
+            "\(self.label): superseded by a newer session stack — standing " +
+            "down (no reconnect; ownership transferred to the new stack)")
+        MCPDiagnosticsLog.shared.record(
+            level: "warn", category: "MCPConnection", server: config.serverName,
+            event: "superseded by a newer session stack — standing down " +
+                   "(no reconnect)")
+        await dispose()
+    }
+
     /// 裁决①入口：已建立世代上的请求失败由上层调用（dsh onclose 的语义
     /// 对应物）。isCurrent 守卫使并发的失败信号天然幂等（:172 注释语义）。
     func reportRequestFailure(generation: Client) {
@@ -438,6 +477,9 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     /// 并关闭双 fd。dsh 同构：TS SDK StdioClientTransport 的 close 会杀
     /// child（stdio.ts:202-206 abort 链）——Swift StdioTransport 是 fd 注入
     /// 形态、无进程所有权（B4 三坑①），kill 归属在 WanWo。
+    /// 发现②：reap 带归属核对（expecting: 本栈 ownerID）——各落点只终结
+    /// 自己的进程组并关闭自己的 fd，异主条目（新栈健康进程）绝不动；
+    /// 跨栈回收只经 factory takeover 显式发生（最新栈获胜）。
     /// 行为链（核① 5s 竞速的兑现路径）：reap→terminate（closeStdin→
     /// SIGTERM→200ms→SIGKILL，minis 坑位④优雅+回退压缩形态）→guest 死→
     /// stdout EOF→StdioTransport readLoop 退出→Client 消息循环退出→
@@ -445,7 +487,8 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     /// 下宽裕获胜；内核僵死时 5s 上限兜底（既有语义不变）。
     /// http 条目无 ledger 记录，reap 返回 false——日志只在真实回收时打。
     private func reapStdioSession(reason: String) {
-        let reaped = MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
+        let reaped = MCPStdioSessionLedger.shared.reap(
+            serverName: config.serverName, expecting: ledgerOwner.id)
         if reaped {
             Self.logger.info("\(self.label): stdio server process terminated (\(reason))")
             // 方案乙最小化：回收落点事件落诊断文件（reason 直接指认归属路径）。
@@ -652,6 +695,9 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     /// 失败一律经 attemptFailure 漏斗；成功即接通请求失败驱动的下行路径。
     /// 永不抛出。
     private func connectGeneration(startup: Bool) async {
+        // 发现②：被替代后拒绝一切新 spawn（含重连退避到期触发的尝试）——
+        // 旧栈收敛为 dispose，绝不反杀新栈健康进程（杀球循环的入口封死）。
+        guard !withLock({ superseded }) else { return }
         // :238-241——client info 照抄 dsh 值（平台适配：标识不变更）；
         // Capabilities() 默认全 nil = 不声明能力（dsh capabilities: {}）。
         // elicitation 能力仅当决策链在场时声明（件9；SDK Capabilities.Elicitation
@@ -702,8 +748,8 @@ final class McpConnectionSupervisor: @unchecked Sendable {
             // :272——每次尝试全新 transport（dsh createTransport(config)）。
             // fs_context 补课（10-design:647）：全部世代带同一会话令牌——
             // 重连=同视图换进程（令牌按 sid 幂等，进程组 fork 自动继承）。
-            let transport = try MCPTransportFactory.makeTransport(for: config,
-                                                                  fsContext: fsContext)
+            let transport = try MCPTransportFactory.makeTransport(
+                for: config, fsContext: fsContext, owner: ledgerOwner)
             // 裁决②：连接看门狗（initialize 挂起无内建超时且不响应取消）。
             // B5：stdio 读 config.startupTimeoutMs（用户裁决③平台层启动
             // 超时），http 恒默认 30s。B7：stdio 超时错误附模型可读提示

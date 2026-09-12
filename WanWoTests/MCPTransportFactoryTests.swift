@@ -7,6 +7,8 @@
 //  Swift URL 宽松通过 → 显式 scheme+host 校验 fail closed 同形。
 //  【场景2 根因修复】makeTransport 签名补 fsContext（10-design:647 兑现）：
 //  http 变体不消费该值（校验先于 stdio 分支），测试用 0 占位。
+//  【发现② 修复】makeTransport 签名补 owner（ledger 归属身份）：http
+//  变体同样不消费（无 ledger 记账），测试以空回调 owner 占位。
 //
 
 
@@ -20,10 +22,16 @@ final class MCPTransportFactoryTests: XCTestCase {
                         serverName: "docs")
     }
 
+    /// owner 占位（发现② 签名）：http 变体不触 ledger，回调永不被调。
+    private func makeOwner() -> MCPStdioLedgerOwner {
+        MCPStdioLedgerOwner(id: UUID(), onSuperseded: {})
+    }
+
     /// 缺 scheme（"example.com/mcp"）→ 抛。
     func testRejectsURLWithoutScheme() {
         XCTAssertThrowsError(try MCPTransportFactory.makeTransport(
-            for: makeConfig(url: "example.com/mcp"), fsContext: 0)) { error in
+            for: makeConfig(url: "example.com/mcp"), fsContext: 0,
+            owner: makeOwner())) { error in
             XCTAssertEqual(
                 String(describing: error),
                 "mcp-client(docs): url is not a valid absolute URL")
@@ -33,18 +41,21 @@ final class MCPTransportFactoryTests: XCTestCase {
     /// 缺 host（"https:///path"）→ 抛。
     func testRejectsURLWithoutHost() {
         XCTAssertThrowsError(try MCPTransportFactory.makeTransport(
-            for: makeConfig(url: "https:///path"), fsContext: 0))
+            for: makeConfig(url: "https:///path"), fsContext: 0,
+            owner: makeOwner()))
     }
 
     /// 合法绝对 http(s) URL → 构造成功（HTTPClientTransport 无公开连接
     /// 状态面——isConnected 为 SDK private，CI 工具链实证；构造不抛即锚点）。
     func testAcceptsAbsoluteHTTPSURL() throws {
         _ = try MCPTransportFactory.makeTransport(
-            for: makeConfig(url: "https://example.com/mcp"), fsContext: 0)
+            for: makeConfig(url: "https://example.com/mcp"), fsContext: 0,
+            owner: makeOwner())
     }
 
     func testAcceptsAbsoluteHTTPURL() throws {
         _ = try MCPTransportFactory.makeTransport(
-            for: makeConfig(url: "http://127.0.0.1:8765/mcp"), fsContext: 0)
+            for: makeConfig(url: "http://127.0.0.1:8765/mcp"), fsContext: 0,
+            owner: makeOwner())
     }
 }

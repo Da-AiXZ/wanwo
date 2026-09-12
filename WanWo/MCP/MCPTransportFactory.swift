@@ -93,6 +93,8 @@ enum MCPTransportFactory {
     /// - Parameter fsContext: fs_context 会话令牌（10-design:647 兑现——
     ///   stdio spawn 的 guest 侧路径由 fs_context 翻译；0=legacy 全局视图
     ///   仅测试/无会话语境使用，生产链路恒带 FsContextRouter.context(for:)）。
+    /// - Parameter owner: ledger 归属身份（发现②：takeover/登记/被替代通知
+    ///   的键——supervisor 自产 UUID+stand down 回调）。
     /// - Returns: 未连接的 transport——streamable-http 为 `HTTPClient-
     ///   Transport`（streaming=true——独立 GET 事件流 + POST 响应 SSE，
     ///   简报件2 指定形态）；stdio 为 SDK `StdioTransport`（fd 注入形态，
@@ -106,7 +108,8 @@ enum MCPTransportFactory {
     ///   （executor envp_buf 8192 字节静默丢条目，入口侧预检 fail loud）、
     ///   spawn 失败。
     static func makeTransport(for config: MCPClientConfig,
-                              fsContext: UInt64) throws -> any Transport {
+                              fsContext: UInt64,
+                              owner: MCPStdioLedgerOwner) throws -> any Transport {
         switch config.transport {
         case .streamableHTTP(let urlString, let headers):
             guard let endpoint = URL(string: urlString),
@@ -153,9 +156,12 @@ enum MCPTransportFactory {
                     "contributes \(totalEnvBytes - userEnvBytes) bytes, user env " +
                     "\(userEnvBytes) bytes) — trim user env entries")
             }
-            // 世代替换防泄漏：同 server 重 spawn（重连=新世代）前终结旧
-            // 进程+关旧 fd（正式监督面=B5；此处只挡无界进程累积）。
-            MCPStdioSessionLedger.shared.reap(serverName: config.serverName)
+            // 世代替换防泄漏+跨栈接管（发现② 修复）：takeover=「最新栈获胜」
+            // 的显式形态——回收既有条目（无论归属）+ 异主附加 stand down 通知
+            // （旧栈 supervisor dispose 收敛，不再重试反杀）。原 reap 无差别
+            // 杀球+旧栈不识替代=测3/测4 的杀球循环与 Bad file descriptor。
+            MCPStdioSessionLedger.shared.takeover(serverName: config.serverName,
+                                                  owner: owner)
             var stdinWriteFd: Int32 = -1
             var stdoutReadFd: Int32 = -1
             var spawnError: Int32 = 0
@@ -238,11 +244,13 @@ enum MCPTransportFactory {
             // 在 WanWo（ledger.reap）。
             MCPStdioSessionLedger.shared.register(
                 serverName: config.serverName,
+                owner: owner,
                 entry: MCPStdioSessionLedger.Entry(
                     session: session,
                     pid: Int32(session.pid),
                     stdinWriteFd: stdinWriteFd,
-                    stdoutReadFd: stdoutReadFd))
+                    stdoutReadFd: stdoutReadFd,
+                    owner: owner))
             // EOF→世代下行信号源：guest 死→stdout 读端 EOF→StdioTransport
             // readLoop 退出→messageContinuation finish→Client 消息循环退出
             //（SDK 源码 :147-150/:176）——B5 监督面据此判世代下行。
