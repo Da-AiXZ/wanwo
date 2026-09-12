@@ -45,6 +45,8 @@ final class ToolSearchTool: AgentTool, @unchecked Sendable {
         required: ["query"])
 
     /// codex tools/src/tool_discovery.rs:7 TOOL_SEARCH_DEFAULT_LIMIT。
+    /// ⚠️ 同步提醒（C1 review 登记级意见 2）：上方 parameters schema 中 limit
+    /// 的 description 硬编码 "Defaults to 8."——若本值将来变更，必须同步改文案。
     static let defaultLimit = 8
 
     /// 语料缝：组装面（C2）按当前 registry 的 deferred 工具集提供 ToolSearchInfo
