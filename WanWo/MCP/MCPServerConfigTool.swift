@@ -51,7 +51,10 @@ struct MCPServerConfigTool: AgentTool {
         "update a stdio server's startup timeout — useful when a server times " +
         "out during startup. The change is persisted and takes effect for newly " +
         "spawned sessions only (configuration is captured as a snapshot when a " +
-        "session stack is built — reconnecting does not pick it up). Updating a " +
+        "session stack is built — reconnecting does not pick it up). For stdio " +
+        "scripts, use /var/wanwo/mcp-servers/ as the persistent home (visible " +
+        "to every session); a script under /var/wanwo/workspace/ is only " +
+        "visible to the session that wrote it. Updating a " +
         "configuration is a sandboxed mutation: it is " +
         "denied in read-only mode and may require user approval via " +
         "sandbox_permissions."
