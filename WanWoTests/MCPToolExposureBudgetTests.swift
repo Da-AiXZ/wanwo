@@ -54,8 +54,8 @@ final class MCPToolExposureBudgetTests: XCTestCase {
         // 第 23 个 next 仍 66000 → Hidden。
         let exposures = MCPToolExposureBudget.exposures(forSpecBytes:
             Array(repeating: 3_000, count: 23))
-        XCTAssertEqual(exposures.prefix(21),
-                       Array(repeating: .deferred, count: 21))
+        XCTAssertEqual(Array(exposures.prefix(21)),
+                       Array(repeating: ToolExposure.deferred, count: 21))
         XCTAssertEqual(exposures[21], .hidden)
         XCTAssertEqual(exposures[22], .hidden)
     }
