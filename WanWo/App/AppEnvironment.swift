@@ -376,6 +376,12 @@ final class AppEnvironment: ObservableObject {
                               "\(String(describing: error))")
         }
 
+        // M4-C2：tool_search 组装步宿主——M4-C3 起 MCP 工具默认 deferred，
+        // 存在 deferred 工具 ⇒ 注册元工具、零 deferred ⇒ 不注册（每步组装前
+        // AgentLoop.refresh 收敛；codex spec_plan.rs:371-406 同构）。资源三元
+        // /mcp_server_config 等内置元工具走协议默认 .direct，不受影响。
+        let toolSearchAssembly = ToolSearchAssembly(registry: registry)
+
         let spill = SpillStore(
             root: WanWoPaths.persistentBase
                 .appendingPathComponent("spill", isDirectory: true)
@@ -449,7 +455,9 @@ final class AppEnvironment: ObservableObject {
             // PermissionCoordinator 折叠，此处取实时值；approved 显式 stamp
             // 发生在工具体内 SandboxGate.resolveMode）。
             sandboxModeProvider: { [permission] in permission.knobs.sandbox },
-            escalationApprover: escalationApprover)
+            escalationApprover: escalationApprover,
+            // M4-C2：tool_search 组装步（存在 deferred 才注册，每步刷新）。
+            toolSearchAssembly: toolSearchAssembly)
         return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
                 planMode, attachments)
     }

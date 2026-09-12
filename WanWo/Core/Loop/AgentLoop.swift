@@ -94,6 +94,9 @@ actor AgentLoop {
         /// P1-3：提权审批通道（approval 只由 sandbox_permissions 请求触发；
         /// 'never' 政策在闭包内先短路——dsh user-approval index.ts:266）。
         let escalationApprover: SandboxEscalationApprover?
+        /// M4-C2：tool_search 组装步宿主（存在 deferred 工具 ⇒ 注册/刷新
+        /// tool_search；nil = 不组装——既有调用面/测试不受扰）。
+        var toolSearchAssembly: ToolSearchAssembly? = nil
     }
 
     // MARK: - 状态
@@ -567,10 +570,21 @@ actor AgentLoop {
     private func runStep(turn: Int, step: Int) async throws -> StepOutcome {
         let adapter = try await deps.makeAdapter()
 
+        // M4-C2 组装步（codex spec_plan.rs:371-406 finalize_tool_router 的
+        // tool_search 注册面同构）：存在 deferred 工具 ⇒ 注册/刷新 tool_search；
+        // 零 deferred ⇒ 注销（幂等；MCP 工具世代换手后由此收敛注册态，逐步
+        // 执行对齐 codex per-turn finalize 的 WanWo 等价）。
+        deps.toolSearchAssembly?.refresh()
+
         // prompt 组装（严格插值；组装失败按回合错误处理）。
         let assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
         do {
-            assembly = try deps.assembler.assemble(toolSchemas: deps.registry.schemas())
+            assembly = try deps.assembler.assemble(
+                toolSchemas: deps.registry.schemas(),
+                // M4-C6：toolOrder 校验名集 = registry.knownNames 全集（含
+                // deferred/hidden）——收窄集会把 toolOrder 合法列出的 MCP
+                // deferred 工具名误判为未注册（fatalError 回归防线）。
+                knownNames: deps.registry.knownNames)
         } catch {
             throw LLMError(message: String(describing: error), code: "PROMPT_ASSEMBLY")
         }

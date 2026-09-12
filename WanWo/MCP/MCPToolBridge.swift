@@ -74,13 +74,23 @@ func publicToolName(serverName: String, rawName: String) -> String {
 
 /// MCP server 工具的 WanWo ToolRegistry 定义（dsh ToolDefinition 注册面：
 /// name/description/parameters；执行经 MCPToolExecuting 缝=件5）。
-/// 协议默认取用：exposure=.direct（简报清单外检查：deferred 归 M4-C，本批
-/// 按现有 ToolRegistry 正常注册）、isConcurrencySafe=false（fail closed——
-/// MCP 工具并发安全性未知）、presentCall/presentResult=nil（M9 卡片族）。
+/// exposure=.deferred（F023，M4-C 落地——此前 M4-A 注释「deferred 归 M4-C」
+/// 兑现）：MCP 工具不进请求 tools 数组，模型经 tool_search 元工具按需发现
+/// （C2 组装步注册；C5 激活面回注命中 spec）。isConcurrencySafe=false（fail
+/// closed——MCP 工具并发安全性未知）、presentCall/presentResult=nil（M9 卡片
+/// 族）均走协议默认（内置工具协议默认 .direct 不动，ToolRegistry.swift:111）。
 struct WanWoMCPServerTool: AgentTool {
     let name: String
     let description: String
     let parameters: JSONValue
+    /// F023：MCP 工具默认 deferred（C3 覆写；C2a schemas() 只直出 direct，
+    /// 本字段落位后 MCP 工具名从请求 tools 数组消失、由 tool_search 承载）。
+    let exposure: ToolExposure = .deferred
+    /// C2c：tool_search 来源信息（server 名；可选描述当前恒 nil——
+    /// MCPClientConfig 无 server description 字段，上游缺口呈报登记）。
+    var toolSearchSourceInfo: ToolSearchSourceInfo? {
+        ToolSearchSourceInfo(name: options.serverName, description: nil)
+    }
     /// dsh call timeout 的 AgentTool 预算镜像（F019 协作式 deadline；SDK 层
     /// 超时由件5 executor 内做——两层预算一致性随件5 呈报）。
     let timeoutMs: Int?

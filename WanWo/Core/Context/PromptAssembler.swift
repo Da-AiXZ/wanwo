@@ -164,20 +164,26 @@ final class PromptAssembler: @unchecked Sendable {
         }
 
         // 3. 工具 schema 排序（dsh orderTools：rest 标记位插入未列出工具的字典序）。
-        let tools = Self.orderTools(toolSchemas, order)
+        let tools = Self.orderTools(toolSchemas, order,
+                                    knownNames: knownNames.map(Set.init))
 
         return (system, contextSnapshot, tools)
     }
 
     /// dsh orderTools 1:1：未知配置名即抛；已知但被隐藏的名字允许缺席。
-    static func orderTools(_ tools: [ToolSchemaEntry], _ toolOrder: [String]?) -> [ToolSchemaEntry] {
+    /// M4-C6：`knownNames` 校验名集与模型可见 schema 集解耦——deferred/hidden
+    /// 工具（如 MCP 工具名）可被 toolOrder 合法列出而不进请求 tools 数组
+    /// （输出循环按名查找落空即跳过，语义=缺席）；nil = 回落 schema 收窄集
+    /// （dsh 原语义，既有调用面/测试不受扰）。
+    static func orderTools(_ tools: [ToolSchemaEntry], _ toolOrder: [String]?,
+                           knownNames: Set<String>? = nil) -> [ToolSchemaEntry] {
         guard let toolOrder else {
             return tools.sorted { $0.name < $1.name }
         }
-        let knownNames = Set(tools.map { $0.name })
-        let unknown = toolOrder.filter { $0 != TOOL_ORDER_REST.marker && !knownNames.contains($0) }
+        let known = knownNames ?? Set(tools.map { $0.name })
+        let unknown = toolOrder.filter { $0 != TOOL_ORDER_REST.marker && !known.contains($0) }
         if !unknown.isEmpty {
-            fatalError("toolOrder lists unregistered tools \(unknown.joined(separator: ", ")); known tools: \(knownNames.sorted().joined(separator: ", "))")
+            fatalError("toolOrder lists unregistered tools \(unknown.joined(separator: ", ")); known tools: \(known.sorted().joined(separator: ", "))")
         }
         let listed = Set(toolOrder)
         let rest = tools.filter { !listed.contains($0.name) }.sorted { $0.name < $1.name }

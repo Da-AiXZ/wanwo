@@ -9,7 +9,8 @@
 //    · guard 单调否定是硬不变量：guard 只有 deny 结果，无 allow，后注册不可翻转先前否定
 //    · executionMode fail-closed：未知/未声明/抛错的 isConcurrencySafe 一律 exclusive
 //    · schema 只暴露 name/description/parameters（timeoutMs 等元数据永不上 wire）
-//    · PTC 部分跳过——M5.4 才做（exposure .deferred 预留，不注册 ToolSearch）
+//    · PTC 部分跳过——M5.4 才做（exposure .deferred 已生效=M4-C：MCP 工具
+//      默认 deferred；tool_search 组装步见 ToolSearchAssembly，不属本文件职责）
 //
 
 import Foundation
@@ -92,8 +93,11 @@ protocol AgentTool: Sendable {
     var description: String { get }
     /// JSON Schema（object；lossless）。
     var parameters: JSONValue { get }
-    /// 呈现模式：M2 全部 direct；MCP 工具默认 deferred（F023，M4）；hidden 不可见。
+    /// 呈现模式：内置默认 direct；MCP 工具覆写 deferred（F023，M4-C 落地）；
+    /// hidden 不可见。
     var exposure: ToolExposure { get }
+    /// tool_search 来源信息（M4-C2c 语料缝：MCP 工具携带 server 名；内置 nil）。
+    var toolSearchSourceInfo: ToolSearchSourceInfo? { get }
     /// 协作式超时预算（毫秒）；nil = 无 deadline（F019）。
     var timeoutMs: Int? { get }
 
@@ -109,13 +113,15 @@ protocol AgentTool: Sendable {
 
 extension AgentTool {
     var exposure: ToolExposure { .direct }
+    var toolSearchSourceInfo: ToolSearchSourceInfo? { nil }
     var timeoutMs: Int? { nil }
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
     func presentCall(_ args: JSONValue) -> ToolCardIntent? { nil }
     func presentResult(_ args: JSONValue, _ output: ToolOutput) -> ToolCardIntent? { nil }
 }
 
-/// 呈现模式（dsh exposure 词汇；M2 仅 direct/hidden 生效，deferred 为 M4 预留）。
+/// 呈现模式（dsh exposure 词汇；M4-C 起 deferred 生效=MCP 工具默认——
+/// tool_search 组装步见 ToolSearchAssembly）。
 enum ToolExposure: String, Sendable {
     case direct, deferred, hidden
 }
@@ -209,14 +215,27 @@ final class ToolRegistry: @unchecked Sendable {
         return nil
     }
 
-    /// 模型可见 schema（exposure != .hidden；按名称字典序——dsh 缺省 toolOrder 语义）。
+    /// 模型可见 schema（exposure == .direct——codex spec_plan.rs:530-542
+    /// build_model_visible_specs `!exposure.is_direct() { continue }` 同构；
+    /// 按名称字典序——dsh 缺省 toolOrder 语义。deferred 工具经 tool_search
+    /// 按需发现（F023，组装步见 ToolSearchAssembly），hidden 永不可见）。
     func schemas() -> [ToolSchemaEntry] {
         lock.lock()
         defer { lock.unlock() }
         return tools.values
-            .filter { $0.exposure != .hidden }
+            .filter { $0.exposure == .direct }
             .map { ToolSchemaEntry(name: $0.name, description: $0.description,
                                    parameters: $0.parameters) }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// M4-C2c：deferred 工具快照（tool_search 语料构建消费面；按名称字典序
+    /// 确定性——ToolSearchTool 引擎缓存的全等判定随序稳定）。
+    func deferredTools() -> [AgentTool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return tools.values
+            .filter { $0.exposure == .deferred }
             .sorted { $0.name < $1.name }
     }
 
