@@ -8,7 +8,9 @@
 //  设置页"导出诊断日志"按钮（ShareLink）交用户自助取回。
 //    · 事件集（全部为既有日志点的同步追加，零语义变更）：guest exited
 //      （探针 A，死因三态）/ stdio process terminated (reason)（B5 回收落点）/
-//      重连循环（retry/give-up）/ 激活成功失败（MCPRuntime.activateAll）。
+//      重连循环（retry/give-up）/ 激活成功失败（MCPRuntime.activateAll）/
+//      stderr 行（MCPServerStderr——server 自述诊断，"can't open file" 级
+//      直读；行级追加+环形截断，降频策略待真机观察）。
 //    · 环形：~100KB 上界，超限保留后半行原子重写（事件频率=激活/世代级，
 //      重写成本可忽略）。
 //    · 隐私（lead 要求③）：只追加本仓错误文案与自产事件文案；每行再过

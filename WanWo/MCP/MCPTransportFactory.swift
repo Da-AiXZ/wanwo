@@ -174,6 +174,14 @@ enum MCPTransportFactory {
                 stderrLineCallback: { [serverName = config.serverName] line, _ in
                     // M4-B B7：stderr 行原样进 AppLogger（方案乙接线）。
                     stderrLogger.warning("mcp-server \(serverName) stderr: \(line)")
+                    // 任务包（lead 批准）：stderr 行同步追加诊断文件——python
+                    // "can't open file" 级别的 server 自述诊断免推理直读。
+                    // category=MCPServerStderr 与 os.log 对读；sanitized 兜底在
+                    // record 内部；高频路径=行级追加+既有环形截断（降频策略
+                    // 待真机观察再定）。
+                    MCPDiagnosticsLog.shared.record(
+                        level: "info", category: "MCPServerStderr", server: serverName,
+                        event: line)
                 },
                 exitHandler: { [serverName = config.serverName] exitCode, error in
                     // M4-B 场景2 取证（探针 A）：guest 死因直读——此前
