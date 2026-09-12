@@ -60,12 +60,15 @@ final class MCPToolExposureBudgetTests: XCTestCase {
         XCTAssertEqual(exposures[22], .hidden)
     }
 
-    /// 边界内不误伤：单工具恰 8_000、累计恰 64_000 均压线放行（`<=` 判定）。
+    /// 边界内不误伤：单工具恰 8_000（闭边界）与累计恰 64_000（8 条 × 8_000
+    /// 闭边界）均放行（`<=` 判定；第 9 条超累计 → Hidden）。
     func testBoundaryValuesStayWithinBudget() {
-        let exposures = MCPToolExposureBudget.exposures(forSpecBytes: [
-            8_000, 56_000])
-        XCTAssertEqual(exposures, [.deferred, .deferred],
+        let exposures = MCPToolExposureBudget.exposures(forSpecBytes:
+            Array(repeating: 8_000, count: 9))
+        XCTAssertEqual(Array(exposures.prefix(8)),
+                       Array(repeating: ToolExposure.deferred, count: 8),
                        "8_000 单工具与 64_000 累计均为闭边界（codex `next <= MAX`）")
+        XCTAssertEqual(exposures[8], .hidden)
     }
 
     /// 空输入零输出。

@@ -71,10 +71,12 @@ final class ToolSearchToolTests: XCTestCase {
         let info = ToolSearchInfo.from(name: "create_event", description: "Create events",
                                        parameters: parameters, sourceInfo: nil)
         let tokens = Set(BM25Tokenizer.tokenize(info.entry.searchText))
-        XCTAssertTrue(tokens.contains("create"))
+        // 断言对照 = Porter1 词干化后形态（差异登记 #3：create→creat、
+        // identifier→identifi；检索语义=查询/文档同器词干化，词族收敛一致）。
+        XCTAssertTrue(tokens.contains("creat"))
         XCTAssertTrue(tokens.contains("event"), "underscore variant 'create event' must feed corpus")
         XCTAssertTrue(tokens.contains("calendar"), "property name must feed corpus")
-        XCTAssertTrue(tokens.contains("identifier"), "property description must feed corpus")
+        XCTAssertTrue(tokens.contains("identifi"), "property description must feed corpus")
         XCTAssertTrue(tokens.contains("start"), "nested property name must feed corpus")
     }
 

@@ -146,22 +146,29 @@ final class MCPServerConfigToolTests: XCTestCase {
         XCTAssertEqual(output.errorCode, "MCP_UNKNOWN_SERVER")
     }
 
-    /// server 缺失/空串 → must be provided（normalize_required_string 语义）。
+    /// server 空白串 → must be provided（normalize_required_string 语义）。
+    /// 540b97c 语义更新：server **省略**（空参数）= 列出全部已配置 server（合法
+    /// 查询路径，非错误）——本用例旧断言（空参数拒绝）为该提交的测试同步欠账，
+    /// 由 M4-C 一次性验证跑首次执行暴露（此前测试轨道拆除期无执行面）。
     @MainActor
     func testMissingServerRejected() async throws {
         let (tool, _) = try makeTool()
-        // 显式 [JSONValue] 标注：数组字面量含 `as` 转换时编译器推断为 [Any]
-        //（B9 首跑编译红自修——:145/:146）。
-        let argCases: [JSONValue] = [.object([:]),
-                                     .object(["server": .string("   ")])]
-        for args in argCases {
-            let output = try await tool.execute(
-                args, makeContext(sandboxMode: .readOnly, approver: nil))
-            XCTAssertTrue(output.isError)
-            XCTAssertEqual(output.errorCode, "MCP_INVALID_ARGUMENTS")
-            XCTAssertTrue(output.text.contains("server must be provided"),
-                          "unexpected: \(output.text)")
-        }
+        // 空白串（提供但无效）→ 拒绝。
+        let output = try await tool.execute(
+            .object(["server": .string("   ")]),
+            makeContext(sandboxMode: .readOnly, approver: nil))
+        XCTAssertTrue(output.isError)
+        XCTAssertEqual(output.errorCode, "MCP_INVALID_ARGUMENTS")
+        XCTAssertTrue(output.text.contains("server must be provided"),
+                      "unexpected: \(output.text)")
+        // 省略（空参数）→ 成功列出全部（540b97c 语义；fixture 预置 stdio+http
+        // 两个 server）。
+        let listed = try await tool.execute(
+            .object([:]),
+            makeContext(sandboxMode: .readOnly, approver: nil))
+        XCTAssertFalse(listed.isError, "unexpected: \(listed.text)")
+        XCTAssertTrue(listed.text.contains("\"count\":2"),
+                      "unexpected: \(listed.text)")
     }
 
     // MARK: 写入——白名单值域 + 参数形态纪律

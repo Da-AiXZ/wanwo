@@ -62,7 +62,10 @@ final class ToolSearchEngineTests: XCTestCase {
     func testPorterKnownResults() {
         XCTAssertEqual(BM25Tokenizer.tokenize("caresses"), ["caress"])
         XCTAssertEqual(BM25Tokenizer.tokenize("running"), ["run"])
-        XCTAssertEqual(BM25Tokenizer.tokenize("agreed"), ["agree"])
+        // Porter1 口径（差异登记 #3）：agreed →(1b eed→ee)→ agree →(5a m=1 且
+        // 非 *o 删 e)→ agre——crate 的 Snowball/Porter2 输出 agree，两口径
+        // 词族收敛一致（agree/agreed 同归 agre），检索功能等价。
+        XCTAssertEqual(BM25Tokenizer.tokenize("agreed"), ["agre"])
     }
 
     // MARK: 引擎（bm25 search.rs / scorer.rs 测试移植）
@@ -148,9 +151,10 @@ final class ToolSearchEngineTests: XCTestCase {
         XCTAssertTrue(makeEngine(["space station"]).search("space", limit: 0).isEmpty)
     }
 
-    /// IDF 公式抽查（crate scorer.rs:99-107：N=1、df=1 → ln(2)）。
+    /// IDF 公式抽查（crate scorer.rs:99-107：ln(1 + (N-df+0.5)/(df+0.5))；
+    /// N=1、df=1 → ln(1 + 0.5/1.5) = ln(4/3)）。
     func testIdfSingleDocumentFormula() {
         let engine = makeEngine(["space"])
-        XCTAssertEqual(engine.idf("space"), Foundation.log(2.0), accuracy: 1e-9)
+        XCTAssertEqual(engine.idf("space"), Foundation.log(4.0 / 3.0), accuracy: 1e-9)
     }
 }
