@@ -274,6 +274,11 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     private let config: MCPClientConfig
     private let policy: MCPReconnectPolicy
     private let label: String
+    /// fs_context 会话令牌（10-design:647——guest 侧路径由 fs_context 翻译；
+    /// 全部世代共用同一令牌：令牌按 sid 幂等（FsContextRouter.context(for:)），
+    /// 重连=同视图换进程。场景2 根因修复：B4 曾传 0=绕过翻译，脚本在
+    /// per-session 桶对 spawn 进程不可见（发现①终判）。
+    private let fsContext: UInt64
     /// 常规同步选项（connection.ts:125-129 opts）。
     private let opts: MCPToolBridgeOptions
     /// 首次同步选项：failOnStartupError 时冲突改为上抛
@@ -318,12 +323,13 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     /// 构造即启动首次连接尝试（dsh :308 `settling = connectGeneration(true)`
     /// ——状态声明后立即执行）。
     init(config: MCPClientConfig, policy: MCPReconnectPolicy, toolSync: MCPToolSyncing,
-         elicit: MCPElicitationHandling? = nil) {
+         elicit: MCPElicitationHandling? = nil, fsContext: UInt64) {
         self.config = config
         self.policy = policy
         self.label = "mcp-client(\(config.serverName))"
         self.toolSync = toolSync
         self.elicit = elicit
+        self.fsContext = fsContext
         var regular = MCPToolBridgeOptions(
             registrationFailure: .contain,
             serverName: config.serverName,
@@ -694,7 +700,10 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         // :271-278 try 块（connect → close 检查 → 初始同步入队）。
         do {
             // :272——每次尝试全新 transport（dsh createTransport(config)）。
-            let transport = try MCPTransportFactory.makeTransport(for: config)
+            // fs_context 补课（10-design:647）：全部世代带同一会话令牌——
+            // 重连=同视图换进程（令牌按 sid 幂等，进程组 fork 自动继承）。
+            let transport = try MCPTransportFactory.makeTransport(for: config,
+                                                                  fsContext: fsContext)
             // 裁决②：连接看门狗（initialize 挂起无内建超时且不响应取消）。
             // B5：stdio 读 config.startupTimeoutMs（用户裁决③平台层启动
             // 超时），http 恒默认 30s。B7：stdio 超时错误附模型可读提示

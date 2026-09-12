@@ -39,6 +39,9 @@ final class McpClient: @unchecked Sendable {
     private let registry: MCPNamespaceRegistry
     /// 所有者身份键（dispose 释放预留时使用；弱引用语义见 registry 注）。
     private let ownerID: ObjectIdentifier
+    /// fs_context 会话令牌（10-design:647 补课——透传至 supervisor→factory
+    /// spawn；MCP server 进程与本会话 shell 同一文件视图，场景2 根因修复）。
+    private let fsContext: UInt64
 
     /// 连接监督句柄（index.ts:173 startConnection；activate/deactivate
     /// 生命周期串行调用，仍加锁防御并发误用——fail closed）。
@@ -55,7 +58,8 @@ final class McpClient: @unchecked Sendable {
     ///     通常为装载 server 集的环境对象）。
     init(config: MCPClientConfig,
          registry: MCPNamespaceRegistry,
-         owner: AnyObject) throws {
+         owner: AnyObject,
+         fsContext: UInt64) throws {
         // serverName 形态校验（index.ts:116/127 .pattern(SERVER_NAME_PATTERN)）。
         guard MCPClientConfig.isValidServerName(config.serverName) else {
             throw MCPConfigurationError(
@@ -72,6 +76,7 @@ final class McpClient: @unchecked Sendable {
         self.label = "mcp-client(\(config.serverName))"
         self.registry = registry
         self.ownerID = ObjectIdentifier(owner)
+        self.fsContext = fsContext
     }
 
     /// 激活（index.ts:173-187 apply 后半 1:1）：启动连接监督，阻塞等待首次
@@ -96,7 +101,8 @@ final class McpClient: @unchecked Sendable {
             throw MCPConfigurationError("\(label): activate called twice — instance already active")
         }
         supervisor = McpConnectionSupervisor(
-            config: config, policy: reconnectPolicy, toolSync: toolSync, elicit: elicit)
+            config: config, policy: reconnectPolicy, toolSync: toolSync, elicit: elicit,
+            fsContext: fsContext)
         connection = supervisor
         lifecycleLock.unlock()
         // index.ts:184 await connection.ready。

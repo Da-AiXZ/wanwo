@@ -72,12 +72,16 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
     ///   - writer: 本会话事件写柄（E1 mcp/elicitation 事件汇）。
     ///   - lastActivation: 激活状态记录器（M4-A 验收增补方案甲——设置页
     ///     "上次激活"直显；每次会话栈构建都覆盖写最新结果）。
+    ///   - fsContext: fs_context 会话令牌（10-design:647 补课——透传至
+    ///     spawn，MCP server 进程与本会话 shell 同一文件视图；场景2 根因
+    ///     修复，B4 曾传 0=绕过翻译）。
     init(configs: [MCPClientConfig],
          registry: ToolRegistry,
          namespaces: MCPNamespaceRegistry,
          permission: PermissionCoordinator,
          writer: SessionWriter,
-         lastActivation: MCPLastActivationStore) {
+         lastActivation: MCPLastActivationStore,
+         fsContext: UInt64) {
         // E1 事件汇：写侧门（SessionWriter.append 内 schema 校验）fail closed
         // ——写入失败仅降级审计（AppLogger.warning），不影响决策链应答。
         let emitter: MCPElicitationEventEmitter = { [weak writer] payload in
@@ -103,7 +107,8 @@ final class MCPRuntime: MCPResourceConnecting, @unchecked Sendable {
                 // :154-168 文案 1:1），跨会话栈互不影响（scope 级互斥语义）。
                 let client = try McpClient(config: config,
                                            registry: namespaces,
-                                           owner: self)
+                                           owner: self,
+                                           fsContext: fsContext)
                 let bridge = MCPToolBridge(
                     registry: registry,
                     executor: MCPToolExecutor(imageProjector: nil))   // 本批恒 nil（派单）

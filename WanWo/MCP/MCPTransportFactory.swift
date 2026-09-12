@@ -35,6 +35,16 @@ import MCP
 /// 旧世代进程与双 fd 的终结经 MCPStdioSessionLedger.reap（B5 监督面
 /// 正式接管）。
 /// B2：buildChildEnv 落位（transport.ts:21-23 1:1，本文件 stdio 分支消费）。
+/// 【场景2 根因修复 · fs_context 补课（10-design:647 兑现）】设计原文：
+/// M4 stdio 段"guest 侧路径由 fs_context 翻译"（10-design:64 总则——会话
+/// 隔离=fs_context 令牌+路径翻译钩子）。B4 实现曾传 fsContext: 0（guard 0
+/// 直通 legacy g_bind_mounts 全局表）=设计要求的翻译未实现——脚本放会话
+/// 工作区对 spawn 进程不可见（python exit 2=512 秒退 crash-loop，发现①
+/// 终判）。本修复：spawn 带会话令牌（makeAgentStack→MCPRuntime→McpClient→
+/// supervisor→本工厂全链透传），MCP server 进程与本会话 shell 同一文件
+/// 视图；executor 侧 task->group->fs_context 赋值已就绪（ISHShellExecutor.m
+/// :590-591，fork 自动继承=10-design:64 已核）。B4 缺口登记：fsContext=0
+/// 当时为静默决策未呈报（应呈报未呈报项，双方 review 盲区，复盘入档）。
 enum MCPTransportFactory {
 
     /// stderr 行日志汇（B4 登记①兑现——方案乙 AppLogger 接线）。行文本
@@ -80,6 +90,9 @@ enum MCPTransportFactory {
     /// 按 transport 变体构造全新 transport（dsh transport.ts:31-50 1:1）。
     ///
     /// - Parameter config: 已通过件1 加载校验的客户端配置。
+    /// - Parameter fsContext: fs_context 会话令牌（10-design:647 兑现——
+    ///   stdio spawn 的 guest 侧路径由 fs_context 翻译；0=legacy 全局视图
+    ///   仅测试/无会话语境使用，生产链路恒带 FsContextRouter.context(for:)）。
     /// - Returns: 未连接的 transport——streamable-http 为 `HTTPClient-
     ///   Transport`（streaming=true——独立 GET 事件流 + POST 响应 SSE，
     ///   简报件2 指定形态）；stdio 为 SDK `StdioTransport`（fd 注入形态，
@@ -92,7 +105,8 @@ enum MCPTransportFactory {
     ///   spawn 路径不支持工作目录——fail loud 不静默忽略）、env 块超限
     ///   （executor envp_buf 8192 字节静默丢条目，入口侧预检 fail loud）、
     ///   spawn 失败。
-    static func makeTransport(for config: MCPClientConfig) throws -> any Transport {
+    static func makeTransport(for config: MCPClientConfig,
+                              fsContext: UInt64) throws -> any Transport {
         switch config.transport {
         case .streamableHTTP(let urlString, let headers):
             guard let endpoint = URL(string: urlString),
@@ -149,7 +163,11 @@ enum MCPTransportFactory {
                 command,
                 arguments: args,
                 environment: childEnv,
-                fsContext: 0,
+                // fs_context 补课（10-design:647）：会话令牌透传——spawn 进程
+                // 组与本会话 shell 同一翻译钩子视图（executor 侧 task->group->
+                // fs_context 赋值 ISHShellExecutor.m:590-591 已就绪）。B4 曾传
+                // 0=guard 直通 legacy 全局表（发现①终判根因）。
+                fsContext: fsContext,
                 stdinWriteFd: &stdinWriteFd,
                 stdoutReadFd: &stdoutReadFd,
                 spawnError: &spawnError,

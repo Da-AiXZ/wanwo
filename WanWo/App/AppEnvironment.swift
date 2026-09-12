@@ -330,7 +330,11 @@ final class AppEnvironment: ObservableObject {
                                     namespaces: mcpNamespaces,
                                     permission: permission,
                                     writer: writer,
-                                    lastActivation: mcpLastActivation)
+                                    lastActivation: mcpLastActivation,
+                                    // fs_context 补课（10-design:647）：MCP spawn
+                                    // 与本会话 shell 同一文件视图——令牌按 sid
+                                    // 幂等，与 ShellTool/FsTools 同源。
+                                    fsContext: FsContextRouter.shared.context(for: sessionId))
         Task { await mcpRuntime.activateAll() }
         for tool in MCPResourceTools.makeAll(connections: mcpRuntime) {
             do {
