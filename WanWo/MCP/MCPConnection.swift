@@ -247,6 +247,32 @@ struct MCPConnectionOutcome: @unchecked Sendable {
     let error: (any Error)?
 }
 
+/// 被替代回调的中继（发现② 平台适配）：Swift 两段式初始化禁止在 init
+/// 完成前于逃逸闭包中捕获 self——ledgerOwner 的 onSuperseded 先指向本中继
+/// （零捕获），init 尾部（全部存储属性就绪后）再绑定 weak self 的
+/// standDown 桥接。锁守护换手，防「旧栈条目被 takeover 回收早于 init
+/// 返回」的窗口期回调丢失。
+private final class MCPSupersedeRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (() -> Void)?
+
+    /// init 尾部绑定真实回调（幂等覆盖：placeholder→真实）。
+    func set(_ h: @escaping () -> Void) {
+        lock.lock()
+        handler = h
+        lock.unlock()
+    }
+
+    /// ledger 回收路径调用（恒锁外）：有绑定则桥接，未绑定则丢弃
+    /// （init 窗口内被替代=连接从未产出，无需收敛）。
+    func fire() {
+        lock.lock()
+        let h = handler
+        lock.unlock()
+        h?()
+    }
+}
+
 // MARK: - 连接监督器（connection.ts:98-352 startConnection）
 
 /// 单个 MCP server 的受监督连接（dsh startConnection 闭包状态的 WanWo
@@ -276,8 +302,9 @@ final class McpConnectionSupervisor: @unchecked Sendable {
     private let policy: MCPReconnectPolicy
     private let label: String
     /// ledger 归属身份（发现②）：本 supervisor 的栈 UUID + 被替代 stand down
-    /// 回调——takeover/register/reap 全链核对键。weak 捕获本类（台账不持强
-    /// 引用，栈释放后回调 no-op）。
+    /// 回调——takeover/register/reap 全链核对键。回调经 MCPSupersedeRelay
+    /// 中继到 weak self（两段式初始化限制，init 尾部绑定；台账不持强引用，
+    /// 栈释放后回调 no-op）。
     private let ledgerOwner: MCPStdioLedgerOwner
     /// fs_context 会话令牌（10-design:647——guest 侧路径由 fs_context 翻译；
     /// 全部世代共用同一令牌：令牌按 sid 幂等（FsContextRouter.context(for:)），
@@ -347,21 +374,23 @@ final class McpConnectionSupervisor: @unchecked Sendable {
         // connection.ts:133-135：仅首次同步在 failOnStartupError 下用严格模式。
         if config.failOnStartupError { regular.registrationFailure = .throwError }
         self.startupOpts = regular
-        // 发现②：ledger 归属身份——UUID 唯一 + 被替代 stand down 回调
-        // （weak 捕获本类；回调在 ledger 锁外发起，经 Task 桥接异步执行，
-        // 避免在回收路径上同步重入 supervisor 锁）。
-        self.ledgerOwner = MCPStdioLedgerOwner(
-            id: UUID(),
-            onSuperseded: { [weak self] in
-                guard let self else { return }
-                Task { await self.standDown() }
-            })
+        // 发现②：ledger 归属身份——UUID 唯一 + 被替代 stand down 回调。
+        // 回调经中继（MCPSupersedeRelay）：两段式初始化禁止 init 完成前
+        // 捕获 self，此处闭包零捕获；init 尾部绑定 weak self 桥接。
+        let relay = MCPSupersedeRelay()
+        self.ledgerOwner = MCPStdioLedgerOwner(id: UUID(), onSuperseded: relay.fire)
         let first = Task { [weak self] in
             guard let self else { return }
             await self.connectGeneration(startup: true)
         }
         self.initialSettlingTask = first
         self.settlingTask = first
+        // 全部存储属性就绪——此时才允许捕获 self（weak：台账不持强引用；
+        // Task 异步桥接避免在 ledger 回收路径上同步重入 supervisor 锁）。
+        relay.set { [weak self] in
+            guard let self else { return }
+            Task { await self.standDown() }
+        }
     }
 
     // MARK: 对外句柄（connection.ts:99-112 ConnectionHandle）
