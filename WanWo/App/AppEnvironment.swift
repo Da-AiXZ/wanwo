@@ -50,6 +50,10 @@ final class AppEnvironment: ObservableObject {
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
+    /// a①（吞错面修复）：会话删除失败的用户可见反馈——此前 deleteSession
+    /// 的 try? 静默吞掉异常，用户看到行「消失又回来」、重试怎么点都没用。
+    /// 非 nil 时由 SessionsSidebarView 以 alert 呈现，呈现后清零。
+    @Published var sessionActionError: String?
     @Published var selection: RootSelection = .none
     /// 待决交互镜像（侧栏琥珀点数据源；dsh 2026-07-23 笔记——sidebar mirrors
     /// every blocked interaction with an amber warning dot，优先级高于运行中圆环）。
@@ -199,7 +203,18 @@ final class AppEnvironment: ObservableObject {
     func deleteSession(id: String) async {
         // 先关闭可能开放的写柄（排他写所有权归还），再删除。
         await sessionStore.closeWriter(id: id)
-        try? await sessionStore.deleteSession(id: id)
+        // a①（吞错面修复）：try? 吞错改 do/catch——删除失败必须用户可见，
+        // 且不得清选中态/推进 revision 假装成功（旧行为失败后照常 +1 触发
+        // 重载把行拉回=视觉「消失又回来」且无任何解释）。失败时会话仍保留。
+        do {
+            try await sessionStore.deleteSession(id: id)
+        } catch {
+            Self.logger.error(
+                "session delete failed for \(id): \(String(describing: error))")
+            sessionActionError =
+                "删除会话失败：\(String(describing: error))。会话仍保留在列表中，可重试；若持续失败，请重启 App 后再试。"
+            return
+        }
         if case .session(let selectedID) = selection, selectedID == id {
             selection = .none
         }

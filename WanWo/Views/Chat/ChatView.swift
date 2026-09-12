@@ -42,6 +42,13 @@ struct ChatView: View {
     /// 集中管理——cover 挂气泡内深层组件时宿主身份在流式重建场景失效→
     /// present 静默失败；对齐 draftPreview 根层 cover 既有模式）。
     @State private var messagePreview: ImageAttachmentRef?
+    /// bc②（智能跟随）：自动跟随锚点开关——用户向上翻历史（手指下移）即
+    /// 停跟，拖回底部方向或发送新消息即恢复。旧实现每个流式节流帧强制
+    /// scrollTo，用户翻历史被反复拽回底部（幽灵回合/视口卡住的体感根源）。
+    @State private var autoFollow = true
+    /// bc②：用户拖动在途标记——拖动期间暂停一切程序化滚动；同时是 bug d
+    /// 第二层的修复（流式期 0.2s 程序化滚动打断「拖动收起键盘」手势）。
+    @State private var userDragging = false
 
     init(environment: AppEnvironment, sessionID: String) {
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
@@ -253,13 +260,38 @@ struct ChatView: View {
                             .foregroundStyle(.red)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    // bc①：恒渲染底部兜底锚——流式锚只在 live 面存在，
+                    // reproject 清空流式缓冲后 scrollTo 死锚 no-op，视口停在
+                    // 旧偏移（「内容消失重来时视口卡住」的根因）；兜底锚保证
+                    // 跟随滚动在任何投影状态下都有可达目标。
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom-anchor")
                 }
                 .padding(12)
             }
-            .onChange(of: viewModel.bubbles) { _ in scrollToBottom(proxy) }
-            .onChange(of: viewModel.streamingText) { _ in scrollToBottom(proxy) }
+            .onChange(of: viewModel.bubbles) { _ in followIfEnabled(proxy) }
+            .onChange(of: viewModel.streamingText) { _ in followIfEnabled(proxy) }
             // E2：只流思考（文本尚空）时同样跟随滚动。
-            .onChange(of: viewModel.streamingReasoning) { _ in scrollToBottom(proxy) }
+            .onChange(of: viewModel.streamingReasoning) { _ in followIfEnabled(proxy) }
+            // d①：拖动即收起键盘（iOS 16+）——旧版零收起 affordance，键盘
+            // 只能靠键盘自带途径；配合下方拖动闸门，流式期的程序化滚动不再
+            // 打断收起手势。
+            .scrollDismissesKeyboard(.immediately)
+            // d①：点按消息区任意处收起第一响应者（零 affordance 修复的
+            // 第二通道；simultaneousGesture=不吞气泡内按钮/卡片的点按）。
+            .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
+            // bc②：用户拖动侦测——在途暂停程序化滚动（防打断拖动收键盘
+            // 手势）；松手按方向裁决跟随态：手指上移（translation<0）=滚向
+            // 最新=恢复跟随，手指下移=翻历史=停跟。
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 10)
+                    .onChanged { _ in userDragging = true }
+                    .onEnded { value in
+                        userDragging = false
+                        autoFollow = value.translation.height < 0
+                    }
+            )
             // T2.6 件4（用户 #16）：消息流不参与键盘规避——键盘弹出时滚动
             // 区域不被压缩（对话不被挤没）；composer chrome 保持键盘安全位
             // （输入可用硬要求）。规避责任只在 composer 侧。
@@ -392,11 +424,34 @@ struct ChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         // E2：锚点跟随在流的尾部气泡（纯文本流 → streaming-text；纯思考流 →
         // streaming-reasoning；工具卡落位经 bubbles onChange 走同一入口）。
-        let anchor: String = viewModel.streamingText.isEmpty
-            ? "streaming-reasoning" : "streaming-text"
+        // bc①：流式锚不可达（live 面已清）时回落恒渲染的 bottom-anchor——
+        // scrollTo 死锚是 no-op，不回落=视口卡旧偏移。
+        let anchor: String
+        if !viewModel.streamingText.isEmpty {
+            anchor = "streaming-text"
+        } else if !viewModel.streamingReasoning.isEmpty {
+            anchor = "streaming-reasoning"
+        } else {
+            anchor = "bottom-anchor"
+        }
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(anchor, anchor: .bottom)
         }
+    }
+
+    /// bc②（智能跟随闸门）：拖动在途一律不滚（防打断拖动收键盘手势，bug d
+    /// 第二层）；停跟态不滚（用户在翻历史）。恢复路径：拖回底部方向（手势
+    /// 松手裁决）或发送新消息（onPrimary/提问提交处置位）。
+    private func followIfEnabled(_ proxy: ScrollViewProxy) {
+        guard autoFollow, !userDragging else { return }
+        scrollToBottom(proxy)
+    }
+
+    /// d①：收起第一响应者（点按消息区触发）。
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil)
     }
 
     // MARK: - composer 座位（M3 T1 接管路由；T2.2 A1 修正路由顺序——
@@ -413,6 +468,8 @@ struct ChatView: View {
             QuestionComposerView(pending: viewModel.pendingQuestions.first!,
                                  busy: viewModel.questionBusy,
                                  onSubmit: { answer in
+                                     // bc②：提问提交=回到最新意图——恢复跟随。
+                                     autoFollow = true
                                      viewModel.submitQuestionAnswer(
                                         viewModel.pendingQuestions.first!, answer: answer)
                                  },
@@ -549,6 +606,8 @@ struct ChatView: View {
                         if primaryStops {
                             viewModel.cancel()
                         } else {
+                            // bc②：发新消息=回到最新意图——恢复跟随。
+                            autoFollow = true
                             viewModel.send()
                         }
                     })

@@ -90,6 +90,16 @@ struct SessionsSidebarView: View {
             }
             .presentationBackground(.clear)
         }
+        // a①（吞错面修复）：删除失败的用户可见反馈——AppEnvironment.
+        // deleteSession 失败置 sessionActionError，alert 呈现后清零。
+        .alert("删除会话失败",
+               isPresented: Binding(
+                get: { environment.sessionActionError != nil },
+                set: { if !$0 { environment.sessionActionError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(environment.sessionActionError ?? "")
+        }
     }
 
     // MARK: - 品牌行 + 新建钮（dsh SidebarRoot.tsx:140-200）
@@ -366,7 +376,11 @@ struct SessionsSidebarView: View {
     }
 
     private func delete(at offsets: IndexSet) {
-        let ids = offsets.map { summaries[$0].id }
+        // a②（搜索态 offset 错位修复）：onDelete 的 offsets 是渲染行集
+        // （filteredSummaries）的索引——此前对全量 summaries 取值，搜索态下
+        // 两集合下标错位=删错行。按渲染行集映射回 id（含越界防御）。
+        let rows = filteredSummaries
+        let ids = offsets.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
         Task {
             for id in ids {
                 await environment.deleteSession(id: id)
