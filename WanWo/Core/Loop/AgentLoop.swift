@@ -577,7 +577,7 @@ actor AgentLoop {
         deps.toolSearchAssembly?.refresh()
 
         // prompt 组装（严格插值；组装失败按回合错误处理）。
-        let assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
+        var assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
         do {
             assembly = try deps.assembler.assemble(
                 toolSchemas: deps.registry.schemas(),
@@ -588,6 +588,15 @@ actor AgentLoop {
         } catch {
             throw LLMError(message: String(describing: error), code: "PROMPT_ASSEMBLY")
         }
+
+        // M4-C5 激活面（codex models.rs:845/:1060/:1136 协议项的 chat completions
+        // 等价——gap11 §八.2）：tool_search 命中 spec 注入下一请求 tools 数组。
+        // 推导纯函数消费 writer.events（JSONL replay 快照）⇒ resume 免费恢复
+        // （零新存储零新事件词汇，R2）；注入 = Direct 集原样 + 激活集尾部首见序
+        // append-only（拍板项 5）；model-visible=logged：注入内容全部来源于已
+        // 落盘的 tool/result ✓。
+        assembly.tools = ToolSearchActivation.inject(into: assembly.tools,
+                                                     events: deps.writer.events)
 
         // request/header（dsh buildRequest：config + system + tools）。
         let header = EpochHeader(
