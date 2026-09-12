@@ -146,29 +146,23 @@ final class MCPServerConfigToolTests: XCTestCase {
         XCTAssertEqual(output.errorCode, "MCP_UNKNOWN_SERVER")
     }
 
-    /// server 空白串 → must be provided（normalize_required_string 语义）。
-    /// 540b97c 语义更新：server **省略**（空参数）= 列出全部已配置 server（合法
-    /// 查询路径，非错误）——本用例旧断言（空参数拒绝）为该提交的测试同步欠账，
-    /// 由 M4-C 一次性验证跑首次执行暴露（此前测试轨道拆除期无执行面）。
+    /// server 省略/空白串（normalize_optional_string：trim 后空=未提供）→
+    /// 成功列出全部已配置 server（540b97c 可选化语义；写入路径的必填参数才走
+    /// normalize_required_string 拒绝）。本用例旧断言（缺失/空串拒绝）为该
+    /// 提交的测试同步欠账，由 M4-C 一次性验证跑首次执行暴露（测试轨道拆除
+    /// 期间无执行面）。
     @MainActor
-    func testMissingServerRejected() async throws {
+    func testOmittedServerListsAllServers() async throws {
         let (tool, _) = try makeTool()
-        // 空白串（提供但无效）→ 拒绝。
-        let output = try await tool.execute(
-            .object(["server": .string("   ")]),
-            makeContext(sandboxMode: .readOnly, approver: nil))
-        XCTAssertTrue(output.isError)
-        XCTAssertEqual(output.errorCode, "MCP_INVALID_ARGUMENTS")
-        XCTAssertTrue(output.text.contains("server must be provided"),
-                      "unexpected: \(output.text)")
-        // 省略（空参数）→ 成功列出全部（540b97c 语义；fixture 预置 stdio+http
-        // 两个 server）。
-        let listed = try await tool.execute(
-            .object([:]),
-            makeContext(sandboxMode: .readOnly, approver: nil))
-        XCTAssertFalse(listed.isError, "unexpected: \(listed.text)")
-        XCTAssertTrue(listed.text.contains("\"count\":2"),
-                      "unexpected: \(listed.text)")
+        let argCases: [JSONValue] = [.object([:]),
+                                     .object(["server": .string("   ")])]
+        for args in argCases {
+            let listed = try await tool.execute(
+                args, makeContext(sandboxMode: .readOnly, approver: nil))
+            XCTAssertFalse(listed.isError, "unexpected: \(listed.text)")
+            XCTAssertTrue(listed.text.contains("\"count\":2"),
+                          "unexpected: \(listed.text)")
+        }
     }
 
     // MARK: 写入——白名单值域 + 参数形态纪律
