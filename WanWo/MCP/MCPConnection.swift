@@ -154,7 +154,10 @@ final class MCPGenerationCloseSignal: @unchecked Sendable {
 /// RequestOptions.timeout 的 Swift 侧无内建对应物）。
 final class MCPSettleOnce<Value>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Value, Never>?
+    /// 多槽（CI 一次性验证跑实证：单槽覆盖写使并发 waiter 的前序 continuation
+    /// 泄漏悬挂——testMultipleWaitersAllReceiveFirstValue 的字面语义即多 waiter
+    /// 全收首值；生产消费点恰为单 waiter 故未爆，类契约本应支持多 waiter）。
+    private var continuations: [CheckedContinuation<Value, Never>] = []
     private var value: Value?
     private var settled = false
 
@@ -166,10 +169,10 @@ final class MCPSettleOnce<Value>: @unchecked Sendable {
         }
         settled = true
         value = v
-        let c = continuation
-        continuation = nil
+        let cs = continuations
+        continuations = []
         lock.unlock()
-        c?.resume(returning: v)
+        cs.forEach { $0.resume(returning: v) }
     }
 
     func wait() async -> Value {
@@ -180,7 +183,7 @@ final class MCPSettleOnce<Value>: @unchecked Sendable {
                 c.resume(returning: v)
                 return
             }
-            continuation = c
+            continuations.append(c)
             lock.unlock()
         }
     }
