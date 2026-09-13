@@ -300,3 +300,11 @@ final class SkillRegistryTests: XCTestCase {
         XCTAssertEqual(registry.snapshot().summaries.count, 1)
     }
 }
+
+/// Root 的路径算术便利（测试断言用；生产代码经 baseURL 直取——Root 为纯
+/// 数据对，路径派生属测试断言的读面）。
+private extension SkillRegistry.Root {
+    func appendingPathComponent(_ component: String) -> URL {
+        baseURL.appendingPathComponent(component)
+    }
+}
