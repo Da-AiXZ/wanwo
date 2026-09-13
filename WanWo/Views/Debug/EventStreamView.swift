@@ -635,10 +635,21 @@ final class EventStreamViewModel: ObservableObject {
         self.environment = environment
     }
 
-    /// 进入页面：拉会话列表（默认选最近一个）+ 首次 replay。
+    /// M5-A G2：资源护栏快照（诊断页状态段数据源；onAppear + 1s 定时器驱动，
+    /// resourceGovernor.snapshot 为 NSLock 纯读投影）。
+    @Published private(set) var resourceSnapshot: IshResourceGovernorSnapshot?
+
+    /// 进入页面：拉资源护栏快照 + 会话列表（默认选最近一个）+ 首次 replay。
     func onAppear() async {
+        refreshResourceSnapshot()
         await reloadSessions()
         await loadEvents()
+    }
+
+    /// 资源护栏快照拉取（G1 门面七字段只读投影——zone/运行态/footprint
+    /// mode/fork guard stalls/喂送遥测）。
+    func refreshResourceSnapshot() {
+        resourceSnapshot = environment.resourceGovernor.snapshot
     }
 
     /// 重拉会话列表；当前选择已失效（被删）则落回最近一个。
@@ -774,6 +785,8 @@ struct EventStreamView: View {
 
     var body: some View {
         List {
+            // M5-A G2：资源护栏状态段（真机压测观测载体——App 级快照，置顶首段）。
+            ResourceGuardSection(snapshot: model.resourceSnapshot)
             sessionSection
             eventListSection
         }
@@ -782,6 +795,11 @@ struct EventStreamView: View {
         .toolbar { debugToolbar }
         .refreshable { await model.loadEvents(force: true) }
         .task { await model.onAppear() }
+        // M5-A G2：资源护栏段 1s 定时刷新（快照 = NSLock 纯读，廉价；
+        // 压测观测实时性——onAppear/.refreshable 之外的常驻拉取）。
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            model.refreshResourceSnapshot()
+        }
         .onChange(of: model.selectedSessionID) { _ in
             Task { await model.loadEvents() }
         }
