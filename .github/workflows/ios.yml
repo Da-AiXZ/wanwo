@@ -98,3 +98,14 @@ jobs:
   # （导入 fixture 缺 createDirectory/告警文案自带 2 个 x/body 拼接时序/
   # 第十轮 Edit 笔误自纠）。本文件曾被环境竞态第四次吞工作树（未 commit
   # 即恢复，git 数据零损失）。主流水线零变化；WanWoTests 保留备日后重启。
+  # 2026-09-13 M4-E+项目锚点终局留痕：第五次一次性验证跑已执行完毕——
+  # run 34754335237 全绿（1611 tests, 0 failures；新面=项目锚点 P1-P3
+  # [GRDB v3 迁移/GroupStoreMigrator/路径模型 24 用例]+M4-D 真机验收两修复
+  # +hooks E1-E5 [Parser 46/Runner 13/SessionEvents 18/Config 28/PointRunner
+  # 18 用例]）。CI 修正六轮：①HookRunner map 内三元 nil 分支推断 ②SessionStart
+  # 注入缺 await（actor 跨界）③测试编译三族（嵌套字面量/实参序/元组 Equatable）
+  # ④durationMs 单位错（dsh 毫秒时钟 vs WanWo 秒时钟——×1000 换算）+CC 桩
+  # updatedInput 块位/Stop payload 桥序/孤儿 result 补 invoked ⑤P3 逃逸回落
+  # 真缺陷（project tail containment 失败回落会话桶——fail closed 守卫）
+  # ⑥marker 作用域漏改。本文件曾被环境竞态第五次吞工作树（恢复，零损失）。
+  # 主流水线零变化；WanWoTests 保留备日后重启。
