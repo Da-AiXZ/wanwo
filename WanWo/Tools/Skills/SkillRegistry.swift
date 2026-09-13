@@ -79,6 +79,10 @@ struct SkillSummary: Equatable, Sendable {
     /// 技能目录绝对路径（bundle=技能目录；平铺=所在根目录）——resourceBase=
     /// directory 形态（WanWo 全本地），相对资源经 read 工具自取（渐进三级）。
     let resourceBase: String
+    /// 正文文件绝对路径（D5 重读正文消费位；D2/D3 review 后 additive 扩展——
+    /// bundle=目录/SKILL.md、平铺=根/<stem>.md；消除 frontmatter name≠目录名
+    /// 时平铺正文不可寻的缺口，resourceBase 保留资源引导职责）。
+    let bodyPath: String
 }
 
 /// 装载快照（不可变）。complete 语义：WanWo 同步组装期发现=恒 complete
@@ -286,7 +290,8 @@ final class SkillRegistry: @unchecked Sendable {
                 whenToUse: nil,
                 invocation: invocationFlags(fromFrontmatter: contents),
                 source: source,
-                resourceBase: resourceBase)
+                resourceBase: resourceBase,
+                bodyPath: url.path)
             // 同名先见者胜（跨根=rank 小者胜、同根=扫描序首见——scan 的遍历序承载）。
             if byName[summary.name] == nil {
                 byName[summary.name] = summary

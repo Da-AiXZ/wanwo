@@ -58,9 +58,12 @@ enum ConversationProjector {
 
     // MARK: - 注入/标记消息过滤（F038/F039/F040 + 压缩摘要呈现；不渲染气泡）
 
+    /// M4-D D4：`<system-reminder>` = 技能目录消息包装前缀（简报暴露项 2——
+    /// SkillCatalogInjector 产物不渲染用户气泡；§5.9 归属识别同位扩展）。
     static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
                                  "<compaction-summary>", "<file>",
-                                 "<permission-update>", "<plan-mode-update>"]
+                                 "<permission-update>", "<plan-mode-update>",
+                                 "<system-reminder>"]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }

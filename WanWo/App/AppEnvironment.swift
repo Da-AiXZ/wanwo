@@ -403,6 +403,9 @@ final class AppEnvironment: ObservableObject {
             .init(source: .user, baseURL: skillsUserRoot),
             .init(source: .bundled, baseURL: skillsBundledRoot),
         ])
+        // M4-D D5：skill 工具（渐进二级入口；direct——内置元工具恒 direct，
+        // mcp_server_config 死锁防线同源；registry 注入同 ToolSearchTool 模式）。
+        registry.register(SkillTool(registry: skillRegistry))
 
         let spill = SpillStore(
             root: WanWoPaths.persistentBase

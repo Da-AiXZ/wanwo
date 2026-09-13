@@ -583,6 +583,23 @@ actor AgentLoop {
         // 同位模式：脏才重扫，幂等低成本；消费面 D4 目录注入接线）。
         deps.skillRegistry?.refresh()
 
+        // M4-D D4：技能目录注入（渐进一级，dsh skills.md:229-235）——组装期从
+        // 派生视角取基线（DeriveFold 产物最后一个含 <available_skills> 的
+        // user/message；影子化=基线丢失→快照自动重建），与当前快照渲染文本
+        // 全等对比；变化即追加全量替换 user/message（append-only，model-visible
+        // =logged；R2 零新事件词汇）。无状态投影：基线每步重导，零 AgentLoop 态。
+        // 注入失败不抛穿（fail open 记日志——目录缺失下一快照周期重建，R5 同族）。
+        if let skillRegistry = deps.skillRegistry,
+           let pending = SkillCatalogInjector.project(
+            snapshot: skillRegistry.snapshot(), events: deps.writer.events) {
+            do {
+                try await deps.writer.append(.userMessage(text: pending))
+            } catch {
+                Self.logger.error("skill catalog injection failed: "
+                                  + "\(String(describing: error))")
+            }
+        }
+
         // prompt 组装（严格插值；组装失败按回合错误处理）。
         var assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
         do {
