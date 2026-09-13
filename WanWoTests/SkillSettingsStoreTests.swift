@@ -162,6 +162,8 @@ final class SkillSettingsStoreTests: XCTestCase {
 
     func testImportFlatMarkdown() throws {
         let sourceRoot = workDir.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceRoot,
+                                                withIntermediateDirectories: true)
         let flat = sourceRoot.appendingPathComponent("flat-skill.md")
         try "---\nname: flat-skill\ndescription: d\n---\nB."
             .write(to: flat, atomically: true, encoding: .utf8)
@@ -193,6 +195,8 @@ final class SkillSettingsStoreTests: XCTestCase {
 
     func testImportNonMarkdownRejected() throws {
         let sourceRoot = workDir.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceRoot,
+                                                withIntermediateDirectories: true)
         let stray = sourceRoot.appendingPathComponent("notes.txt")
         try "hello".write(to: stray, atomically: true, encoding: .utf8)
         let userRoot = workDir.appendingPathComponent("dest", isDirectory: true)
