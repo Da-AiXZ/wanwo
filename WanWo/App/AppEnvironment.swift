@@ -207,6 +207,12 @@ final class AppEnvironment: ObservableObject {
                 pairing: .none))
         }
 
+        // M4-E E3 报批登记：hook/invoked / hook/result 扩展事件 schema（E1
+        // 通道——M4-E 批次报批项，dsh hook-protocol events.ts 事件对原件词汇；
+        // projection=logOnly 审计记录；invoked↔result 以 handlerId 应答配对
+        // ——SessionInvariant 先关后开序；dialect 封闭值域未知即拒）。
+        HookSessionEvents.registerEventSchemas()
+
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
         // 后台增量校验兜底外部变更：mtime/size 基线比对，零变化静默完成；
