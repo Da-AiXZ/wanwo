@@ -207,6 +207,23 @@ final class SessionDatabase {
         }
     }
 
+    /// M4-E+ P1：groupId IS NULL 行回填（GroupStoreMigrator 尾步调用）。
+    /// 返回实际回填行数；幂等（NULL 集合为空 → 0 行）；fail-open（失败记
+    /// 日志返回 0——迁移器链路"源数据零删除"语义不受影响，下次启动重试）。
+    func backfillGroupIDs(groupID: String) -> Int {
+        do {
+            return try dbQueue.write { db in
+                try db.execute(
+                    sql: "UPDATE sessionIndex SET groupId = ? WHERE groupId IS NULL",
+                    arguments: [groupID])
+                return db.changesCount
+            }
+        } catch {
+            Self.logger.error("groupId backfill failed: \(String(describing: error))")
+            return 0
+        }
+    }
+
     /// 列表 UI 数据源（仅摘要列，按 updatedAt 倒序）。
     func list() -> [SessionSummary] {
         listWithBaselines().map(\.summary)
