@@ -371,7 +371,7 @@ final class LocalJobRegistryTests: XCTestCase {
         XCTAssertTrue(try registry.get(id: id, callerSessionId: nil).reported)
     }
 
-    func testReadCursorDeltaAndTerminalReported() throws {
+    func testReadCursorDeltaAndTerminalReported() async throws {
         let lines = ResultBox<JobOutcome>()
         let cursor = CursorBox()
         let spec = JobStart(kind: .bash, label: "stream", run: {
@@ -442,10 +442,15 @@ final class LocalJobRegistryTests: XCTestCase {
         }
     }
 
-    func testInvalidWaitTimeoutVerbatim() throws {
+    func testInvalidWaitTimeoutVerbatim() async throws {
         let producer = makeBashProducer()
         let id = try registry.start(producer.spec)
-        XCTAssertThrowsError(try registry.wait(id: id, timeoutMs: 0, callerSessionId: nil)) { error in
+        // async 调用不能进 XCTAssertThrowsError 的 autoclosure——do/catch 手写
+        //（错误文案断言等价，index.ts:233-235 逐字）。
+        do {
+            _ = try await registry.wait(id: id, timeoutMs: 0, callerSessionId: nil)
+            XCTFail("wait with timeoutMs=0 must throw")
+        } catch {
             XCTAssertEqual(message(of: error),
                 "invalid wait timeout: expected a positive number of milliseconds, got 0")
         }
