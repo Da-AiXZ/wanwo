@@ -61,6 +61,10 @@ final class AppEnvironment: ObservableObject {
     /// M5-A J2：后台作业注册表（App 级单例——dsh ctx.jobs 一 context 一份
     /// 对应）。J1 缝的本地实现；J3 三工具与完成通知将挂本实例。
     let jobRegistry = LocalJobRegistry()
+    /// M5-A J3：per-session 完成通知 listener 注销器（makeAgentStack 同会话
+    /// 重建栈时先摘旧再挂新——dsh tool-jobs 插件单 listener 语义对应；
+    /// MainActor 域属性，免锁）。
+    private var jobNoticeDisposers: [String: () -> Void] = [:]
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -374,6 +378,9 @@ final class AppEnvironment: ObservableObject {
 
         let registry = ToolRegistry()
         registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry))
+        // M5-A J3：job_output / job_list / job_kill 三工具（dsh tool-jobs
+        // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
+        JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
         FsTools.registerAll(into: registry, sessionId: sessionId)
         WebTools.registerAll(into: registry)
 
@@ -515,6 +522,9 @@ final class AppEnvironment: ObservableObject {
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
         PromptSections.registerAll(into: assembler)
+        // M5-A J3：tool:jobs 段（dsh tool-jobs index.ts:262-266 逐字；
+        // order = SECTION_ORDERS.toolJobs = 1600，dsh TOOL_JOBS 位 1:1）。
+        assembler.section(JobTools.promptSection())
         // M3 T3 计划模式装配：plan/mode 折叠 + plan:policy 段落（order 500，
         // {{plan_policy}} 变量门控）+ /plan + 常驻 exit_plan_mode。
         let planMode = PlanModeController(writer: writer, assembler: assembler)
@@ -567,6 +577,24 @@ final class AppEnvironment: ObservableObject {
             // 已随 pipeline 注入——同一实例）。
             hookPoints: hookPoints)
         let agentLoop = AgentLoop(deps: deps)
+
+        // M5-A J3：完成通知接线（dsh tool-jobs index.ts:278-299 的 owner 归一
+        // 形态）。每会话一枚 listener：reported / owner nil / 非本会话 → 跳过
+        // （dsh :279 同语义）；命中 → fitCompletionNotice 文本注入下一步
+        // 收件箱（AgentLoop.inject——dsh owner.inject 同 API，SessionStart
+        // 通道同款 await agentLoop?.inject）。busy/idle 分流与 wakeup 预算
+        // （dsh :293-297 followup + spentWakes）登记不实现：WanWo 单宿主恒
+        // 注入形态（派单裁定；TODO(wakeup-budget) 上游同注）。
+        jobNoticeDisposers.removeValue(forKey: sessionId)?()
+        let noticeSessionId = sessionId
+        jobNoticeDisposers[sessionId] = jobRegistry.onJobDone { [weak agentLoop] snapshot, owner in
+            if snapshot.reported || owner == nil { return }
+            guard owner == noticeSessionId else { return }
+            let text = JobCompletionNotice.text(for: snapshot)
+            Task { [weak agentLoop] in
+                await agentLoop?.inject(text)
+            }
+        }
 
         // M4-E E5：SessionStart 挂点（CC index.ts:206-215 detached 火忘——
         // R5：不阻塞 stack 构建；慢 hook 可能错过首请求，dsh TODO(session-

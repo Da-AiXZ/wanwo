@@ -25,8 +25,14 @@ enum SECTION_ORDERS {
     static let toolEdit = 1300
     static let toolGlob = 1400
     static let toolGrep = 1500
-    static let toolReadImage = 1600
-    static let toolStrReplaceEditor = 1700
+    // M5-A J3 纠偏（对拍裁定）：dsh SECTION_ORDERS 里 TOOL_JOBS=1600、
+    // TOOL_PTY=1700（system-prompt/src/index.ts:135-136 逐字）——M2 曾把
+    // WanWo 本地工具 read_image/str_replace_editor 误登记到这两位（M2-era
+    // 头注自称"新槽位"，与 dsh 布局表冲突）。本件按 dsh 1:1 归位：
+    // tool:jobs=1600；两个本地工具顺移 1610/1620，1700 让位 TOOL_PTY 保留。
+    static let toolJobs = 1600
+    static let toolReadImage = 1610
+    static let toolStrReplaceEditor = 1620
     static let toolWebSearch = 2000
     static let toolWebFetch = 2100
     static let toolsSDK = 5000

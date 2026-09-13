@@ -48,7 +48,8 @@
 //       对应工具，不注册。
 //    6. tool:web-search / tool:web-fetch —— 已解决：自拟文案于本批注册。
 //    7. WanWo 本地工具 read_image / str_replace_editor —— 已解决：自拟文案
-//       于本批注册（新槽位 1600/1700）。
+//       于本批注册（槽位经 M5-A J3 纠偏为 1610/1620——原 1600/1700 是 dsh
+//       TOOL_JOBS/TOOL_PTY 保留位）。
 //    8. plan:policy / team:policy / ptc-only / tools-sdk /
 //       deliverable-file-references / structured-output——dsh 子系统 sections。
 //       M3 T3：plan:policy 已激活——PlanModeController 装配期注册（order 500 =
