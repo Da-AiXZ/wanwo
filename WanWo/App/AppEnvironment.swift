@@ -99,40 +99,6 @@ final class AppEnvironment: ObservableObject {
 
     private static let logger = AppLogger(category: "env")
 
-    /// M4-E 验收修复：Documents/hooks/ 脚手架预置（幂等）。iOS 文件 App 只能
-    /// 新建文件夹不能新建文本文件——预置目录+README+示例配置（.example 后缀
-    /// 不被 loader 加载，文件 App 重命名启用）。README 存在即整体跳过。
-    private static func presetDocumentsHooksScaffold() {
-        let fm = FileManager.default
-        let dir = HookConfigLoader.defaultDirectory
-        let readmeURL = dir.appendingPathComponent("README.txt")
-        guard !fm.fileExists(atPath: readmeURL.path) else { return }
-        do {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            let readme = """
-            万我 hooks 配置（兼容 Claude Code / Codex 命令钩子）
-
-            启用示例钩子：长按 hooks-codex.json.example → 重新命名 →
-            改为 hooks-codex.json → 回到万我新建一个对话，发任意消息。
-
-            示例钩子会在每条消息给 AI 的上下文注入一句「hook 见过你了」——
-            问 AI「你上下文里有没有 hook 见过你了」即可验证。
-
-            停用：把 hooks-codex.json 改回 .example 后缀（或删除）即可，
-            不影响其他功能。Claude Code 格式同理放 hooks-claude-code.json。
-            """
-            try readme.write(to: readmeURL, atomically: true, encoding: .utf8)
-            let example = "{\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\","
-                + "\"command\":\"echo hook 见过你了\"}]}]}"
-            try example.write(
-                to: dir.appendingPathComponent("hooks-codex.json.example"),
-                atomically: true, encoding: .utf8)
-        } catch {
-            Self.logger.error("hooks scaffold preset failed: "
-                              + "\(String(describing: error))")
-        }
-    }
-
     init() {
         let base = WanWoPaths.persistentBase
         let configDir = base.appendingPathComponent("config", isDirectory: true)
@@ -486,10 +452,6 @@ final class AppEnvironment: ObservableObject {
                 .appendingPathComponent("spill", isDirectory: true)
                 .appendingPathComponent(sessionId, isDirectory: true))
         let repeatAdviser = RepeatCallAdviser()
-        // M4-E 验收修复：Documents/hooks/ 预置（幂等）——iOS 文件 App 只能新
-        // 建文件夹不能新建文本文件，预置目录+README+示例配置（.example 后缀不
-        // 被 loader 加载，文件 App 重命名启用）。
-        Self.presetDocumentsHooksScaffold()
 
         // M4-E E5：hooks 装配（E4 loader——Documents/hooks/ 双桥；fail open
         // 语义在 loader 内）。runtime.warnings 装配期逐条 warn（dsh apply 期
