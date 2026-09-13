@@ -252,8 +252,9 @@ final class JobRegistrySeamTests: XCTestCase {
                                         callerSessionId: nil)
             XCTFail("wait on unknown job must throw")
         } catch {
-            XCTAssertTrue(error is JobRegistryError || error is CancellationError,
-                          "unexpected: \(error)")
+            // 桩 wait 恒抛 JobRegistrySeamError.stub——本测试只验证 protocol
+            // 形态可调（错误类型无关；CI 第五轮实证类型断言过严）。
+            XCTAssertTrue(error is JobRegistrySeamError, "unexpected: \(error)")
         }
     }
 }

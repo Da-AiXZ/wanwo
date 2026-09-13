@@ -22,7 +22,7 @@ import XCTest
 private final class ResultBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Never>?
-    private var pending: T?
+    private var pending: T?   // 首次 fulfill 定格；后续 fulfill 忽略（Promise 语义）
 
     func wait() async -> T {
         await withCheckedContinuation { (cont: CheckedContinuation<T, Never>) in
@@ -37,16 +37,25 @@ private final class ResultBox<T>: @unchecked Sendable {
         }
     }
 
+    /// fulfill 语义 = JS Promise 首参定格：已定格后的后续 fulfill **忽略**
+    /// （dsh done Promise 的第二次 resolve 是 no-op——first-wins 测试意图的
+    /// 基建前提；CI 第五轮实证覆盖写让「先 completed 后 failed 迟到」变成
+    /// 「只有 failed」，测试构造失效）。
     func fulfill(_ value: T) {
         lock.lock()
         if let cont = continuation {
             continuation = nil
-            lock.unlock()
-            cont.resume(returning: value)
-        } else {
             pending = value
             lock.unlock()
+            cont.resume(returning: value)
+            return
         }
+        if pending != nil {
+            lock.unlock()
+            return
+        }
+        pending = value
+        lock.unlock()
     }
 }
 
@@ -180,8 +189,15 @@ final class LocalJobRegistryTests: XCTestCase {
             boxes.append(producer.box)
         }
         // 同 owner 第三个 → 拒绝（文案逐字，limit 值内插）。
+        // 注意 makeBashProducer().spec 默认 unowned（ownerSessionId=nil）——
+        // 必须显式覆盖 ownerSessionId 才落 s1 桶（CI 第五轮实证：unowned 第三个
+        // 落独立桶不触发上限，XCTFail 后继续执行又把 unowned 桶填满，连锁
+        // :203 s2 前的 unowned start 抛 limit）。
         do {
-            _ = try limited.start(makeBashProducer().spec)
+            var third = makeBashProducer()
+            third.spec = JobStart(kind: .bash, label: third.spec.label,
+                                  ownerSessionId: "s1", run: third.spec.run)
+            _ = try limited.start(third.spec)
             XCTFail("应触发并发上限")
         } catch {
             XCTAssertEqual(message(of: error),

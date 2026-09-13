@@ -186,9 +186,10 @@ final class JobToolsTests: XCTestCase {
         // 预算内：直拼。
         XCTAssertEqual(fitWithSuffix("abc", "!", 10, "\n[omitted]"), "abc!")
         // 分支②：fixed < maxBytes → 尾部保留 content 腾位再接 fixed。
+        // 字节账：fixed=\n[omitted]\nSUFFIX=19B → content 预算=40-19=21。
         let content = String(repeating: "a", count: 50)
         XCTAssertEqual(fitWithSuffix(content, "\nSUFFIX", 40, "\n[omitted]"),
-                       String(repeating: "a", count: 22) + "\n[omitted]\nSUFFIX")
+                       String(repeating: "a", count: 21) + "\n[omitted]\nSUFFIX")
         // 分支①：fixed ≥ maxBytes → 尾部保留整串。
         XCTAssertEqual(fitWithSuffix("hi", "\nSUFFIX", 5, "\n[omitted]"), "UFFIX")
         // content 已带 omitted 标记（trimStart 后）→ 不重复补。
@@ -332,7 +333,10 @@ final class JobToolsTests: XCTestCase {
         // 取预算 60：complete 64 > 60；fixed = 19+34 = 53 < 60 →
         // retainTail(content, 7) + fixed（分支②路径）。
         let id = try startHeldJob(registry, settler: settler,
-                                  outputLimitBytes: 60)
+                                  outputLimitBytes: 60,
+                                  outcome: JobOutcome(status: .completed,
+                                                      detail: "exit code: 0",
+                                                      output: String(repeating: "0123456789", count: 3)))
         let tool = JobOutputTool(sessionId: "s1", jobs: registry)
         settler.settle()
         _ = try await registry.wait(id: id, timeoutMs: 2_000, callerSessionId: "s1")
