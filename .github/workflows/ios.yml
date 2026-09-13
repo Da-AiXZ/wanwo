@@ -87,3 +87,14 @@ jobs:
   # 4 失败（预算用例设计/Porter 口径/IDF 口算/540b97c 测试同步欠账）。
   # b34b35c 曾误删本文件（环境竞态吞编辑+git add -A 复合，f1ae1a9 同族
   # 事故第二次），b70cc0f 恢复。主流水线零变化；WanWoTests 保留备日后重启。
+  # 2026-09-13 M4-D 终局留痕：第四次一次性验证跑已执行完毕——run
+  # 34738627746 全绿（0 failures；新面=M4-D D1-D7 全七件 ~76 用例：Parser 9/
+  # Registry 12/Installer 5/CatalogInjector 12/SkillTool ~12/Mention 16/
+  # SettingsStore 10）。CI 修正十一轮：①Multiple commands（xcodegen folder
+  # 展开冲突→预装改编译期内嵌模板）②测试首编（store 属性声明+case skills+
+  # Optional.filter）③makeContext return ④⑤⑥测试编译三族（默认参数/
+  # Substring 歧义/实参乱序/Root 扩展）⑦MCPSettleOnce 多 waiter 悬挂
+  # （单槽覆盖写→多槽数组，M4-A 概率性缺陷首次实爆）⑧⑨⑩⑪执行面 4 失败
+  # （导入 fixture 缺 createDirectory/告警文案自带 2 个 x/body 拼接时序/
+  # 第十轮 Edit 笔误自纠）。本文件曾被环境竞态第四次吞工作树（未 commit
+  # 即恢复，git 数据零损失）。主流水线零变化；WanWoTests 保留备日后重启。
