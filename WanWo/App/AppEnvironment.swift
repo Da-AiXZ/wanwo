@@ -58,6 +58,9 @@ final class AppEnvironment: ObservableObject {
     /// 250ms 内存喂送定时器（init 启动）+ governor zone/fork guard stalls
     /// 状态快照暴露（G2 压测观测面）。
     let resourceGovernor = IshResourceGovernor()
+    /// M5-A J2：后台作业注册表（App 级单例——dsh ctx.jobs 一 context 一份
+    /// 对应）。J1 缝的本地实现；J3 三工具与完成通知将挂本实例。
+    let jobRegistry = LocalJobRegistry()
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -246,6 +249,11 @@ final class AppEnvironment: ObservableObject {
         // 把 >2s 未喂判为死采样器 fail-closed 进 BRAKE；首喂早于 guest boot
         // 是期望行为（main.c:367-370 "Prime the feed BEFORE the guest boots"）。
         resourceGovernor.start()
+
+        // M5-A J2：job controller 挂接（'tool-jobs' 名称等价——servesOwner
+        // 门控放行 producer start；J3 三工具装配时与 dsh tool-jobs 插件
+        // 语义对齐）。App 生命周期常驻，disposer 不取。
+        jobRegistry.attachController(name: "tool-jobs")
     }
 
     // MARK: - 会话
@@ -365,7 +373,7 @@ final class AppEnvironment: ObservableObject {
         let attachments = AttachmentStore(sessionId: sessionId)
 
         let registry = ToolRegistry()
-        registry.register(ShellTool(sessionId: sessionId))
+        registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry))
         FsTools.registerAll(into: registry, sessionId: sessionId)
         WebTools.registerAll(into: registry)
 

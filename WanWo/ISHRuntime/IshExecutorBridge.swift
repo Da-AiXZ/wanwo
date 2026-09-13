@@ -46,6 +46,103 @@ private struct CommandOutcome {
     let stderr: String
 }
 
+// MARK: - Detached 后台执行通道（M5-A J2）
+//
+// dsh 锚点：tool-bash/src/index.ts:364-376（run() 内 ctx.shell.start 同步
+// 启动 → JobHooks{cancel, done, readOutput}）+ background.ts:17-27
+// （processOutcome：非零退出=completed 不是 failed）。JobStart.run 是同步
+// 契约（registry 在 start 的锁内窗口调用，绝不允许阻塞/async），因此 spawn
+// 必须是同步 C 调用——ISHShellExecutor.executeExecutable 立即返回 pid、
+// completion 异步挂 done：形态与 runCommand 同管道但 completion 不阻塞
+// 调用方（派单语义）。既有 executeSeparated/runCommand 行为零变化。
+
+/// detached 命令的结算结果（done 恰好一次的产物）。
+struct DetachedShellResult: Sendable {
+    /// 合并输出（stdout\nstderr 按行合并——后台完成通知的面）。
+    let mergedOutput: String
+    /// C 层解码后的退出码。
+    let exitCode: Int32
+    /// C 层完成错误位（.cancelled=取消/杀——processOutcome 的 killed 依据）。
+    let error: ISHShellExecutorError
+}
+
+/// detached 执行句柄（dsh ShellProcess 的 WanWo 形态：pid + done + cancel
+/// + 消费游标）。
+struct DetachedShellHandle: Sendable {
+    let pid: Int32
+    /// 结算面：生产者释放完资源后恰好一次（dsh done "resolves after the
+    /// producer releases its resources, not merely when work finishes"）。
+    let done: @Sendable () async -> DetachedShellResult
+    /// 取消：进程组 SIGTERM→SIGKILL + finalize 防僵尸（超时路径同款配平）。
+    let cancel: @Sendable () -> Void
+    /// 消费游标增量（dsh readOutput：自上次调用以来的输出）。
+    let readOutput: @Sendable () -> String
+}
+
+/// 行缓冲 + 消费游标（lineCallback 线程 = C 层回调队列；读侧任意线程）。
+private final class DetachedOutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    private var readIndex = 0
+
+    func append(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    /// 全量合并（done 结算面用）。
+    func merged() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 自上次读取以来的增量（readOutput 消费游标语义）。
+    func readDelta() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard readIndex < lines.count else { return "" }
+        let delta = lines[readIndex...].joined(separator: "\n")
+        readIndex = lines.count
+        return delta
+    }
+}
+
+/// done 的单槽位结算箱：completion 与 wait 竞争时先到先得；completion 先
+/// 落（调用方延后 await）由 pending 承接（单 waiter 契约——registry 只有
+/// 一个观察 Task）。
+private final class DetachedCompletionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<DetachedShellResult, Never>?
+    private var pending: DetachedShellResult?
+
+    func wait() async -> DetachedShellResult {
+        await withCheckedContinuation { (cont: CheckedContinuation<DetachedShellResult, Never>) in
+            lock.lock()
+            if let result = pending {
+                lock.unlock()
+                cont.resume(returning: result)
+                return
+            }
+            continuation = cont
+            lock.unlock()
+        }
+    }
+
+    func fulfill(_ result: DetachedShellResult) {
+        lock.lock()
+        if let cont = continuation {
+            continuation = nil
+            lock.unlock()
+            cont.resume(returning: result)
+        } else {
+            pending = result
+            lock.unlock()
+        }
+    }
+}
+
 /// Errors specific to the execution coordinator.
 enum ISHCoordinatorError: Error, LocalizedError {
     case kernelNotBooted
@@ -105,6 +202,11 @@ actor IshExecutorBridge {
         var waiterContinuation: CheckedContinuation<Void, Error>?
     }
     private var perSessionInflight: [String: [InflightExec]] = [:]
+
+    /// J2 detached 通道：完成先于登记落地的 pid 吸收集（register 见到即跳过
+    /// ——登记/出队两个 Task 在 actor 上串行化但相对序不定，乱序经此收敛，
+    /// stop 按钮 PID 表零泄漏）。
+    private var completedDetachedPids: Set<Int32> = []
 
     /// Set of sessions for which the static (memory/skills/shared/external)
     /// mount layer has been initialized. The per-session 4 buckets are now
@@ -586,6 +688,100 @@ actor IshExecutorBridge {
         // The pid is only known here, so this is the sync that actually makes
         // a running command killable from the nonisolated stop path.
         syncInflightPidSnapshot()
+    }
+
+    // MARK: - Detached 后台通道（M5-A J2）
+
+    /// 后台作业前置挂载（幂等）：前台 execute 同款的静态层初始化 + 会话
+    /// 标记。仅 ShellTool 后台路径调用——detached spawn 是同步 C 调用，
+    /// 无法再于锁内窗口做 actor 挂载（故前置于 jobs.start 之前）。
+    func prepareDetached(sessionId: String) {
+        mountedSessionId = sessionId
+        ensureStaticMountsInitialized(for: sessionId)
+    }
+
+    /// detached PID 登记（stop 按钮 PID 表可见性——[T-shell-stop-blocked-
+    /// by-actor] 纪律复用）。spawn 在 nonisolated 同步面进行，登记经 Task
+    /// 异步；与出队 Task 的相对序不定，乱序由 completedDetachedPids 吸收。
+    func registerDetachedInflight(sessionId: String, pid: Int32) {
+        if completedDetachedPids.remove(pid) != nil { return }
+        perSessionInflight[sessionId, default: []].append(
+            InflightExec(id: UUID(), pid: pid, startTime: Date()))
+        syncInflightPidSnapshot()
+    }
+
+    /// detached 完成/取消后的 PID 出队（runCommand completion 路径同款
+    /// pid 清零配平）；登记 Task 尚未落地时先记入 pending 集等登记面吸收。
+    func completeDetachedInflight(sessionId: String, pid: Int32) {
+        if var queue = perSessionInflight[sessionId],
+           let idx = queue.firstIndex(where: { $0.pid == pid }) {
+            queue.remove(at: idx)
+            perSessionInflight[sessionId] = queue.isEmpty ? nil : queue
+        } else {
+            completedDetachedPids.insert(pid)
+        }
+        syncInflightPidSnapshot()
+    }
+
+    /// 同步 detached spawn（JobStart.run 的同步契约面）。立即返回句柄：
+    /// completion 挂 done、cancel 走进程组杀通道、lineCallback 累积行缓冲。
+    /// script 包装与 runCommand :428 同款（heredoc 尾换行 + stdin /dev/null
+    /// 子壳）；无超时面（后台作业跑到退出或 kill 为止——dsh 后台语义同，
+    /// 前台 900s 缺省不适用，登记）。
+    nonisolated func executeDetached(sessionId: String, command: String) throws -> DetachedShellHandle {
+        guard ISHKernel.shared.isBooted else {
+            throw ISHCoordinatorError.kernelNotBooted
+        }
+        let fsContext = FsContextRouter.shared.context(for: sessionId)
+        let customEnv = WanWoEnvStore.shared.allAsDict()
+        let env: [String: String]? = customEnv.isEmpty ? nil : customEnv
+        let scriptContent =
+            "cd /root\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
+        let stdinData = scriptContent.data(using: .utf8)
+
+        let lines = DetachedOutputBox()
+        let completion = DetachedCompletionBox()
+        let sid = sessionId
+
+        let pid = ISHShellExecutor.executeExecutable(
+            "/bin/sh",
+            arguments: nil,
+            environment: env,
+            stdinData: stdinData,
+            fsContext: fsContext,
+            lineCallback: { line, _ in
+                lines.append(line)
+            },
+            completion: { result in
+                completion.fulfill(DetachedShellResult(
+                    mergedOutput: lines.merged(),
+                    exitCode: result.exitCode,
+                    error: result.error))
+                Task { [weak self] in
+                    await self?.completeDetachedInflight(sessionId: sid,
+                                                         pid: result.pid)
+                }
+            })
+        guard pid >= 0 else {
+            logger.error("detached spawn failed: code \(pid)")
+            throw ISHCoordinatorError.spawnFailed
+        }
+        let pid32 = Int32(pid)
+        Task { [weak self] in
+            await self?.registerDetachedInflight(sessionId: sid, pid: pid32)
+        }
+        return DetachedShellHandle(
+            pid: pid32,
+            done: { await completion.wait() },
+            cancel: {
+                // [T-ish-thread-leak] 杀整进程组（同 runCommand 超时路径）。
+                ISHShellExecutor.killProcessGroup(pid32)
+                // [T-ish-shell-timeout-leak] 杀后立即 finalize：被收尸为
+                // 僵尸的任务收不到 exit 通知，不 finalize 则上下文与其两个
+                // reader 线程永久泄漏。C 层幂等——与正常退出竞争零双触发。
+                ISHShellExecutor.finalizeTimedOutPid(Int32(pid))
+            },
+            readOutput: { lines.readDelta() })
     }
 
     // MARK: - Mount Logic

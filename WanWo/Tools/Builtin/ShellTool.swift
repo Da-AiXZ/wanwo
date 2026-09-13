@@ -52,7 +52,11 @@ struct ShellTool: AgentTool {
     let name = "bash"
     let description = "Run a shell command inside the session's Alpine (busybox ash) environment. "
         + "Standard POSIX sh syntax; bash-only syntax is detected and bash is installed on demand. "
-        + "Working directory is the session workspace (/var/wanwo/workspace). Output is sanitized and truncated."
+        + "Working directory is the session workspace (/var/wanwo/workspace). Output is sanitized and truncated. "
+        // M5-A J2：run_in_background 增量文案（dsh tool-bash :69-72 逐字；
+        // job_output/job_kill 于 J3 装配——文案先行引用，dsh 同形态）。
+        + "Set `run_in_background: true` for long-running commands: the call returns a job id immediately; "
+        + "read its output with `job_output` and stop it with `job_kill`."
 
     let parameters: JSONValue = {
         // P1-3：提权参数字段（dsh escalation.ts:140 subject='command' 的名词
@@ -60,6 +64,8 @@ struct ShellTool: AgentTool {
         var props: [String: JSONValue] = [
             "command": .stringSchema(description: "The shell command to execute."),
             "timeout_ms": .numberSchema(description: "Optional timeout in milliseconds. Defaults to 900000 (15 minutes). The tool-level cooperative cap is 960000 (16 minutes)."),
+            // M5-A J2：后台作业参数（dsh tool-bash :49 run_in_background?）。
+            "run_in_background": .booleanSchema(description: "Set to true to run the command as a background job: the call returns a job id immediately instead of waiting for completion. Read output with job_output; stop with job_kill."),
         ]
         props.merge(SandboxGate.escalationSchemaFields(noun: "command")) { current, _ in current }
         return .schemaObject(properties: props, required: ["command"])
@@ -69,6 +75,21 @@ struct ShellTool: AgentTool {
     let timeoutMs: Int? = 960_000
 
     let sessionId: String
+
+    /// M5-A J2：后台作业注册表缝（AppEnvironment 装配注入；nil = 后台面
+    /// 不可用——dsh ctx.jobs 缺失同语义，错误文案 :355 逐字）。
+    var jobs: JobRegistryProtocol?
+
+    /// M5-A J2 注入缝①：后台路径前置挂载（幂等；生产=真桥，测试=no-op）。
+    var prepareBackground: @Sendable (_ sessionId: String) async -> Void = { sid in
+        await IshExecutorBridge.shared.prepareDetached(sessionId: sid)
+    }
+
+    /// M5-A J2 注入缝②：同步 detached spawn（JobStart.run 同步契约——
+    /// dsh ctx.shell.start 同款；生产=executeDetached，测试=桩句柄工厂）。
+    var spawnDetached: @Sendable (_ sessionId: String, _ command: String) throws -> DetachedShellHandle = { sid, cmd in
+        try IshExecutorBridge.shared.executeDetached(sessionId: sid, command: cmd)
+    }
 
     private static let defaultTimeoutSeconds: TimeInterval = 900
     private static let logger = AppLogger(category: "ShellTool")
@@ -96,6 +117,52 @@ struct ShellTool: AgentTool {
         let timeoutSeconds = args.objectValue?["timeout_ms"]?.intValue
             .map { max(1, Double($0) / 1000) } ?? Self.defaultTimeoutSeconds
 
+        // ── 后台作业分支（M5-A J2 · dsh tool-bash :348-377）──────────────
+        // 序：沙箱门已过（上方）→ jobs 缺失拒绝 → caller 取消检查 →
+        // 挂载前置 → jobs.start（run() 内同步 spawn）→ {kind:'background',
+        // jobId} 形态返回。bashism 检测不适用于后台路径（detached 通道直接
+        // /bin/sh 执行——差异登记；bash-only 脚本请前台跑）。
+        if args.objectValue?["run_in_background"]?.boolValue == true {
+            guard let jobs = self.jobs else {
+                return .failure(
+                    "background jobs unavailable: load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs",
+                    code: "JOBS_UNAVAILABLE")
+            }
+            // dsh :357-362：caller 拥有直到注册提交前的取消权。
+            try Task.checkCancellation()
+            CrashBreadcrumb.log("shell bg start [\(ctx.callId)]: \(command.prefix(300))")
+            await prepareBackground(sessionId)
+            let spawner = spawnDetached
+            let sid = sessionId
+            do {
+                let jobId = try jobs.start(JobStart(
+                    kind: .bash,
+                    label: command,
+                    ownerSessionId: sessionId,
+                    run: {
+                        let handle = try spawner(sid, command)
+                        return JobHooks(
+                            cancel: { handle.cancel() },
+                            done: {
+                                let result = await handle.done()
+                                return ShellTool.processOutcome(from: result)
+                            },
+                            readOutput: { handle.readOutput() })
+                    }))
+                Self.logger.info("background job started: \(jobId) [\(ctx.callId)]")
+                return .success(
+                    "{\"kind\": \"background\", \"jobId\": \"\(jobId)\"}",
+                    meta: .object([
+                        "kind": .string("background"),
+                        "jobId": .string(jobId),
+                    ]))
+            } catch {
+                return .failure(
+                    "background job start rejected: \((error as? JobRegistryError)?.message ?? String(describing: error))",
+                    code: "JOB_START_REJECTED")
+            }
+        }
+
         CrashBreadcrumb.log("shell start [\(ctx.callId)]: \(command.prefix(300))")
         defer { CrashBreadcrumb.log("shell end [\(ctx.callId)]") }
 
@@ -121,6 +188,21 @@ struct ShellTool: AgentTool {
                                                reminder: bashReminder,
                                                silentClass: bashism.hasSilent, ctx: ctx)
         return Self.finish(result, command: command)
+    }
+
+    // MARK: - 后台作业 outcome 映射（M5-A J2）
+
+    /// dsh background.ts:17-27 processOutcome 1:1：killed 留 killed（detail
+    /// signal 已知则 'signal: N'）；其余 completed + 'exit code: N'——**非零
+    /// 退出=报告而非 failed**，与前台渲染同款。TODO(background-infrastructure-
+    /// outcome) 上游登记照录：基础设施失败未来映射 failed；C 层 completion
+    /// 未携带 signal 粒度 → killed detail 走上游 fallback 'killed before
+    /// exit'（background.ts:24 fallback 分支）。
+    static func processOutcome(from result: DetachedShellResult) -> JobOutcome {
+        if result.error == .cancelled {
+            return JobOutcome(status: .killed, detail: "killed before exit")
+        }
+        return JobOutcome(status: .completed, detail: "exit code: \(result.exitCode)")
     }
 
     // MARK: - 结果组装

@@ -19,7 +19,7 @@ import XCTest
 
 /// 九方法最小 conform 桩：全部 preflight 拒绝（抛/空表）——缝测试只关心
 /// 签名可调，不关心行为（行为语义属 J2 jobs-local）。
-private final class StubJobRegistry: JobRegistryProtocol {
+private final class StubJobRegistry: JobRegistryProtocol, @unchecked Sendable {
     func start(_ spec: JobStart) throws -> String { "bash-1" }
     func list(callerSessionId: String?) -> [JobSnapshot] { [] }
     func get(id: String, callerSessionId: String?) throws -> JobSnapshot {

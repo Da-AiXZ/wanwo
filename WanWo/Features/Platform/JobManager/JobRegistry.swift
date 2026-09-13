@@ -43,7 +43,10 @@ import Foundation
 ///   controller 与完成 listener 的挂接是 owner 相对而非进程全局的——
 ///   WanWo 单层形态（ScopedLayers 不做，J2 需要再补，登记）退化为
 ///   进程级挂接集合。
-public protocol JobRegistryProtocol: AnyObject {
+/// （J2 增补：Sendable 收紧——ShellTool 等 AgentTool: Sendable 装配面
+///   持有注册表存在体，缝协议须 Sendable；LocalJobRegistry 以
+///   @unchecked Sendable + NSLock 兑现。）
+public protocol JobRegistryProtocol: AnyObject, Sendable {
 
     /// preflight 访问、校验、owner cleanup 与实现自有的 admission，然后才
     /// 启动并原子注册工作。任何 preflight 拒绝都不留下 job id 或执行资源。
