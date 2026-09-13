@@ -69,6 +69,32 @@ final class AppEnvironment: ObservableObject {
     /// App 级单例同 resourceGovernor/jobRegistry 位）。注入缝经 JobNotifier
     /// 可变闭包（测试桩替换）。
     let jobNotifier = JobNotifier()
+    /// M5-B S2：沙箱 provider 注册表——本地 iSH 后端默认（S1）；远程 E2B
+    /// opt-in 经 enableRemoteSandbox 装配（validateConnection 通过才可选用）。
+    /// confine 消费面接线留 P2——本件不动 ShellTool（行为零变化）。
+    var sandboxRegistry = SandboxProviderRegistry(
+        local: LocalSandboxProvider(), remote: nil)
+
+    /// M5-B S2：远程沙箱 opt-in。apiKey 缺省解析（env `E2B_API_KEY` >
+    /// Info.plist `E2BAPIKey`——RemoteSandboxConfig.resolveAPIKey）不落代码/
+    /// 日志；validateConnection 未通过时结构化吞掉（注册表回落本地唯一候选）。
+    /// - Parameter config: 调用方构造的配置（apiKey 可传 nil 触发缺省解析）。
+    /// - Returns: 连通验证报告；配置缺 apiKey（校验拒绝）= nil。
+    func enableRemoteSandbox(apiKey: String? = nil) async -> RemoteConnectionReport? {
+        let resolved = apiKey
+            ?? RemoteSandboxConfig.resolveAPIKey(
+                env: ProcessInfo.processInfo.environment,
+                infoPlist: Bundle.main.infoDictionary)
+        guard let resolved else { return nil }
+        guard let provider = try? RemoteSandboxProvider(
+            config: RemoteSandboxConfig(apiKey: resolved)) else { return nil }
+        let report = await provider.validateConnection()
+        if report.ok {
+            sandboxRegistry = SandboxProviderRegistry(
+                local: sandboxRegistry.local, remote: provider)
+        }
+        return report
+    }
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
