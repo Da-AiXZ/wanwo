@@ -100,6 +100,10 @@ actor AgentLoop {
         /// M4-D D2：技能注册表宿主（每步组装前 refresh 装载快照 + write-edit
         /// 失效判定消费方；nil = 不启用——既有调用面/测试不受扰）。
         var skillRegistry: SkillRegistry? = nil
+        /// M4-E E5：hooks 五挂点编排器（UserPromptSubmit + Stop 由 loop 直挂；
+        /// Pre/PostToolUse 经 pipeline 注入；nil = 不启用——既有调用面/测试
+        /// 不受扰，skillRegistry 同款默认值纪律）。
+        var hookPoints: HookPointRunner? = nil
     }
 
     // MARK: - 状态
@@ -383,6 +387,32 @@ actor AgentLoop {
 
                 // 上下文注入（F038/F039/F040）。
                 let injected = try await self.injectContexts(entries: entries)
+
+                // M4-E E5：UserPromptSubmit 挂点（CC index.ts:219-235 / codex
+                // :199-222——dsh agent/pre-step 位）。有 prompt 才挂（dsh
+                // messages.length===0 → next() 同语义）；matchQuery 恒 ""。
+                var upsContexts: [String] = []
+                let upsPrompt = injected.map(\.text)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                if let hookPoints = deps.hookPoints, !upsPrompt.isEmpty {
+                    let merged = await hookPoints.userPromptSubmit(
+                        turn: turn, prompt: upsPrompt)
+                    if merged.decision == .deny {
+                        // 拍板⑥：丢弃该消息 + turnEnd aborted(cause:)（CC
+                        // reject 语义=无 model-visible 消息落盘）。stepStart
+                        // 已落盘 → 先闭合 step 再 break（turn/end 前不得有
+                        // 开放 step——SessionInvariant）。
+                        try? await deps.writer.append(
+                            .stepEnd(turn: turn, step: step))
+                        endReason = .aborted(
+                            cause: "blocked by UserPromptSubmit hook")
+                        break
+                    }
+                    // context-only 不否决：注入后照常 enter（delegate 语义）。
+                    upsContexts = merged.additionalContext
+                }
+
                 for entry in injected where !entry.text.isEmpty {
                     let event = try await deps.writer.append(.userMessage(text: entry.text))
                     // F042：附件引用随归属 userMessage 紧随落 E1 通道
@@ -398,6 +428,18 @@ actor AgentLoop {
                     // T2.6 件6：引用事件已落盘后才发射（见上）——随行图片引用
                     // 供 live 乐观气泡带图上屏（用户 #22 前半）。
                     deps.callbacks.onUserMessageAppended(entry.text, entry.images)
+                }
+
+                // M4-E E5：UPS 上下文注入（CC index.ts:226-235——context-only
+                // 不否决，随 prompt 之后、模型请求之前；SkillCatalogInjector
+                // 同款 userMessage 通道）。注入失败不抛穿（R5 同族）。
+                for text in upsContexts {
+                    do {
+                        try await deps.writer.append(.userMessage(text: text))
+                    } catch {
+                        Self.logger.error("UserPromptSubmit context injection "
+                            + "failed: \(String(describing: error))")
+                    }
                 }
 
                 // 压力检查（dsh pre-step 压缩介入点；失败继续回合）。
@@ -454,6 +496,22 @@ actor AgentLoop {
             endReason = .maxTokens
         }
         let finalReason = endReason ?? .completed
+
+        // M4-E E5：Stop 挂点（CC index.ts:270-277 / codex :260-270——dsh
+        // agent/turn-stopping 位，turnEnd 落盘前）。仅自然完成边界触发
+        // （aborted/error/blocked/maxTokens 非 stopping boundary 语义——取消
+        // 或失败回合强制续步违背用户意图，裁定呈报）。deny → steer 强制续步
+        //（AgentLoop.steer:247 现成；kick() 收敛回放 nextStepInbox 非空再
+        // 唤醒——AgentLoop.kick:328——turn N 以 completed 收尾、steer 文本
+        // 作为 turn N+1 首步 claim 消费，强制续步达成）。
+        if let hookPoints = deps.hookPoints, case .completed = finalReason {
+            let merged = await hookPoints.stop(turn: turn)
+            if merged.decision == .deny {
+                let text = merged.reason ?? "continue: blocked by Stop hook"
+                self.steer(text)
+            }
+        }
+
         try? await deps.writer.append(.turnEnd(turn: turn, reason: finalReason))
         deps.callbacks.onTurnEnd(finalReason)
 

@@ -23,14 +23,19 @@ import Foundation
 final class ToolPipeline: @unchecked Sendable {
     let registry: ToolRegistry
     let repeatAdviser: RepeatCallAdviser
+    /// M4-E E5：hooks Pre/PostToolUse 编排器（nil = 不启用——既有调用面/
+    /// 测试不受扰；init 参数默认值保既有调用面）。
+    let hookPoints: HookPointRunner?
     /// spill 阈值（F037：>50KB 落盘）。
     static let spillThresholdBytes = 50_000
 
     private static let logger = AppLogger(category: "ToolPipeline")
 
-    init(registry: ToolRegistry, repeatAdviser: RepeatCallAdviser) {
+    init(registry: ToolRegistry, repeatAdviser: RepeatCallAdviser,
+         hookPoints: HookPointRunner? = nil) {
         self.registry = registry
         self.repeatAdviser = repeatAdviser
+        self.hookPoints = hookPoints
     }
 
     /// 执行一笔工具调用（不含事件落盘——tool/call 与 tool/result 由调度器按
@@ -41,6 +46,43 @@ final class ToolPipeline: @unchecked Sendable {
         guard let tool = registry.get(toolName), tool.exposure != .hidden else {
             return .failure("unknown tool \"\(toolName)\"", code: "UNKNOWN_TOOL",
                             name: "ToolNotFoundError")
+        }
+
+        // 0.5 M4-E E5：PreToolUse hook（CC index.ts:238-244 / codex :225-231
+        //     ——dsh tools/pre-execute 位；UNKNOWN_TOOL 检查后、guard 前）。
+        //     matcher subject=toolName。deny→合成错误结果；ask→审批缝挂起等
+        //     真人（SandboxGate 提权同通道——escalationApprover 闭包，'never'
+        //     与 nil 服务在闭包/守卫内 fail closed）；其余 next（=guard 流程）。
+        if let hookPoints {
+            let merged = await hookPoints.preToolUse(turn: ctx.turn,
+                                                     toolName: toolName,
+                                                     args: args,
+                                                     callId: ctx.callId)
+            switch merged.decision {
+            case .deny:
+                return .failure(merged.reason ?? "blocked by PreToolUse hook",
+                                code: "DENIED_BY_HOOK", name: "HookDeniedError")
+            case .ask:
+                // CC ask 语义=PreToolDecision.ask → 真人审批（跨桥 merge 后
+                // ask 胜出即 ask——裁定②）。allowedOnce → 准入继续 guard；
+                // 其余（rejected/cancelled/unavailable）→ 合成错误（hook 请求
+                // 的准入被拒=deny 等价，fail closed）。
+                guard let approver = ctx.escalationApprover else {
+                    return .failure(
+                        "hook asks for approval, but no approval service is composed",
+                        code: "HOOK_ASK_UNAVAILABLE", name: "HookDeniedError")
+                }
+                let outcome = await approver(
+                    toolName, ctx.callId,
+                    merged.reason ?? "PreToolUse hook requested approval")
+                guard case .allowedOnce = outcome else {
+                    return .failure(
+                        "tool use not approved (hook ask): \(outcome.rawValue)",
+                        code: "HOOK_ASK_REJECTED", name: "HookDeniedError")
+                }
+            default:
+                break
+            }
         }
 
         // 1. guard 单调否定（dsh：guard 在 pre-execute 之后、工具体之前；
@@ -68,8 +110,32 @@ final class ToolPipeline: @unchecked Sendable {
         // 3. post：大结果 spill（F037 >50KB → 落盘 + locator，按引用取回）。
         let postProcessed = await self.applySpill(output, ctx: ctx)
 
+        // 3.5 M4-E E5：PostToolUse hook（CC index.ts:247-265 / codex
+        //     :234-253——spill 后 adviser 前：deny 短路 adviser，坏结果不必
+        //     再附重复调用提醒）。matcher subject=toolName。deny→结果替换为
+        //     isError feedback（CC :252 kind:'block'+feedback）；additional-
+        //     Context→并入结果文本（adviser 同款拼接——dsh 以 additional-
+        //     Contexts 附在 downstream 决策，WanWo tool/result 是模型可见
+        //     最近位，登记差异）。
+        var postHooked = postProcessed
+        if let hookPoints {
+            let merged = await hookPoints.postToolUse(turn: ctx.turn,
+                                                      toolName: toolName,
+                                                      args: args,
+                                                      callId: ctx.callId,
+                                                      response: postProcessed.text)
+            if merged.decision == .deny {
+                return .failure(merged.reason ?? "blocked by PostToolUse hook",
+                                code: "DENIED_BY_HOOK", name: "HookDeniedError")
+            }
+            if !merged.additionalContext.isEmpty {
+                postHooked.text += "\n\n"
+                    + merged.additionalContext.joined(separator: "\n\n")
+            }
+        }
+
         // 4. result 观察：重复调用 advisory（只提醒，不改变执行结果本身）。
-        var final = postProcessed
+        var final = postHooked
         let canonical = Self.canonicalArgsText(args)
         if let advisory = await repeatAdviser.advise(tool: toolName, canonicalArgs: canonical) {
             final.text += "\n\n\(advisory)"

@@ -452,6 +452,22 @@ final class AppEnvironment: ObservableObject {
                 .appendingPathComponent("spill", isDirectory: true)
                 .appendingPathComponent(sessionId, isDirectory: true))
         let repeatAdviser = RepeatCallAdviser()
+        // M4-E E5：hooks 装配（E4 loader——Documents/hooks/ 双桥；fail open
+        // 语义在 loader 内）。runtime.warnings 装配期逐条 warn（dsh apply 期
+        // skipped/load-failure warn 同语义）；双桥全缺 → runner 不装配（nil，
+        // 五挂点全部旁路——零开销路径）。
+        let hookRuntimes = HookConfigLoader(
+            directory: HookConfigLoader.defaultDirectory).load()
+        for runtime in hookRuntimes {
+            for warning in runtime.warnings {
+                Self.logger.warning("hooks assembly: \(warning)")
+            }
+        }
+        let hookPoints: HookPointRunner? = hookRuntimes.isEmpty ? nil : HookPointRunner(
+            sessionId: sessionId,
+            writer: writer,
+            runtimes: hookRuntimes,
+            executor: IshHookCommandExecutor(sessionId: sessionId))
         // P1-3：提权审批通道（审批只由 sandbox_permissions 请求触发——dsh
         // escalation.ts:173）。'never' 政策在 dispatch 之前确定性 rejected
         // （dsh user-approval index.ts:266——不呈现、不落审计对）；ask 交给
@@ -465,7 +481,8 @@ final class AppEnvironment: ObservableObject {
         }
         let pipeline = ToolPipeline(
             registry: registry,
-            repeatAdviser: repeatAdviser)
+            repeatAdviser: repeatAdviser,
+            hookPoints: hookPoints)
         let compactor = Compactor(makeAdapter: { [weak self, modelSelection] in
             guard let self else {
                 throw LLMError(message: "environment released", code: "UNKNOWN")
@@ -524,8 +541,29 @@ final class AppEnvironment: ObservableObject {
             // M4-C2：tool_search 组装步（存在 deferred 才注册，每步刷新）。
             toolSearchAssembly: toolSearchAssembly,
             // M4-D D2：技能注册表（组装期 refresh + write-edit 失效消费方）。
-            skillRegistry: skillRegistry)
-        return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
+            skillRegistry: skillRegistry,
+            // M4-E E5：hooks 五挂点编排器（UPS/Stop 直挂 loop；Pre/Post
+            // 已随 pipeline 注入——同一实例）。
+            hookPoints: hookPoints)
+        let agentLoop = AgentLoop(deps: deps)
+
+        // M4-E E5：SessionStart 挂点（CC index.ts:206-215 detached 火忘——
+        // R5：不阻塞 stack 构建；慢 hook 可能错过首请求，dsh TODO(session-
+        // start-gating) 同注）。source 取值（裁定③）：writer 已有事件=resume
+        // 会话 → "resume"，零事件=新建 → "startup"（dsh session-start source
+        // 语义的 WanWo 等价判定，零签名改动）。additionalContext → agent.
+        // inject 通道（AgentLoop.inject:252——dsh agent.inject 同 API）。
+        if let hookPoints {
+            let source = writer.eventCount > 0 ? "resume" : "startup"
+            Task { [weak agentLoop] in
+                let merged = await hookPoints.sessionStart(source: source)
+                for text in merged.additionalContext {
+                    agentLoop?.inject(text)
+                }
+            }
+        }
+
+        return (agentLoop, nil, coordinator, questionService, permission,
                 planMode, attachments)
     }
 }
