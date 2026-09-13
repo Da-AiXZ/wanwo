@@ -135,6 +135,18 @@ final class AppEnvironment: ObservableObject {
         // Support 约定与 providers/permission-default/mcp-servers 同族）。
         self.skillSettingsStore = SkillSettingsStore(
             fileURL: configDir.appendingPathComponent("skills-settings.json"))
+        // M4-D D7 验收实证：bundled 安装原在 makeAgentStack（会话栈构建时机）——
+        // 首次启动无会话时 Skills 页 .bundled 为空（"新建对话后才出现"）。移到
+        // App 级 init（App 启动即安装；fail open——bundled 技能可选）。
+        do {
+            try BundledSkillInstaller.install(
+                files: BundledSkillInstaller.bundledFiles(),
+                targetRoot: WanWoPaths.skillsPersistentDir
+                    .appendingPathComponent(".bundled", isDirectory: true))
+        } catch {
+            Self.logger.error("bundled skills install failed: " +
+                              "\(String(describing: error))")
+        }
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
@@ -392,26 +404,18 @@ final class AppEnvironment: ObservableObject {
         let toolSearchAssembly = ToolSearchAssembly(registry: registry)
 
         // M4-D D2：技能三根（project=workspace /.agents/skills 宿主直读 /
-        // user=容器 skills/ / bundled=安装位 skills/.bundled）+ bundled 指纹
-        // 幂等安装（会话启动一次；fail open——bundled 技能可选，失败不阻塞）。
+        // user=容器 skills/ / bundled=安装位 skills/.bundled——安装已前移至
+        // AppEnvironment init（App 启动一次；D7 验收实证会话栈时机过晚）。
         let skillsUserRoot = WanWoPaths.skillsPersistentDir
         let skillsBundledRoot = skillsUserRoot
             .appendingPathComponent(".bundled", isDirectory: true)
-        do {
-            try BundledSkillInstaller.install(
-                files: BundledSkillInstaller.bundledFiles(),
-                targetRoot: skillsBundledRoot)
-        } catch {
-            Self.logger.error("bundled skills install failed: " +
-                              "\(String(describing: error))")
-        }
         let skillRegistry = SkillRegistry(roots: [
             .init(source: .project,
                   baseURL: WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
                       .appendingPathComponent(".agents/skills", isDirectory: true)),
             .init(source: .user, baseURL: skillsUserRoot),
             .init(source: .bundled, baseURL: skillsBundledRoot),
-        ])
+        ], settings: skillSettingsStore)
         // M4-D D5：skill 工具（渐进二级入口；direct——内置元工具恒 direct，
         // mcp_server_config 死锁防线同源；registry 注入同 ToolSearchTool 模式）。
         registry.register(SkillTool(registry: skillRegistry))
