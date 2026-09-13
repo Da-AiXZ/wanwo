@@ -28,6 +28,24 @@ struct ISHCommandResult {
     let exitCode: Int
 }
 
+/// M4-E E2：hooks 执行面的分离结果——stdout/stderr 不合并不装饰（C 桥层
+/// ISHShellExecutionResult.output/errorOutput 本就分离，见 ISHShellExecutor.h
+/// :35-39；本结构绕过 runCommand 的装饰性合并直取两流）。
+struct ISHSeparatedCommandResult {
+    let exitCode: Int32
+    let stdout: String
+    let stderr: String
+}
+
+/// runCommand 的统一出参：decorated（既有 ShellTool 通道——合并 stderr+exit
+/// 尾注+空输出占位）与 separated（hook 通道——两流原样）共用同一 continuation
+/// 管道，调用方按通道取用。
+private struct CommandOutcome {
+    let exitCode: Int
+    let output: String
+    let stderr: String
+}
+
 /// Errors specific to the execution coordinator.
 enum ISHCoordinatorError: Error, LocalizedError {
     case kernelNotBooted
@@ -147,15 +165,85 @@ actor IshExecutorBridge {
             }
         }
 
-        return try await runCommand(
+        let decorated = try await runCommand(
             sessionId: sessionId,
             myId: myId,
             fsContext: fsContext,
             command: command,
             timeout: timeout,
+            mergeOutput: true,
+            workingDirectory: "/root",
+            extraEnvironment: [:],
             lineCallback: lineCallback,
             pidCallback: pidCallback
         )
+        return ISHCommandResult(output: decorated.output, exitCode: decorated.exitCode)
+    }
+
+    // MARK: - M4-E E2：hooks 执行面（分离 stdout/stderr 的 run-to-completion）
+
+    /// Execute a shell command returning **separated, undecorated** stdout and
+    /// stderr（hooks 桥专用——dsh runner 需要 exitCode + 纯 stdout + 纯 stderr
+    /// 三元，runner.ts:87-95）。与 execute() 共享同一 runCommand 管道：[T-ish-
+    /// continuation-double-resume] / [T-ish-thread-leak] / [T-ish-shell-timeout-
+    /// leak] / [T-shell-stop-blocked-by-actor] 全部事故修复原样生效；差异仅在
+    /// 结果组装不合并不装饰。
+    /// - Parameters:
+    ///   - workingDirectory: guest 工作目录（hook=/var/wanwo/workspace——dsh
+    ///     session.header.cwd 语义；既有通道仍 cd /root，互不影响）。
+    ///   - extraEnvironment: 追加进 WanWoEnvStore 用户 env 的变量（hook 注入
+    ///     CLAUDE_PROJECT_DIR 等——CC 桥语义）。
+    ///   - stderr 通道：spawn 失败/超时的错误消息进 stderr 位（exitCode -1，
+    ///     hook 侧映射为 dsh 的 undefined=非阻断错误）。
+    func executeSeparated(
+        sessionId: String,
+        command: String,
+        timeout: TimeInterval?,
+        workingDirectory: String,
+        extraEnvironment: [String: String],
+        pidCallback: @escaping (Int32) -> Void
+    ) async throws -> ISHSeparatedCommandResult {
+        guard ISHKernel.shared.isBooted else {
+            throw ISHCoordinatorError.kernelNotBooted
+        }
+
+        let myId = UUID()
+        perSessionInflight[sessionId, default: []].append(
+            InflightExec(id: myId, startTime: Date()))
+        syncInflightPidSnapshot()
+
+        try Task.checkCancellation()
+
+        mountedSessionId = sessionId
+        ensureStaticMountsInitialized(for: sessionId)
+
+        let fsContext = FsContextRouter.shared.context(for: sessionId)
+
+        defer {
+            if var queue = perSessionInflight[sessionId],
+               let idx = queue.firstIndex(where: { $0.id == myId }) {
+                queue.remove(at: idx)
+                perSessionInflight[sessionId] = queue.isEmpty ? nil : queue
+                syncInflightPidSnapshot()
+            }
+        }
+
+        let outcome = try await runCommand(
+            sessionId: sessionId,
+            myId: myId,
+            fsContext: fsContext,
+            command: command,
+            timeout: timeout,
+            mergeOutput: false,
+            workingDirectory: workingDirectory,
+            extraEnvironment: extraEnvironment,
+            lineCallback: { _ in },   // hook 不消费行流
+            pidCallback: pidCallback
+        )
+        return ISHSeparatedCommandResult(
+            exitCode: Int32(outcome.exitCode),
+            stdout: outcome.output,
+            stderr: outcome.stderr)
     }
 
     /// Called from loadSession() for UI readiness. Per-session buckets are
@@ -289,20 +377,28 @@ actor IshExecutorBridge {
     }
 
     /// Bridge ISHShellExecutor's callback API to async/await.
+    /// M4-E E2 参数化：mergeOutput=false 时结果不合并不装饰（hook 分离通道）；
+    /// workingDirectory=guest cd 目标；extraEnvironment 追加进用户 env。
+    /// 默认值=既有行为（ShellTool 通道零变化）。
     private func runCommand(
         sessionId: String,
         myId: UUID,
         fsContext: UInt64,
         command: String,
         timeout: TimeInterval?,
+        mergeOutput: Bool,
+        workingDirectory: String,
+        extraEnvironment: [String: String],
         lineCallback: @escaping (String) -> Void,
         pidCallback: @escaping (Int32) -> Void
-    ) async throws -> ISHCommandResult {
+    ) async throws -> CommandOutcome {
         let effectiveTimeout = timeout ?? 300 // 5 minute default
 
         // Load user-defined env vars (nonisolated, reads from disk + Keychain)
         // 【万我适配】替代 OpenMinis EnvVarStore（薄 stub，M0 恒为空）。
-        let customEnv = WanWoEnvStore.shared.allAsDict()
+        var customEnv = WanWoEnvStore.shared.allAsDict()
+        // M4-E E2：hook 注入变量（CLAUDE_PROJECT_DIR 等）与用户 env 同通道。
+        for (key, value) in extraEnvironment { customEnv[key] = value }
 
         // Feed the command as a script via stdin pipe to /bin/sh.
         // This avoids shell quoting issues with multi-line or special-char commands.
@@ -323,7 +419,7 @@ actor IshExecutorBridge {
         // terminator and fails deterministically with
         // `unexpected end of file (expecting ")")`. A newline puts the closing
         // `)` on its own line; it is a no-op for every other command.
-        let scriptContent = "cd /root\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
+        let scriptContent = "cd \(workingDirectory)\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
         let stdinData = scriptContent.data(using: .utf8)
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -376,22 +472,33 @@ actor IshExecutorBridge {
 
                 Task { await self?.recordInflightPid(sessionId: sessionId, id: myId, pid: 0) }
 
-                var output = result.output
-                let errOutput = result.errorOutput
-                if !errOutput.isEmpty {
-                    output += (output.isEmpty ? "" : "\n") + errOutput
+                let outcome: CommandOutcome
+                if mergeOutput {
+                    var output = result.output
+                    let errOutput = result.errorOutput
+                    if !errOutput.isEmpty {
+                        output += (output.isEmpty ? "" : "\n") + errOutput
+                    }
+
+                    if result.exitCode != 0 && !output.contains("exit code") {
+                        output += "\n(exit code: \(result.exitCode))"
+                    }
+
+                    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        output = "(command completed with no output)"
+                    }
+                    outcome = CommandOutcome(exitCode: Int(result.exitCode),
+                                             output: output, stderr: "")
+                } else {
+                    // M4-E E2 hook 通道：两流原样分离，零装饰（无 exit 尾注、
+                    // 无空输出占位——hook 语义需要真实空串）。
+                    outcome = CommandOutcome(exitCode: Int(result.exitCode),
+                                             output: result.output,
+                                             stderr: result.errorOutput)
                 }
 
-                if result.exitCode != 0 && !output.contains("exit code") {
-                    output += "\n(exit code: \(result.exitCode))"
-                }
-
-                if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    output = "(command completed with no output)"
-                }
-
-                logger.info("Command completed. Exit code: \(result.exitCode), output: \(output.count) chars")
-                continuation.resume(returning: ISHCommandResult(output: output, exitCode: Int(result.exitCode)))
+                logger.info("Command completed. Exit code: \(result.exitCode), output: \(outcome.output.count) chars")
+                continuation.resume(returning: outcome)
             })
 
             if pid < 0 {
@@ -410,7 +517,11 @@ actor IshExecutorBridge {
                     errorMsg = "Execution error (code: \(pid))"
                 }
                 logger.error("ISHShellExecutor failed: \(errorMsg)")
-                continuation.resume(returning: ISHCommandResult(output: "Error: \(errorMsg)", exitCode: -1))
+                // separated 通道：错误消息进 stderr 位（hook 侧 exitCode -1 →
+                // dsh undefined=非阻断错误映射）。
+                continuation.resume(returning: mergeOutput
+                    ? CommandOutcome(exitCode: -1, output: "Error: \(errorMsg)", stderr: "")
+                    : CommandOutcome(exitCode: -1, output: "", stderr: "Error: \(errorMsg)"))
                 return
             }
 
@@ -444,7 +555,13 @@ actor IshExecutorBridge {
                 Task { await self?.recordInflightPid(sessionId: sessionId, id: myId, pid: 0) }
                 pidCallback(0)
                 logger.warning("Command timed out after \(effectiveTimeout)s — killing process group pid=\(pid)")
-                continuation.resume(returning: ISHCommandResult(output: "(command timed out after \(Int(effectiveTimeout))s)", exitCode: -1))
+                continuation.resume(returning: mergeOutput
+                    ? CommandOutcome(exitCode: -1,
+                                     output: "(command timed out after \(Int(effectiveTimeout))s)",
+                                     stderr: "")
+                    : CommandOutcome(exitCode: -1,
+                                     output: "",
+                                     stderr: "(hook command timed out after \(Int(effectiveTimeout))s)"))
             }
             timeoutWork = work
             DispatchQueue.main.asyncAfter(
