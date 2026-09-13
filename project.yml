@@ -92,6 +92,9 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        # M4-E：hooks 配置放置面（拍板项①——Documents/hooks/ 双桥配置经
+        # 文件 App 放入；UIFileSharingEnabled=Documents 暴露到"我的 iPad"）。
+        UIFileSharingEnabled: true
 
   # M3 T1：单元测试目标（纯逻辑单测，WanWoTests 已批；CI 无 test action——
   # 按收益取舍本地跑；不触碰 WanWo 主 target 的任何编译宏/链接参数基线）。
