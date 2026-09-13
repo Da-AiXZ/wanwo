@@ -65,6 +65,10 @@ final class AppEnvironment: ObservableObject {
     /// 重建栈时先摘旧再挂新——dsh tool-jobs 插件单 listener 语义对应；
     /// MainActor 域属性，免锁）。
     private var jobNoticeDisposers: [String: () -> Void] = [:]
+    /// M5-A J4：作业完成本地通知器（07 F007——用户不在看 App 时的可见性面；
+    /// App 级单例同 resourceGovernor/jobRegistry 位）。注入缝经 JobNotifier
+    /// 可变闭包（测试桩替换）。
+    let jobNotifier = JobNotifier()
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -579,20 +583,35 @@ final class AppEnvironment: ObservableObject {
         let agentLoop = AgentLoop(deps: deps)
 
         // M5-A J3：完成通知接线（dsh tool-jobs index.ts:278-299 的 owner 归一
-        // 形态）。每会话一枚 listener：reported / owner nil / 非本会话 → 跳过
-        // （dsh :279 同语义）；命中 → fitCompletionNotice 文本注入下一步
-        // 收件箱（AgentLoop.inject——dsh owner.inject 同 API，SessionStart
-        // 通道同款 await agentLoop?.inject）。busy/idle 分流与 wakeup 预算
-        // （dsh :293-297 followup + spentWakes）登记不实现：WanWo 单宿主恒
-        // 注入形态（派单裁定；TODO(wakeup-budget) 上游同注）。
+        // 形态）。每会话一枚 listener：reported / owner nil → 跳过（dsh :279
+        // 同语义）；本会话命中 → fitCompletionNotice 文本注入下一步收件箱
+        // （AgentLoop.inject——dsh owner.inject 同 API，SessionStart 通道同款
+        // await agentLoop?.inject）。busy/idle 分流与 wakeup 预算（dsh :293-297
+        // followup + spentWakes）登记不实现：WanWo 单宿主恒注入形态
+        // （派单裁定；TODO(wakeup-budget) 上游同注）。
+        // M5-A J4 增补（07 F007）：用户侧可见性——同作业完成追加本地通知
+        // （前台抑制在 notifier 内）；通知无会话隔离，非本会话作业完成只走
+        // 通知不走 inject；同作业多 listener 重复请求由 identifier=job id
+        // 收敛（UNUserNotificationCenter 同 identifier 覆盖）。
         jobNoticeDisposers.removeValue(forKey: sessionId)?()
         let noticeSessionId = sessionId
+        let notifier = jobNotifier
         jobNoticeDisposers[sessionId] = jobRegistry.onJobDone { [weak agentLoop] snapshot, owner in
             if snapshot.reported || owner == nil { return }
-            guard owner == noticeSessionId else { return }
             let text = JobCompletionNotice.text(for: snapshot)
-            Task { [weak agentLoop] in
-                await agentLoop?.inject(text)
+            if owner == noticeSessionId {
+                Task { [weak agentLoop] in
+                    await agentLoop?.inject(text)
+                    await notifier.notifyIfNeeded(snapshot: snapshot,
+                                                  ownerSessionId: owner,
+                                                  noticeText: text)
+                }
+            } else {
+                Task {
+                    await notifier.notifyIfNeeded(snapshot: snapshot,
+                                                  ownerSessionId: owner,
+                                                  noticeText: text)
+                }
             }
         }
 
