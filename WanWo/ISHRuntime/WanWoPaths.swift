@@ -105,6 +105,16 @@ enum WanWoPaths {
             .appendingPathComponent(".agents/skills", isDirectory: true)
     }
 
+    /// 分组级 agent 资源根：groups/<gid>/workspace/.agents（M4-E 验收修复：
+    /// fakefs/Swift 翻译粒度从 .agents/skills 提升为 .agents 整树——skills 粒度
+    /// 会让父目录 .agents 落会话桶（AI 终端 find 即报不存在，误判写失败），
+    /// 且 mkdir -p 逐级创建会跨宿主劈裂。skills 子目录语义不变（registry 扫描
+    /// 与失效判定仍锚 .agents/skills）。
+    static func groupAgentResourcesRoot(base: URL, groupID: String) -> URL {
+        groupWorkspaceRoot(base: base, groupID: groupID)
+            .appendingPathComponent(".agents", isDirectory: true)
+    }
+
     /// 每会话四桶的宿主持久化目录（fs_context 路由目标）。
     /// M4-E+ P2：会话桶挂分组下——persistentBase/groups/<gid>/<sid>/<bucket>
     /// （brief §5.2；groupID 默认值保既有调用面零改动自动跟随默认分组；

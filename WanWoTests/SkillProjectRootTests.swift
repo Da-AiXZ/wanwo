@@ -22,6 +22,7 @@ final class SkillProjectRootTests: XCTestCase {
 
     private var workDir: URL!
     private var projectRoot: URL!
+    private var skillsRoot: URL!
     private var sid: String!
     private var workspace: WorkspaceFileAccess!
 
@@ -31,7 +32,10 @@ final class SkillProjectRootTests: XCTestCase {
             .appendingPathComponent("m4e-p3-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workDir,
                                                 withIntermediateDirectories: true)
-        projectRoot = workDir.appendingPathComponent("project-skills", isDirectory: true)
+        // M4-E 验收修复：翻译粒度=.agents 整树（projectRoot=.agents 根）；
+        // registry 扫描粒度仍=.agents/skills（skillsRoot）——两粒度分离。
+        projectRoot = workDir.appendingPathComponent("project-agent", isDirectory: true)
+        skillsRoot = projectRoot.appendingPathComponent("skills", isDirectory: true)
         workspace = WorkspaceFileAccess(sessionId: sid, projectSkillsRoot: projectRoot)
     }
 
@@ -58,28 +62,28 @@ final class SkillProjectRootTests: XCTestCase {
     func testResolveSplitsProjectSkillsFromSessionWorkspace() {
         let sessionBucket = WanWoPaths.sessionPersistentDir(for: sid, bucket: "workspace")
 
-        // project 资源（绝对 guest 路径）→ 分组技能根。
+        // project 资源（绝对 guest 路径）→ 分组 agent 资源根（.agents 整树）。
         XCTAssertEqual(
             workspace.resolve("/var/wanwo/workspace/.agents/skills/alpha/SKILL.md")?
                 .standardizedFileURL.path,
-            projectRoot.appendingPathComponent("alpha/SKILL.md")
+            projectRoot.appendingPathComponent("skills/alpha/SKILL.md")
                 .standardizedFileURL.path)
         // project 根自身（目录列出场景）。
         XCTAssertEqual(
             workspace.resolve("/var/wanwo/workspace/.agents/skills")?
                 .standardizedFileURL.path,
-            projectRoot.standardizedFileURL.path)
+            projectRoot.appendingPathComponent("skills").standardizedFileURL.path)
         // 相对路径形态同样命中。
         XCTAssertEqual(
             workspace.resolve(".agents/skills/alpha/SKILL.md")?
                 .standardizedFileURL.path,
-            projectRoot.appendingPathComponent("alpha/SKILL.md")
+            projectRoot.appendingPathComponent("skills/alpha/SKILL.md")
                 .standardizedFileURL.path)
-        // 前缀边界：.agents/skillsX 不是 project 资源 → 会话桶。
+        // 前缀边界（新语义）：.agents 整树归分组桶——skillsX 也在 .agents 下。
         XCTAssertEqual(
             workspace.resolve("/var/wanwo/workspace/.agents/skillsX/a.txt")?
                 .standardizedFileURL.path,
-            sessionBucket.appendingPathComponent(".agents/skillsX/a.txt")
+            projectRoot.appendingPathComponent("skillsX/a.txt")
                 .standardizedFileURL.path)
         // 普通 workspace 文件照旧会话桶。
         XCTAssertEqual(
@@ -94,16 +98,18 @@ final class SkillProjectRootTests: XCTestCase {
             WorkspaceFileAccess(sessionId: sid)
                 .resolve("/var/wanwo/workspace/.agents/skills/x.md")?
                 .standardizedFileURL.path,
-            WanWoPaths.groupSkillsProjectRoot(base: WanWoPaths.persistentBase,
-                                              groupID: WanWoPaths.defaultGroupID)
-                .appendingPathComponent("x.md").standardizedFileURL.path)
+            WanWoPaths.groupAgentResourcesRoot(base: WanWoPaths.persistentBase,
+                                               groupID: WanWoPaths.defaultGroupID)
+                .appendingPathComponent("skills/x.md").standardizedFileURL.path)
     }
 
     // MARK: writeAt 失效链（隐蔽关键点：命中失效 + 不误伤）
 
     func testWriteAtInvalidationHitsProjectRootOnly() throws {
+        // registry 扫描粒度=.agents/skills（skillsRoot）——resolve 翻译粒度
+        // =.agents 整树，两粒度分离（见 setUp）。
         let registry = SkillRegistry(roots: [
-            .init(source: .project, baseURL: projectRoot)])
+            .init(source: .project, baseURL: skillsRoot)])
         workspace.onMutation = { [weak registry] url in
             registry?.noteHostMutation(url)
         }
@@ -114,7 +120,7 @@ final class SkillProjectRootTests: XCTestCase {
         // 预热快照（回填缓存；此刻根内无技能）。
         XCTAssertFalse(hasSkill("external-after-warmup"))
         // 缓存有效后，直接在根内落一个技能文件（绕过 writeAt——模拟外部出现）。
-        try makeSkill("external-after-warmup", in: projectRoot)
+        try makeSkill("external-after-warmup", in: skillsRoot)
         // 写会话桶普通文件 → 若误伤失效，下一次 snapshot 重扫会看到 external；
         // 断言「不可见」= 未误伤（缓存未被错误置脏）。
         try workspace.writeText("notes.txt", content: "hi", mode: .workspaceWrite)
@@ -144,29 +150,30 @@ final class SkillProjectRootTests: XCTestCase {
 
     func testFsContextRouterProjectSkillsPrefixWinsOverSessionBucket() {
         let router = FsContextRouter.shared
-        let projectSkillsHost = WanWoPaths.groupSkillsProjectRoot(
+        // 验收修复：翻译粒度=.agents 整树（groupAgentResourcesRoot）。
+        let projectAgentHost = WanWoPaths.groupAgentResourcesRoot(
             base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
         let sessionBucket = WanWoPaths.sessionPersistentDir(for: sid, bucket: "workspace")
 
-        // project 资源 → 分组技能根（无 sid 层）。
+        // project 资源 → 分组 agent 资源根（无 sid 层）。
         XCTAssertEqual(
             router.hostURL(forGuest: "/var/wanwo/workspace/.agents/skills/a/b.md",
                            sid: sid)?.path,
-            projectSkillsHost.appendingPathComponent("a/b.md").path)
-        // project 根自身。
+            projectAgentHost.appendingPathComponent("skills/a/b.md").path)
+        // project 根自身（.agents 目录）。
         XCTAssertEqual(
-            router.hostURL(forGuest: "/var/wanwo/workspace/.agents/skills",
+            router.hostURL(forGuest: "/var/wanwo/workspace/.agents",
                            sid: sid)?.path,
-            projectSkillsHost.path)
-        // 不含 .agents/skills 前缀的 workspace 路径照旧会话桶（两种都断言）。
+            projectAgentHost.path)
+        // 不含 .agents 前缀的 workspace 路径照旧会话桶（两种都断言）。
         XCTAssertEqual(
             router.hostURL(forGuest: "/var/wanwo/workspace/plain.txt", sid: sid)?.path,
             sessionBucket.appendingPathComponent("plain.txt").path)
-        // 前缀边界：.agents/skillsX → 会话桶。
+        // 前缀边界（新语义）：.agents 整树归分组桶——skillsX 亦然。
         XCTAssertEqual(
             router.hostURL(forGuest: "/var/wanwo/workspace/.agents/skillsX/a",
                            sid: sid)?.path,
-            sessionBucket.appendingPathComponent(".agents/skillsX/a").path)
+            projectAgentHost.appendingPathComponent("skillsX/a").path)
     }
 
     // MARK: 派生形状与 guest 心智保真
@@ -184,5 +191,14 @@ final class SkillProjectRootTests: XCTestCase {
         XCTAssertEqual(WanWoPaths.projectSkillsLinuxDir,
                        "/var/wanwo/workspace/.agents/skills")
         XCTAssertEqual(WanWoPaths.projectSkillsGroupTail, "workspace/.agents/skills")
+        // 验收修复：.agents 整树粒度（fakefs/Swift 翻译统一）。
+        XCTAssertEqual(
+            WanWoPaths.groupAgentResourcesRoot(base: base, groupID: "g").path,
+            base.appendingPathComponent("groups", isDirectory: true)
+                .appendingPathComponent("g", isDirectory: true)
+                .appendingPathComponent("workspace", isDirectory: true)
+                .appendingPathComponent(".agents", isDirectory: true).path)
+        let agentPrefix = WanWoPaths.workspaceLinuxDir + "/.agents"
+        XCTAssertEqual(agentPrefix, "/var/wanwo/workspace/.agents")
     }
 }

@@ -297,33 +297,43 @@ struct FsGlobTool: AgentTool {
         }
         let workspace = ctx.workspace
         let baseTail = args.objectValue?["path"]?.stringValue
-        guard let base = baseTail.flatMap({ workspace.resolve($0) }) ?? Optional(workspace.rootURL) else {
-            return .failure("path escapes the workspace root", code: "INVALID_ARGS")
-        }
         guard let regex = Self.globRegex(pattern: pattern) else {
             return .failure("invalid glob pattern: \(pattern)", code: "INVALID_ARGS")
         }
-        let files = workspace.recursiveFiles()
-            .filter { $0.path.hasPrefix(base.path) }
-            // ERR-018：dsh glob 模式相对搜索目录匹配——对绝对路径匹配 `*`
-            // （^[^/]*$）永远失败（真机实证：`*` 搜不到 hello.txt 而 `**/*` 能）。
-            .filter { url -> Bool in
+        // M4-E 验收修复：默认（未传 path）遍历面=会话桶+分组技能根两根统一
+        // guest 相对视图（.agents/skills/… 的共享文件此前被 base 前缀过滤掉
+        // ——AI glob 验证自己写的技能永远 No match，真机实证）。显式 path 保
+        // 持 resolve 语义（P3 特判可命中分组根）。
+        let files: [(url: URL, tail: String)]
+        if let baseTail {
+            guard let base = workspace.resolve(baseTail) else {
+                return .failure("path escapes the workspace root", code: "INVALID_ARGS")
+            }
+            files = workspace.recursiveFiles().compactMap { url in
+                guard url.path.hasPrefix(base.path) else { return nil }
                 var tail = String(url.path.dropFirst(base.path.count))
                 if tail.hasPrefix("/") { tail.removeFirst() }
-                return regex.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)) != nil
+                return (url, tail)
             }
+            // ERR-018：dsh glob 模式相对搜索目录匹配——显式 path 时 tail 相对
+            // 解析后的搜索目录（对绝对路径匹配 `*` 永远失败）。
+        } else {
+            files = workspace.recursiveFiles().compactMap { url in
+                workspace.guestRelativeTail(url).map { (url, $0) }
+            }
+        }
+        let matched = files.filter { entry -> Bool in
+            regex.firstMatch(in: entry.tail,
+                             range: NSRange(entry.tail.startIndex..., in: entry.tail)) != nil
+        }
         func mtime(_ url: URL) -> TimeInterval {
             (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate?.timeIntervalSince1970) ?? nil ?? 0
         }
-        let sorted = files.sorted { mtime($0) > mtime($1) }
-        var rootPrefix = workspace.rootURL.path
-        if rootPrefix.hasSuffix("/") { rootPrefix.removeLast() }
-        let names = sorted.prefix(Self.maxResults).map { url -> String in
-            var p = url.path
-            if p.hasPrefix("/private" + rootPrefix) { p = String(p.dropFirst("/private".count)) }
-            return p.hasPrefix(rootPrefix) ? String(p.dropFirst(rootPrefix.count + 1)) : p
-        }
+        let sorted = matched.sorted { mtime($0.url) > mtime($1.url) }
+        // 输出统一 guest 相对视图（会话桶文件=相对根；分组技能根文件=
+        // .agents/skills/…——AI 可直接以同路径回访）。
+        let names = sorted.prefix(Self.maxResults).map(\.tail)
         if names.isEmpty { return .success("No files match \(pattern)") }
         var text = names.joined(separator: "\n")
         if sorted.count > Self.maxResults {

@@ -38,6 +38,12 @@ struct SkillsView: View {
         _store = ObservedObject(wrappedValue: environment.skillSettingsStore)
         displayRegistry = SkillRegistry(
             roots: [
+                // M4-E 验收修复：分组技能根入列（用户裁定——对话里建的技能是
+                // 持久资源，设置页应可见可停用；启停同走 DisabledSkills 按名）。
+                .init(source: .project,
+                      baseURL: WanWoPaths.groupSkillsProjectRoot(
+                          base: WanWoPaths.persistentBase,
+                          groupID: WanWoPaths.defaultGroupID)),
                 .init(source: .user, baseURL: WanWoPaths.skillsPersistentDir),
                 .init(source: .bundled,
                       baseURL: WanWoPaths.skillsPersistentDir
@@ -48,15 +54,33 @@ struct SkillsView: View {
 
     var body: some View {
         List {
+            // M4-E 验收修复：按来源分层展示（分组级=对话内 AI 创建；持久=
+            // 导入/预装）。启停同走 DisabledSkills 按名，语义一致。
+            let projectSkills = snapshot.summaries.filter { $0.source == .project }
+            let persistentSkills = snapshot.summaries.filter { $0.source != .project }
             Section {
-                ForEach(snapshot.summaries, id: \.name) { summary in
+                ForEach(projectSkills, id: \.name) { summary in
+                    skillRow(summary)
+                }
+                if projectSkills.isEmpty {
+                    Text("（空——对话里让 AI 在 .agents/skills/ 下创建即可）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("工作区技能（分组级）")
+            } footer: {
+                Text("同分组内跨会话共享。对话里让 AI 在 .agents/skills/ 下创建，"
+                     + "写盘即自动进入本列表。")
+            }
+            Section {
+                ForEach(persistentSkills, id: \.name) { summary in
                     skillRow(summary)
                 }
             } header: {
-                Text("技能")
+                Text("技能（全部会话可用）")
             } footer: {
-                Text("停用后技能从模型目录/工具/触发面整体移除，即时生效。"
-                     + "工作区技能（.agents/skills）为分组级（同分组内跨会话共享），不在本列表。")
+                Text("停用后技能从模型目录/工具/触发面整体移除，即时生效。")
             }
             if !snapshot.errors.isEmpty {
                 Section("扫描问题") {

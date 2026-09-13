@@ -54,8 +54,8 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         self.rootURL = WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
         // M4-E+ P3：project 资源根升分组桶（默认=WanWoPaths 单一事实源派生）。
         self.projectSkillsRootURL = projectSkillsRoot
-            ?? WanWoPaths.groupSkillsProjectRoot(base: WanWoPaths.persistentBase,
-                                                 groupID: WanWoPaths.defaultGroupID)
+            ?? WanWoPaths.groupAgentResourcesRoot(base: WanWoPaths.persistentBase,
+                                                  groupID: WanWoPaths.defaultGroupID)
         self.guestRootURL = guestRoot ?? RootfsInstaller.shared.dataPath
         try? Self.fileManager.createDirectory(at: rootURL,
                                               withIntermediateDirectories: true)
@@ -111,16 +111,17 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     /// resolve/resolveUnderGuestRoot 同源逻辑——既有两处为 P13 已验证面不回改，
     /// 最小触碰纪律）；非 project 资源返回 nil（回落 workspace 桶解析）。
     /// project 资源 tail 判定（marker 前缀；resolve 的回落守卫与本解析器
-    /// 共用同一判定——单一事实源）。
+    /// 共用同一判定——单一事实源）。M4-E 验收修复：marker 提升为 ".agents"
+    /// 整树（与 fakefs 特判粒度一致——skills 粒度会让父目录翻译劈裂）。
     private static func isProjectSkillsTail(_ tail: String) -> Bool {
-        let marker = ".agents/skills"
+        let marker = ".agents"
         return tail == marker || tail.hasPrefix(marker + "/")
     }
 
     private static func resolveProjectSkillsTail(_ tail: String,
                                                  within root: URL) -> URL? {
         guard isProjectSkillsTail(tail) else { return nil }
-        let marker = ".agents/skills"
+        let marker = ".agents"
         let candidate: URL
         if tail == marker {
             candidate = root
@@ -289,6 +290,23 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     /// 技能后 glob 验证不可见=行为回归）。两根物理不相交，无需去重。
     func recursiveFiles() -> [URL] {
         return filesUnder(rootURL) + filesUnder(projectSkillsRootURL)
+    }
+
+    /// guest 相对视图（M4-E 验收修复：glob 匹配基统一）：会话桶文件→相对
+    /// rootURL；分组 agent 资源根文件→".agents/… "（与 fakefs guest 路径形状
+    /// 一致，AI 可用同一路径回访）。两根之外的文件返回 nil。
+    func guestRelativeTail(_ url: URL) -> String? {
+        var p = url.standardizedFileURL.path
+        if p.hasPrefix("/private") { p = String(p.dropFirst("/private".count)) }
+        let rootPath = rootURL.standardizedFileURL.path
+        if p == rootPath { return "" }
+        if p.hasPrefix(rootPath + "/") { return String(p.dropFirst(rootPath.count + 1)) }
+        let skillsPath = projectSkillsRootURL.standardizedFileURL.path
+        if p == skillsPath { return ".agents" }
+        if p.hasPrefix(skillsPath + "/") {
+            return ".agents/" + String(p.dropFirst(skillsPath.count + 1))
+        }
+        return nil
     }
 
     private func filesUnder(_ root: URL) -> [URL] {
