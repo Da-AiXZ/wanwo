@@ -262,7 +262,7 @@ enum ToolCallScheduler {
                 skillRegistry?.noteHostMutation(url)
             }
         }
-        ToolExecutionContext(
+        return ToolExecutionContext(
             sessionId: deps.sessionId,
             turn: turn,
             step: step,
