@@ -223,9 +223,10 @@ final class SkillMentionInjectorTests: XCTestCase {
             SkillTool.truncationWarningPrefix + "big"
                 + SkillTool.truncationWarningSuffix))
         // 正文主体恰好 8000 字节（全 'x' 载体——截断点精确断言）。
-        XCTAssertEqual(injection.filter { $0 == "x" }.count, 8000, "unexpected: " + injection)
-        let xPos = injection.enumerated().compactMap { (i, c) in c == "x" ? i : nil }.filter { $0 < 50 || $0 > 7950 }
-        print("TRUNC_DEBUG: totalBytes=", injection.utf8.count, " xCount=", injection.filter { $0 == "x" }.count, " nonBodyX=", xPos.count, " xPos=", xPos.prefix(10))
+        // 正文段 = 连续 8000 个 'x'（截断告警文案 "exceeded"/"context" 自带 2 个
+        // 零散 x——CI 第九轮实证；连续性断言排除告警散 x 的计数干扰）。
+        XCTAssertTrue(injection.contains(String(repeating: "x", count: 8000)))
+        XCTAssertFalse(injection.contains(String(repeating: "x", count: 8001)))
     }
 
     func testProjectDeduplicatesWhenMarkerLater() throws {
