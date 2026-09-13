@@ -64,7 +64,7 @@ final class SkillCatalogInjectorTests: XCTestCase {
         let truncated = SkillCatalogInjector.catalogDescription(String(repeating: "a", count: 600))
         XCTAssertEqual(truncated.count, 500)
         XCTAssertTrue(truncated.hasSuffix("..."))
-        XCTAssertEqual(truncated.dropLast(3), String(repeating: "a", count: 497))
+        XCTAssertEqual(String(truncated.dropLast(3)), String(repeating: "a", count: 497))
     }
 
     // MARK: 空态与全删

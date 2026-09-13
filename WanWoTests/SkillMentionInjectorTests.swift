@@ -278,9 +278,10 @@ final class SkillMentionInjectorTests: XCTestCase {
         // （dsh 四象限——user-only 只挡模型自发调用）。
         let bodyPath = try writeBody("usronly", "user body")
         let snapshot = SkillSnapshot(summaries: [
-            summary("usronly", bodyPath: bodyPath,
+            summary("usronly",
                     invocation: SkillInvocation(modelInvocable: false,
-                                                userInvocable: true)),
+                                                userInvocable: true),
+                    bodyPath: bodyPath),
         ], errors: [])
         let injection = SkillMentionInjector.project(
             snapshot: snapshot, events: [event(0, "$usronly")])
