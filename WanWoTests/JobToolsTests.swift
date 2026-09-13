@@ -186,10 +186,11 @@ final class JobToolsTests: XCTestCase {
         // 预算内：直拼。
         XCTAssertEqual(fitWithSuffix("abc", "!", 10, "\n[omitted]"), "abc!")
         // 分支②：fixed < maxBytes → 尾部保留 content 腾位再接 fixed。
-        // 字节账：fixed=\n[omitted]\nSUFFIX=19B → content 预算=40-19=21。
+        // 字节账：fixed="\n[omitted]\nSUFFIX"=17B（10+7）→ content 预算
+        // =40-17=23。（CI 第六轮实证 23a——第五轮的 21 是主理人二次手算错。）
         let content = String(repeating: "a", count: 50)
         XCTAssertEqual(fitWithSuffix(content, "\nSUFFIX", 40, "\n[omitted]"),
-                       String(repeating: "a", count: 21) + "\n[omitted]\nSUFFIX")
+                       String(repeating: "a", count: 23) + "\n[omitted]\nSUFFIX")
         // 分支①：fixed ≥ maxBytes → 尾部保留整串。
         XCTAssertEqual(fitWithSuffix("hi", "\nSUFFIX", 5, "\n[omitted]"), "UFFIX")
         // content 已带 omitted 标记（trimStart 后）→ 不重复补。
@@ -345,7 +346,7 @@ final class JobToolsTests: XCTestCase {
                                             makeContext())
         XCTAssertFalse(output.isError)
         XCTAssertEqual(output.text,
-                       "2345678\n[output truncated]\n[status: completed, exit code: 0]")
+                       "3456789\n[output truncated]\n[status: completed, exit code: 0]")
     }
 
     func testJobOutputInvalidAndUnknownJob() async throws {
