@@ -140,7 +140,7 @@ struct ShellTool: AgentTool {
                 let runHooks: @Sendable () throws -> JobHooks = {
                     let handle = try spawner(sid, command)
                     return JobHooks(
-                        cancel: { handle.cancel() },
+                        cancel: { _ in handle.cancel() },
                         done: {
                             let result = await handle.done()
                             return ShellTool.processOutcome(from: result)
