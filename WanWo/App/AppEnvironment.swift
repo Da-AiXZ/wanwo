@@ -126,6 +126,10 @@ final class AppEnvironment: ObservableObject {
         self.mcpServerStore = MCPServerStore(
             fileURL: configDir.appendingPathComponent("mcp-servers")
                 .appendingPathComponent("servers.json"))
+        // M4-D D7：技能启停覆盖层（config/skills-settings.json；Application
+        // Support 约定与 providers/permission-default/mcp-servers 同族）。
+        self.skillSettingsStore = SkillSettingsStore(
+            fileURL: configDir.appendingPathComponent("skills-settings.json"))
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。

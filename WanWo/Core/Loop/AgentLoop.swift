@@ -600,6 +600,24 @@ actor AgentLoop {
             }
         }
 
+        // M4-D D6：显式触发（$name 提及 → 正文注入）——派生面真用户消息逐条
+        // 提取（mentions.rs 逐式：链接形态+裸名+env 排除）→ snapshot 精确匹配
+        // （重名/不存在跳过=歧义保护）→ 位置去重（派生面已有 <skill name="X">
+        // 且晚于该消息则跳过——无状态幂等，每步全量重扫与 D4 同模式）。注入
+        // 消息 user/message（R2 零新词汇）+ 投影层 `<skill ` 前缀过滤不渲染。
+        // user-only 技能显式提及照常注入（用户调用通道，dsh 四象限语义）。
+        // fail open：追加失败记日志不抛穿（下一快照周期重扫重建）。
+        if let skillRegistry = deps.skillRegistry,
+           let mentionInjection = SkillMentionInjector.project(
+            snapshot: skillRegistry.snapshot(), events: deps.writer.events) {
+            do {
+                try await deps.writer.append(.userMessage(text: mentionInjection))
+            } catch {
+                Self.logger.error("skill mention injection failed: "
+                                  + "\(String(describing: error))")
+            }
+        }
+
         // prompt 组装（严格插值；组装失败按回合错误处理）。
         var assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])
         do {

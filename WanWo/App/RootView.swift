@@ -41,6 +41,10 @@ struct RootView: View {
             // M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView
             // 交互参照；配置→MCPRuntime 装配收口）。
             MCPServersView(environment: environment)
+        case .skills:
+            // M4-D D7：设置·技能管理（列表/启停/导入；最小素净版——dsh
+            // apps/web 无原件取证，M9 对齐登记）。
+            SkillsView(environment: environment)
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()

@@ -99,11 +99,25 @@ final class SkillCatalogInjectorTests: XCTestCase {
         let message = SkillCatalogInjector.message(for: snapshot, tokenBudget: 60)
 
         // 装得下的条目完整保留；装不下的 Omitted；末尾 marker
-        // （预算 60 tokens：单条目 ≈36 → 仅 skill-0 装下，其余 9 条 Omitted）
+        // （预算 60 tokens：单条目 ≈36 → 仅 skill-0 装下，其余 9 条 Omitted；
+        // marker ≈20 → 36+21=57 ≤ 60 → skill-0 保留）。
         XCTAssertTrue(message.contains("skill-0\nd"))
         XCTAssertTrue(message.contains("9 additional skills omitted from this bounded skills list."))
         XCTAssertFalse(message.contains("skill-1\nd"))
         XCTAssertFalse(message.contains("skill-9\nd"))
+    }
+
+    func testMarkerBudgetPreemption() {
+        // D6 顺手补（D4 review 登记项）：marker 成本计入预算——装不下时从尾部
+        // 回退条目给 marker 让位（预算 45：条目 36 单独装得下，但 36+21>45 →
+        // 回退 → 全部 10 条 Omitted，marker 必现保底）。
+        let summaries = (0..<10).map { summary("skill-\($0)", String(repeating: "d", count: 100)) }
+        let snapshot = SkillSnapshot(summaries: summaries, errors: [])
+        let message = SkillCatalogInjector.message(for: snapshot, tokenBudget: 45)
+
+        XCTAssertTrue(message.contains("10 additional skills omitted from this bounded skills list."))
+        XCTAssertFalse(message.contains("skill-0\nd"))
+        XCTAssertTrue(message.contains("<available_skills>\n- 10 additional skills omitted"))
     }
 
     // MARK: 派生面基线与投影

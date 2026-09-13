@@ -22,8 +22,9 @@
 //  失效三通道（简报环 5）：①组装期刷新（AgentLoop 每步组装前 refresh——C2
 //  ToolSearchAssembly 同位模式；脏才重扫，幂等低成本）②write/edit 命中技能根
 //  → 失效（dsh:81 语义；观测缝在 WorkspaceFileAccess.writeAt 宿主直读 chokepoint，
-//  路径前缀判定在本类 noteHostMutation）③设置页改动（D7 批次接线，invalidate()
-//  入口本件预留）。
+//  路径前缀判定在本类 noteHostMutation）③设置页改动（D7：SkillSettingsStore.
+//  DisabledIndex.revision 进缓存键——启停/导入改动 revision 递增，所有 registry
+//  实例缓存键失配重扫；启停过滤另在快照出口逐读评估，双保险）。
 //
 //  invocation 两键方案（lead 给两选项，本实现选 B）：D1 解析面零触碰（已 review
 //  冻结），D3 侧二次读 frontmatter 原文（invocationFlags）——两键为顶层布尔
@@ -124,14 +125,22 @@ final class SkillRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private let roots: [Root]
-    /// 快照缓存（键=根集+失效标记；根集实例期固定 ⇒ 键退化为失效标记）。
+    /// D7 启停覆盖层宿主（App 级 store；nil=无覆盖层——测试/既有形态不变）。
+    private let settings: SkillSettingsStore?
+    /// 快照缓存（键=失效标记+覆盖层 revision；根集实例期固定）。
     private var cachedSnapshot: SkillSnapshot?
+    /// 覆盖层 revision 对齐键（nil=无 settings；与 settings 版本失配即重扫）。
+    private var cachedOverlayRevision: Int?
     /// 初次为脏 → 首个 refresh 即扫描。
     private var invalidated = true
 
-    /// - Parameter roots: 发现根（rank 合并按 source 全序；实例期固定）。
-    init(roots: [Root]) {
+    /// - Parameters:
+    ///   - roots: 发现根（rank 合并按 source 全序；实例期固定）。
+    ///   - settings: D7 启停覆盖层宿主（App 级注入——消费其 DisabledIndex 的
+    ///     contains（出口过滤）与 currentRevision（缓存键），不触碰主线程 UI 面）。
+    init(roots: [Root], settings: SkillSettingsStore? = nil) {
         self.roots = roots
+        self.settings = settings
     }
 
     // MARK: 失效三通道
@@ -142,7 +151,8 @@ final class SkillRegistry: @unchecked Sendable {
         _ = snapshot()
     }
 
-    /// 通道③预留（D7 设置页接线）：置脏，下一步组装期重扫。
+    /// 置脏（D2 通道③预留；D7 落位后设置页改动主走 DisabledIndex.revision
+    /// 缓存键——跨实例即时生效，本入口保留为显式失效面，导入页展示重扫用）。
     func invalidate() {
         lock.lock()
         defer { lock.unlock() }
@@ -167,20 +177,51 @@ final class SkillRegistry: @unchecked Sendable {
 
     // MARK: 快照
 
-    /// 当前快照（缓存有效即返回缓存；脏/无缓存则重扫并回填）。
+    /// 当前快照（缓存有效即返回缓存；脏/覆盖层 revision 失配则重扫并回填）。
+    /// D7 覆盖层：出口逐读过滤已停用名（selection.rs is_skill_enabled 门同位
+    /// ——目录/工具/提及三消费面同享）。设置页列表面用 snapshotIncludingDisabled。
     func snapshot(limits: ScanLimits = .production) -> SkillSnapshot {
+        let overlayRevision = settings?.disabledIndex.currentRevision
         lock.lock()
-        if !invalidated, let cached = cachedSnapshot {
+        if !invalidated, cachedOverlayRevision == overlayRevision,
+           let cached = cachedSnapshot {
             lock.unlock()
-            return cached
+            return Self.filterDisabled(cached, index: settings?.disabledIndex)
         }
         lock.unlock()
         let fresh = Self.scan(roots: roots, limits: limits)
         lock.lock()
         invalidated = false
         cachedSnapshot = fresh
+        cachedOverlayRevision = overlayRevision
+        lock.unlock()
+        return Self.filterDisabled(fresh, index: settings?.disabledIndex)
+    }
+
+    /// 含已停用的完整快照（D7 设置页列表面——覆盖层不滤，需能重新启用）。
+    func snapshotIncludingDisabled(limits: ScanLimits = .production) -> SkillSnapshot {
+        lock.lock()
+        let cached = invalidated ? nil : cachedSnapshot
+        lock.unlock()
+        if let cached { return cached }
+        let fresh = Self.scan(roots: roots, limits: limits)
+        lock.lock()
+        invalidated = false
+        cachedSnapshot = fresh
+        cachedOverlayRevision = settings?.disabledIndex.currentRevision
         lock.unlock()
         return fresh
+    }
+
+    /// D7 出口过滤（纯函数）：无覆盖层原样；有则剔除已停用名（errors 保留）。
+    static func filterDisabled(_ snapshot: SkillSnapshot,
+                               index: SkillSettingsStore.DisabledIndex?) -> SkillSnapshot {
+        guard let index else { return snapshot }
+        guard snapshot.summaries.contains(where: { index.contains($0.name) }) else {
+            return snapshot
+        }
+        return SkillSnapshot(summaries: snapshot.summaries.filter { !index.contains($0.name) },
+                             errors: snapshot.errors)
     }
 
     // MARK: 扫描（纯函数；不递归——dsh:85）

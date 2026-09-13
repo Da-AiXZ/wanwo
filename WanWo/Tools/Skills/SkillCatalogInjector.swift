@@ -72,20 +72,34 @@ enum SkillCatalogInjector {
         }
 
         // 档二（简化授权）：贪心装全条目 + Omitted marker（codex :1151-1153 文案）。
-        var included: [String] = []
+        // D6 顺手补（D4 review 登记项）：marker 自身 token 成本计入预算——装不下
+        // 时从尾部回退条目给 marker 让位（codex 保底语义：marker 必现，宁可少装
+        // 条目也不让 marker 超预算）；空目录回退到底时 marker 超预算仍输出。
+        var included: [(entry: String, cost: Int)] = []
         var used = 0
         var omitted = 0
         for entry in fullLines {
-            let cost = Compactor.estimateText(entry + (included.isEmpty ? "" : "\n"))
+            let separatorCost = included.isEmpty ? 0 : Compactor.estimateText("\n")
+            let cost = Compactor.estimateText(entry) + separatorCost
             if used + cost <= tokenBudget {
-                included.append(entry)
+                included.append((entry, cost))
                 used += cost
             } else {
                 omitted += 1
             }
         }
-        var body = included.joined(separator: "\n")
+        var body = included.map(\.entry).joined(separator: "\n")
         if omitted > 0 {
+            // marker 让位循环：回退尾条目直至 marker 装得下（marker 文案随
+            // omitted 数变化，逐轮重估；条目成本按登记值精确回收）。
+            while true {
+                let markerCost = Compactor.estimateText(omissionMarker(omitted))
+                    + (included.isEmpty ? 0 : Compactor.estimateText("\n"))
+                if used + markerCost <= tokenBudget { break }
+                guard let last = included.popLast() else { break }
+                omitted += 1
+                used -= last.cost
+            }
             let marker = omissionMarker(omitted)
             body += (body.isEmpty ? "" : "\n") + marker
         }

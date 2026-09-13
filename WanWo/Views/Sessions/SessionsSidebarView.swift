@@ -309,6 +309,10 @@ struct SessionsSidebarView: View {
                 // M4-A 件11：设置·MCP server 管理（配置存储+最小设置页）。
                 selection = .mcpServers
             }
+            footButton("Skills", icon: "square.stack.3d.up") {
+                // M4-D D7：设置·技能管理（启停覆盖层+迁移导入）。
+                selection = .skills
+            }
             footButton("权限", icon: "lock.shield") {
                 // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1；
                 // P1-4 后唯一权限入口——规则 CRUD 页随 F022 砍除）。
