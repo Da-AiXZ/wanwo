@@ -122,8 +122,9 @@ enum EventStreamLoader {
             else {
                 return .failure(.invalidSessionID(sessionID))
             }
-            let url = WanWoPaths.persistentBase
-                .appendingPathComponent("sessions", isDirectory: true)
+            let url = GroupStore.groupSessionsRoot(
+                base: WanWoPaths.persistentBase,
+                groupID: GroupStore.defaultGroupID)
                 .appendingPathComponent("\(sessionID).jsonl")
             guard FileManager.default.fileExists(atPath: url.path) else {
                 return .failure(.logNotFound(sessionID))
@@ -164,8 +165,8 @@ enum EventStreamLoader {
         else {
             return nil
         }
-        let source = WanWoPaths.persistentBase
-            .appendingPathComponent("sessions", isDirectory: true)
+        let source = GroupStore.groupSessionsRoot(base: WanWoPaths.persistentBase,
+                             groupID: GroupStore.defaultGroupID)
             .appendingPathComponent("\(sessionID).jsonl")
         guard FileManager.default.fileExists(atPath: source.path) else {
             return nil
@@ -206,8 +207,8 @@ enum EventStreamLoader {
         else {
             return nil
         }
-        let url = WanWoPaths.persistentBase
-            .appendingPathComponent("sessions", isDirectory: true)
+        let url = GroupStore.groupSessionsRoot(base: WanWoPaths.persistentBase,
+                             groupID: GroupStore.defaultGroupID)
             .appendingPathComponent("\(sessionID).jsonl")
         guard let data = try? Data(contentsOf: url) else {
             return nil

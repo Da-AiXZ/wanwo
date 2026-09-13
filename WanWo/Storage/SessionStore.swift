@@ -115,8 +115,11 @@ actor SessionStore {
         let url = try fileURL(for: id)
         _ = try JsonlEventLog.create(header: header, at: url)
         let now = Date()
+        // M4-E+ P1：新会话显式归入默认分组（brief §5.1——默认单分组语义；
+        // 与成员默认值一致，此处显式传入以便将来多分组时一眼可核）。
         let summary = SessionSummary(id: id, title: nil,
-                                     createdAt: now, updatedAt: now, eventCount: 0)
+                                     createdAt: now, updatedAt: now, eventCount: 0,
+                                     groupId: GroupStore.defaultGroupID)
         let baseline = Self.fileBaseline(atPath: url.path)
         database.upsert(summary, fileMtimeSeconds: baseline?.mtimeSeconds,
                         fileSize: baseline?.size)

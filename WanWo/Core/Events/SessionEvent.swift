@@ -602,4 +602,9 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
     var createdAt: Date
     var updatedAt: Date
     var eventCount: Int
+    /// M4-E+ P1（项目锚点存储半边，brief §5.1）：所属分组 id——默认单分组，
+    /// 既有构造点经成员默认值全部落 'default'；v2 时代索引行 NULL 由
+    /// GroupStoreMigrator 回填，读路径 NULL 亦按 default 兜底（SessionDatabase）。
+    /// 值类型可扩展，SessionHeader（事件溯源头 append-only 不可变）不动。
+    var groupId: String = GroupStore.defaultGroupID
 }

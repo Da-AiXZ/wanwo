@@ -101,10 +101,7 @@ final class AppEnvironment: ObservableObject {
 
     init() {
         let base = WanWoPaths.persistentBase
-        let sessionsRoot = base.appendingPathComponent("sessions", isDirectory: true)
         let configDir = base.appendingPathComponent("config", isDirectory: true)
-        try? FileManager.default.createDirectory(at: sessionsRoot,
-                                                 withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: configDir,
                                                  withIntermediateDirectories: true)
 
@@ -120,6 +117,26 @@ final class AppEnvironment: ObservableObject {
             path: FileManager.default.temporaryDirectory
                 .appendingPathComponent("wanwo-index-fallback.sqlite3").path))!
         self.database = db
+
+        // M4-E+ P1（项目锚点存储半边）：分组迁移器——时序硬约束：SessionDatabase
+        // v3 迁移（groups 表 + sessionIndex.groupId 列 + default seed）已在上方
+        // db 打开时完成，本迁移器在其后、SessionStore 构造前同步执行（brief §5.2）：
+        //   · 旧 base/sessions 下 *.jsonl → groups/default/sessions/
+        //   · persistentBase 直下 UUID 形状且含已知 bucket 的会话桶目录 →
+        //     groups/default/<sid>/
+        //   · GRDB groupId IS NULL 回填 'default'
+        // fail-open（源数据绝不删除，单项失败记日志继续，下次启动重试）；幂等
+        // ——重复运行 no-op，常态第二次启动起零动静。
+        _ = GroupStoreMigrator(base: base, database: db).migrate()
+
+        // M4-E+ P1：SessionStore root 注入分组维度路径（groups/default/sessions）
+        // ——brief §5.2「SessionStore(root:) 注入点改 groups/<gid>/sessions（
+        // AppEnvironment:104→123 一处）」，SessionStore 本体签名不动；db 留在
+        // base 根=跨分组全局索引，不动。
+        let sessionsRoot = GroupStore.groupSessionsRoot(
+            base: base, groupID: GroupStore.defaultGroupID)
+        try? FileManager.default.createDirectory(at: sessionsRoot,
+                                                 withIntermediateDirectories: true)
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
         // M3 T2.2：新会话默认权限预设（config/permission-default.json）。

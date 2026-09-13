@@ -56,6 +56,25 @@ final class SessionDatabase {
                 t.add(column: "fileSize", .integer)
             }
         }
+        // v3（M4-E+ P1 项目锚点存储半边，brief §5.1）：分组归属层——
+        //   · groups 表（分组实体；F073 原文「GRDB 边表」口径）
+        //   · sessionIndex.groupId 列（既有行 NULL = 迁移器 GroupStoreMigrator
+        //     回填 'default'——回填职责在迁移器不在本迁移，保持锚点分工）
+        //   · 默认单分组 seed（INSERT OR IGNORE：幂等，重复迁移不重播）
+        migrator.registerMigration("wanwo.sessionIndex.v3") { db in
+            try db.create(table: "groups") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("createdAtMs", .integer).notNull()
+            }
+            try db.alter(table: "sessionIndex") { t in
+                t.add(column: "groupId", .text)
+            }
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO groups (id, name, createdAtMs) VALUES (?, ?, ?)",
+                arguments: [GroupStore.defaultGroupID, GroupStore.defaultGroupName,
+                            Int64(Date().timeIntervalSince1970 * 1000)])
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -69,19 +88,20 @@ final class SessionDatabase {
             try dbQueue.write { db in
                 try db.execute(
                     sql: """
-                    INSERT INTO sessionIndex (id, title, createdAt, updatedAt, eventCount, fileMtime, fileSize)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO sessionIndex (id, title, createdAt, updatedAt, eventCount, fileMtime, fileSize, groupId)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         createdAt = excluded.createdAt,
                         updatedAt = excluded.updatedAt,
                         eventCount = excluded.eventCount,
                         fileMtime = COALESCE(excluded.fileMtime, sessionIndex.fileMtime),
-                        fileSize = COALESCE(excluded.fileSize, sessionIndex.fileSize)
+                        fileSize = COALESCE(excluded.fileSize, sessionIndex.fileSize),
+                        groupId = excluded.groupId
                     """,
                     arguments: [summary.id, summary.title, summary.createdAt,
                                 summary.updatedAt, summary.eventCount,
-                                fileMtimeSeconds, fileSize])
+                                fileMtimeSeconds, fileSize, summary.groupId])
             }
             onIndexChanged?()
         } catch {
@@ -140,15 +160,16 @@ final class SessionDatabase {
             try dbQueue.write { db in
                 try db.execute(sql: "DELETE FROM sessionIndex")
                 for row in rows {
-                    try db.execute(
-                        sql: """
-                        INSERT INTO sessionIndex (id, title, createdAt, updatedAt, eventCount, fileMtime, fileSize)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        arguments: [row.summary.id, row.summary.title,
-                                    row.summary.createdAt, row.summary.updatedAt,
-                                    row.summary.eventCount,
-                                    row.fileMtimeSeconds, row.fileSize])
+                try db.execute(
+                    sql: """
+                    INSERT INTO sessionIndex (id, title, createdAt, updatedAt, eventCount, fileMtime, fileSize, groupId)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [row.summary.id, row.summary.title,
+                                row.summary.createdAt, row.summary.updatedAt,
+                                row.summary.eventCount,
+                                row.fileMtimeSeconds, row.fileSize,
+                                row.summary.groupId])
                 }
             }
             onIndexChanged?()
@@ -172,7 +193,10 @@ final class SessionDatabase {
                             title: row["title"],
                             createdAt: row["createdAt"] ?? Date(timeIntervalSince1970: 0),
                             updatedAt: row["updatedAt"] ?? Date(timeIntervalSince1970: 0),
-                            eventCount: row["eventCount"] ?? 0),
+                            eventCount: row["eventCount"] ?? 0,
+                            // v2 时代行 groupId 为 NULL → 读路径按 default 兜底
+                            // （回填由 GroupStoreMigrator 负责，读路径不依赖其完成）。
+                            groupId: row["groupId"] ?? GroupStore.defaultGroupID),
                         fileMtimeSeconds: row["fileMtime"],
                         fileSize: row["fileSize"])
                 }
