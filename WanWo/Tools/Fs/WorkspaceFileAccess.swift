@@ -120,6 +120,7 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     private static func resolveProjectSkillsTail(_ tail: String,
                                                  within root: URL) -> URL? {
         guard isProjectSkillsTail(tail) else { return nil }
+        let marker = ".agents/skills"
         let candidate: URL
         if tail == marker {
             candidate = root
