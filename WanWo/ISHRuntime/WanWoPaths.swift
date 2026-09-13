@@ -79,6 +79,32 @@ enum WanWoPaths {
             .appendingPathComponent("sessions", isDirectory: true)
     }
 
+    // MARK: 分组级技能根（M4-E+ P3：workspace 根升格——brief §5.3）
+
+    /// 分组级技能根 guest 前缀（dsh project 根形状 /var/wanwo/workspace/
+    /// .agents/skills——P3 后 guest 心智一字不变；宿主翻译目标见
+    /// groupSkillsProjectRoot）。
+    static let projectSkillsLinuxDir = workspaceLinuxDir + "/.agents/skills"
+
+    /// project 资源相对 groups/<gid>/ 的尾径（"workspace/.agents/skills"）——
+    /// FsContextRouter 反向解析用；由 guest 前缀派生避免双真值。
+    static let projectSkillsGroupTail = String(
+        projectSkillsLinuxDir.dropFirst(linuxBaseDir.count + 1))
+
+    /// 分组 workspace 桶根（无 sid 层——分组级跨会话共享；P3 技能根升格落点）。
+    static func groupWorkspaceRoot(base: URL, groupID: String) -> URL {
+        groupRoot(base: base, groupID: groupID)
+            .appendingPathComponent("workspace", isDirectory: true)
+    }
+
+    /// 分组级技能根：groups/<gid>/workspace/.agents/skills（dsh project 根语义
+    /// ——guest 路径 /var/wanwo/workspace/.agents/skills 的 P3 翻译目标；
+    /// guest 写路径形状不变，翻译由 FsContextRouter/WorkspaceFileAccess 特判）。
+    static func groupSkillsProjectRoot(base: URL, groupID: String) -> URL {
+        groupWorkspaceRoot(base: base, groupID: groupID)
+            .appendingPathComponent(".agents/skills", isDirectory: true)
+    }
+
     /// 每会话四桶的宿主持久化目录（fs_context 路由目标）。
     /// M4-E+ P2：会话桶挂分组下——persistentBase/groups/<gid>/<sid>/<bucket>
     /// （brief §5.2；groupID 默认值保既有调用面零改动自动跟随默认分组；

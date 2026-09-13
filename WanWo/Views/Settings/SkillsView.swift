@@ -9,8 +9,9 @@
 //  行内 Toggle+footer；启停即改即生效——store.revision 驱动全部 registry
 //  实例缓存失配重扫，通道③跨实例实现见 SkillSettingsStore 头注）。
 //
-//  列表口径：user+bundled 两根（displayRegistry）；project 根=会话工作区桶，
-//  跨会话不可见是 D2 review 已登记的分层固有语义，设置页不列。展示用
+//  列表口径：user+bundled 两根（displayRegistry）；project 根=分组级技能根
+//  （M4-E+ P3 升格：groups/<gid>/workspace/.agents/skills，无 sid 层，同分组
+//  跨会话共享），设置页不列。展示用
 //  snapshotIncludingDisabled（覆盖层不滤——要能重新启用）；会话消费面走
 //  snapshot（已滤）。
 //
@@ -55,7 +56,7 @@ struct SkillsView: View {
                 Text("技能")
             } footer: {
                 Text("停用后技能从模型目录/工具/触发面整体移除，即时生效。"
-                     + "会话工作区（.agents/skills）技能按会话独立，不在本列表。")
+                     + "工作区技能（.agents/skills）为分组级（同分组内跨会话共享），不在本列表。")
             }
             if !snapshot.errors.isEmpty {
                 Section("扫描问题") {

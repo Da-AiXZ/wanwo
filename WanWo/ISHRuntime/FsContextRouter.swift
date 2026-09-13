@@ -24,6 +24,9 @@ final class FsContextRouter: @unchecked Sendable {
     /// (M4-E+ P2 分组维度——与 WanWoPaths.sessionPersistentDir 同形状). Paths under
     /// /var/wanwo/{memory,skills,shared} stay global and are NOT listed here —
     /// they fall through to the legacy g_bind_mounts[] table.
+    /// M4-E+ P3：/var/wanwo/workspace/.agents/skills[/tail]（project 资源）在
+    /// 本表**之前**特判（最长前缀优先）→ groups/<gid>/workspace/.agents/skills
+    /// （无 sid 层，分组级跨会话共享——brief §5.3）。
     private let perSessionBuckets: [(linuxPrefix: String, hostSubdir: String)] = [
         (WanWoPaths.offloadsLinuxDir,    "offloads"),
         (WanWoPaths.attachmentsLinuxDir, "attachments"),
@@ -44,10 +47,16 @@ final class FsContextRouter: @unchecked Sendable {
     /// init 一次捕获（persistentBase 每次取 FileManager URLs，不可进 fakefs
     /// 热路径）。P1/P2 恒 default 分组；M9 多分组后按 sid 查组替换派生。
     private let sessionBucketBaseURL: URL
+    /// M4-E+ P3：分组级技能根宿主落点（guest /var/wanwo/workspace/.agents/skills
+    /// 的翻译目标——groups/<gid>/workspace/.agents/skills，无 sid 层跨会话共享）。
+    /// init 捕获（热路径纪律同 sessionBucketBaseURL）。
+    private let projectSkillsHostBaseURL: URL
 
     private init() {
         self.wanwoBaseURL = WanWoPaths.persistentBase
         self.sessionBucketBaseURL = WanWoPaths.groupRoot(
+            base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
+        self.projectSkillsHostBaseURL = WanWoPaths.groupSkillsProjectRoot(
             base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
     }
 
@@ -108,6 +117,18 @@ final class FsContextRouter: @unchecked Sendable {
     }
 
     private func hostPath(forGuest guestPath: String, sid: String) -> String? {
+        // M4-E+ P3：project 资源特判（最长前缀优先——/var/wanwo/workspace/
+        // .agents/skills 比 perSessionBuckets 的 /var/wanwo/workspace 更具体，
+        // 必须先判）：guest 形状不变，翻译目标=分组技能根（无 sid 层，跨会话
+        // 共享——brief §5.3）。
+        let skillsPrefix = WanWoPaths.projectSkillsLinuxDir
+        if guestPath == skillsPrefix {
+            return projectSkillsHostBaseURL.path
+        }
+        if guestPath.hasPrefix(skillsPrefix + "/") {
+            return projectSkillsHostBaseURL.path
+                + String(guestPath.dropFirst(skillsPrefix.count))
+        }
         for bucket in perSessionBuckets {
             let prefix = bucket.linuxPrefix
             guard guestPath.hasPrefix(prefix) else { continue }
@@ -152,6 +173,17 @@ final class FsContextRouter: @unchecked Sendable {
             rest = rest.dropFirst(WanWoPaths.groupsDirName.count + 1)
             guard let groupEnd = rest.firstIndex(of: "/") else { return nil }
             rest = rest[rest.index(after: groupEnd)...]
+        }
+        // M4-E+ P3：project 资源形状（workspace/.agents/skills[/tail]——P2 的
+        // groups/<gid>/ 剥离后自然衔接）→ guest /var/wanwo/workspace/.agents/
+        // skills[/tail]。project 资源无 sid 归属，跳过下方 known-sid 守卫直翻。
+        let projectTail = WanWoPaths.projectSkillsGroupTail
+        if rest == projectTail {
+            return WanWoPaths.projectSkillsLinuxDir
+        }
+        if rest.hasPrefix(projectTail + "/") {
+            return WanWoPaths.projectSkillsLinuxDir
+                + String(rest.dropFirst(projectTail.count))
         }
         // Split into sid / bucket / tail
         let parts = rest.split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)

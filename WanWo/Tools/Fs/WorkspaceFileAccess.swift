@@ -6,8 +6,12 @@
 //  工作区桶宿主直读，不经 iSH fork——iOS 禁 spawn 的对应落地）+ §十一 M2.5
 //  （F014：read-match-write 临界区共享）。
 //  语义：
-//    · 会话工作区桶 = 宿主 <persistentBase>/<sid>/workspace/，即 guest 视角的
-//      /var/wanwo/workspace/（FsContextRouter perSessionBuckets 对应桶）。
+//    · 会话工作区桶 = 宿主 groups/<gid>/<sid>/workspace/（M4-E+ P2 分组维度），
+//      即 guest 视角的 /var/wanwo/workspace/（FsContextRouter perSessionBuckets
+//      对应桶）。
+//    · M4-E+ P3：project 资源特判——guest /var/wanwo/workspace/.agents/skills[/
+//      tail]（含相对形态）映射分组级技能根 groups/<gid>/workspace/.agents/skills
+//      （无 sid 层，跨会话共享；guest 路径形状不变，brief §5.3）。
 //    · 路径安全：guest 绝对路径（/var/wanwo/workspace/**）与相对路径统一解析到
 //      根内；规范化后必须仍在根内（防 ../ 逃逸），越界一律 nil（fail closed）。
 //    · read-match-write 临界区：编辑类工具（edit / str_replace_editor / write）
@@ -31,6 +35,10 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     let guestRootURL: URL
     /// 读-改-写临界区（编辑族工具共享；glob/grep 只读遍历不走此锁）。
     private let mutationLock = NSLock()
+    /// M4-E+ P3：分组级技能根（guest /var/wanwo/workspace/.agents/skills 的宿主
+    /// 落点——groups/<gid>/workspace/.agents/skills，无 sid 层跨会话共享；
+    /// 可注入以供测试，注入收窄模式与 guestRoot 同源）。
+    let projectSkillsRootURL: URL
     /// M4-D D2：宿主写通道观测缝（writeAt 成功落盘后回调）。技能注册表据此实现
     /// write/edit 命中技能根的失效判定（dsh skills.md:81；write/edit/str_replace
     /// editor 三族变更全汇于 writeData/mutate→writeAt 单点）。构造后、首次写前
@@ -40,9 +48,14 @@ final class WorkspaceFileAccess: @unchecked Sendable {
 
     private static let fileManager = FileManager.default
 
-    init(sessionId: String, guestRoot: URL? = nil) {
+    init(sessionId: String, guestRoot: URL? = nil,
+         projectSkillsRoot: URL? = nil) {
         self.sessionId = sessionId
         self.rootURL = WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
+        // M4-E+ P3：project 资源根升分组桶（默认=WanWoPaths 单一事实源派生）。
+        self.projectSkillsRootURL = projectSkillsRoot
+            ?? WanWoPaths.groupSkillsProjectRoot(base: WanWoPaths.persistentBase,
+                                                 groupID: WanWoPaths.defaultGroupID)
         self.guestRootURL = guestRoot ?? RootfsInstaller.shared.dataPath
         try? Self.fileManager.createDirectory(at: rootURL,
                                               withIntermediateDirectories: true)
@@ -52,6 +65,10 @@ final class WorkspaceFileAccess: @unchecked Sendable {
 
     /// 把 guest/相对路径解析为根内的宿主 URL。
     /// 接受：`/var/wanwo/workspace/<tail>`、`<tail>`（相对根）、`./<tail>`。
+    /// M4-E+ P3：project 资源特判（最长前缀语义——`.agents/skills` 比裸
+    /// workspace 前缀更具体）：相对/绝对路径归一后 tail 恰为 `.agents/skills`
+    /// 或其子路径 → 映射分组技能根（无 sid 层，跨会话共享——brief §5.3；
+    /// guest 路径形状不变），其余 workspace 路径照旧会话桶。
     /// 越界（`..` 逃逸）返回 nil。
     func resolve(_ path: String) -> URL? {
         var tail = path
@@ -64,6 +81,10 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         // 归一：去首部斜杠与 "./"。
         while tail.hasPrefix("/") { tail.removeFirst() }
         while tail.hasPrefix("./") { tail.removeFirst(2) }
+        // P3：project 资源先于 workspace 桶根判定。
+        if let url = Self.resolveProjectSkillsTail(tail, within: projectSkillsRootURL) {
+            return url
+        }
         if tail.isEmpty {
             return rootURL
         }
@@ -79,6 +100,34 @@ final class WorkspaceFileAccess: @unchecked Sendable {
             return nil
         }
         return candidate
+    }
+
+    /// M4-E+ P3：project 资源 tail（恰 ".agents/skills" 或其子路径）→ 分组技能根
+    /// 内宿主 URL（含 /private 归一与词法 containment 防 `..` 逃逸，与既有
+    /// resolve/resolveUnderGuestRoot 同源逻辑——既有两处为 P13 已验证面不回改，
+    /// 最小触碰纪律）；非 project 资源返回 nil（回落 workspace 桶解析）。
+    private static func resolveProjectSkillsTail(_ tail: String,
+                                                 within root: URL) -> URL? {
+        let marker = ".agents/skills"
+        guard tail == marker || tail.hasPrefix(marker + "/") else { return nil }
+        let candidate: URL
+        if tail == marker {
+            candidate = root
+        } else {
+            candidate = root.appendingPathComponent(
+                String(tail.dropFirst(marker.count + 1)))
+        }
+        let rootPath = root.standardizedFileURL.path
+        var normalized = candidate.standardizedFileURL
+        var candidatePath = normalized.path
+        if candidatePath.hasPrefix("/private" + rootPath) {
+            candidatePath = String(candidatePath.dropFirst("/private".count))
+            normalized = URL(fileURLWithPath: candidatePath)
+        }
+        guard candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        return normalized
     }
 
     // MARK: - 提权感知解析（P0-1：围栏说什么，执行层兑现什么）
@@ -224,9 +273,16 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     }
 
     /// 只读遍历不走 mutationLock；遍历期间 VCS 元数据目录排除（dsh glob 语义）。
+    /// M4-E+ P3：遍历面=会话工作区桶 + 分组技能根——guest 心智里 project 资源
+    /// 在 workspace 内，glob/grep 目录枚举必须覆盖分组桶技能文件（否则 AI 写
+    /// 技能后 glob 验证不可见=行为回归）。两根物理不相交，无需去重。
     func recursiveFiles() -> [URL] {
+        return filesUnder(rootURL) + filesUnder(projectSkillsRootURL)
+    }
+
+    private func filesUnder(_ root: URL) -> [URL] {
         guard let enumerator = Self.fileManager.enumerator(
-            at: rootURL,
+            at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsPackageDescendants]) else { return [] }
         var out: [URL] = []

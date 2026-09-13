@@ -420,16 +420,20 @@ final class AppEnvironment: ObservableObject {
         // /mcp_server_config 等内置元工具走协议默认 .direct，不受影响。
         let toolSearchAssembly = ToolSearchAssembly(registry: registry)
 
-        // M4-D D2：技能三根（project=workspace /.agents/skills 宿主直读 /
-        // user=容器 skills/ / bundled=安装位 skills/.bundled——安装已前移至
-        // AppEnvironment init（App 启动一次；D7 验收实证会话栈时机过晚）。
+        // M4-D D2：技能三根（project=分组级技能根——M4-E+ P3 升格：groups/
+        // <gid>/workspace/.agents/skills，无 sid 层同分组跨会话共享（guest 写
+        // 路径 /var/wanwo/workspace/.agents/skills 形状不变，经 FsContextRouter/
+        // WorkspaceFileAccess project 特判翻译）；user=容器 skills/ /
+        // bundled=安装位 skills/.bundled——安装已前移至 AppEnvironment init
+        // （App 启动一次；D7 验收实证会话栈时机过晚）。
         let skillsUserRoot = WanWoPaths.skillsPersistentDir
         let skillsBundledRoot = skillsUserRoot
             .appendingPathComponent(".bundled", isDirectory: true)
         let skillRegistry = SkillRegistry(roots: [
             .init(source: .project,
-                  baseURL: WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
-                      .appendingPathComponent(".agents/skills", isDirectory: true)),
+                  baseURL: WanWoPaths.groupSkillsProjectRoot(
+                      base: WanWoPaths.persistentBase,
+                      groupID: WanWoPaths.defaultGroupID)),
             .init(source: .user, baseURL: skillsUserRoot),
             .init(source: .bundled, baseURL: skillsBundledRoot),
         ], settings: skillSettingsStore)
