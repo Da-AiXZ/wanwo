@@ -558,7 +558,8 @@ final class AppEnvironment: ObservableObject {
             Task { [weak agentLoop] in
                 let merged = await hookPoints.sessionStart(source: source)
                 for text in merged.additionalContext {
-                    agentLoop?.inject(text)
+                    // AgentLoop 是 actor——inject 跨 actor 调用须 await。
+                    await agentLoop?.inject(text)
                 }
             }
         }
