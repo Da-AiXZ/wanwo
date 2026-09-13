@@ -77,6 +77,17 @@ enum HookRunner {
     /// runner.ts:20——hook 未配 timeout 时的默认（600s）。
     static let defaultHookTimeoutMs = 600_000
 
+    /// M4-E 验收修复：waitpid 原始 status → hook 协议退出码。iSH 宿主桥返回
+    /// 的是 waitpid 原始 status（真退出码在高 8 位：`exit 2` → 512；信号死亡
+    /// =低 7 位非 0）。hook 协议语义=真退出码（codec：exit 2=阻断）。
+    ///   · status>>8 = WEXITSTATUS
+    ///   · 信号死亡 / 负值哨兵（spawn 失败/超时）→ -1（HookRunner 统一映射
+    ///     nil = dsh undefined，非阻断）
+    static func normalizedExitCode(_ status: Int) -> Int32 {
+        if status < 0 || status & 0x7F != 0 { return -1 }
+        return Int32(status >> 8)
+    }
+
     /// runner.ts:62-74 + :87-105 的等价端口。
     /// - Parameters:
     ///   - executor: 执行器（注入抽象——测试桩/生产宿主桥）。

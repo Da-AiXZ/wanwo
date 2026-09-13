@@ -274,4 +274,19 @@ final class HookRunnerTests: XCTestCase {
         XCTAssertEqual(output.decision, HookDecision.deny)
         XCTAssertEqual(output.reason, "policy")
     }
+    // MARK: normalizedExitCode（waitpid 原始 status → hook 协议退出码）
+
+    func testNormalizedExitCodeWaitpidStatus() {
+        // `exit 2` → waitpid status 512 = 2<<8（真机实证：512 曾致拦截失效）
+        XCTAssertEqual(HookRunner.normalizedExitCode(512), 2)
+        XCTAssertEqual(HookRunner.normalizedExitCode(0), 0)
+        XCTAssertEqual(HookRunner.normalizedExitCode(256), 1)   // exit 1
+        XCTAssertEqual(HookRunner.normalizedExitCode(65280), 255)
+        // 信号死亡（低 7 位非 0）→ -1（HookRunner 映射 nil=dsh undefined）
+        XCTAssertEqual(HookRunner.normalizedExitCode(137), -1)  // 128+SIGKILL(9)
+        XCTAssertEqual(HookRunner.normalizedExitCode(2), -1)    // 裸信号位
+        // 负值哨兵（spawn 失败/超时）原样穿透
+        XCTAssertEqual(HookRunner.normalizedExitCode(-1), -1)
+    }
+
 }

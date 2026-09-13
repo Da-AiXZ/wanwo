@@ -240,8 +240,14 @@ actor IshExecutorBridge {
             lineCallback: { _ in },   // hook 不消费行流
             pidCallback: pidCallback
         )
+        // M4-E 验收修复：exitCode 换算——桥返回 waitpid 原始 status（`exit 2` →
+        // 512），hook 协议语义=真退出码（codec：exit 2=阻断）。真机实证
+        // （hooks测试事件流 seq 4）：512 → codec 不识别 → decision pass 拦截
+        // 失效。ShellTool 既有通道（合并流+尾注显示原始 status）本批不动，
+        // 登记另修。
+        let hookExitCode = HookRunner.normalizedExitCode(outcome.exitCode)
         return ISHSeparatedCommandResult(
-            exitCode: Int32(outcome.exitCode),
+            exitCode: hookExitCode,
             stdout: outcome.output,
             stderr: outcome.stderr)
     }
