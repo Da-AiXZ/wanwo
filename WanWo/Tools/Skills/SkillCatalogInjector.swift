@@ -88,7 +88,6 @@ enum SkillCatalogInjector {
                 omitted += 1
             }
         }
-        var body = included.map(\.entry).joined(separator: "\n")
         if omitted > 0 {
             // marker 让位循环：回退尾条目直至 marker 装得下（marker 文案随
             // omitted 数变化，逐轮重估；条目成本按登记值精确回收）。
@@ -100,6 +99,10 @@ enum SkillCatalogInjector {
                 omitted += 1
                 used -= last.cost
             }
+            // CI 第十轮实证：body 拼接必须**在让位循环之后**（popLast 回退只改
+            // included 数组，先拼的 body 字符串不会跟着缩——原时序把被回退的
+            // 条目留在了 body 里）。
+            body = included.map(\.entry).joined(separator: "\n")
             let marker = omissionMarker(omitted)
             body += (body.isEmpty ? "" : "\n") + marker
         }
