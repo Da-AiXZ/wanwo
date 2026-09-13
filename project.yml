@@ -106,6 +106,9 @@ targets:
       # SDK 面）——test target 需显式声明包依赖。
       - package: mcp-swift-sdk
         product: MCP
+      # M4-E+ P1：单测直接 import GRDB 构造 v2 旧库 fixture（v2→v3 迁移
+      # 测试需以相同 identifier 预记账 grdb_migrations）。
+      - package: GRDB
 
 # 测试 scheme（本地 xcodebuild test 用；主流水线构建路径不受影响）。
 schemes:
