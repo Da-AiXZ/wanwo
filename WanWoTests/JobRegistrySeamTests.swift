@@ -92,7 +92,8 @@ final class JobRegistrySeamTests: XCTestCase {
 
     // MARK: - 不变量全分支（invariant.ts:17-43 逐分支）
 
-    /// 合法快照基底（可逐字段变异构造负例）。
+    /// 合法快照基底（可逐字段变异构造负例）。completionOwner 一层 Optional
+    /// 足够（CI 第四轮实证 String?? 纯冗余：nil 字面量传 String? 即显式 nil）。
     private func makeValidSnapshot(
         id: String = "bash-1",
         kind: JobKind = .bash,
@@ -101,7 +102,7 @@ final class JobRegistrySeamTests: XCTestCase {
         status: JobStatus = .running,
         startedAt: Int64 = 1_000,
         finishedAt: Int64? = nil,
-        completionOwner: String?? = "s1"   // 双层 Optional：nil=unowned 断言
+        completionOwner: String? = "s1"   // nil = unowned 断言（显式传 nil）
     ) -> (snapshot: JobSnapshot, completionOwner: String?) {
         let snapshot = JobSnapshot(id: id, kind: kind, label: label,
                                    ownerSessionId: ownerSessionId,
@@ -244,8 +245,15 @@ final class JobRegistrySeamTests: XCTestCase {
         registry.onJobsChanged { _ in }()
         registry.attachController(name: "chat")
 
-        // wait 是唯一 async throws 面。
-        XCTAssertThrowsError(try await registry.wait(id: "bash-1", timeoutMs: 10,
-                                                     callerSessionId: nil))
+        // wait 是唯一 async throws 面（async 进 XCTAssertThrowsError 的
+        // autoclosure 不支持并发——do/catch 手写，同 J2 CI 第三轮先例）。
+        do {
+            _ = try await registry.wait(id: "bash-1", timeoutMs: 10,
+                                        callerSessionId: nil)
+            XCTFail("wait on unknown job must throw")
+        } catch {
+            XCTAssertTrue(error is JobRegistryError || error is CancellationError,
+                          "unexpected: \(error)")
+        }
     }
 }
