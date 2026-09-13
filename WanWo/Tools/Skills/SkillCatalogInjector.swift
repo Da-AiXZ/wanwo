@@ -88,6 +88,9 @@ enum SkillCatalogInjector {
                 omitted += 1
             }
         }
+        // 全量基线（omitted==0 分支=档二贪心装下全部的正确产物；让位循环仅在
+        // omitted>0 时重拼回退后的 included）。
+        var body = included.map(\.entry).joined(separator: "\n")
         if omitted > 0 {
             // marker 让位循环：回退尾条目直至 marker 装得下（marker 文案随
             // omitted 数变化，逐轮重估；条目成本按登记值精确回收）。
