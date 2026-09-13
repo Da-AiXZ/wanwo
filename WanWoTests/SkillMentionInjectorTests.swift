@@ -17,11 +17,14 @@ final class SkillMentionInjectorTests: XCTestCase {
     private func summary(_ name: String,
                          source: SkillSource = .user,
                          invocation: SkillInvocation = .default,
-                         bodyPath: String = "/tmp/skills/\(name)/SKILL.md",
-                         resourceBase: String = "/tmp/skills/\(name)") -> SkillSummary {
+                         bodyPath: String? = nil,
+                         resourceBase: String? = nil) -> SkillSummary {
+        // Swift 默认参数禁引用同函数其他参数——bodyPath/resourceBase 缺省在
+        // 方法体内按 name 派生（M4-C 同款笔误族的修正形态）。
         SkillSummary(name: name, description: "desc \(name)", whenToUse: nil,
                      invocation: invocation, source: source,
-                     resourceBase: resourceBase, bodyPath: bodyPath)
+                     resourceBase: resourceBase ?? "/tmp/skills/\(name)",
+                     bodyPath: bodyPath ?? "/tmp/skills/\(name)/SKILL.md")
     }
 
     private func event(_ seq: Int, _ text: String) -> SessionEvent {
