@@ -85,6 +85,10 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         if let url = Self.resolveProjectSkillsTail(tail, within: projectSkillsRootURL) {
             return url
         }
+        // P3 fail closed（CI 第五轮实证）：tail 命中 project 资源 marker 但
+        // containment 失败时必须整体拒——不得回落会话桶解析（"../.." 恰
+        // 标准化回桶内=逃逸成功：.agents/skills/../../x → workspace/x）。
+        if Self.isProjectSkillsTail(tail) { return nil }
         if tail.isEmpty {
             return rootURL
         }
@@ -106,10 +110,16 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     /// 内宿主 URL（含 /private 归一与词法 containment 防 `..` 逃逸，与既有
     /// resolve/resolveUnderGuestRoot 同源逻辑——既有两处为 P13 已验证面不回改，
     /// 最小触碰纪律）；非 project 资源返回 nil（回落 workspace 桶解析）。
+    /// project 资源 tail 判定（marker 前缀；resolve 的回落守卫与本解析器
+    /// 共用同一判定——单一事实源）。
+    private static func isProjectSkillsTail(_ tail: String) -> Bool {
+        let marker = ".agents/skills"
+        return tail == marker || tail.hasPrefix(marker + "/")
+    }
+
     private static func resolveProjectSkillsTail(_ tail: String,
                                                  within root: URL) -> URL? {
-        let marker = ".agents/skills"
-        guard tail == marker || tail.hasPrefix(marker + "/") else { return nil }
+        guard isProjectSkillsTail(tail) else { return nil }
         let candidate: URL
         if tail == marker {
             candidate = root

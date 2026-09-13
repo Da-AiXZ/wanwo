@@ -189,6 +189,14 @@ final class HookSessionEventsTests: XCTestCase {
         let (writer, dir) = try await makeWriter(id: "decision-fallback")
         defer { try? FileManager.default.removeItem(at: dir) }
 
+        // 先落三个 open（孤儿 result 被 SessionInvariant 拒——配对机制
+        // 正常工作；CI 第五轮实证同族第三处漏修）。
+        for handler in ["halt", "noop", "both"] {
+            _ = try await HookSessionEvents.appendHookInvoked(to: writer,
+                invocation: HookInvocation(turn: 1, point: "Stop",
+                                            dialect: .claudeCode,
+                                            handlerId: handler, matcher: nil))
+        }
         // ① continue:false → stop（events.ts:99 回退第一支）。
         _ = try await HookSessionEvents.appendHookResult(to: writer,
             record: HookResultRecord(turn: 1, point: "Stop", handlerId: "halt",
