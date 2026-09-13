@@ -57,15 +57,19 @@ final class HookBridgeConfigTests: XCTestCase {
     }
 
     func testClaudeCarriesTimeoutAndSubstitutes() throws {
+        // 分层构造（深层嵌套字面量括号配对易错——CI 第三轮 67 行语法错实证）。
+        let hook: JSONValue = .object([
+            "type": .string("command"),
+            "command": .string("${CLAUDE_PLUGIN_ROOT}/s.sh"),
+            "timeout": .int(30),
+        ])
+        let raw: JSONValue = .object([
+            "Stop": .array([
+                .object(["hooks": .array([hook])]),
+            ]),
+        ])
         let parsed = try HookBridgeConfig.parseClaudeCodeConfig(
-            .object(["Stop": .array([.object([
-                "hooks": .array([.object([
-                    "type": .string("command"),
-                    "command": .string("${CLAUDE_PLUGIN_ROOT}/s.sh"),
-                    "timeout": .int(30),
-                ])])]),
-            ])]]),
-            vars: SubstitutionVars(pluginRoot: "/p"))
+            raw, vars: SubstitutionVars(pluginRoot: "/p"))
         XCTAssertEqual(parsed.config["Stop"], [
             MatcherGroup(matcher: nil,
                          hooks: [CommandHook(command: "/p/s.sh", timeoutSec: 30)]),

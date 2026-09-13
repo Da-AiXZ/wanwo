@@ -255,8 +255,8 @@ final class HookRunnerTests: XCTestCase {
         let (output, _) = await HookRunner.run(
             executor: executor, hook: hook,
             payload: "{}", trailingNewline: true,
-            expectedEventName: "PreToolUse", cwd: "/var/wanwo/workspace")
-        XCTAssertEqual(output.decision, .block)
+            cwd: "/var/wanwo/workspace", expectedEventName: "PreToolUse")
+        XCTAssertEqual(output.decision, HookDecision.block)
         XCTAssertEqual(output.reason, "this command is not allowed")
     }
 
@@ -270,8 +270,8 @@ final class HookRunnerTests: XCTestCase {
         let (output, _) = await HookRunner.run(
             executor: executor, hook: hook,
             payload: "{}", trailingNewline: true,
-            expectedEventName: "PreToolUse", cwd: "/var/wanwo/workspace")
-        XCTAssertEqual(output.decision, .deny)
+            cwd: "/var/wanwo/workspace", expectedEventName: "PreToolUse")
+        XCTAssertEqual(output.decision, HookDecision.deny)
         XCTAssertEqual(output.reason, "policy")
     }
 }

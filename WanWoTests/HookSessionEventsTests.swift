@@ -208,8 +208,8 @@ final class HookSessionEventsTests: XCTestCase {
             return (handlerId, decision)
         }
         // dsh events.spec.ts:69——三分支一比一。
-        XCTAssertEqual(decisions, [("halt", "stop"), ("noop", "pass"),
-                                   ("both", "block")])
+        XCTAssertEqual(decisions.map { $0.0 }, ["halt", "noop", "both"])
+        XCTAssertEqual(decisions.map { $0.1 }, ["stop", "pass", "block"])
     }
 
     // MARK: - registry 注册面（E1 通道接入）
