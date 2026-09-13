@@ -156,7 +156,11 @@ enum HookRunner {
 
         // runner.ts:88-91——负值 exitCode（spawn 失败/超时哨兵）→ nil（dsh
         // undefined），非阻断；正常码原样交 E1 codec（exit 2 阻断/exit 0 结构化）。
-        let exitCode: Int? = outcome.exitCode.map { $0 < 0 ? nil : Int($0) }
+        // （flatMap + 显式闭包签名——map 内三元 nil 分支无法从上下文推断，
+        // CI 第一轮 34751424937 实证。）
+        let exitCode: Int? = outcome.exitCode.flatMap { (code: Int32) -> Int? in
+            code < 0 ? nil : Int(code)
+        }
         let output = HookCodec.parseHookOutput(
             exitCode: exitCode,
             stdout: outcome.stdout,
