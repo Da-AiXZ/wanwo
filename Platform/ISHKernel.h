@@ -184,4 +184,58 @@ typedef NSString * _Nullable (^ISHPathReverseHandler)(NSString *hostPath);
 
 @end
 
+#pragma mark - Memory Status Feed
+
+/// [T-ish-footprint-brake] Host-side memory status feed for the kernel's
+/// footprint-based admission control (vendored Vendor/ish/kernel/mm.h:90-134).
+///
+/// Aggregates the three live measurements the kernel comments specify
+/// (mm.h:123-126, verbatim: "`limit_bytes` = phys_footprint + available (the
+/// live jetsam allowance); `avail_bytes` = os_proc_available_memory();
+/// `pressure_critical` = the OS sent a critical memory-pressure event") and
+/// calls ish_set_memory_status() with them.
+///
+/// Measurement notes:
+///   - phys_footprint: TASK_VM_INFO, same metric the fork guard uses
+///     (minis_current_phys_footprint, ISHKernel.m:189-197) — it is what
+///     Jetsam kills on.
+///   - os_proc_available_memory(): the remaining per-process allowance.
+///   - pressure_critical: reuses the fork guard's memory-pressure dispatch
+///     source (ISHKernel.m:167-185) — critical is encoded as level 2 there,
+///     so no second pressure source is created.
+///
+/// Once the first feed lands, the kernel ledger stops being admission
+/// control and becomes accounting only (mm.h:92-94); ish_mem_commit_ok()
+/// then fails closed when the feed goes stale for >2s (mm.h:110-111), so the
+/// host must keep feeding on a steady cadence (Swift side: 250ms, see
+/// IshResourceGovernor).
+///
+/// A skipped tick (task_info failure) is safe: the kernel ignores a zero
+/// limit (mmap.c:53-54 "host couldn't measure — don't flip modes on garbage")
+/// and the staleness rule handles a dead feed on its own.
+@interface ISHKernel (MemoryGovernor)
+
+/// Take one memory measurement set and feed it to the kernel. Cheap
+/// (two host syscalls); safe from any thread.
+- (void)feedMemoryStatus;
+
+/// True once at least one feed has been installed (footprint mode active —
+/// the legacy ledger is then accounting only). Mirrors ish_footprint_mode().
+@property (nonatomic, readonly) BOOL isMemoryFootprintModeActive;
+
+/// Background CPU governor zone from the last gov_tick sample
+/// (0 GREEN / 1 YELLOW / 2 RED; 0 while the governor is not running).
+@property (nonatomic, readonly) int backgroundCPUGovernorZone;
+
+/// Whether the background CPU governor timer is currently running
+/// (i.e. beginBackgroundCPUGovernor without a matching end).
+@property (nonatomic, readonly) BOOL isBackgroundCPUGovernorRunning;
+
+/// Number of guest fork() calls delayed by the fork memory guard since
+/// boot (diagnostic; monotonically increasing). Read-only mirror of the
+/// g_fork_guard_stalls counter for the Swift facade / G2 stress observability.
+@property (nonatomic, readonly) uint64_t forkGuardStallCount;
+
+@end
+
 NS_ASSUME_NONNULL_END

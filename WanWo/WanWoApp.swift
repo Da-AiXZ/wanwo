@@ -21,6 +21,23 @@ struct WanWoApp: App {
                 .onChange(of: scenePhase) { phase in
                     lifecycleLogger.info(
                         "app scene phase → \(String(describing: phase))")
+                    // M5-A G1：资源护栏前后台接线（沿用本文件既有 scenePhase
+                    // onChange 模式，不自创新通知机制）。begin/end 幂等
+                    // （ISHKernel.h:178/:183 注释原文 "Call on didEnter-
+                    // Background / Call on foreground return. Idempotent."）。
+                    // inactive 不动作（半透明遮挡等瞬时态不动 governor）；
+                    // SwiftUI scenePhase 无独立 willEnterForeground 态，
+                    // .active 即前台返回语义。
+                    switch phase {
+                    case .background:
+                        environment.resourceGovernor.handleDidEnterBackground()
+                    case .active:
+                        environment.resourceGovernor.handleWillEnterForeground()
+                    case .inactive:
+                        break
+                    @unknown default:
+                        break
+                    }
                 }
         }
     }

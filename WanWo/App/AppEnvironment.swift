@@ -52,6 +52,12 @@ final class AppEnvironment: ObservableObject {
     /// M4-D D7：技能启停覆盖层宿主（config/skills-settings.json；Application
     /// Support 约定与 providers/permission-default/mcp-servers 同族）。
     let skillSettingsStore: SkillSettingsStore
+    /// M5-A G1：资源护栏 Swift 门面（App 级单例——HookConfigLoader 等既有
+    /// App 级组件同位装配）。职责：前后台 scenePhase → begin/end
+    /// BackgroundCPUGovernor 接线（转发方=WanWoApp 既有 onChange 模式）+
+    /// 250ms 内存喂送定时器（init 启动）+ governor zone/fork guard stalls
+    /// 状态快照暴露（G2 压测观测面）。
+    let resourceGovernor = IshResourceGovernor()
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0
@@ -234,6 +240,12 @@ final class AppEnvironment: ObservableObject {
                 Self.logger.fault("app-level kernel boot failed: \(String(describing: error))")
             }
         }
+
+        // M5-A G1：资源护栏喂送定时器启动（App 生命周期常驻，幂等）。喂送
+        // 必须持续而非仅前台——内核 stale 规则（Vendor/ish/kernel/mm.h:110-111）
+        // 把 >2s 未喂判为死采样器 fail-closed 进 BRAKE；首喂早于 guest boot
+        // 是期望行为（main.c:367-370 "Prime the feed BEFORE the guest boots"）。
+        resourceGovernor.start()
     }
 
     // MARK: - 会话

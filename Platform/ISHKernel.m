@@ -34,6 +34,8 @@
 #include <setjmp.h>
 #include <unistd.h>     // usleep
 #import <mach/mach.h>   // task_info / TASK_VM_INFO (phys_footprint)
+#import <os/proc.h>     // os_proc_available_memory ([T-ish-footprint-brake] host feed)
+#include "kernel/mm.h"  // ish_set_memory_status / ish_footprint_mode (host feed)
 #include <execinfo.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -1830,6 +1832,57 @@ static void gov_tick(void) {
     g_gov_timer = nil;
     NSLog(@"ISHKernel: [Governor] END after %.1fs — lastZone=%s sleeps=%llu totalSleep=%.1fs",
           t, gov_zone_name(g_gov_zone), sleeps, (double)sleep_ns / 1e9);
+}
+
+@end
+
+@implementation ISHKernel (MemoryGovernor)
+
+// [T-ish-footprint-brake] Host feed per Vendor/ish/kernel/mm.h:90-134. The
+// two values follow the kernel comment verbatim (mm.h:123-126):
+//   limit_bytes = phys_footprint + available (the live jetsam allowance)
+//   avail_bytes = os_proc_available_memory()
+// Derivation rationale: jetsam's kill decision is the app's physical
+// footprint against its live allowance; footprint alone measures what was
+// spent, the allowance measures what remains — their sum is the ceiling the
+// kernel's <10%-headroom BRAKE / >15%-hysteresis state machine (mmap.c:60-66)
+// reasons over. (Contrast the CLI host feed, main.c:345-356, which uses
+// hw.memsize*0.8 — there is no per-process allowance on a CLI host.)
+- (void)feedMemoryStatus {
+    uint64_t footprint = minis_current_phys_footprint();
+    if (footprint == 0) {
+        // task_info failed — mmap.c:53-54 "host couldn't measure — don't
+        // flip modes on garbage". Skip the tick; the kernel's 2s staleness
+        // rule (mm.h:110-111) fails closed on a dead feed on its own.
+        return;
+    }
+    uint64_t available = (uint64_t) os_proc_available_memory();
+    uint64_t limit = footprint + available;
+    // Reuse the fork guard's pressure source (dispatch source kept current
+    // at ISHKernel.m:167-185; critical encoded as level 2 at :180) instead
+    // of creating a second DISPATCH_SOURCE_TYPE_MEMORYPRESSURE — same OS
+    // signal, one source, and the fork guard's 1.5x fallback logic keeps
+    // working even if a transition was missed.
+    uint32_t pressure =
+        atomic_load_explicit(&g_fork_guard_pressure, memory_order_relaxed);
+    bool critical = pressure >= 2;
+    ish_set_memory_status(limit, available, critical);
+}
+
+- (BOOL)isMemoryFootprintModeActive {
+    return ish_footprint_mode() ? YES : NO;
+}
+
+- (int)backgroundCPUGovernorZone {
+    return g_gov_zone;
+}
+
+- (BOOL)isBackgroundCPUGovernorRunning {
+    return g_gov_timer != nil;
+}
+
+- (uint64_t)forkGuardStallCount {
+    return atomic_load_explicit(&g_fork_guard_stalls, memory_order_relaxed);
 }
 
 @end
