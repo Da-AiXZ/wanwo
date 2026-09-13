@@ -109,3 +109,11 @@ jobs:
   # 真缺陷（project tail containment 失败回落会话桶——fail closed 守卫）
   # ⑥marker 作用域漏改。本文件曾被环境竞态第五次吞工作树（恢复，零损失）。
   # 主流水线零变化；WanWoTests 保留备日后重启。
+  # 2026-09-14 M5-A 终局留痕：第六次一次性验证跑已执行完毕——run
+  # 34787995210 全绿（1890 tests, 0 failures；新面=资源护栏收尾 G1-G2
+  # [喂送/生命周期接线/诊断观测]+后台作业 J1-J4 [registry 缝/本地实现/
+  # detached 通道/三工具/本地通知]）。CI 修正六轮（①②编译三族 ③④测试
+  # async 两族 ⑤测试构造四族（ResultBox Promise 语义/并发桶 unowned 误用/
+  # fitWithSuffix 期望/truncation fixture）⑥fitWithSuffix 字节账二次手算
+  # 纠正 17 非 19——实现零缺陷，全部为测试期望/构造错误）。网络故障期间
+  # push 攒批恢复后统一执行。主流水线零变化；WanWoTests 保留备日后重启。
