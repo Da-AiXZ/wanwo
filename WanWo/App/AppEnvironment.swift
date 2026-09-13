@@ -382,6 +382,28 @@ final class AppEnvironment: ObservableObject {
         // /mcp_server_config 等内置元工具走协议默认 .direct，不受影响。
         let toolSearchAssembly = ToolSearchAssembly(registry: registry)
 
+        // M4-D D2：技能三根（project=workspace /.agents/skills 宿主直读 /
+        // user=容器 skills/ / bundled=安装位 skills/.bundled）+ bundled 指纹
+        // 幂等安装（会话启动一次；fail open——bundled 技能可选，失败不阻塞）。
+        let skillsUserRoot = WanWoPaths.skillsPersistentDir
+        let skillsBundledRoot = skillsUserRoot
+            .appendingPathComponent(".bundled", isDirectory: true)
+        do {
+            try BundledSkillInstaller.install(
+                files: BundledSkillInstaller.bundledFiles(),
+                targetRoot: skillsBundledRoot)
+        } catch {
+            Self.logger.error("bundled skills install failed: " +
+                              "\(String(describing: error))")
+        }
+        let skillRegistry = SkillRegistry(roots: [
+            .init(source: .project,
+                  baseURL: WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
+                      .appendingPathComponent(".agents/skills", isDirectory: true)),
+            .init(source: .user, baseURL: skillsUserRoot),
+            .init(source: .bundled, baseURL: skillsBundledRoot),
+        ])
+
         let spill = SpillStore(
             root: WanWoPaths.persistentBase
                 .appendingPathComponent("spill", isDirectory: true)
@@ -457,7 +479,9 @@ final class AppEnvironment: ObservableObject {
             sandboxModeProvider: { [permission] in permission.knobs.sandbox },
             escalationApprover: escalationApprover,
             // M4-C2：tool_search 组装步（存在 deferred 才注册，每步刷新）。
-            toolSearchAssembly: toolSearchAssembly)
+            toolSearchAssembly: toolSearchAssembly,
+            // M4-D D2：技能注册表（组装期 refresh + write-edit 失效消费方）。
+            skillRegistry: skillRegistry)
         return (AgentLoop(deps: deps), nil, coordinator, questionService, permission,
                 planMode, attachments)
     }

@@ -31,6 +31,12 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     let guestRootURL: URL
     /// 读-改-写临界区（编辑族工具共享；glob/grep 只读遍历不走此锁）。
     private let mutationLock = NSLock()
+    /// M4-D D2：宿主写通道观测缝（writeAt 成功落盘后回调）。技能注册表据此实现
+    /// write/edit 命中技能根的失效判定（dsh skills.md:81；write/edit/str_replace
+    /// editor 三族变更全汇于 writeData/mutate→writeAt 单点）。构造后、首次写前
+    /// 一次性注入（ToolCallScheduler.makeContext），此后只读——@unchecked Sendable
+    /// 下该初始化序是既定的良性边界。
+    var onMutation: (@Sendable (URL) -> Void)?
 
     private static let fileManager = FileManager.default
 
@@ -194,6 +200,9 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         } else {
             _ = try Self.fileManager.moveItem(at: tmp, to: url)
         }
+        // M4-D D2：成功变更后通知观测方（技能根前缀判定在 SkillRegistry.
+        // noteHostMutation——write/edit 命中技能目录即失效，dsh:81）。
+        if let onMutation { onMutation(url) }
         return url
     }
 

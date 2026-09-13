@@ -97,6 +97,9 @@ actor AgentLoop {
         /// M4-C2：tool_search 组装步宿主（存在 deferred 工具 ⇒ 注册/刷新
         /// tool_search；nil = 不组装——既有调用面/测试不受扰）。
         var toolSearchAssembly: ToolSearchAssembly? = nil
+        /// M4-D D2：技能注册表宿主（每步组装前 refresh 装载快照 + write-edit
+        /// 失效判定消费方；nil = 不启用——既有调用面/测试不受扰）。
+        var skillRegistry: SkillRegistry? = nil
     }
 
     // MARK: - 状态
@@ -575,6 +578,10 @@ actor AgentLoop {
         // 零 deferred ⇒ 注销（幂等；MCP 工具世代换手后由此收敛注册态，逐步
         // 执行对齐 codex per-turn finalize 的 WanWo 等价）。
         deps.toolSearchAssembly?.refresh()
+
+        // M4-D D2：技能装载快照组装期刷新（失效三通道①——C2 ToolSearchAssembly
+        // 同位模式：脏才重扫，幂等低成本；消费面 D4 目录注入接线）。
+        deps.skillRegistry?.refresh()
 
         // prompt 组装（严格插值；组装失败按回合错误处理）。
         var assembly: (system: String, contextSnapshot: String, tools: [ToolSchemaEntry])

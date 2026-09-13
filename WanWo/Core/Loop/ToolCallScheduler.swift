@@ -253,12 +253,21 @@ enum ToolCallScheduler {
     private static func makeContext(_ deps: AgentLoop.Dependencies,
                                     turn: Int, step: Int,
                                     callId: String) -> ToolExecutionContext {
+        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
+        // M4-D D2：write/edit 失效通道②观测缝——变更工具全部落盘经
+        // WorkspaceFileAccess.writeAt 成功点回调，前缀判定在 SkillRegistry
+        // .noteHostMutation（dsh skills.md:81）。
+        if let skillRegistry = deps.skillRegistry {
+            workspace.onMutation = { [weak skillRegistry] url in
+                skillRegistry?.noteHostMutation(url)
+            }
+        }
         ToolExecutionContext(
             sessionId: deps.sessionId,
             turn: turn,
             step: step,
             callId: callId,
-            workspace: AgentLoop.workspaceAccess(sessionId: deps.sessionId),
+            workspace: workspace,
             spill: deps.spill,
             onShellLine: deps.callbacks.onShellLine,
             completeLLM: { prompt, system in

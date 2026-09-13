@@ -46,6 +46,12 @@ targets:
       # Bashism 规则（M2.4：BashismDetector 运行时加载；OpenMinis src/shared 共享 JSON）
       - path: WanWo/Resources/bashism_rules.json
         buildPhase: resources
+      # M4-D D2：bundled 预装技能（folder reference 保目录结构——Bundle.main
+      # subdirectory 语义；安装面 BundledSkillInstaller 指纹 marker 幂等安装
+      # 到容器 skills/.bundled/，发现面 bundled rank 单独成根）
+      - path: WanWo/Resources/bundled-skills
+        buildPhase: resources
+        type: folder
       # RootfsPatch.bundle（ERR-019：boot 时 FsApplyOverlay 从 mainBundle 加载，
       # 对齐 OpenMinis pbxproj:33 Resources phase 集成方式）
       - path: Vendor/resources/RootfsPatch.bundle
