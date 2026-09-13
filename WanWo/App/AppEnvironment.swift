@@ -23,6 +23,8 @@ enum RootSelection: Hashable {
     /// M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView 交互
     /// 参照；配置存储 config/mcp-servers/servers.json）。
     case mcpServers
+    /// M4-D D7：设置·技能管理（启停覆盖层+迁移导入）。
+    case skills
     case none
 }
 
@@ -47,6 +49,9 @@ final class AppEnvironment: ObservableObject {
     /// M4-A 件11：serverName 命名空间注册表（dsh 模块级 WeakMap 的 App 级
     /// 单例对应——scope 级互斥、跨会话栈复用）。
     let mcpNamespaces = MCPNamespaceRegistry()
+    /// M4-D D7：技能启停覆盖层宿主（config/skills-settings.json；Application
+    /// Support 约定与 providers/permission-default/mcp-servers 同族）。
+    let skillSettingsStore: SkillSettingsStore
 
     /// 会话列表版本号（创建/删除/标题落盘时 +1，驱动侧栏刷新）。
     @Published var sessionsRevision = 0

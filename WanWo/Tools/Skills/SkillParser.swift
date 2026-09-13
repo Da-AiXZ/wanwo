@@ -115,7 +115,11 @@ enum SkillParser {
         // description：sanitize_single_line → unwrap_or_default（parser.rs:70-74）
         let description = parsed.description.map(sanitizeSingleLine) ?? ""
         // short_description：sanitize → 空 filter 为 None（parser.rs:75-80）
-        let shortDescription = parsed.shortDescription.map(sanitizeSingleLine).filter { !$0.isEmpty }
+        // （Optional.map 后无 filter 方法——flatMap 承载空滤，等价 Rust
+        // `.filter(|v| !v.is_empty())` 的 Option 语义）
+        let shortDescription = parsed.shortDescription
+            .map(sanitizeSingleLine)
+            .flatMap { $0.isEmpty ? nil : $0 }
 
         try validateLen(name, maxLen: maxNameLen, fieldName: "name")
         // 空即 MissingField("description")（parser.rs:83-85）
