@@ -14,12 +14,14 @@ import Foundation
 /// Routes guest paths under /var/wanwo/{offloads,attachments,workspace,browser}
 /// to per-session host directories via the iSH fakefs path-translate hook.
 /// 【万我适配】原注释路径为 /var/minis/...，宿主基目录 Library/MinisChat/minis
-/// → Library/WanWo/wanwo。
+/// → Library/WanWo/wanwo。M4-E+ P2：路由目标升为分组维度——
+/// ~/Library/.../wanwo/groups/<gid>/<sid>/<bucket>/<tail>（brief §5.2）。
 final class FsContextRouter: @unchecked Sendable {
     static let shared = FsContextRouter()
 
     /// Guest path prefixes that route per-session. Anything under one of these
-    /// becomes ~/Library/.../wanwo/<sid>/<bucket>/<tail>. Paths under
+    /// becomes ~/Library/.../wanwo/groups/<gid>/<sid>/<bucket>/<tail>
+    /// (M4-E+ P2 分组维度——与 WanWoPaths.sessionPersistentDir 同形状). Paths under
     /// /var/wanwo/{memory,skills,shared} stay global and are NOT listed here —
     /// they fall through to the legacy g_bind_mounts[] table.
     private let perSessionBuckets: [(linuxPrefix: String, hostSubdir: String)] = [
@@ -36,9 +38,17 @@ final class FsContextRouter: @unchecked Sendable {
 
     /// Host base URL (~/Library/WanWo/wanwo). Captured once at install time.
     private let wanwoBaseURL: URL
+    /// M4-E+ P2：会话桶路由基座（wanwoBaseURL/groups/<gid>）——路由目标形状
+    /// persistentBase/groups/<gid>/<sid>/<bucket>，与 WanWoPaths.
+    /// sessionPersistentDir 同源同形状（brief §5.2）。热路径考量同 wanwoBaseURL：
+    /// init 一次捕获（persistentBase 每次取 FileManager URLs，不可进 fakefs
+    /// 热路径）。P1/P2 恒 default 分组；M9 多分组后按 sid 查组替换派生。
+    private let sessionBucketBaseURL: URL
 
     private init() {
         self.wanwoBaseURL = WanWoPaths.persistentBase
+        self.sessionBucketBaseURL = WanWoPaths.groupRoot(
+            base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
     }
 
     /// Allocate a stable fs_context token for `sid`. Repeated calls with the
@@ -106,7 +116,10 @@ final class FsContextRouter: @unchecked Sendable {
                 continue
             }
             let tail = String(guestPath[prefixEnd...])
-            return wanwoBaseURL
+            // M4-E+ P2：路由目标改分组维度——groups/<gid>/<sid>/<bucket>
+            // （与 WanWoPaths.sessionPersistentDir 形状一致；sessionBucketBaseURL
+            // 已含 groups/<gid> 前缀）。
+            return sessionBucketBaseURL
                 .appendingPathComponent(sid, isDirectory: true)
                 .appendingPathComponent(bucket.hostSubdir, isDirectory: true)
                 .path + tail
@@ -114,8 +127,11 @@ final class FsContextRouter: @unchecked Sendable {
         return nil
     }
 
-    /// Reverse hook: given a host APFS path under <wanwoBaseURL>/<sid>/<bucket>,
-    /// return the canonical guest path /var/wanwo/<bucket>/<tail>.
+    /// Reverse hook: given a host APFS path under
+    /// <wanwoBaseURL>/groups/<gid>/<sid>/<bucket> (M4-E+ P2 形状；旧
+    /// <wanwoBaseURL>/<sid>/<bucket> 形状保留兼容解析——迁移窗口内 stale
+    /// 打开句柄仍指向旧盘位), return the canonical guest path
+    /// /var/wanwo/<bucket>/<tail>.
     /// Returns nil if the path doesn't live under any per-session bucket
     /// (caller falls back to the static bind_mount_resolve table).
     private func reverse(hostPath: String) -> String? {
@@ -127,7 +143,16 @@ final class FsContextRouter: @unchecked Sendable {
             stripped = String(hostPath.dropFirst("/private".count))
         }
         guard stripped.hasPrefix(basePath + "/") else { return nil }
-        let rest = stripped.dropFirst(basePath.count + 1)  // "<sid>/<bucket>[/tail]"
+        var rest = stripped.dropFirst(basePath.count + 1)
+        // M4-E+ P2：分组维度形状 groups/<gid>/<sid>/<bucket>[/tail]——剥掉
+        // groups/<gid>/ 前缀归一到 <sid>/<bucket>[/tail]（旧形状直落同解析）。
+        // 非 groups 前缀的路径（memory/skills 等全局桶）不匹配本分支，照旧
+        // 走下方 sid/bucket 解析 + 已发 context 守卫（误配被 known-sid 拒绝）。
+        if rest.hasPrefix(WanWoPaths.groupsDirName + "/") {
+            rest = rest.dropFirst(WanWoPaths.groupsDirName.count + 1)
+            guard let groupEnd = rest.firstIndex(of: "/") else { return nil }
+            rest = rest[rest.index(after: groupEnd)...]
+        }
         // Split into sid / bucket / tail
         let parts = rest.split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count >= 2 else { return nil }

@@ -50,9 +50,42 @@ enum WanWoPaths {
         persistentBase.appendingPathComponent("mcp-servers", isDirectory: true)
     }
 
+    // MARK: - 分组维度路径（M4-E+ P2：会话四桶分组化——brief §5.2 路径模型）
+    //
+    // 分组常量与派生的单一事实源居本文件（ISHRuntime 层）：Storage 层的
+    // GroupStore 以同名字面薄壳转发引用（顺着 Storage→ISHRuntime 既有依赖
+    // 方向），避免 ISHRuntime 反向依赖 Storage（派单锚点 1 的层依赖裁定）。
+
+    /// 分组根目录名（persistentBase/groups）。
+    static let groupsDirName = "groups"
+    /// 默认分组 id（M9 前 UI 不做分组管理，全部会话归默认分组——brief §5.1）。
+    static let defaultGroupID = "default"
+    /// 默认分组显示名（本批无 UI，与 id 同值）。
+    static let defaultGroupName = "default"
+    /// 会话四桶已知 bucket 名（GroupStoreMigrator 识别依据；与
+    /// FsContextRouter.perSessionBuckets 前缀表一致）。
+    static let knownSessionBuckets = ["workspace", "attachments", "offloads", "browser"]
+
+    /// 分组根目录：persistentBase/groups/<gid>。base 参数化——迁移器测试
+    /// 注入临时根（GroupStoreMigratorTests fixture）。
+    static func groupRoot(base: URL, groupID: String) -> URL {
+        base.appendingPathComponent(groupsDirName, isDirectory: true)
+            .appendingPathComponent(groupID, isDirectory: true)
+    }
+
+    /// 分组会话目录：persistentBase/groups/<gid>/sessions（SessionStore root 注入点）。
+    static func groupSessionsRoot(base: URL, groupID: String) -> URL {
+        groupRoot(base: base, groupID: groupID)
+            .appendingPathComponent("sessions", isDirectory: true)
+    }
+
     /// 每会话四桶的宿主持久化目录（fs_context 路由目标）。
-    static func sessionPersistentDir(for sid: String, bucket: String) -> URL {
-        persistentBase
+    /// M4-E+ P2：会话桶挂分组下——persistentBase/groups/<gid>/<sid>/<bucket>
+    /// （brief §5.2；groupID 默认值保既有调用面零改动自动跟随默认分组；
+    /// P3 将把无 sid 层的分组桶根升格为技能根，本函数届时不动）。
+    static func sessionPersistentDir(for sid: String, bucket: String,
+                                     groupID: String = defaultGroupID) -> URL {
+        groupRoot(base: persistentBase, groupID: groupID)
             .appendingPathComponent(sid, isDirectory: true)
             .appendingPathComponent(bucket, isDirectory: true)
     }

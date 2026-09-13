@@ -19,26 +19,28 @@
 
 import Foundation
 
-/// 分组层常量与路径派生（P1 仅默认单分组；M9 UI 分组管理后按需扩展）。
+/// 分组层常量与路径派生——M4-E+ P2 起常量与派生逻辑上提 WanWoPaths
+/// （ISHRuntime 层=单一事实源），本 enum 仅保留同名字面薄壳转发：
+/// 维持 Storage→ISHRuntime 既有依赖方向（避免 ISHRuntime 反向依赖 Storage），
+/// 既有引用点（SessionSummary 默认值/SessionDatabase seed 与回填/迁移器/
+/// EventStreamView 读面/测试）字面零改动。
 enum GroupStore {
     /// 默认分组 id（v3 seed 与迁移器回填共用常量；brief §5.1）。
-    static let defaultGroupID = "default"
+    static let defaultGroupID = WanWoPaths.defaultGroupID
     /// 默认分组显示名（本批无 UI，与 id 同值）。
-    static let defaultGroupName = "default"
+    static let defaultGroupName = WanWoPaths.defaultGroupName
     /// 会话四桶已知 bucket 名——迁移器识别 UUID 目录是否为会话桶目录的依据；
     /// 与 FsContextRouter.perSessionBuckets 前缀表一致（FsContextRouter.swift:26-32）。
-    static let knownBuckets = ["workspace", "attachments", "offloads", "browser"]
+    static let knownBuckets = WanWoPaths.knownSessionBuckets
 
     /// 分组根目录：persistentBase/groups/<gid>（brief §5.2 路径模型）。
     static func groupRoot(base: URL, groupID: String) -> URL {
-        base.appendingPathComponent("groups", isDirectory: true)
-            .appendingPathComponent(groupID, isDirectory: true)
+        WanWoPaths.groupRoot(base: base, groupID: groupID)
     }
 
     /// 分组会话目录：persistentBase/groups/<gid>/sessions（SessionStore root 注入点）。
     static func groupSessionsRoot(base: URL, groupID: String) -> URL {
-        groupRoot(base: base, groupID: groupID)
-            .appendingPathComponent("sessions", isDirectory: true)
+        WanWoPaths.groupSessionsRoot(base: base, groupID: groupID)
     }
 }
 
