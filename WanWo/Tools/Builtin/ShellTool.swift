@@ -135,20 +135,23 @@ struct ShellTool: AgentTool {
             let spawner = spawnDetached
             let sid = sessionId
             do {
+                // CI 实证（run 34784934683）：复杂嵌套表达式里闭包签名推断退化
+                // （extra argument 报到 run 大括号）——显式类型锚定消除歧义。
+                let runHooks: @Sendable () throws -> JobHooks = {
+                    let handle = try spawner(sid, command)
+                    return JobHooks(
+                        cancel: { handle.cancel() },
+                        done: {
+                            let result = await handle.done()
+                            return ShellTool.processOutcome(from: result)
+                        },
+                        readOutput: { handle.readOutput() })
+                }
                 let jobId = try jobs.start(JobStart(
                     kind: .bash,
                     label: command,
                     ownerSessionId: sessionId,
-                    run: {
-                        let handle = try spawner(sid, command)
-                        return JobHooks(
-                            cancel: { handle.cancel() },
-                            done: {
-                                let result = await handle.done()
-                                return ShellTool.processOutcome(from: result)
-                            },
-                            readOutput: { handle.readOutput() })
-                    }))
+                    run: runHooks))
                 Self.logger.info("background job started: \(jobId) [\(ctx.callId)]")
                 return .success(
                     "{\"kind\": \"background\", \"jobId\": \"\(jobId)\"}",

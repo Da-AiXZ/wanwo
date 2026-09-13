@@ -136,7 +136,7 @@ final class IshResourceGovernor: @unchecked Sendable {
         timer.resume()
         feedTimer = timer
         lock.unlock()
-        Self.logger.info("resource governor: feed timer started (interval \(self.feedInterval, format: .fixed(precision: 3))s)")
+        Self.logger.info("resource governor: feed timer started (interval \(String(format: "%.3f", self.feedInterval))s)")
     }
 
     /// 停止喂送定时器（App teardown 面；正常形态常驻不停——内核 stale
