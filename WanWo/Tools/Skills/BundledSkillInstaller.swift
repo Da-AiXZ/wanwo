@@ -34,13 +34,52 @@ enum BundledSkillInstaller {
 
     // MARK: 资源装载
 
-    /// 生产面：从 bundle 的 `bundled-skills/` 目录引用读取（folder reference）。
-    /// 目录引用缺失（无预装）→ []。
+    /// 内嵌模板（codex lib.rs include_dir! 同款思路，CI 首跑实证：folder
+    /// reference 被展开为独立资源→两份 SKILL.md 同名冲突 Multiple commands——
+    /// 改编译期内嵌，零资源文件、版本随代码走、指纹幂等语义不变）。
+    /// 修改预装技能内容 = 改这里的模板字符串（安装位指纹随之变化触发重写）。
+    static let bundledTemplates: [BundledSkillFile] = [
+        BundledSkillFile(
+            relativePath: "hello-wanwo/SKILL.md",
+            data: Data("""
+---
+name: hello-wanwo
+description: Show how WanWo skills work with a friendly onboarding walkthrough.
+metadata:
+  short-description: WanWo 技能入门示例
+---
+
+# Hello WanWo
+
+1. Greet the user and briefly explain the three-tier progressive disclosure
+   model: catalog (name + description, always visible with budget) → this
+   SKILL.md body (loaded on trigger) → resources (never preloaded, fetched
+   on demand by path).
+2. Point the user to the `skill` tool and the `$hello-wanwo` explicit trigger
+   as the two ways to reach a skill.
+3. Suggest adding their own skill under the workspace `/.agents/skills/`
+   directory (a `<name>/SKILL.md` bundle or a flat `<name>.md` file).
+""".utf8)),
+        BundledSkillFile(
+            relativePath: "project-tour/SKILL.md",
+            data: Data("""
+---
+name: project-tour
+description: Walk through the current workspace layout and summarize key files.
+---
+
+# Project Tour
+
+1. List the workspace root (glob `*`) to see the top-level layout.
+2. Read `README.md` and `AGENTS.md` if they exist.
+3. Summarize the project structure, call out anything unusual, and suggest
+   concrete next steps for the user.
+""".utf8)),
+    ]
+
+    /// 生产面：内嵌模板（bundle 资源面已弃用——CI 首跑 Multiple commands实证）。
     static func bundledFiles(bundle: Bundle = .main) -> [BundledSkillFile] {
-        guard let folderURL = bundle.url(forResource: "bundled-skills", withExtension: nil) else {
-            return []
-        }
-        return bundledFiles(in: folderURL)
+        bundledTemplates
     }
 
     /// 目录直读重载（测试注入面）：枚举目录内全部常规文件（含子层——资源目录
