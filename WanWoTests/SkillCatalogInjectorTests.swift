@@ -116,8 +116,8 @@ final class SkillCatalogInjectorTests: XCTestCase {
         let message = SkillCatalogInjector.message(for: snapshot, tokenBudget: 45)
 
         XCTAssertTrue(message.contains("10 additional skills omitted from this bounded skills list."))
-        XCTAssertFalse(message.contains("skill-0\nd"))
-        XCTAssertTrue(message.contains("<available_skills>\n- 10 additional skills omitted"))
+        XCTAssertFalse(message.contains("skill-0\nd"), "unexpected: " + message)
+        XCTAssertTrue(message.contains("<available_skills>\n- 10 additional skills omitted"), "unexpected: " + message)
     }
 
     // MARK: 派生面基线与投影

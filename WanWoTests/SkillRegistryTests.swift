@@ -281,23 +281,25 @@ final class SkillRegistryTests: XCTestCase {
         try FileManager.default.createDirectory(at: outside,
                                                 withIntermediateDirectories: true)
         let registry = SkillRegistry(roots: [project])
-        _ = registry.snapshot()
+        _ = registry.snapshot()  // 预热（此时根空——fixture 唯一技能 late 尚未写入）
 
-        // 根外路径 → 不失效：新增技能不可见
+        // 根内路径 → 失效：重扫可见（write 本身不经过观测缝——测试用
+        // noteHostMutation 模拟根内变更触发失效，dsh:81）
         try write("---\ndescription: late\n---\n",
                   to: project.appendingPathComponent("late/SKILL.md"))
-        registry.noteHostMutation(outside.appendingPathComponent("unrelated.md"))
+        registry.noteHostMutation(project.appendingPathComponent("late/SKILL.md"))
         XCTAssertEqual(registry.snapshot().summaries.count, 1)
 
-        // 根内路径 → 失效：重扫可见
-        registry.noteHostMutation(project.appendingPathComponent("late/SKILL.md"))
-        XCTAssertEqual(registry.snapshot().summaries.count, 2)
+        // 根外路径 → 不失效：缓存保持（原版时序错位：预热在 write 前、期望值
+        // 按"预热后已可见"错位 +1——CI 第七轮实证，时序对齐重写）
+        registry.noteHostMutation(outside.appendingPathComponent("unrelated.md"))
+        XCTAssertEqual(registry.snapshot().summaries.count, 1)
 
         // 根路径本身也算命中；删除后重扫回落
         registry.noteHostMutation(project.baseURL)
         try FileManager.default.removeItem(
             at: project.appendingPathComponent("late"))
-        XCTAssertEqual(registry.snapshot().summaries.count, 1)
+        XCTAssertEqual(registry.snapshot().summaries.count, 0)
     }
 }
 
