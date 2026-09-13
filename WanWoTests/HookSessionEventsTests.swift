@@ -140,6 +140,11 @@ final class HookSessionEventsTests: XCTestCase {
     func testAppendHookResultFullShape() async throws {
         let (writer, dir) = try await makeWriter(id: "result-full")
         defer { try? FileManager.default.removeItem(at: dir) }
+        // 先落 open（孤儿 result 被 SessionInvariant 拒——配对机制正常工作）。
+        _ = try await HookSessionEvents.appendHookInvoked(to: writer,
+            invocation: HookInvocation(turn: 1, point: "PreToolUse",
+                                        dialect: .claudeCode, handlerId: "h1",
+                                        matcher: nil))
         _ = try await HookSessionEvents.appendHookResult(to: writer,
             record: HookResultRecord(turn: 1, point: "PreToolUse", handlerId: "h1",
                                      output: HookOutput(exitCode: 2, stderr: "blocked",
@@ -162,6 +167,11 @@ final class HookSessionEventsTests: XCTestCase {
     func testAppendHookResultOmitsAbsentExitCodeAndStderrSummary() async throws {
         let (writer, dir) = try await makeWriter(id: "result-sparse")
         defer { try? FileManager.default.removeItem(at: dir) }
+        // 先落 open（同上——配对机制正常工作的证据）。
+        _ = try await HookSessionEvents.appendHookInvoked(to: writer,
+            invocation: HookInvocation(turn: 1, point: "Stop",
+                                        dialect: .codex, handlerId: "h3",
+                                        matcher: nil))
         _ = try await HookSessionEvents.appendHookResult(to: writer,
             record: HookResultRecord(turn: 1, point: "Stop", handlerId: "h3",
                                      output: HookOutput(exitCode: nil, stderr: "",

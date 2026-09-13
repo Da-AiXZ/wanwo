@@ -254,7 +254,7 @@ final class HookPointRunnerTests: XCTestCase {
             if request.command.contains("cc-hook.sh") {
                 return HookShellOutcome(
                     exitCode: 0,
-                    stdout: "{\"updatedInput\":{\"a\":1},\"systemMessage\":\"careful\"}",
+                    stdout: "{\"systemMessage\":\"careful\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"a\":1}}}",
                     stderr: "")
             }
             return HookShellOutcome(
@@ -327,8 +327,9 @@ final class HookPointRunnerTests: XCTestCase {
         _ = await runner.stop(turn: 2)
         let payloads = executor.snapshotPayloads().compactMap(parsePayload)
         XCTAssertEqual(payloads.count, 2)
-        guard case .object(let cx) = payloads[0],
-              case .object(let cc) = payloads[1] else {
+        // 裁定①：runner 固定 claude→codex 序（makeRunner 传参序不影响）。
+        guard case .object(let cc) = payloads[0],
+              case .object(let cx) = payloads[1] else {
             return XCTFail("payload 必须是 object")
         }
         // codex index.ts:261——stop_hook_active:false + last_assistant_message:null。

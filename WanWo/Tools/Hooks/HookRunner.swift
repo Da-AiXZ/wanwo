@@ -8,7 +8,8 @@
 //    - runner.ts:74 CommandHook.timeoutSec（秒）×1000 覆盖默认（JS falsy 0 → 默认）
 //    - runner.ts:77-84 request{command,timeoutMs,stdin,signal,cwd,env} 六要素
 //    - runner.ts:87-95 bash.run → exitCode ?? undefined（signal 死亡 null→undefined，
-//      非阻断错误）+ durationMs（now() 差值，供 hook/result 事件）
+//      非阻断错误）+ durationMs（now() 差值，供 hook/result 事件；dsh now=
+//      performance.now() 毫秒——WanWo 默认时钟为秒，差值 ×1000 换算毫秒）
 //    - runner.ts:96-105 executor 基础设施故障 → 无 exit code 的 outcome（message
 //      进 stderr 位），从不抛进 loop（R5 fail open）
 //    - runner.ts:75 stdin = JSON.stringify(payload) + (trailingNewline ? '\n' : '')
@@ -120,7 +121,7 @@ enum HookRunner {
             return (nonBlockingOutcome(
                 stderr: "hook payload staging failed",
                 expectedEventName: expectedEventName),
-                Int(now() - startedAt))
+                Int((now() - startedAt) * 1000))
         }
         defer { executor.cleanupPayload(payloadPath) }
 
@@ -144,14 +145,14 @@ enum HookRunner {
         } catch is CancellationError {
             return (nonBlockingOutcome(stderr: "hook run cancelled",
                                        expectedEventName: expectedEventName),
-                    Int(now() - startedAt))
+                    Int((now() - startedAt) * 1000))
         } catch {
             // runner.ts:96-105：基础设施故障 → 无 exit code outcome（message
             // 进 stderr 位），从不抛。
             return (nonBlockingOutcome(
                 stderr: "hook execution failed: \(error)",
                 expectedEventName: expectedEventName),
-                Int(now() - startedAt))
+                Int((now() - startedAt) * 1000))
         }
 
         // runner.ts:88-91——负值 exitCode（spawn 失败/超时哨兵）→ nil（dsh
@@ -166,7 +167,7 @@ enum HookRunner {
             stdout: outcome.stdout,
             stderr: outcome.stderr,
             expectedEventName: expectedEventName)
-        return (output, Int(now() - startedAt))
+        return (output, Int((now() - startedAt) * 1000))
     }
 
     /// runner.ts:96-105——无 exit code 的非阻断 outcome（message 进 stderr 位）。
