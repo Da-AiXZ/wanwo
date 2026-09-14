@@ -1083,6 +1083,8 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             // 程序调用 → promise → settlement 桥（bootstrap :412 同构）。
             // fallback 模式：transform 输出已整体求值（__dsh_program__ 在
             // globalObject），直接取用调用；正常模式走 makeProgram 构造。
+            // 真机批 B 定位针：程序体首行执行证明（console 捕获→logs 可见）。
+            stripped = "console.log('[jscore-body] started');\n" + stripped
             let promise: JSValue
             if fallbackMode {
                 context.evaluateScript(stripped)
@@ -1153,7 +1155,9 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             let queue = self.queue
             let state = self
             let bridge: @convention(block) (JSValue) -> JSValue = { argsJS in
-                // 运行于 queue（JS 执行线程）。
+                // 运行于 queue（JS 执行线程）。真机批 B 定位针：bridge 被调即
+                // 证明程序体确实发起了 binding 调用。
+                config.onTrace("[jscore] bridge invoked: " + name)
                 let encoded = encode.call(withArguments: [argsJS])
                 if encoded == nil || encoded!.isUndefined {
                     // bootstrap :336——args 无损预检拒绝（errorClass 实例化）。
@@ -1352,6 +1356,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         /// 幂等收敛：清理计时器/Watchdog/JS 引用，结算 continuation 与 done 面。
         private func finish(result: CodeRunResult) {
             guard !settled else { return }
+            config.onTrace("[jscore] finish will resume (kind=" + (result.error?.kind.rawValue ?? "success") + ")")
             config.onTrace("[jscore] finish: \(result.error?.kind.rawValue ?? "success") msg=\(result.error?.message.prefix(120) ?? "-") logs=\(result.logs.count)")
             settled = true
             settledResult = result
@@ -1367,6 +1372,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             context = nil   // JS 引用随 context 释放（块↔状态环由 context 死亡破除）
             resultContinuation?.resume(returning: result)
             resultContinuation = nil
+            config.onTrace("[jscore] continuation resumed")
             let dones = doneContinuations
             doneContinuations = []
             for continuation in dones {
