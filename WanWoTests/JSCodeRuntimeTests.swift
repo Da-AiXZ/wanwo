@@ -74,7 +74,7 @@ final class JSCodeRuntimeTests: XCTestCase {
         let expectation = expectation(description: "promise settled")
         let thenFn = context!.evaluateScript("Promise.prototype.then")!
         let resolveBlock: @convention(block) (JSValue) -> Void = { v in
-            box.value = .int(v.toInt32())
+            box.value = .int(Int(v.toInt32()))
             expectation.fulfill()
         }
         let rejectBlock: @convention(block) (JSValue) -> Void = { _ in
@@ -120,7 +120,7 @@ final class JSCodeRuntimeTests: XCTestCase {
             "a": .int(1),
             "s": .string("x"),
             "n": .null,
-            "arr": [.int(1), .double(2.5)],
+            "arr": [.int(1), .double(2.5)] as [JSONValue],
         ]))
     }
 
