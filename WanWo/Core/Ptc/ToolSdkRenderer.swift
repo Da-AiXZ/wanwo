@@ -378,11 +378,11 @@ enum ToolSdkRenderer {
         for schema in sorted {
             argsMembers.append(contentsOf: docLines(schema.description, 1))
             argsMembers.append("\(pad(1))\(renderKey(schema.name)): "
-                + "\(jsonSchemaToTs(schema.parameters, 1));")
+                + "\(jsonSchemaToTs(schema.parameters, indent: 1));")
             // output nil → annotation-only 空对象 → 'JsonValue'（登记④）。
             let output = schema.output ?? .object([:])
             outputMembers.append("\(pad(1))\(renderKey(schema.name)): "
-                + "\(jsonSchemaToTs(output, 1));")
+                + "\(jsonSchemaToTs(output, indent: 1));")
         }
         let argsMap = "interface ToolArgsMap {"
             + (argsMembers.isEmpty ? "}" : "\n\(argsMembers.joined(separator: "\n"))\n}")
@@ -554,7 +554,7 @@ enum ToolSdkRenderer {
             parts.append(.text(";"))
         }
         parts.append(.text("\n"))
-        parts.append(.text("\(pad(frame.indent)})"))
+        parts.append(.text("\(pad(frame.indent))}"))
         let declared = TypeDoc.parts(parts)
         return isExplicitFalse(objectFields(of: frame.node)?["additionalProperties"])
             ? declared
