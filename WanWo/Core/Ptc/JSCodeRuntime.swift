@@ -141,7 +141,7 @@ struct JSCodeRuntimeConfig: Sendable {
          maxWallMs: Double = 600_000,
          maxOutputBytes: Int = 67_108_864,
          maxOldGenerationSizeMb: Int = 512,
-         onTrace: @Sendable (String) -> Void = { _ in }) {
+         onTrace: @escaping @Sendable (String) -> Void = { _ in }) {
         self.computeMs = computeMs
         self.maxWallMs = maxWallMs
         self.maxOutputBytes = maxOutputBytes
