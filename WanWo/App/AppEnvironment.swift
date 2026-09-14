@@ -562,8 +562,12 @@ final class AppEnvironment: ObservableObject {
         // 结构化失败，非装配期错误）。
         do {
             let codeRuntime = try JSCodeRuntime()
-            registry.register(RunCodeTool(pipeline: pipeline, writer: writer,
-                                          runtime: codeRuntime))
+            // P4 保留名语义（真机闪退实证 2026-09-14）：run_code 经专用
+            // transport 注册面入场（register 的保留名检查 fatalError——
+            // 普通注册面对此工具永不合法，dsh requireCodeTransport :914-925
+            // "never enters the global layer" 同构）。
+            registry.registerReservedTransport(RunCodeTool(
+                pipeline: pipeline, writer: writer, runtime: codeRuntime))
         } catch {
             Self.logger.error("run_code tool registration failed: " +
                               "\(String(describing: error))")
