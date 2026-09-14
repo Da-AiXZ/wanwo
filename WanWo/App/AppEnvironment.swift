@@ -70,8 +70,10 @@ final class AppEnvironment: ObservableObject {
     /// 可变闭包（测试桩替换）。
     let jobNotifier = JobNotifier()
     /// 真机批 B 全方位诊断：会话 writer 注册表（diagTrace 写事件流用）。
-    private let writerRegistryLock = NSLock()
-    private var sessionWriters: [String: SessionWriter] = [:]
+    /// nonisolated(unsafe)：NSLock 自保护（diagTrace 标 nonisolated 供
+    /// 非隔离上下文调用——闭包/调度/通知各面）。
+    nonisolated(unsafe) private let writerRegistryLock = NSLock()
+    nonisolated(unsafe) private var sessionWriters: [String: SessionWriter] = [:]
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
