@@ -50,7 +50,11 @@ public final class LocalJobRegistry: JobRegistryProtocol, @unchecked Sendable {
 
     private let lock = NSLock()
     /// 活跃记录（插入序 = 注册序，list 语义 index.ts:192-197）。
+    /// Swift Dictionary 无序——注册序列由 jobOrder 索引承载（CI 第十三轮
+    /// 实证：无序遍历致 job_list 输出序漂移 bash-2 先于 bash-1）。
     private var jobs: [String: TrackedTask] = [:]
+    /// 注册序索引（start append / disposeAll 与 store 同步清）。
+    private var jobOrder: [String] = []
     /// 每 kind 正序数（index.ts:103/:151-153）。
     private var counters: [String: Int] = [:]
     /// 单层 controller 挂接计数（dsh ScopedLayers 全局层等价——存在即服务
@@ -167,6 +171,7 @@ public final class LocalJobRegistry: JobRegistryProtocol, @unchecked Sendable {
             cancel: hooks.cancel, readOutput: hooks.readOutput,
             startedAt: Int64(Date().timeIntervalSince1970 * 1000))
         jobs[id] = job
+        jobOrder.append(id)
         lock.unlock()
 
         // 8. 观察生产者结算（index.ts:178-185：拒绝=生产者契约违约 →
@@ -192,9 +197,12 @@ public final class LocalJobRegistry: JobRegistryProtocol, @unchecked Sendable {
     public func list(callerSessionId: String?) -> [JobSnapshot] {
         lock.lock()
         defer { lock.unlock() }
-        return jobs.values
-            .filter { $0.ownerSessionId == nil || $0.ownerSessionId == callerSessionId }
-            .map { snapshotLocked($0) }
+        return jobOrder.compactMap { id -> JobSnapshot? in
+            guard let job = jobs[id],
+                  job.ownerSessionId == nil || job.ownerSessionId == callerSessionId
+            else { return nil }
+            return snapshotLocked(job)
+        }
     }
 
     public func get(id: String, callerSessionId: String?) throws -> JobSnapshot {
@@ -528,6 +536,7 @@ public final class LocalJobRegistry: JobRegistryProtocol, @unchecked Sendable {
         // 由单作业记录承载的可见集变更）。
         let emptied = Set(all.map(\.ownerSessionId))
         jobs.removeAll()
+        jobOrder.removeAll()
         lock.unlock()
         for owner in emptied { notifyChanged(owner) }
     }
