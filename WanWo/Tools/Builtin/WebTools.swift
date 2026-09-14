@@ -29,6 +29,16 @@ struct WebFetchTool: AgentTool {
     /// 结果字符上限（§5.4 输出卫生口径）。
     static let maxChars = 15_000
 
+    /// 网络策略（M5-B N1 · F028：逐连接裁决前置——deny 优先，SSRF 恒开）。
+    let policy: NetworkPolicy
+    /// 出站会话缝（测试注入 URLProtocol 桩；生产缺省 .shared 不变）。
+    let session: URLSession
+
+    init(policy: NetworkPolicy = .unrestricted, session: URLSession = .shared) {
+        self.policy = policy
+        self.session = session
+    }
+
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
@@ -37,12 +47,23 @@ struct WebFetchTool: AgentTool {
               scheme == "http" || scheme == "https" else {
             return .failure("invalid or non-http(s) url", code: "INVALID_ARGS")
         }
+        // M5-B N1（F028）：逐连接裁决前置（NetworkPolicy.judge——scheme 面 →
+        // SSRF 恒开 → 域名白名单，deny 优先）。拒绝为结构化失败回模型
+        //（codex network_policy_decision.rs:46 文案逐字形态），不抛穿管线。
+        switch policy.judge(url: url) {
+        case .deny(let reason):
+            let blockedHost = url.host ?? urlText
+            return .failure(NetworkPolicy.blockedMessage(host: blockedHost, reason: reason),
+                            code: "NETWORK_BLOCKED", name: "NetworkPolicyError")
+        case .allow:
+            break
+        }
         let maxBytes = args.objectValue?["max_bytes"]?.intValue ?? 200_000
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         request.setValue("WanWo/0.1 (agent)", forHTTPHeaderField: "User-Agent")
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 return .failure("no HTTP response", code: "WEB_ERROR")
             }
@@ -104,8 +125,11 @@ struct WebSearchTool: AgentTool {
 // MARK: - 注册器
 
 enum WebTools {
-    static func registerAll(into registry: ToolRegistry) {
-        registry.register(WebFetchTool())
+    /// M5-B N1：web_fetch 挂接网络策略（缺省不受限——生产装配经
+    /// AppEnvironment 装配常量传入；web_search 走 completeLLM 缝不受限）。
+    static func registerAll(into registry: ToolRegistry,
+                            policy: NetworkPolicy = .unrestricted) {
+        registry.register(WebFetchTool(policy: policy))
         registry.register(WebSearchTool())
     }
 }

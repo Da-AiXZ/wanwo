@@ -416,13 +416,17 @@ final class AppEnvironment: ObservableObject {
         // M5-B P4：注册表呈现模式定档（.both 缺省——native schema 与
         // run_code SDK 两形态并存；dsh Config 缺省 native，WanWo 拍板差异，
         // 见 ToolRegistry 头注）。
+        // M5-B N1：网络策略装配常量（F028 第一版：不受限——allowedDomains nil，
+        // SSRF 防护恒开；受限形态=域名白名单，接入配置面时替换此常量。R3
+        // 禁触——不读 config/；独立 NetworkPolicy 配置，非 SandboxMode 维度）。
+        let networkPolicy = NetworkPolicy.unrestricted
         let registry = ToolRegistry(presentationMode: .both)
         registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry))
         // M5-A J3：job_output / job_list / job_kill 三工具（dsh tool-jobs
         // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
         FsTools.registerAll(into: registry, sessionId: sessionId)
-        WebTools.registerAll(into: registry)
+        WebTools.registerAll(into: registry, policy: networkPolicy)
 
         // M3 T1 审批装配（m3-scope-brief §二.3-5）：
         //   · ApprovalDecisionMatrix —— workspace-write 最简矩阵（T1 缺省档）；
