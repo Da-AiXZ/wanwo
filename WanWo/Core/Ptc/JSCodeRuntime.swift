@@ -118,7 +118,7 @@ import JavaScriptCore
 
 /// 四预算配置（computeMs/maxWallMs/maxOutputBytes/maxOldGenerationSizeMb）。
 /// 显式优于隐式：缺省在此定死（dsh schemastery default 同位），请求不带旋钮。
-struct JSCodeRuntimeConfig: Equatable, Sendable {
+struct JSCodeRuntimeConfig: Sendable {
     /// busy-time 预算毫秒（worker :26-34 注释语义）——JSCore 无 ELU 计量，
     /// 词汇保留不执行（拍板项②登记）。
     var computeMs: Double
@@ -1115,7 +1115,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                         newErrorFn: api.objectForKeyedSubscript("newError")!)
                     return rejectedFn.call(withArguments: [error])!
                 }
-                config.onTrace("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
+                self.config.onTrace("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
                 let deferred = deferredFn.call(withArguments: [])
                 let promise = deferred!.objectForKeyedSubscript("promise")!
                 let resolve = deferred!.objectForKeyedSubscript("resolve")!
