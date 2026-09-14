@@ -805,7 +805,6 @@ struct RunCodeTool: AgentTool {
 
         // ptc.ts:337-345 run-scoped abort（登记⑥）：外层取消入 → abort
         //（"canceled"）；run 落定 → finally abort("run_code settled")。
-        defer { config.onTrace("[jscore] execute returned") }
         return await withTaskCancellationHandler {
             await runProgram(code: code, ctx: ctx, scope: scope, lane: lane)
         } onCancel: {

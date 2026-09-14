@@ -1157,7 +1157,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             let bridge: @convention(block) (JSValue) -> JSValue = { argsJS in
                 // 运行于 queue（JS 执行线程）。真机批 B 定位针：bridge 被调即
                 // 证明程序体确实发起了 binding 调用。
-                config.onTrace("[jscore] bridge invoked: " + name)
+                self.config.onTrace("[jscore] bridge invoked: " + name)
                 let encoded = encode.call(withArguments: [argsJS])
                 if encoded == nil || encoded!.isUndefined {
                     // bootstrap :336——args 无损预检拒绝（errorClass 实例化）。
