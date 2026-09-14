@@ -88,7 +88,7 @@ final class JSCodeEngineProbeTests: XCTestCase {
                 functions: ["echo": { args in return args }])])
         let result = await runtime.run(request)
         let error = try XCTUnwrap(result.error,
-                                  "undefined host API must fail fast, got value=\(result.value?.description ?? "nil")")
-        XCTAssertEqual(error.kind, .exception)
+                                  "undefined host API must fail fast, got value=\(String(describing: result.value))")
+        XCTAssertEqual(error.kind, CodeRunFailureKind.exception)
     }
 }
