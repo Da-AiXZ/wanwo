@@ -1151,9 +1151,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
 
         /// 在飞 binding reject 登记（run 中止面统一拒绝用）。
         func registerBindingReject(_ token: UUID, _ reject: JSValue) {
-            lock.lock()
             if !settled { inflightBindingRejects[token] = reject }
-            lock.unlock()
         }
 
         /// binding 结算回归（worker :489-506 语义：resolution 无损检查 →
@@ -1162,9 +1160,8 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             outcome: Result<JSONValue, Error>, resolve: JSValue, reject: JSValue,
             errorClass: JSValue?, name: JSValue, token: UUID
         ) {
-            lock.lock()
+            // RunState 可变态全在 run 队列串行（无锁——外层 lock 属 JSCodeRuntime）。
             inflightBindingRejects.removeValue(forKey: token)
-            lock.unlock()
             guard !settled, !stopRequested else { return }
             let context = self.context!
             let api = self.api!
