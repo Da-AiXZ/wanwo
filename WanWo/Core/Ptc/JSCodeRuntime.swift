@@ -896,7 +896,9 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 finishIfStopped()
                 return
             }
-            let context = JSContext()
+            // JSContext() 构造返回 Optional（ObjC 可空初始化器导入面）——
+            // 实际失败面仅内存耗尽，强解包（CI 第二轮实证 optional 未解包）。
+            let context = JSContext()!
             self.context = context
             // Watchdog 注册（先于任何脚本执行——头注 :84-86 生效保证）。
             let contextRef = context.JSGlobalContextRef   // 【CI 编译风险登记】
