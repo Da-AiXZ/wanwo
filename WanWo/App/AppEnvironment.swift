@@ -75,7 +75,7 @@ final class AppEnvironment: ObservableObject {
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
-    func diagTrace(sessionId: String, _ note: String) {
+    nonisolated func diagTrace(sessionId: String, _ note: String) {
         writerRegistryLock.lock()
         let writer = sessionWriters[sessionId]
         writerRegistryLock.unlock()
@@ -689,6 +689,7 @@ final class AppEnvironment: ObservableObject {
         let noticeSessionId = sessionId
         var notifier = jobNotifier
         notifier.diagTrace = { [weak self] sessionId, note in
+            guard let sessionId else { return }
             self?.diagTrace(sessionId: sessionId, note)
         }
         jobNoticeDisposers[sessionId] = jobRegistry.onJobDone { [weak agentLoop] snapshot, owner in
