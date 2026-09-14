@@ -58,11 +58,20 @@ enum ResourceGuardStatus {
         }
         let feedValue = "\(snapshot.feedCount) 次 · 最近 \(feedTime) · 定时器 "
             + (snapshot.isFeedTimerRunning ? "运行中" : "已停")
+        // 真机批 D：最近后台时段摘要（后台限速曾是黑盒——回前台只见当下态）。
+        let bgValue: String
+        if let bg = snapshot.lastBackgroundSummary {
+            let fmt = { (d: Date) in d.formatted(.dateTime.hour().minute().second()) }
+            bgValue = "\(fmt(bg.startedAt))–\(fmt(bg.endedAt)) · 峰值 \(zoneName(bg.peakZone)) · stalls +\(bg.forkGuardStalls)"
+        } else {
+            bgValue = "无记录"
+        }
         return [
             Line(label: "CPU Governor", value: governorValue),
             Line(label: "内存准入", value: footprintValue),
             Line(label: "Fork Guard", value: forkValue),
             Line(label: "喂送", value: feedValue),
+            Line(label: "最近后台", value: bgValue),
         ]
     }
 }

@@ -52,6 +52,14 @@ extension ISHKernel: ISHResourceKernelControlling {}
 // MARK: - 快照（G2 真机压测的观测载体）
 
 /// 资源护栏状态快照（只读诊断面）。
+/// 最近一次后台时段的护栏摘要（真机批 D：后台限速观测面）。
+struct IshBackgroundSummary: Equatable, Sendable {
+    let startedAt: Date
+    let endedAt: Date
+    let peakZone: Int32
+    let forkGuardStalls: UInt64
+}
+
 struct IshResourceGovernorSnapshot: Equatable {
     /// CPU governor zone（0 GREEN / 1 YELLOW / 2 RED）。
     let governorZone: Int32
@@ -67,6 +75,8 @@ struct IshResourceGovernorSnapshot: Equatable {
     let feedCount: Int
     /// 最近一次喂送时刻（nil = 尚未喂过）。
     let lastFeedDate: Date?
+    /// 最近一次后台时段摘要（nil=本次启动未曾进过后台）。
+    let lastBackgroundSummary: IshBackgroundSummary?
 }
 
 // MARK: - 门面
@@ -101,6 +111,11 @@ final class IshResourceGovernor: @unchecked Sendable {
 
     private let lock = NSLock()
     private var feedTimer: DispatchSourceTimer?
+    // 真机批 D：后台时段摘要跟踪
+    private var backgroundStartedAt: Date?
+    private var backgroundPeakZone: Int32 = 0
+    private var backgroundStallsAtStart: UInt64 = 0
+    private var lastBackgroundSummary: IshBackgroundSummary?
     private var feedCountValue = 0
     private var lastFeedDateValue: Date?
 
@@ -155,6 +170,11 @@ final class IshResourceGovernor: @unchecked Sendable {
     /// ObjC 侧保证（ISHKernel.m:1788 begin 早退），转发不设防重复计数。
     func handleDidEnterBackground() {
         Self.logger.info("resource governor: scene → background — begin CPU governor")
+        lock.lock()
+        backgroundStartedAt = Date()
+        backgroundPeakZone = kernel.backgroundCPUGovernorZone
+        backgroundStallsAtStart = kernel.forkGuardStallCount
+        lock.unlock()
         kernel.beginBackgroundCPUGovernor()
     }
 
@@ -166,6 +186,17 @@ final class IshResourceGovernor: @unchecked Sendable {
     func handleWillEnterForeground() {
         Self.logger.info("resource governor: scene → active — end CPU governor")
         kernel.endBackgroundCPUGovernor()
+        // 真机批 D：后台限速对用户曾是黑盒（回前台只见「未运行」当下态）——
+        // 定格最近后台时段摘要，诊断页可读。
+        lock.lock()
+        defer { lock.unlock() }
+        guard let started = backgroundStartedAt else { return }
+        lastBackgroundSummary = IshBackgroundSummary(
+            startedAt: started,
+            endedAt: Date(),
+            peakZone: backgroundPeakZone,
+            forkGuardStalls: kernel.forkGuardStallCount - backgroundStallsAtStart)
+        backgroundStartedAt = nil
     }
 
     // MARK: 喂送
@@ -178,6 +209,10 @@ final class IshResourceGovernor: @unchecked Sendable {
         lock.lock()
         feedCountValue += 1
         lastFeedDateValue = Date()
+        // 真机批 D：governor 运行中随喂送采样 zone 峰值（后台摘要用）。
+        if backgroundStartedAt != nil {
+            backgroundPeakZone = max(backgroundPeakZone, kernel.backgroundCPUGovernorZone)
+        }
         lock.unlock()
     }
 
@@ -194,6 +229,7 @@ final class IshResourceGovernor: @unchecked Sendable {
         lock.lock()
         let count = feedCountValue
         let last = lastFeedDateValue
+        let bgSummary = lastBackgroundSummary
         lock.unlock()
         return IshResourceGovernorSnapshot(
             governorZone: kernel.backgroundCPUGovernorZone,
@@ -202,6 +238,7 @@ final class IshResourceGovernor: @unchecked Sendable {
             forkGuardStallCount: kernel.forkGuardStallCount,
             isFeedTimerRunning: isFeedTimerRunning,
             feedCount: count,
-            lastFeedDate: last)
+            lastFeedDate: last,
+            lastBackgroundSummary: bgSummary)
     }
 }

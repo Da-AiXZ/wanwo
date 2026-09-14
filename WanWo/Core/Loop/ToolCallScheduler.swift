@@ -80,6 +80,50 @@ enum ToolCallScheduler {
 
     private static let logger = AppLogger(category: "ToolCallScheduler")
 
+    // MARK: 在飞收敛面（真机转圈批 A 修复）
+
+    /// 在飞调用登记（notifyStarted 后、result 落盘前的调用）。锁保护
+    /// static 状态；callId 全局唯一（provider 前缀），回合结束整体清空。
+    private static let inflightLock = NSLock()
+    private static var inflightCallIds: Set<String> = []
+    /// 已结算调用（含中断合成）——appendResult 幂等守卫，防中断合成与
+    /// 真结果双落（tool/result 配对唯一性）。
+    private static var settledCallIds: Set<String> = []
+
+    /// 回合中断时对全部在飞调用收敛：立即落合成 error result + 工具卡
+    /// 回调（卡片停转）。真结果晚到的由 settledCallIds 守卫丢弃（M2 注记
+    /// 「将以错误结果回注」的实现载体——原缺口=卡片无限转圈）。
+    static func convergeInflightOnInterrupt(deps: AgentLoop.Dependencies,
+                                            turn: Int, step: Int) {
+        inflightLock.lock()
+        let ids = Array(inflightCallIds)
+        inflightCallIds.removeAll()
+        settledCallIds.formUnion(ids)
+        inflightLock.unlock()
+        guard !ids.isEmpty else { return }
+        logger.warning("turn interrupted: converging \(ids.count) inflight tool call(s)")
+        let output = ToolOutput.failure(
+            "回合被中断：本工具调用未完成，结果未知。",
+            code: "TURN_INTERRUPTED", name: "ToolInterruptError")
+        // 异步落盘+卡片回调（SessionWriter gate 串行化保证 append 有序；
+        // cancel 调用方在 actor 同步段——不阻塞等待）。
+        Task {
+            for id in ids {
+                await appendResult(deps, turn: turn, step: step, callId: id,
+                                   output: output)
+                deps.callbacks.onToolCallFinished(id, output.text, output.isError)
+            }
+        }
+    }
+
+    /// 回合收尾清理（防 static 集合跨回合无限增长）。
+    static func endTurnSweep() {
+        inflightLock.lock()
+        inflightCallIds.removeAll()
+        settledCallIds.removeAll()
+        inflightLock.unlock()
+    }
+
     /// dsh abort 合成结果（未派发即放弃的调用；文本与 dsh 对齐）。
     static func abortedBeforeDispatch() -> ToolOutput {
         .failure("tool call aborted before dispatch", code: "ABORTED_BEFORE_DISPATCH",
@@ -163,8 +207,12 @@ enum ToolCallScheduler {
                                                callId: call.id, name: call.name,
                                                arguments: call.arguments))
         notifyStarted(deps, call: call, args: args)
+        inflightLock.lock()
+        inflightCallIds.insert(call.id)
+        inflightLock.unlock()
         let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
         let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
+        guard markSettled(call.id) else { return }   // 中断合成已落，真结果丢弃
         await appendResult(deps, turn: turn, step: step, callId: call.id, output: output)
         notifyFinished(deps, callId: call.id, output: output)
     }
@@ -183,6 +231,9 @@ enum ToolCallScheduler {
                                                    callId: call.id, name: call.name,
                                                    arguments: call.arguments))
             notifyStarted(deps, call: call, args: parseArgs(call.arguments))
+            inflightLock.lock()
+            inflightCallIds.insert(call.id)
+            inflightLock.unlock()
         }
         let semaphore = AsyncSemaphore(maxParallel)
         await withTaskGroup(of: Void.self) { group in
@@ -193,6 +244,7 @@ enum ToolCallScheduler {
                     defer { semaphore.signal() }
                     if Task.isCancelled || cancelFlag.isCancelled {
                         let output = abortedBeforeDispatch()
+                        _ = markSettled(call.id)
                         await appendResult(deps, turn: turn, step: step,
                                            callId: call.id, output: output)
                         notifyFinished(deps, callId: call.id, output: output)
@@ -200,6 +252,7 @@ enum ToolCallScheduler {
                     }
                     let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
                     let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
+                    guard markSettled(call.id) else { return }   // 中断合成已落
                     await appendResult(deps, turn: turn, step: step,
                                        callId: call.id, output: output)
                     notifyFinished(deps, callId: call.id, output: output)

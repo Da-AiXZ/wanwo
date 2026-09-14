@@ -43,6 +43,22 @@ struct JobNotifier: Sendable {
         await MainActor.run { UIApplication.shared.applicationState == .active }
     }
 
+    /// 最近一次进入后台的时刻（scenePhase .background 时更新；nil=未曾）。
+    /// 真机批 C：后台冻结使作业结算被推迟到回前台——结算时点已 active，
+    /// 单纯的前台抑制会把「错过的事件」永远静音。规则改为：前台结算时
+    /// 若作业启动于最近一次进后台之前 → 仍发通知。
+    private static let backgroundedAtLock = NSLock()
+    private static var _lastBackgroundedAt: Date?
+    static var lastBackgroundedAt: Date? {
+        backgroundedAtLock.lock(); defer { backgroundedAtLock.unlock() }
+        return _lastBackgroundedAt
+    }
+    static func noteBackgrounded() {
+        backgroundedAtLock.lock()
+        _lastBackgroundedAt = Date()
+        backgroundedAtLock.unlock()
+    }
+
     /// 授权请求（true=granted）。生产=requestAuthorization 幂等惰性形态
     /// （首次弹窗，之后直返当前设置——不需自持缓存）。
     var requestAuthorization: @Sendable () async -> Bool = {
@@ -76,8 +92,14 @@ struct JobNotifier: Sendable {
         // owner 归一面口径：reported（已上报）与 unowned（owner nil）不发
         // ——listener 已过滤，此处复检保证独立调用面也合规（J4 测试锚点）。
         if snapshot.reported || ownerSessionId == nil { return }
-        // 前台抑制：active → inject 已可见，通知=打扰（F007 判定钉死）。
-        if await isAppActive() { return }
+        // 前台抑制：active 且作业全程在前台 → inject 已可见，通知=打扰
+        // （F007）。作业启动后曾进过后台 → 结算虽回到前台，用户错过的是
+        // 后台期间的事件 → 仍发（真机批 C：后台冻结推迟结算的场景）。
+        if await isAppActive() {
+            let backgrounded = JobNotifier.lastBackgroundedAt
+            let startedAfter = backgrounded.map { $0 < snapshot.startedAtDate } ?? false
+            if !startedAfter { return }
+        }
         // 授权惰性请求；拒绝/出错静默跳过（fail open，登记）。
         guard await requestAuthorization() else { return }
         let title = retainHead(snapshot.label, maxBytes: Self.titleMaxBytes)

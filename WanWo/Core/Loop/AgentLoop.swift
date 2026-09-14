@@ -125,6 +125,9 @@ actor AgentLoop {
     /// 驱动器唤醒即复位，避免上一轮回合的残留置位污染新回合）。
     private let toolCancelFlag = CancelFlag()
     private var driverTask: Task<Void, Never>?
+    /// 在飞工具批次（调度期间置位——中断收敛的 turn/step 真相源；
+    /// 真机转圈批 A：合成 result 必须落在正确的 turn/step 才保配对不变量）。
+    private var activeToolBatch: (turn: Int, step: Int)?
     private var maxParallelToolCalls: Int
     /// runtime context 快照投影状态（F038' ERR-024；dsh RuntimeContextProjection
     /// 语义移植，见 Core/Context/RuntimeContextProjection.swift）。
@@ -279,6 +282,14 @@ actor AgentLoop {
         toolCancelFlag.set()
         driverTask?.cancel()
         IshExecutorBridge.stopAllNonisolated(sessionId: deps.sessionId)
+        // 真机转圈批 A：在飞工具立即收敛（合成 error result + 工具卡回调
+        // 停转）——协作式旗标对不检查点的在飞调用（如 run_code 挂在续体
+        // 上）永远不生效，收敛必须有确定载体。turn/step 用真实批次值
+        // （phase 推算的 step=0 会破坏 result 配对不变量）。
+        if let batch = activeToolBatch {
+            ToolCallScheduler.convergeInflightOnInterrupt(
+                deps: deps, turn: batch.turn, step: batch.step)
+        }
     }
 
     // MARK: - 维护相（/compact 经此串行化）
@@ -742,6 +753,8 @@ actor AgentLoop {
         }
         if toolCalls.isEmpty { return .completed }
 
+        activeToolBatch = (turn, step)
+        defer { activeToolBatch = nil }
         await ToolCallScheduler.executeToolCalls(
             deps: deps, cancelFlag: toolCancelFlag, turn: turn, step: step,
             toolCalls: toolCalls, maxParallel: maxParallelToolCalls)

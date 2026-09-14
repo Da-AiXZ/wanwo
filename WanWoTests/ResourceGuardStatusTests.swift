@@ -28,7 +28,8 @@ final class ResourceGuardStatusTests: XCTestCase {
                                     forkGuardStallCount: stalls,
                                     isFeedTimerRunning: feedTimerRunning,
                                     feedCount: feedCount,
-                                    lastFeedDate: lastFeed)
+                                    lastFeedDate: lastFeed,
+                                    lastBackgroundSummary: nil)
     }
 
     func testZoneNameMapping() {
