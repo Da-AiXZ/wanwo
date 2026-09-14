@@ -205,22 +205,22 @@ enum IPAddressLiteral {
     }
 
     static func isNonPublicIPv4(_ ip: UInt32) -> Bool {
-        return inCidr(ip, 127 << 24, 8)          // loopback（全 /8）
-            || inCidr(ip, 10 << 24, 8)           // private 10/8
-            || inCidr(ip, (172 << 24) | (16 << 16), 12)  // private 172.16/12
-            || inCidr(ip, (192 << 24) | (168 << 16), 16) // private 192.168/16
-            || inCidr(ip, (169 << 24) | (254 << 16), 16) // link-local 169.254/16
+        return ipv4(ip, inCidr: 127 << 24, prefix: 8)          // loopback（全 /8）
+            || ipv4(ip, inCidr: 10 << 24, prefix: 8)           // private 10/8
+            || ipv4(ip, inCidr: (172 << 24) | (16 << 16), prefix: 12)  // private 172.16/12
+            || ipv4(ip, inCidr: (192 << 24) | (168 << 16), prefix: 16) // private 192.168/16
+            || ipv4(ip, inCidr: (169 << 24) | (254 << 16), prefix: 16) // link-local 169.254/16
             || ip == 0                           // unspecified 0.0.0.0
-            || inCidr(ip, 0, 8)                  // "this network" 0/8（RFC 1122）
+            || ipv4(ip, inCidr: 0, prefix: 8)                  // "this network" 0/8（RFC 1122）
             || (ip & 0xf000_0000) == 0xe000_0000 // multicast 224/4
             || ip == 0xffff_ffff                 // broadcast
-            || inCidr(ip, (100 << 24) | (64 << 16), 10)  // CGNAT（RFC 6598）
-            || inCidr(ip, (192 << 24), 24)       // IETF Protocol Assignments（RFC 6890）
-            || inCidr(ip, (192 << 24) | (2 << 16), 24)   // TEST-NET-1（RFC 5737）
-            || inCidr(ip, (198 << 24) | (18 << 16), 15)  // Benchmarking（RFC 2544）
-            || inCidr(ip, (198 << 24) | (51 << 16) | (100 << 8), 24) // TEST-NET-2
-            || inCidr(ip, (203 << 24) | (113 << 8), 24)  // TEST-NET-3
-            || inCidr(ip, (240 << 24), 4)        // Reserved（RFC 6890）
+            || ipv4(ip, inCidr: (100 << 24) | (64 << 16), prefix: 10)  // CGNAT（RFC 6598）
+            || ipv4(ip, inCidr: (192 << 24), prefix: 24)       // IETF Protocol Assignments（RFC 6890）
+            || ipv4(ip, inCidr: (192 << 24) | (2 << 16), prefix: 24)   // TEST-NET-1（RFC 5737）
+            || ipv4(ip, inCidr: (198 << 24) | (18 << 16), prefix: 15)  // Benchmarking（RFC 2544）
+            || ipv4(ip, inCidr: (198 << 24) | (51 << 16) | (100 << 8), prefix: 24) // TEST-NET-2
+            || ipv4(ip, inCidr: (203 << 24) | (113 << 8), prefix: 24)  // TEST-NET-3
+            || ipv4(ip, inCidr: (240 << 24), prefix: 4)        // Reserved（RFC 6890）
     }
 
     /// Rust to_ipv4 语义：前 5 组全零 → 尾两组合成 IPv4
