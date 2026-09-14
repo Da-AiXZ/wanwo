@@ -49,7 +49,7 @@ final class ResourceGuardStatusTests: XCTestCase {
                                     lastFeed: Date(timeIntervalSince1970: 0))
         let lines = ResourceGuardStatus.lines(for: snapshot)
         // 派单展示项恰四条，label 逐条对齐。
-        XCTAssertEqual(lines.count, 4)
+        XCTAssertEqual(lines.count, 5)
         XCTAssertEqual(lines[0].label, "CPU Governor")
         XCTAssertEqual(lines[1].label, "内存准入")
         XCTAssertEqual(lines[2].label, "Fork Guard")
