@@ -104,6 +104,10 @@ actor AgentLoop {
         /// Pre/PostToolUse 经 pipeline 注入；nil = 不启用——既有调用面/测试
         /// 不受扰，skillRegistry 同款默认值纪律）。
         var hookPoints: HookPointRunner? = nil
+        /// 真机批 B 全方位诊断：写进会话事件流的诊断通道（diag/trace，
+        /// logOnly 不进模型上下文）——通知/调度/引擎各面的打点经此入
+        /// 事件流导出，用户一个窗口看全貌。缺省静默。
+        var diagTrace: @Sendable (String) -> Void = { _ in }
     }
 
     // MARK: - 状态

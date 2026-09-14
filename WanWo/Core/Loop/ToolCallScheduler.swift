@@ -244,14 +244,19 @@ enum ToolCallScheduler {
         // 真机特有断点的自愈面（run_code 程序 3 秒成功但 execute 16 分钟
         // 不返回的实证）。超时→合成结果落盘+卡片收敛（引擎任务继续后台
         // 自行了断，不影响会话）。并行批路径同款（runParallelBatch）。
+        deps.diagTrace("scheduler: runSingle pipeline.run begin " + call.name)
         let output = await ToolCallScheduler.withHardTimeout(900, fallback: ToolOutput.failure(
             "工具执行超过 15 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
             name: "ToolHardTimeoutError")) {
             await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
         }
+        deps.diagTrace("scheduler: runSingle pipeline.run returned " + call.name
+            + " isError=" + (output.isError ? "1" : "0"))
         guard markSettled(call.id) else { return }   // 中断合成已落，真结果丢弃
         await appendResult(deps, turn: turn, step: step, callId: call.id, output: output)
+        deps.diagTrace("scheduler: runSingle result appended " + call.id)
         notifyFinished(deps, callId: call.id, output: output)
+        deps.diagTrace("scheduler: runSingle card notified " + call.id)
     }
 
     // MARK: 有界并行池（dsh rolling window）
@@ -288,11 +293,14 @@ enum ToolCallScheduler {
                         return
                     }
                     let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
+                    deps.diagTrace("scheduler: batch pipeline.run returned " + call.name)
                     let output = await ToolCallScheduler.withHardTimeout(900, fallback: ToolOutput.failure(
                         "工具执行超过 15 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
                         name: "ToolHardTimeoutError")) {
                         await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
                     }
+                    deps.diagTrace("scheduler: batch pipeline.run returned " + call.name
+                        + " isError=" + (output.isError ? "1" : "0"))
                     guard markSettled(call.id) else { return }   // 中断合成已落
                     await appendResult(deps, turn: turn, step: step,
                                        callId: call.id, output: output)

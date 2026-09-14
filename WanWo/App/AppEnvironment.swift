@@ -69,6 +69,22 @@ final class AppEnvironment: ObservableObject {
     /// App 级单例同 resourceGovernor/jobRegistry 位）。注入缝经 JobNotifier
     /// 可变闭包（测试桩替换）。
     let jobNotifier = JobNotifier()
+    /// 真机批 B 全方位诊断：会话 writer 注册表（diagTrace 写事件流用）。
+    private let writerRegistryLock = NSLock()
+    private var sessionWriters: [String: SessionWriter] = [:]
+
+    /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
+    /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
+    func diagTrace(sessionId: String, _ note: String) {
+        writerRegistryLock.lock()
+        let writer = sessionWriters[sessionId]
+        writerRegistryLock.unlock()
+        guard let writer else { return }
+        Task { _ = try? await writer.append(.extensionEvent(
+            kind: "diag/trace",
+            payload: .object(["note": .string(note)])))
+        }
+    }
     /// M5-B S2：沙箱 provider 注册表——本地 iSH 后端默认（S1）；远程 E2B
     /// opt-in 经 enableRemoteSandbox 装配（validateConnection 通过才可选用）。
     /// confine 消费面接线留 P2——本件不动 ShellTool（行为零变化）。
@@ -263,6 +279,7 @@ final class AppEnvironment: ObservableObject {
         // 应答对））。
         PtcDispatchEvents.registerEventSchemas()
         JscoreTraceEvents.registerEventSchemas()
+        DiagTraceEvents.registerEventSchemas()
 
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
@@ -394,6 +411,9 @@ final class AppEnvironment: ObservableObject {
                   permission: PermissionCoordinator?,
                   plan: PlanModeController?,
                   attachmentStore: AttachmentStore?) {
+        writerRegistryLock.lock()
+        sessionWriters[sessionId] = writer
+        writerRegistryLock.unlock()
         do {
             _ = try await makeAgentAdapter()
         } catch {
@@ -647,7 +667,11 @@ final class AppEnvironment: ObservableObject {
             skillRegistry: skillRegistry,
             // M4-E E5：hooks 五挂点编排器（UPS/Stop 直挂 loop；Pre/Post
             // 已随 pipeline 注入——同一实例）。
-            hookPoints: hookPoints)
+            hookPoints: hookPoints,
+            // 真机批 B 全方位诊断：写进会话事件流（diag/trace logOnly）。
+            diagTrace: { [weak self] note in
+                self?.diagTrace(sessionId: sessionId, note)
+            })
         let agentLoop = AgentLoop(deps: deps)
 
         // M5-A J3：完成通知接线（dsh tool-jobs index.ts:278-299 的 owner 归一
@@ -663,7 +687,10 @@ final class AppEnvironment: ObservableObject {
         // 收敛（UNUserNotificationCenter 同 identifier 覆盖）。
         jobNoticeDisposers.removeValue(forKey: sessionId)?()
         let noticeSessionId = sessionId
-        let notifier = jobNotifier
+        var notifier = jobNotifier
+        notifier.diagTrace = { [weak self] sessionId, note in
+            self?.diagTrace(sessionId: sessionId, note)
+        }
         jobNoticeDisposers[sessionId] = jobRegistry.onJobDone { [weak agentLoop] snapshot, owner in
             if snapshot.reported || owner == nil { return }
             let text = JobCompletionNotice.text(for: snapshot)

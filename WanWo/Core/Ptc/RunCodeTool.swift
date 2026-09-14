@@ -993,3 +993,19 @@ enum JscoreTraceEvents {
             pairing: .none))
     }
 }
+
+/// 全方位诊断事件（真机批 B：通知/调度/引擎各面打点的统一通道——
+/// logOnly 不进模型上下文；AppEnvironment.diagTrace 写入）。
+enum DiagTraceEvents {
+    static let traceKind = "diag/trace"
+
+    static func registerEventSchemas() {
+        let registry = ExtensionEventRegistry.shared
+        guard !registry.isRegistered(traceKind) else { return }
+        registry.register(ExtensionEventSchema(
+            kind: traceKind,
+            requiredFields: [ExtensionFieldSchema("note", .string)],
+            projection: .logOnly,
+            pairing: .none))
+    }
+}

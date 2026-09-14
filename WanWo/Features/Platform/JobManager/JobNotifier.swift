@@ -32,6 +32,8 @@ import UIKit
 /// 后台作业完成的本地通知器（07 F007）。注入缝三枚：前台态判定 / 授权请求 /
 /// 通知投递——测试桩替换；生产缺省走 UIKit + UNUserNotificationCenter。
 struct JobNotifier: Sendable {
+    /// 真机批 B 全方位诊断缝（装配注入——打点写 owner 会话事件流）。
+    var diagTrace: @Sendable (String?, String) -> Void = { _, _ in }
     private static let logger = AppLogger(category: "jobnotify")
 
     /// title 截断字节上限（label=一行命令，防超长通知；UTF-8 边界保留——
@@ -92,7 +94,10 @@ struct JobNotifier: Sendable {
                         noticeText: String) async {
         // owner 归一面口径：reported（已上报）与 unowned（owner nil）不发
         // ——listener 已过滤，此处复检保证独立调用面也合规（J4 测试锚点）。
-        if snapshot.reported || ownerSessionId == nil { return }
+        if snapshot.reported || ownerSessionId == nil {
+            diagTrace(ownerSessionId, "[jobnotify] skip: reported=\(snapshot.reported) owner=\(ownerSessionId ?? "nil")")
+            return
+        }
         // 前台抑制：active 且作业全程在前台 → inject 已可见，通知=打扰
         // （F007）。作业启动后曾进过后台 → 结算虽回到前台，用户错过的是
         // 后台期间的事件 → 仍发（真机批 C：后台冻结推迟结算的场景）。
@@ -101,12 +106,20 @@ struct JobNotifier: Sendable {
             let startedMs = Double(snapshot.startedAt)
             let startedAfter = backgrounded.map { $0.timeIntervalSince1970 * 1000 < startedMs } ?? false
             Self.logger.info("[jobnotify] active; startedAfter=\(startedAfter) bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil") startedAt=\(startedMs)")
-            if !startedAfter { return }
+            diagTrace(ownerSessionId, "[jobnotify] active; startedAfter=\(startedAfter) (bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil"))")
+            if !startedAfter {
+                diagTrace(ownerSessionId, "[jobnotify] suppressed: front-to-back all along")
+                return
+            }
         } else {
             Self.logger.info("[jobnotify] not active — will notify")
+            diagTrace(ownerSessionId, "[jobnotify] not active — will notify")
         }
         // 授权惰性请求；拒绝/出错静默跳过（fail open，登记）。
-        guard await requestAuthorization() else { return }
+        guard await requestAuthorization() else {
+            diagTrace(ownerSessionId, "[jobnotify] authorization denied")
+            return
+        }
         let title = retainHead(snapshot.label, maxBytes: Self.titleMaxBytes)
         await addNotification(snapshot.id, title, noticeText)
     }
