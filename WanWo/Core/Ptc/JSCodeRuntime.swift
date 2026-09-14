@@ -1005,7 +1005,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                         .call(withArguments: [JSValue(object: [
                             "name": descriptor.name,
                             "memberNameProperty": descriptor.memberNameProperty,
-                        ], in: context)])
+                        ], in: context)])!
                     paramNames.append(descriptor.name)
                     parameterValues.append(cls)
                 }
@@ -1060,7 +1060,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             } else {
                 errorClassValue = nil
             }
-            let nameValue = JSValue(object: name, in: context)
+            let nameValue = JSValue(object: name, in: context)!
             let encode = api.objectForKeyedSubscript("encode")!
             let deferredFn = api.objectForKeyedSubscript("deferred")!
             let rejectedFn = api.objectForKeyedSubscript("rejectedPromise")!
@@ -1109,7 +1109,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             context: JSContext, errorClass: JSValue?, name: JSValue,
             message: String, newErrorFn: JSValue
         ) -> JSValue {
-            let messageValue = JSValue(object: message, in: context)
+            let messageValue = JSValue(object: message, in: context)!
             let cls = errorClass ?? JSValue(nullIn: context)
             return newErrorFn.call(withArguments: [cls, name, messageValue])!
         }
