@@ -32,6 +32,7 @@ import UIKit
 /// 后台作业完成的本地通知器（07 F007）。注入缝三枚：前台态判定 / 授权请求 /
 /// 通知投递——测试桩替换；生产缺省走 UIKit + UNUserNotificationCenter。
 struct JobNotifier: Sendable {
+    private static let logger = AppLogger(category: "jobnotify")
 
     /// title 截断字节上限（label=一行命令，防超长通知；UTF-8 边界保留——
     /// 复用 J3 retainHead）。
@@ -99,7 +100,10 @@ struct JobNotifier: Sendable {
             let backgrounded = JobNotifier.lastBackgroundedAt
             let startedMs = Double(snapshot.startedAt)
             let startedAfter = backgrounded.map { $0.timeIntervalSince1970 * 1000 < startedMs } ?? false
+            Self.logger.info("[jobnotify] active; startedAfter=\(startedAfter) bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil") startedAt=\(startedMs)")
             if !startedAfter { return }
+        } else {
+            Self.logger.info("[jobnotify] not active — will notify")
         }
         // 授权惰性请求；拒绝/出错静默跳过（fail open，登记）。
         guard await requestAuthorization() else { return }
