@@ -30,6 +30,7 @@ struct WanWoApp: App {
                     // .active 即前台返回语义。
                     switch phase {
                     case .background:
+                        JobNotifier.noteBackgrounded()   // 真机批 C 接线：进后台标记（通知判定用）
                         environment.resourceGovernor.handleDidEnterBackground()
                     case .active:
                         environment.resourceGovernor.handleWillEnterForeground()

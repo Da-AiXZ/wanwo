@@ -950,6 +950,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             // JSContext() 构造返回 Optional（ObjC 可空初始化器导入面）——
             // 实际失败面仅内存耗尽，强解包（CI 第二轮实证 optional 未解包）。
             let context = JSContext()!
+            config.onTrace("[jscore] context created")
             self.context = context
             // Watchdog 注册（先于任何脚本执行——头注 :84-86 生效保证）。
             let contextRef = context.jsGlobalContextRef   // 【CI 编译风险登记已兑现：Swift 导入名 jsGlobalContextRef】
@@ -985,6 +986,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 return
             }
             self.api = api
+            config.onTrace("[jscore] helper evaluated")
 
             // Sucrase 转译（wrap→transform→首尾切片——dsh :302-303 序）。
             guard let sucraseSource = JSCodeRuntime.loadSucraseSource(
@@ -1033,6 +1035,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 return
             }
             let code = String(stripped.dropFirst(prefix.count).dropLast(suffix.count))
+            config.onTrace("[jscore] sucrase transformed (\(code.utf8.count)B)")
 
             // bindings 桥（bootstrap :315-359 形态：null-prototype namespace +
             // 每 declared 名 own 函数 = 返回 Promise 的桥；args 无损预检）。
@@ -1318,7 +1321,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         /// 幂等收敛：清理计时器/Watchdog/JS 引用，结算 continuation 与 done 面。
         private func finish(result: CodeRunResult) {
             guard !settled else { return }
-            config.onTrace("[jscore] finish: \(result.error?.kind.rawValue ?? "success") logs=\(result.logs.count)")
+            config.onTrace("[jscore] finish: \(result.error?.kind.rawValue ?? "success") msg=\(result.error?.message.prefix(120) ?? "-") logs=\(result.logs.count)")
             settled = true
             settledResult = result
             wallTimer?.cancel()

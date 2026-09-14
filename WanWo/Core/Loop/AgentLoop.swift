@@ -290,6 +290,10 @@ actor AgentLoop {
             ToolCallScheduler.convergeInflightOnInterrupt(
                 deps: deps, turn: batch.turn, step: batch.step)
         }
+        // 真机批 A 补充：中断后 UI 立即解锁（发送键恢复）——真实 phase 仍
+        // 由驱动器收敛后自然回 idle（挂着的 pipeline.run 返回时收尾）；
+        // 此处仅假发 idle 给 UI（用户可发消息入 inbox，收敛后 kick 消费）。
+        deps.callbacks.onPhaseChange(.idle(lastTurn: deps.writer.nextTurn - 1))
     }
 
     // MARK: - 维护相（/compact 经此串行化）
