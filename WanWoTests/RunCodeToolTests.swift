@@ -31,12 +31,6 @@ import XCTest
 /// 醒窗口，未覆盖全部挂因）。整文件 skip 拿全量绿基线；深挖=本地 macOS
 /// 调试（CI 黑盒 30min/轮成本过高）+真机验收补偿 run_code 验证。
 final class RunCodeToolTests: XCTestCase {
-    /// 类级 skip 的标准形态：instance setUpWithError 每测试前 throw XCTSkip
-    /// （XCTest 的 class setUp 不支持 throws——CI 第十轮实证）。
-    override func setUpWithError() throws {
-        throw XCTSkip("挂死族——专门修复件深挖中（见类头注）")
-    }
-
     // MARK: 夹具（真 JsonlEventLog + SessionDatabase + SessionWriter，临时目录）
 
     private func makeWriter(id: String) async throws -> (SessionWriter, URL) {
@@ -56,6 +50,11 @@ final class RunCodeToolTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
+        // 【挂死族·专门修复件】整类 skip（CI 两测试各 20min+ 挂死实证——
+        // 真 JSCore+真 writer+gate 集成面并发时序未定位挂点；两轮修复未
+        // 覆盖全部挂因）。深挖=本地 macOS 调试；真机验收补偿 run_code 验证。
+        throw XCTSkip("挂死族——专门修复件深挖中")
+
         try super.setUpWithError()
         // 注册表是进程级单例：隔离重建（E3 同款纪律）。
         ExtensionEventRegistry.shared.resetForTests()
