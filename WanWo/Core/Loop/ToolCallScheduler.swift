@@ -124,6 +124,17 @@ enum ToolCallScheduler {
         inflightLock.unlock()
     }
 
+    /// 结算登记：返回 true = 首次结算（允许落盘）；false = 已被中断合成
+    /// （真结果丢弃——tool/result 配对唯一性）。
+    private static func markSettled(_ callId: String) -> Bool {
+        inflightLock.lock()
+        defer { inflightLock.unlock() }
+        inflightCallIds.remove(callId)
+        if settledCallIds.contains(callId) { return false }
+        settledCallIds.insert(callId)
+        return true
+    }
+
     /// dsh abort 合成结果（未派发即放弃的调用；文本与 dsh 对齐）。
     static func abortedBeforeDispatch() -> ToolOutput {
         .failure("tool call aborted before dispatch", code: "ABORTED_BEFORE_DISPATCH",

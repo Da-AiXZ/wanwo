@@ -97,7 +97,8 @@ struct JobNotifier: Sendable {
         // 后台期间的事件 → 仍发（真机批 C：后台冻结推迟结算的场景）。
         if await isAppActive() {
             let backgrounded = JobNotifier.lastBackgroundedAt
-            let startedAfter = backgrounded.map { $0 < snapshot.startedAtDate } ?? false
+            let startedMs = Double(snapshot.startedAt)
+            let startedAfter = backgrounded.map { $0.timeIntervalSince1970 * 1000 < startedMs } ?? false
             if !startedAfter { return }
         }
         // 授权惰性请求；拒绝/出错静默跳过（fail open，登记）。

@@ -1170,7 +1170,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 CrashBreadcrumb.log("[jscore] binding resolution dropped (settled/stop): \(name)")
                 return
             }
-            CrashBreadcrumb.log("[jscore] binding resolved: \(name) ok=\(outcome.isSuccess ? 1 : 0)")
+            CrashBreadcrumb.log("[jscore] binding resolved: \(name) ok=\((try? outcome.get()) != nil ? 1 : 0)")
             let context = self.context!
             let api = self.api!
             let newErrorFn = api.objectForKeyedSubscript("newError")!
