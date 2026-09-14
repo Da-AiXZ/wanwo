@@ -901,7 +901,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             let context = JSContext()!
             self.context = context
             // Watchdog 注册（先于任何脚本执行——头注 :84-86 生效保证）。
-            let contextRef = context.JSGlobalContextRef   // 【CI 编译风险登记】
+            let contextRef = context.jsGlobalContextRef   // 【CI 编译风险登记已兑现：Swift 导入名 jsGlobalContextRef】
             contextGroupRef = JSContextGetGroup(contextRef)
             stopStateRef = Unmanaged.passRetained(stopState)
             stopState.finishOnQueue = { [weak self] failure in
@@ -1015,7 +1015,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 self?.handleConsolePush(value)
             }
             let consoleShim = api.objectForKeyedSubscript("consoleShim")!
-                .call(withArguments: [unsafeBitCast(push, to: AnyObject.self)])
+                .call(withArguments: [unsafeBitCast(push, to: AnyObject.self)])!
             paramNames.append("console")
             parameterValues.append(consoleShim)
 
@@ -1075,7 +1075,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                         context: context, errorClass: errorClassValue,
                         name: nameValue, message: "binding arguments must be lossless JSON",
                         newErrorFn: api.objectForKeyedSubscript("newError")!)
-                    return rejectedFn.call(withArguments: [error])
+                    return rejectedFn.call(withArguments: [error])!
                 }
                 let deferred = deferredFn.call(withArguments: [])
                 let promise = deferred!.objectForKeyedSubscript("promise")!
