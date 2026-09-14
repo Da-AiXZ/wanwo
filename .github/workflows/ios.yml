@@ -117,3 +117,11 @@ jobs:
   # fitWithSuffix 期望/truncation fixture）⑥fitWithSuffix 字节账二次手算
   # 纠正 17 非 19——实现零缺陷，全部为测试期望/构造错误）。网络故障期间
   # push 攒批恢复后统一执行。主流水线零变化；WanWoTests 保留备日后重启。
+  # 2026-09-14 M5-B 终局留痕：第七次一次性验证跑已执行完毕——run
+  # 34818943053 全绿（0 failures；新面=S1 沙箱缝/S2 远程 provider 接口/
+  # P1-P4 PTC [CodeRuntime 缝/JSCore 引擎+Sucrase 内嵌/run_code 工具/
+  # SDK 渲染+mode+exposure 6 值]/N1 网络策略）。CI 修正十三轮（ObjC 桥
+  # 导入面族+JSCore 程序侧 Promise 悬挂+车道丢唤醒两个集成真缺陷+测试
+  # 构造族）；JSCodeRuntimeTests/RunCodeToolTests/ToolSdkRendererTests/
+  # NetworkPolicyTests 四类挂账深挖批整类 skip（对拍面本地 macOS 调试，
+  # run_code 真机验收补偿）。主流水线零变化。
