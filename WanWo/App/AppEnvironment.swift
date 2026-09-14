@@ -256,6 +256,13 @@ final class AppEnvironment: ObservableObject {
         // ——SessionInvariant 先关后开序；dialect 封闭值域未知即拒）。
         HookSessionEvents.registerEventSchemas()
 
+        // M5-B P3 报批登记：tool/ptc-dispatch-start / tool/ptc-dispatch 扩展
+        // 事件 schema（E1 通道——M5-B 批次派单拍板⑤，dsh tools types.ts:25-57
+        // 事件对原件词汇；projection=logOnly（子调用永不重入模型上下文），
+        // pairing=none（UI 按 subCallId 配对、time 定时序，非 SessionInvariant
+        // 应答对））。
+        PtcDispatchEvents.registerEventSchemas()
+
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
         // 后台增量校验兜底外部变更：mtime/size 基线比对，零变化静默完成；
@@ -541,6 +548,19 @@ final class AppEnvironment: ObservableObject {
             registry: registry,
             repeatAdviser: repeatAdviser,
             hookPoints: hookPoints)
+        // M5-B P3：run_code 工具（dsh ptc.ts createRunCodeTool 对应）。注册在
+        // pipeline 创建之后：子派发车道闭包捕获同一 registry/pipeline/writer
+        //（裁定①——子派发复用 ToolPipeline，hooks 跑、对话事件不落）；
+        // JSCodeRuntime 预算 = 配置四缺省（sucrase.js 资源缺失为 run 期
+        // 结构化失败，非装配期错误）。
+        do {
+            let codeRuntime = try JSCodeRuntime()
+            registry.register(RunCodeTool(pipeline: pipeline, writer: writer,
+                                          runtime: codeRuntime))
+        } catch {
+            Self.logger.error("run_code tool registration failed: " +
+                              "\(String(describing: error))")
+        }
         let compactor = Compactor(makeAdapter: { [weak self, modelSelection] in
             guard let self else {
                 throw LLMError(message: "environment released", code: "UNKNOWN")
