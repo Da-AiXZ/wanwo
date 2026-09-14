@@ -126,6 +126,9 @@ struct JSCodeRuntimeConfig: Equatable, Sendable {
     var maxWallMs: Double
     /// 序列化 logs/value/failure message 合并硬上限字节（固定结果封套语法不入账）。
     var maxOutputBytes: Int
+    /// 真机批 B1：引擎面包屑出口（run start/binding 调用/结算各步打点——
+    /// run_code 挂死取证的载体；缺省静默，装配接 writer extensionEvent）。
+    var onTrace: @Sendable (String) -> Void = { _ in }
     /// worker 堆上限 MiB（:49——溢出→worker-exit）——JSCore 无 per-context
     /// heap cap，词汇保留（登记）。
     var maxOldGenerationSizeMb: Int
@@ -924,7 +927,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
 
         private func start() {
             // 真机批 B1：引擎面包屑（run_code 挂死取证——程序停在哪一步）。
-            CrashBreadcrumb.log("[jscore] run start: \(request.program.prefix(80))")
+            config.onTrace("[jscore] run start: \(request.program.prefix(80))")
             // 取消早于启动的竞态收口（continuation 已在 awaitResult 登记）。
             if stopRequested {
                 finishIfStopped()
@@ -1053,7 +1056,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             paramNames.append("console")
             parameterValues.append(consoleShim)
 
-            CrashBreadcrumb.log("[jscore] program dispatched (stripped \(code.utf8.count)B, bindings \(paramNames.count))")
+            config.onTrace("[jscore] program dispatched (stripped \(code.utf8.count)B, bindings \(paramNames.count))")
             // 程序调用 → promise → settlement 桥（bootstrap :412 同构）。
             let program = api.objectForKeyedSubscript("makeProgram")!
                 .call(withArguments: [
@@ -1112,7 +1115,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                         newErrorFn: api.objectForKeyedSubscript("newError")!)
                     return rejectedFn.call(withArguments: [error])!
                 }
-                CrashBreadcrumb.log("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
+                config.onTrace("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
                 let deferred = deferredFn.call(withArguments: [])
                 let promise = deferred!.objectForKeyedSubscript("promise")!
                 let resolve = deferred!.objectForKeyedSubscript("resolve")!
@@ -1167,10 +1170,10 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             // RunState 可变态全在 run 队列串行（无锁——外层 lock 属 JSCodeRuntime）。
             inflightBindingRejects.removeValue(forKey: token)
             guard !settled, !stopRequested else {
-                CrashBreadcrumb.log("[jscore] binding resolution dropped (settled/stop): \(name)")
+                config.onTrace("[jscore] binding resolution dropped (settled/stop): \(name)")
                 return
             }
-            CrashBreadcrumb.log("[jscore] binding resolved: \(name) ok=\((try? outcome.get()) != nil ? 1 : 0)")
+            config.onTrace("[jscore] binding resolved: \(name) ok=\((try? outcome.get()) != nil ? 1 : 0)")
             let context = self.context!
             let api = self.api!
             let newErrorFn = api.objectForKeyedSubscript("newError")!
@@ -1212,9 +1215,9 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         }
 
         private func handleResolve(_ value: JSValue) {
-            CrashBreadcrumb.log("[jscore] program resolve path entered")
+            config.onTrace("[jscore] program resolve path entered")
             guard !settled, !stopRequested else {
-                CrashBreadcrumb.log("[jscore] resolve dropped (settled/stop)")
+                config.onTrace("[jscore] resolve dropped (settled/stop)")
                 return
             }
             // bootstrap :171——undefined completion = 无值成功。
@@ -1250,9 +1253,9 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         }
 
         private func handleReject(_ error: JSValue) {
-            CrashBreadcrumb.log("[jscore] program reject path entered")
+            config.onTrace("[jscore] program reject path entered")
             guard !settled, !stopRequested else {
-                CrashBreadcrumb.log("[jscore] reject dropped (settled/stop)")
+                config.onTrace("[jscore] reject dropped (settled/stop)")
                 return
             }
             // bootstrap :216-229 prepareException——stack??message→String，
@@ -1301,7 +1304,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         /// 幂等收敛：清理计时器/Watchdog/JS 引用，结算 continuation 与 done 面。
         private func finish(result: CodeRunResult) {
             guard !settled else { return }
-            CrashBreadcrumb.log("[jscore] finish: \(result.error?.kind.rawValue ?? "success") logs=\(result.logs.count)")
+            config.onTrace("[jscore] finish: \(result.error?.kind.rawValue ?? "success") logs=\(result.logs.count)")
             settled = true
             settledResult = result
             wallTimer?.cancel()

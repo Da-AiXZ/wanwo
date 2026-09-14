@@ -974,3 +974,22 @@ struct RunCodeTool: AgentTool {
         }
     }
 }
+
+// MARK: - 引擎面包屑事件（真机批 B1）
+
+/// JSCore 引擎面包屑的事件通道（诊断导出面；logOnly——不进模型上下文）。
+/// JSCodeRuntime 的 onTrace 回调经装配接 writer，事件流导出即含 `[jscore]`
+/// 打点，run_code 挂死取证用。
+enum JscoreTraceEvents {
+    static let traceKind = "jscore/trace"
+
+    static func registerEventSchemas() {
+        let registry = ExtensionEventRegistry.shared
+        guard !registry.isRegistered(traceKind) else { return }
+        registry.register(ExtensionEventSchema(
+            kind: traceKind,
+            requiredFields: [ExtensionFieldSchema("note", .string)],
+            projection: .logOnly,
+            pairing: .none))
+    }
+}
