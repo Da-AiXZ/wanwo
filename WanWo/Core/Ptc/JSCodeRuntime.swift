@@ -1079,7 +1079,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             paramNames.append("console")
             parameterValues.append(consoleShim)
 
-            config.onTrace("[jscore] program dispatched (stripped \(code.utf8.count)B, bindings \(paramNames.count))")
+            config.onTrace("[jscore] program dispatched (stripped \(stripped.utf8.count)B, bindings \(paramNames.count), fallback=\(fallbackMode ? 1 : 0))")
             // 程序调用 → promise → settlement 桥（bootstrap :412 同构）。
             // fallback 模式：transform 输出已整体求值（__dsh_program__ 在
             // globalObject），直接取用调用；正常模式走 makeProgram 构造。
