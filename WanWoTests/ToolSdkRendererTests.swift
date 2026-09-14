@@ -134,7 +134,7 @@ final class ToolSdkRendererTests: XCTestCase {
             ]),
             "required": .array([.string("name")]),
         ])
-        XCTAssertEqual(ToolSdkRenderer.jsonSchemaToTs(person, 0),
+        XCTAssertEqual(ToolSdkRenderer.jsonSchemaToTs(person, indent: 0),
             "{\n  /** Full name */\n  name: string;\n  age?: number;\n}")
         // 闭对象（additionalProperties: false）裸形态；开对象并 ' & Record<...>'。
         let closed = JSONValue.object([
