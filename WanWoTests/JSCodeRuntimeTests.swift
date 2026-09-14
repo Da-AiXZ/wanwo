@@ -120,7 +120,7 @@ final class JSCodeRuntimeTests: XCTestCase {
             "a": .int(1),
             "s": .string("x"),
             "n": .null,
-            "arr": [.int(1), .double(2.5)] as [JSONValue],
+            "arr": .array([.int(1), .double(2.5)]),
         ]))
     }
 
