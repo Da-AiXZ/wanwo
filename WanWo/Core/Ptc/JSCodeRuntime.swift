@@ -135,6 +135,20 @@ struct JSCodeRuntimeConfig: Sendable {
 
     static let minOutputBytes = 4   // worker index.ts:66
 
+    /// 手写 init（真机批 B1：memberwise init 与 @Sendable 闭包默认值组合
+    /// 在 CI 的 extra argument 报错——显式 init 绕开推断歧义）。
+    init(computeMs: Double = 60_000,
+         maxWallMs: Double = 600_000,
+         maxOutputBytes: Int = 67_108_864,
+         maxOldGenerationSizeMb: Int = 512,
+         onTrace: @Sendable (String) -> Void = { _ in }) {
+        self.computeMs = computeMs
+        self.maxWallMs = maxWallMs
+        self.maxOutputBytes = maxOutputBytes
+        self.maxOldGenerationSizeMb = maxOldGenerationSizeMb
+        self.onTrace = onTrace
+    }
+
     init(computeMs: Double = 60_000,
          maxWallMs: Double = 600_000,
          maxOutputBytes: Int = 67_108_864,
