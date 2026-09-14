@@ -1028,14 +1028,20 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             if !stripped.hasSuffix(suffix), stripped.hasSuffix(suffix + "\n") {
                 stripped = String(stripped.dropLast(1))
             }
-            guard stripped.hasPrefix(prefix), stripped.hasSuffix(suffix) else {
-                finishWithFailure(CodeRunFailure(
-                    kind: .exception,
-                    message: "dsh-code-runtime-jscore: transform wrapper mismatch"))
-                return
+            // 真机批 B2（面包屑实证 transform wrapper mismatch）： Sucrase
+            // 输出的壳形态在真机与模拟器不一致——不再硬性依赖首尾切片。
+            // mismatch 时转 fallback 模式：transform 输出整体求值（函数定义
+            // 落 globalObject），程序体直接取 __dsh_program__ 调用（对壳漂移
+            // 免疫）；正常模式仍走 makeProgram 构造（行为与 dsh 对齐）。
+            var fallbackMode = false
+            if stripped.hasPrefix(prefix), stripped.hasSuffix(suffix) {
+                stripped = String(stripped.dropFirst(prefix.count).dropLast(suffix.count))
+            } else {
+                fallbackMode = true
+                config.onTrace("[jscore] wrapper mismatch — fallback mode; "
+                    + "head=\(stripped.prefix(100)) tail=\(String(stripped.suffix(100)))")
             }
-            let code = String(stripped.dropFirst(prefix.count).dropLast(suffix.count))
-            config.onTrace("[jscore] sucrase transformed (\(code.utf8.count)B)")
+            config.onTrace("[jscore] sucrase transformed (\(stripped.utf8.count)B, fallback=\(fallbackMode ? 1 : 0))")
 
             // bindings 桥（bootstrap :315-359 形态：null-prototype namespace +
             // 每 declared 名 own 函数 = 返回 Promise 的桥；args 无损预检）。
@@ -1075,12 +1081,37 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
 
             config.onTrace("[jscore] program dispatched (stripped \(code.utf8.count)B, bindings \(paramNames.count))")
             // 程序调用 → promise → settlement 桥（bootstrap :412 同构）。
-            let program = api.objectForKeyedSubscript("makeProgram")!
-                .call(withArguments: [
-                    JSValue(object: paramNames, in: context),
-                    JSValue(object: "'use strict';\n" + code, in: context),
-                ])
-            let promise = program!.call(withArguments: parameterValues)
+            // fallback 模式：transform 输出已整体求值（__dsh_program__ 在
+            // globalObject），直接取用调用；正常模式走 makeProgram 构造。
+            let promise: JSValue
+            if fallbackMode {
+                context.evaluateScript(stripped)
+                if let ex = context.exception {
+                    context.exception = nil
+                    config.onTrace("[jscore] fallback eval failed: \(ex.toString())")
+                    finishWithFailure(CodeRunFailure(
+                        kind: .exception,
+                        message: "dsh-code-runtime-jscore: fallback eval failed: \(ex.toString())"))
+                    return
+                }
+                config.onTrace("[jscore] fallback __dsh_program__ lookup")
+                guard let programFn = context.globalObject
+                    .objectForKeyedSubscript("__dsh_program__"), !programFn.isUndefined
+                else {
+                    finishWithFailure(CodeRunFailure(
+                        kind: .exception,
+                        message: "dsh-code-runtime-jscore: __dsh_program__ not found after fallback eval"))
+                    return
+                }
+                promise = programFn.call(withArguments: parameterValues)!
+            } else {
+                let program = api.objectForKeyedSubscript("makeProgram")!
+                    .call(withArguments: [
+                        JSValue(object: paramNames, in: context),
+                        JSValue(object: "'use strict';\n" + stripped, in: context),
+                    ])
+                promise = program!.call(withArguments: parameterValues)!
+            }
             let onResolve: @convention(block) (JSValue) -> Void = { [weak self] value in
                 self?.handleResolve(value)
             }
