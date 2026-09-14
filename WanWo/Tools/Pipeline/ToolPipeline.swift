@@ -40,12 +40,31 @@ final class ToolPipeline: @unchecked Sendable {
 
     /// 执行一笔工具调用（不含事件落盘——tool/call 与 tool/result 由调度器按
     /// model order 落盘；本方法只负责管线本身）。
+    /// - Parameter isSubDispatch: run_code SDK 子派发标记（dsh exec.parent !==
+    ///   undefined 的 WanWo 调用点形态——index.ts:1208 nested 语义：true 时
+    ///   ptc collapse 不生效，子派发可调用任意可见工具）。
     /// - Returns: canonical 结果（成功或合成错误，永不抛）。
-    func run(toolName: String, args: JSONValue, ctx: ToolExecutionContext) async -> ToolOutput {
+    func run(toolName: String, args: JSONValue, ctx: ToolExecutionContext,
+             isSubDispatch: Bool = false) async -> ToolOutput {
         // 0. 工具可见性：未注册/hidden → 未知工具失败（dsh UNKNOWN_TOOL）。
         guard let tool = registry.get(toolName), tool.exposure != .hidden else {
             return .failure("unknown tool \"\(toolName)\"", code: "UNKNOWN_TOOL",
                             name: "ToolNotFoundError")
+        }
+
+        // 0.1 PTC collapse 拒绝面（dsh index.ts:1363-1369——collapsed 调用
+        //     在可扩展政策管线之前确定性终止：pre-execute listeners、审批 ask、
+        //     guards 绝不观察——或更糟，放行——一个只可能失败的调用；谓词
+        //     !nested && mode === 'ptc' && name !== RUN_CODE_NAME，:1314-1316
+        //     同一谓词与提示词宣告段共享，两永不漂移）。文案 = ToolNotFoundError
+        //     reachableFrom 形态逐字（index.ts:1429-1432 + :494-501：名字可见、
+        //     仅呈现面拒绝 → 拒绝携带模型应走的路线）。
+        if !isSubDispatch && registry.presentationMode == .ptc
+            && toolName != ToolRegistry.runCodeName {
+            return .failure(
+                "unknown tool \"\(toolName)\": only `run_code` is callable directly "
+                    + "— call `\(toolName)` from inside a `run_code` program instead",
+                code: "UNKNOWN_TOOL", name: "ToolNotFoundError")
         }
 
         // 0.5 M4-E E5：PreToolUse hook（CC index.ts:238-244 / codex :225-231

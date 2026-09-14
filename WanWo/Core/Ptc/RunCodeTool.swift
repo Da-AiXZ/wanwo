@@ -817,7 +817,8 @@ struct RunCodeTool: AgentTool {
                     escalationApprover: ctx.escalationApprover)
                 return await pipeline.run(toolName: entry.name,
                                           args: entry.argsDispatched,
-                                          ctx: subCtx)
+                                          ctx: subCtx,
+                                          isSubDispatch: true)
             },
             // start 事件（ptc.ts:534-540——rootCallId/parentCallId/subCallId/
             // name/arguments(logged) 1:1；rootCallId=parentCallId，登记⑭）。

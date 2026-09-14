@@ -58,6 +58,15 @@ struct PromptSection {
     var text: String
 }
 
+/// 一段动态系统提示词段落（dsh section text(context) 回调 1:1——index.ts:872-882：
+/// 正文从调用方可见集在每次组装时重新生成）。M5-B P4：MCP 工具异步激活后
+/// 注册表会变，静态文本会陈旧，故 provider 在 assemble 时求值。
+struct DynamicPromptSection {
+    var name: String
+    var order: Int
+    var provider: @Sendable () -> String
+}
+
 /// 一段动态上下文（runtime-context 快照组成项）。
 struct PromptContextEntry {
     var name: String
@@ -70,6 +79,7 @@ struct PromptContextEntry {
 final class PromptAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var sections: [String: PromptSection] = [:]
+    private var dynamicSections: [String: DynamicPromptSection] = [:]
     private var contexts: [String: PromptContextEntry] = [:]
     private var variables: [String: String] = [:]
     /// toolOrder（含且必须含一次 rest 标记；nil = 按名称字典序）。
@@ -82,10 +92,21 @@ final class PromptAssembler: @unchecked Sendable {
     func section(_ section: PromptSection) {
         lock.lock()
         defer { lock.unlock() }
-        if sections[section.name] != nil {
+        if sections[section.name] != nil || dynamicSections[section.name] != nil {
             fatalError("prompt section \"\(section.name)\" is already registered")
         }
         sections[section.name] = section
+    }
+
+    /// 注册动态段落（dsh systemPrompt.section 的 text(context) 回调形态；
+    /// 名字唯一性跨静态/动态两表强制）。
+    func dynamicSection(_ section: DynamicPromptSection) {
+        lock.lock()
+        defer { lock.unlock() }
+        if sections[section.name] != nil || dynamicSections[section.name] != nil {
+            fatalError("prompt section \"\(section.name)\" is already registered")
+        }
+        dynamicSections[section.name] = section
     }
 
     func context(_ entry: PromptContextEntry) {
@@ -142,6 +163,9 @@ final class PromptAssembler: @unchecked Sendable {
         let sectionSnapshot = sections.values.sorted {
             $0.order != $1.order ? $0.order < $1.order : $0.name < $1.name
         }
+        let dynamicSnapshot = dynamicSections.values.sorted {
+            $0.order != $1.order ? $0.order < $1.order : $0.name < $1.name
+        }
         let contextSnapshotEntries = contexts.values.sorted {
             $0.order != $1.order ? $0.order < $1.order : $0.name < $1.name
         }
@@ -150,11 +174,33 @@ final class PromptAssembler: @unchecked Sendable {
         lock.unlock()
 
         // 1. 段落严格插值 → 非空段落按序拼接（空段落丢弃，dsh renderPrompt）。
+        //    静态/动态段落并入同一 (order, name) 全序（dynamicSection 名字唯一
+        //    性跨两表强制，tie 以 name 稳定；dsh text(context) 段位次与静态段
+        //    一致排序——index.ts:850/870 getSectionOrder 同一布局表）。
+        var planned: [(order: Int, name: String, isDynamic: Bool, ref: Int)] = []
+        for (index, item) in sectionSnapshot.enumerated() {
+            planned.append((item.order, item.name, false, index))
+        }
+        for (index, item) in dynamicSnapshot.enumerated() {
+            planned.append((item.order, item.name, true, index))
+        }
+        planned.sort { $0.order != $1.order ? $0.order < $1.order : $0.name < $1.name }
+
         var rendered: [String] = []
-        for section in sectionSnapshot {
-            let text = try Self.interpolate(section.text, variableSnapshot,
-                                            kind: "section", name: section.name)
-            if !text.isEmpty { rendered.append(text) }
+        for item in planned {
+            if item.isDynamic {
+                // 动态段落：assemble 时求值（dsh text(context) 回调位）；文本
+                // 不再过 {{var}} 插值（登记⑤——SDK 文本内嵌任意工具 description，
+                // 敌意描述不得炸掉组装；dsh 侧插值发生在整文渲染端，语义差异
+                // 呈报登记）。
+                let text = dynamicSnapshot[item.ref].provider()
+                if !text.isEmpty { rendered.append(text) }
+            } else {
+                let section = sectionSnapshot[item.ref]
+                let text = try Self.interpolate(section.text, variableSnapshot,
+                                                kind: "section", name: section.name)
+                if !text.isEmpty { rendered.append(text) }
+            }
         }
         let system = rendered.joined(separator: "\n\n")
 

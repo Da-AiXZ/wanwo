@@ -413,7 +413,10 @@ final class AppEnvironment: ObservableObject {
         // 变体共用一 store——content-addressed，同图跨会话各自隔离）。
         let attachments = AttachmentStore(sessionId: sessionId)
 
-        let registry = ToolRegistry()
+        // M5-B P4：注册表呈现模式定档（.both 缺省——native schema 与
+        // run_code SDK 两形态并存；dsh Config 缺省 native，WanWo 拍板差异，
+        // 见 ToolRegistry 头注）。
+        let registry = ToolRegistry(presentationMode: .both)
         registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry))
         // M5-A J3：job_output / job_list / job_kill 三工具（dsh tool-jobs
         // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
@@ -572,6 +575,9 @@ final class AppEnvironment: ObservableObject {
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
         PromptSections.registerAll(into: assembler)
+        // M5-B P4：PTC 模式两段（tools:ptc-only@800 / tools:sdk@5000——dsh
+        // index.ts:826-829 仅 mode ≠ native 注册；.both 档下 ptc-only 渲染空）。
+        PtcPromptSections.registerSections(into: assembler, registry: registry)
         // M5-A J3：tool:jobs 段（dsh tool-jobs index.ts:262-266 逐字；
         // order = SECTION_ORDERS.toolJobs = 1600，dsh TOOL_JOBS 位 1:1）。
         assembler.section(JobTools.promptSection())
