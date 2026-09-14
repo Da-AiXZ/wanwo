@@ -54,6 +54,11 @@ targets:
       # 对齐 OpenMinis pbxproj:33 Resources phase 集成方式）
       - path: Vendor/resources/RootfsPatch.bundle
         buildPhase: resources
+      # M5-B P2：PTC TS 转译资源（@mizchi/sucrase 4.1.0 dist/index.cjs 的
+      # JSContext 包装单文件；拍板项① Sucrase 内嵌 JSCore）——单文件资源零冲突
+      # （D2 先例：folder reference 展开冲突，单文件路径直接落 Resources phase）
+      - path: WanWo/Resources/Ptc/sucrase.js
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang
