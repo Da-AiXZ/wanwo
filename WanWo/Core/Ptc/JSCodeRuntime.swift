@@ -814,6 +814,11 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         private var resultContinuation: CheckedContinuation<CodeRunResult, Never>?
         private var doneContinuations: [CheckedContinuation<Void, Never>] = []
         private var wallTimer: DispatchSourceTimer?
+        /// 在飞 binding 的程序侧 Promise 拒绝面（token→reject）——run 中止时
+        /// 统一拒绝解堵程序 await（dsh worker.terminate 硬杀的 JSCore 等价面：
+        /// dsh 程序随 worker 死亡；JSCore 程序 await 在 deferred 上，不拒绝
+        /// 则永不收敛——CI 实证 testAbandoned 挂死）。
+        private var inflightBindingRejects: [UUID: JSValue] = [:]
         private var context: JSContext?
         private var api: JSValue?
         private var contextGroupRef: JSContextGroupRef?
@@ -873,11 +878,38 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             }
         }
 
-        /// 显式停止请求（取消/Dispose 面）：登记 + 检查点 finish 分派 + Watchdog 强制。
+        /// 显式停止请求（取消/Dispose 面）：登记 + 在飞 binding 统一拒绝
+        ///（程序侧 await 解堵——见 inflightBindingRejects 注释）+ 检查点
+        /// finish 分派 + Watchdog 强制。
         func requestStop(_ failure: CodeRunFailure) {
             stopState.requestStop(failure)
-            queue.async { [weak self] in self?.finishIfStopped() }
+            queue.async { [weak self] in
+                guard let self else { return }
+                self.rejectInflightBindings(failure)
+                self.finishIfStopped()
+            }
             forceWatchdogNow()
+        }
+
+        /// 拒绝全部在飞 binding Promise（queue 上执行；settled 后 context 已
+        /// 释放——settled 守卫跳过）。
+        private func rejectInflightBindings(_ failure: CodeRunFailure) {
+            guard !settled, context != nil, api != nil else {
+                inflightBindingRejects.removeAll()
+                return
+            }
+            let rejects = Array(inflightBindingRejects.values)
+            inflightBindingRejects.removeAll()
+            guard !rejects.isEmpty else { return }
+            let newErrorFn = api!.objectForKeyedSubscript("newError")!
+            for reject in rejects {
+                // binding 拒绝错误实例（无 errorClass = 普通 Error(reason)）。
+                let errorValue = RunState.rejectionError(
+                    context: context!, errorClass: nil,
+                    name: JSValue(object: "binding", in: context!)!,
+                    message: failure.message, newErrorFn: newErrorFn)
+                reject.call(withArguments: [errorValue])
+            }
         }
 
         /// Watchdog 立即到期（setTimeLimit(0)——cpp 内 JSLockHolder，线程安全）。
@@ -1081,6 +1113,8 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 let promise = deferred!.objectForKeyedSubscript("promise")!
                 let resolve = deferred!.objectForKeyedSubscript("resolve")!
                 let reject = deferred!.objectForKeyedSubscript("reject")!
+                let bindingToken = UUID()
+                state.registerBindingReject(bindingToken, reject)
                 let argsText = encoded!.toString() ?? "null"
                 Task {
                     var outcome: Result<JSONValue, Error>
@@ -1095,7 +1129,8 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                     queue.async {
                         state.performBindingResolution(
                             outcome: outcome, resolve: resolve, reject: reject,
-                            errorClass: errorClassValue, name: nameValue)
+                            errorClass: errorClassValue, name: nameValue,
+                            token: bindingToken)
                     }
                 }
                 return promise
@@ -1114,12 +1149,22 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             return newErrorFn.call(withArguments: [cls, name, messageValue])!
         }
 
+        /// 在飞 binding reject 登记（run 中止面统一拒绝用）。
+        func registerBindingReject(_ token: UUID, _ reject: JSValue) {
+            lock.lock()
+            if !settled { inflightBindingRejects[token] = reject }
+            lock.unlock()
+        }
+
         /// binding 结算回归（worker :489-506 语义：resolution 无损检查 →
         /// resolve / 抛错 → messageOf reject；stopRequested 丢弃 = 只停止询问）。
         private func performBindingResolution(
             outcome: Result<JSONValue, Error>, resolve: JSValue, reject: JSValue,
-            errorClass: JSValue?, name: JSValue
+            errorClass: JSValue?, name: JSValue, token: UUID
         ) {
+            lock.lock()
+            inflightBindingRejects.removeValue(forKey: token)
+            lock.unlock()
             guard !settled, !stopRequested else { return }
             let context = self.context!
             let api = self.api!
@@ -1253,6 +1298,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             }
             contextGroupRef = nil
             api = nil
+            inflightBindingRejects.removeAll()   // context 释放后拒绝面失效
             context = nil   // JS 引用随 context 释放（块↔状态环由 context 死亡破除）
             resultContinuation?.resume(returning: result)
             resultContinuation = nil
