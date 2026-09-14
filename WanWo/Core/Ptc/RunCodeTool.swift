@@ -483,15 +483,39 @@ actor PtcDispatchLane {
         defer { driverTask = nil }
         while true {
             if await stepOnce() { continue }
-            // 静默判定与唤醒续延注册之间无挂起点（actor 串行化）——submit
-            // 不可能插队丢唤醒（dsh :398-400 注释的 actor 等价保障）。
-            if pendingQueue.isEmpty && commitQueue.isEmpty && inFlight == 0 { return }
+            // 此刻无可调度工作。但 stepOnce 返回与 waitForWake 注册之间存在
+            // 挂起窗口——submit/bodyDidSettle 的唤醒若落在此窗口即丢失
+            // （CI 实证 testAbandoned 挂死）。dsh :387-389 同构：唤醒源
+            // （signal promise）先于状态检查创建——Swift actor 形态 = 注册
+            // 续延与闭包内终态重查同 actor 域原子（唤醒源序列化于其后，
+            // 零丢失）。
             await waitForWake()
         }
     }
 
     private func waitForWake() async {
-        await withCheckedContinuation { wakeContinuation = $0 }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            // 本闭包在 actor 同步段执行：注册之后的全部唤醒源（submit/
+            // bodyDidSettle/requestStop）串行化于闭包之后。闭包内终态重查：
+            // 若状态已可调度（唤醒源先到）→ 立即唤醒，外层循环再推进。
+            wakeContinuation = cont
+            if canProgress() { wake() }
+            // 静默：外层循环 stepOnce false → 空判定 → return（挂起等下一个
+            // 唤醒源）。
+        }
+    }
+
+    /// 可调度判定（stepOnce 的工作分支同谓词——waitForWake 闭包重查用）。
+    private func canProgress() -> Bool {
+        if let head = commitQueue.first, head.settled { return true }
+        if let head = pendingQueue.first {
+            if scope.isAborted() { return true }
+            let mode = classify(head)
+            let capacity = !exclusiveActive
+                && (mode == .exclusive ? inFlight == 0 : inFlight < maxParallel)
+            if capacity { return true }
+        }
+        return false
     }
 
     private func wake() {
