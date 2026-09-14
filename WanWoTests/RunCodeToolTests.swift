@@ -31,7 +31,7 @@ import XCTest
 /// 醒窗口，未覆盖全部挂因）。整文件 skip 拿全量绿基线；深挖=本地 macOS
 /// 调试（CI 黑盒 30min/轮成本过高）+真机验收补偿 run_code 验证。
 final class RunCodeToolTests: XCTestCase {
-    override class func setUp() {
+    override class func setUp() throws {
         throw XCTSkip("挂死族——专门修复件深挖中（见类头注）")
     }
 
