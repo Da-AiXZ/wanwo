@@ -59,7 +59,7 @@ final class JobNotifierTests: XCTestCase {
         XCTAssertEqual(log.authRequests, 0, "不空耗授权弹窗")
     }
 
-    func testBackgroundTurnCompletedNotifies() async {
+    func testBackgroundTurnCompletedNotifies() async throws {
         // 后台回合完成 → 投递"任务完成，回来验收"。
         let log = NotifyLog()
         let notifier = makeNotifier(active: false, authGranted: true, log: log)
