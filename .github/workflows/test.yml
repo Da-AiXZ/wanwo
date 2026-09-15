@@ -48,11 +48,17 @@ jobs:
           # （真机产物路径与脚本默认行为零影响）。
           ./scripts/build_ish.sh release ios-sim "$PWD/build/simlibs"
           cp build/simlibs/*.a Vendor/libs/
+          # 终验修正（2026-09-16）：runner 镜像更新后 iPhone 16 模拟器名漂移
+          # （35035098673 实证 destination 找不到）——运行时解析首个可用
+          # iPhone 模拟器 UDID，按 id 指定（跨 runner 镜像稳定）。
+          SIM_UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          echo "Using simulator UDID: $SIM_UDID"
+          test -n "$SIM_UDID"
           xcodebuild \
             -project WanWo.xcodeproj \
             -scheme WanWo \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
