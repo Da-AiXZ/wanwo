@@ -327,6 +327,15 @@ final class AppEnvironment: ObservableObject {
         // 门控放行 producer start；J3 三工具装配时与 dsh tool-jobs 插件
         // 语义对齐）。App 生命周期常驻，disposer 不取。
         jobRegistry.attachController(name: "tool-jobs")
+
+        // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 审批缝 → SwiftUI
+        // 审批卡（OpenMinis OffloadPermissionDialog 同款，呈现语义对齐原件
+        // pendingRequest + respond）。OffloadPermissionManager 为 App 级单例
+        // （内核分发点经 checkForKernel 触达），缝装配同位其他 App 级
+        // manager（resourceGovernor/jobRegistry 先例）；呈现卡挂 RootView
+        // （.offloadPermissionDialog()，全局覆盖——offload 审批可来自任意
+        // 会话的内核分发点，非单会话面）。
+        OffloadApprovalPresenter.shared.install()
     }
 
     // MARK: - 会话

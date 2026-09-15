@@ -4,11 +4,17 @@
 <dict>
 	<!-- 万我 M6.1 增（B1b）：entitlements 按本批命令需求，从 OpenMinis
 	     src/ios/Minis.entitlements 原样引入（HealthKit/HomeKit/NFC 三类）。
-	     未引入：iCloud container/ubiquity、app group、WeatherKit（B1c 天气）
-	     —— 属非本批功能面。NFC iso7816/felica 白名单从 OpenMinis
+	     B1c 增：WeatherKit（apple-weather 直连 vendored——WeatherService
+	     调用面要求 com.apple.developer.weatherkit；OpenMinis
+	     Minis.entitlements :30-31 原样。签发依赖开发者账号在 App ID 上启用
+	     WeatherKit capability，评估见 B1c 报告）。
+	     未引入：iCloud container/ubiquity、app group（非本批功能面）。
+	     NFC iso7816/felica 白名单从 OpenMinis
 	     src/ios/Info.plist 原样拷入（apple-nfc 原件支持裸标签
 	     MIFARE/ISO7816/ISO15693/FeliCa 操作，见 NFCOffload.h 注释锚点）。 -->
 	<key>com.apple.developer.healthkit</key>
+	<true/>
+	<key>com.apple.developer.weatherkit</key>
 	<true/>
 	<key>com.apple.developer.healthkit.access</key>
 	<array>

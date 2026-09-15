@@ -22,6 +22,10 @@ struct RootView: View {
                 detail
             }
         }
+        // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 权限确认卡全局
+        // 挂载（OpenMinis 挂 ContentView 同位；sheet(item:) 单槽形态原件
+        // 1:1——审批来自内核 offload 分发点，可发生于任意会话/页面）。
+        .offloadPermissionDialog()
     }
 
     @ViewBuilder

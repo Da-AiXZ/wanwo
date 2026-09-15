@@ -52,6 +52,15 @@
 #import "FFmpegOffload.h"
 #import "CalendarOffload.h"
 #import "LocationOffload.h"
+// 万我 M6.1 增（B1c）：三件套（weather/alarm/player）+ 四件（model-use/
+// sessions-cli/config/debug）
+#import "WeatherOffload.h"
+#import "AlarmOffload.h"
+#import "PlayerOffload.h"
+#import "ModelUseOffload.h"
+#import "SessionsOffload.h"
+#import "ConfigOffload.h"
+#import "DebugOffload.h"
 #import "VisionOffload.h"
 #import "OpenOffload.h"
 #import "HealthKitOffload.h"
@@ -665,7 +674,7 @@ static void handle_process_exit(struct task *task, int code) {
     ffmpeg_offload_register();      // §8.2 #1  ffmpeg（bypass；无框架=降级 NOT_AVAILABLE）
     calendar_offload_register();    // §8.2 #2  apple-calendar（askOnce）
     location_offload_register();    // §8.2 #3  apple-location（askOnce）
-    // §8.2 #4 apple-weather——B1c（WeatherBridge.swift 依赖）暂不接
+    weather_offload_register();     // §8.2 #4  apple-weather（askOnce；B1c 直连 vendored——WeatherKit 桥零 App 依赖）
     vision_offload_register();      // §8.2 #5  apple-vision（askOnce）
     open_offload_register();        // §8.2 #6  apple-open（bypass）
     // B1a 已接：
@@ -674,22 +683,22 @@ static void handle_process_exit(struct task *task, int code) {
     photos_offload_register();      // §8.2 #9  apple-photos（askOnce）
     maps_offload_register();        // §8.2 #10 apple-maps（askOnce）
     nlp_offload_register();         // §8.2 #11 apple-nlp（bypass）
-    // §8.2 #12 apple-alarm——B1c（AlarmKit Bridge.swift 依赖）暂不接
+    alarm_offload_register();       // §8.2 #12 apple-alarm（askOnce；B1c——AlarmKit iOS26+ 版本降级路径原件同款，SDK<26 编译为 NOT_AVAILABLE）
     media_offload_register();       // §8.2 #13 apple-media（askOnce）
     speak_offload_register();       // §8.2 #14 apple-speak（bypass）
     speech_offload_register();      // §8.2 #15 apple-speech（askOnce）
     device_offload_register();      // §8.2 #16 apple-device（bypass；B1a）
     homekit_offload_register();     // §8.2 #17 apple-homekit（askOnce）
     notification_offload_register();// §8.2 #18 apple-notification（bypass）
-    // §8.2 #19 apple-player——B1c（Bridge.swift 依赖）暂不接
-    // §8.2 #20 wanwo-model-use——B2（App 层适配）暂不接
+    player_offload_register();      // §8.2 #19 apple-player（askOnce；B1c 降级桩——播放栈未移植，运行时回 NOT_AVAILABLE）
+    model_use_offload_register();   // §8.2 #20 wanwo-model-use（bypass；B1c 降级桩——无多 provider 注册表）
     reminders_offload_register();   // §8.2 #21 apple-reminders（askOnce）
     bluetooth_offload_register();   // §8.2 #22 apple-bluetooth（askOnce）
     nfc_offload_register();         // §8.2 #23 apple-nfc（askOnce）
-    // §8.2 #24 wanwo-sessions-cli——B2（App 层适配）暂不接
+    sessions_offload_register();    // §8.2 #24 wanwo-sessions-cli（askOnce；B1c 降级桩——跨会话桥未移植）
     // §8.2 #25 wanwo-browser-use——B2（App 层适配）暂不接
-    // §8.2 #26 wanwo-config——B2（App 层适配）暂不接
-    // §8.2 #27 wanwo-debug——B2（App 层适配）暂不接
+    config_offload_register();      // §8.2 #26 wanwo-config（askOnce；B1c 降级桩——无统一设置注册表）
+    debug_offload_register();       // §8.2 #27 wanwo-debug（bypass；B1c 直连 vendored——logs 子命令全构建可用，RPC 子命令 DEBUG-only 回原件合成错误）
 
     _isBooted = YES;
     NSLog(@"ISHKernel: Kernel initialized successfully");
