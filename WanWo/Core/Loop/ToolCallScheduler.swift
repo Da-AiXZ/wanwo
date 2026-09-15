@@ -116,24 +116,6 @@ enum ToolCallScheduler {
         }
     }
 
-    /// 调度层硬超时（真机批 B：真机特有的“收敛后调用链不唤醒”断点的
-    /// 自愈面——pipeline.run 挂超时限即返回合成 fallback 结果；被放弃的
-    /// 原任务继续后台自行了断，不影响会话）。
-    static func withHardTimeout(_ seconds: Int,
-                                fallback: @autoclosure @escaping () -> ToolOutput,
-                                operation: @escaping @Sendable () async -> ToolOutput) async -> ToolOutput {
-        await withTaskGroup(of: ToolOutput.self) { group in
-            group.addTask { await operation() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
-                return fallback()
-            }
-            let first = await group.next()!
-            group.cancelAll()
-            return first
-        }
-    }
-
     /// 回合收尾清理（防 static 集合跨回合无限增长）。
     static func endTurnSweep() {
         inflightLock.lock()
@@ -240,16 +222,13 @@ enum ToolCallScheduler {
         inflightCallIds.insert(call.id)
         inflightLock.unlock()
         let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
-        // 真机批 B：调度层硬超时（20 分钟）——引擎收敛后调用链不唤醒的
-        // 真机特有断点的自愈面（run_code 程序 3 秒成功但 execute 16 分钟
-        // 不返回的实证）。超时→合成结果落盘+卡片收敛（引擎任务继续后台
-        // 自行了断，不影响会话）。并行批路径同款（runParallelBatch）。
+        // 【真机批 B3 删除】调度层硬超时（900s→1200s 两轮形态）经用户裁决移除：
+        // 设计文档（10-design）无此机制，属根因未明时期（drain 挂死）的自愈
+        // 面——根因已修（drain 泵干），用户裁定回归设计文档纯净度。工具级
+        // 超时语义保留：ToolTimeout（dsh tool-call-timeout-policy，per-tool
+        // timeoutMs）+ run_code 引擎墙钟（600s）不受影响。
         deps.diagTrace("scheduler: runSingle pipeline.run begin " + call.name)
-        let output = await ToolCallScheduler.withHardTimeout(1200, fallback: ToolOutput.failure(
-            "工具执行超过 20 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
-            name: "ToolHardTimeoutError")) {
-            await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
-        }
+        let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
         deps.diagTrace("scheduler: runSingle pipeline.run returned " + call.name
             + " isError=" + (output.isError ? "1" : "0"))
         guard markSettled(call.id) else { return }   // 中断合成已落，真结果丢弃
@@ -293,12 +272,8 @@ enum ToolCallScheduler {
                         return
                     }
                     let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
-                    deps.diagTrace("scheduler: batch pipeline.run returned " + call.name)
-                    let output = await ToolCallScheduler.withHardTimeout(1200, fallback: ToolOutput.failure(
-                        "工具执行超过 20 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
-                        name: "ToolHardTimeoutError")) {
-                        await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
-                    }
+                    deps.diagTrace("scheduler: batch pipeline.run begin " + call.name)
+                    let output = await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
                     deps.diagTrace("scheduler: batch pipeline.run returned " + call.name
                         + " isError=" + (output.isError ? "1" : "0"))
                     guard markSettled(call.id) else { return }   // 中断合成已落
