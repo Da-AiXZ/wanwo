@@ -28,6 +28,7 @@
 
 #import <Foundation/Foundation.h>
 #import "NativeOffloadUtils.h"
+#import "WanWoOffloadGate.h"   // 【终验补】B1c 桩走 wanwo_offload_register_checked——B1c 漏带门控头（CI 实证 SessionsOffload.m:46 隐式声明错，同族四处一并补）
 #include "kernel/native_offload.h"
 #include <unistd.h>
 
