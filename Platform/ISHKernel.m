@@ -48,6 +48,24 @@
 #import "NativeOffloadUtils.h"
 #import "DeviceOffload.h"
 #import "ClipboardOffload.h"
+// 万我 M6.1 增（B1b）：16 个系统框架 apple-* 命令 + ffmpeg
+#import "FFmpegOffload.h"
+#import "CalendarOffload.h"
+#import "LocationOffload.h"
+#import "VisionOffload.h"
+#import "OpenOffload.h"
+#import "HealthKitOffload.h"
+#import "PhotosOffload.h"
+#import "MapsOffload.h"
+#import "NLPOffload.h"
+#import "MediaOffload.h"
+#import "SpeakOffload.h"
+#import "SpeechOffload.h"
+#import "HomeKitOffload.h"
+#import "NotificationOffload.h"
+#import "RemindersOffload.h"
+#import "BluetoothOffload.h"
+#import "NFCOffload.h"
 
 NSNotificationName const ISHProcessExitedNotification = @"ISHProcessExited";
 NSNotificationName const ISHTerminalOutputNotification = @"ISHTerminalOutput";
@@ -643,9 +661,35 @@ static void handle_process_exit(struct task *task, int code) {
     // 的 27 命令集中注册序——B1b/B1c 按 10-design §8.2 序在下方追加）。
     // 注册统一走 wanwo_offload_register_checked（权限门控 trampoline，
     // 10-design:818 v2：检查移进内核分发点，封堵 sh -c/env 间接调用绕过）。
-    // B1a 仅接 2 个样板（bypass 档 apple-device + askOnce 档 apple-clipboard）：
-    device_offload_register();
-    clipboard_offload_register();
+    // 【B1b】§8.2 注册序追加 17 个（ffmpeg 最前 + 16 系统框架命令）：
+    ffmpeg_offload_register();      // §8.2 #1  ffmpeg（bypass；无框架=降级 NOT_AVAILABLE）
+    calendar_offload_register();    // §8.2 #2  apple-calendar（askOnce）
+    location_offload_register();    // §8.2 #3  apple-location（askOnce）
+    // §8.2 #4 apple-weather——B1c（WeatherBridge.swift 依赖）暂不接
+    vision_offload_register();      // §8.2 #5  apple-vision（askOnce）
+    open_offload_register();        // §8.2 #6  apple-open（bypass）
+    // B1a 已接：
+    clipboard_offload_register();   // §8.2 #7  apple-clipboard（askOnce）
+    healthkit_offload_register();   // §8.2 #8  apple-healthkit（askOnce）
+    photos_offload_register();      // §8.2 #9  apple-photos（askOnce）
+    maps_offload_register();        // §8.2 #10 apple-maps（askOnce）
+    nlp_offload_register();         // §8.2 #11 apple-nlp（bypass）
+    // §8.2 #12 apple-alarm——B1c（AlarmKit Bridge.swift 依赖）暂不接
+    media_offload_register();       // §8.2 #13 apple-media（askOnce）
+    speak_offload_register();       // §8.2 #14 apple-speak（bypass）
+    speech_offload_register();      // §8.2 #15 apple-speech（askOnce）
+    device_offload_register();      // §8.2 #16 apple-device（bypass；B1a）
+    homekit_offload_register();     // §8.2 #17 apple-homekit（askOnce）
+    notification_offload_register();// §8.2 #18 apple-notification（bypass）
+    // §8.2 #19 apple-player——B1c（Bridge.swift 依赖）暂不接
+    // §8.2 #20 wanwo-model-use——B2（App 层适配）暂不接
+    reminders_offload_register();   // §8.2 #21 apple-reminders（askOnce）
+    bluetooth_offload_register();   // §8.2 #22 apple-bluetooth（askOnce）
+    nfc_offload_register();         // §8.2 #23 apple-nfc（askOnce）
+    // §8.2 #24 wanwo-sessions-cli——B2（App 层适配）暂不接
+    // §8.2 #25 wanwo-browser-use——B2（App 层适配）暂不接
+    // §8.2 #26 wanwo-config——B2（App 层适配）暂不接
+    // §8.2 #27 wanwo-debug——B2（App 层适配）暂不接
 
     _isBooted = YES;
     NSLog(@"ISHKernel: Kernel initialized successfully");

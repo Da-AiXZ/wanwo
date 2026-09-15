@@ -73,6 +73,9 @@ targets:
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
         OTHER_LDFLAGS: "-lish -lish_emu -lfakefs"
         CLANG_ENABLE_MODULES: YES
+        # 万我 M6.1 增（B1b）：entitlements（HealthKit/HomeKit/NFC，按 OpenMinis
+        # src/ios/Minis.entitlements 原样引入，见 WanWo.entitlements 注释）
+        CODE_SIGN_ENTITLEMENTS: WanWo.entitlements
         # iSH 头文件按 GUEST_ARM64 条件编译（对齐 Vendor/ish/app/GuestARM64.xcconfig）
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) GUEST_ARM64=1 ISH_INTERNAL=1"
         # iSH 头里的 C 声明以 ObjC(.m) 编译；QCExecutor.m 需 ObjC++? 实为 .m 即可（纯 C API）
@@ -104,6 +107,27 @@ targets:
         # 才出现在文件 App（OpenMinis 同款 LSSupportsOpeningDocumentsInPlace）。
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # 万我 M6.1 增（B1b）：隐私权限键随本批命令引入（10-design §8.3
+        # 逐命令核对；文案按 OpenMinis src/ios/Info.plist 原样、Minis→WanWo）。
+        # 未引入（非本批面）：NSCamera/NSMicrophone/NSFaceID（聊天输入面）、
+        # NSAlarmKitUsageDescription（apple-alarm=B1c）、
+        # NSLocationAlwaysAndWhenInUse（后台定位，简报 B1b 仅授权 WhenInUse）、
+        # NSLocalNetwork/NSAppTransportSecurity（debug 面）。
+        NSCalendarsFullAccessUsageDescription: WanWo uses calendar access so the AI agent can query your schedule, check availability, and create events on your behalf.
+        NSCalendarsUsageDescription: WanWo uses calendar access so the AI agent can query your schedule, check availability, and create events on your behalf.
+        NSLocationWhenInUseUsageDescription: WanWo uses your location to record where agent sessions are started for your session history.
+        NSHealthShareUsageDescription: WanWo uses HealthKit access so the AI agent can read your health data such as steps, heart rate, sleep, and workouts on your behalf.
+        NSHealthUpdateUsageDescription: WanWo uses HealthKit write access so the AI agent can log health data such as steps, weight, and water intake on your behalf.
+        NSPhotoLibraryUsageDescription: WanWo needs photo library access to attach images to AI conversations.
+        NSPhotoLibraryAddUsageDescription: WanWo needs permission to save videos and images to your photo library.
+        NSAppleMusicUsageDescription: WanWo uses media library access so the AI agent can search your music library and control playback on your behalf.
+        NSSpeechRecognitionUsageDescription: WanWo uses speech recognition to convert your voice into text messages.
+        NSBluetoothAlwaysUsageDescription: WanWo uses Bluetooth so the AI agent can scan for, connect to, and communicate with nearby BLE devices on your behalf.
+        NSBluetoothPeripheralUsageDescription: WanWo uses Bluetooth so the AI agent can scan for, connect to, and communicate with nearby BLE devices on your behalf.
+        NFCReaderUsageDescription: WanWo uses NFC so the AI agent can read and write NFC tags on your behalf.
+        NSHomeKitUsageDescription: WanWo uses HomeKit access so the AI agent can query and control your smart home accessories on your behalf.
+        NSRemindersFullAccessUsageDescription: WanWo uses reminders access so the AI agent can query and create reminders on your behalf.
+        NSRemindersUsageDescription: WanWo uses reminders access so the AI agent can query and create reminders on your behalf.
 
   # M3 T1：单元测试目标（纯逻辑单测，WanWoTests 已批；CI 无 test action——
   # 按收益取舍本地跑；不触碰 WanWo 主 target 的任何编译宏/链接参数基线）。
