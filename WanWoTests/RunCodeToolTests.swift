@@ -434,23 +434,22 @@ final class RunCodeToolTests: XCTestCase {
         }
         await gate.awaitEntered(count: 1)
         runTask.cancel()
-        // 先放闸再取值（真机批 B4 重写）：在飞 body 恢复后以 isError 产出
-        // 落定（ToolTimeout 入口 ABORTED——types.ts:44-49）并 commit 落盘
-        // settle 事件——execute 内 drain 泵干等待在飞 commit，返回时事件
-        // 必已落盘（原顺序 releaseOne 后置 → execute 返回时 settle 未落，
+        // 先放闸再取值（真机批 B4 重写）：在飞 body 在闸前已过取消检查点，
+        // 放闸后正常完成（settle isError=false）；程序自身由 requestStop
+        // 停止面收敛（abort canceled）→ execute 内 drain 泵干等待在飞
+        // commit，返回时事件必已落盘（原顺序 releaseOne 后置 → settle 未落，
         // settles[0] 越界崩溃实证）。弃单条目零事件。
         gate.releaseOne()
         let output = try await runTask.value
         XCTAssertTrue(output.isError)
-        // 程序 await 的第二个 binding 被弃单（逐字文案）→ 程序 throw →
-        // handleReject → messageOf 提取（B4 修复后取 message 非 stack）。
-        XCTAssertTrue(output.text.contains("run_code run is over (canceled)"),
+        XCTAssertTrue(output.text.contains("code run failed (abort): canceled"),
                       "text=\(output.text)")
         let starts = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.startKind)
         let settles = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.dispatchKind)
         XCTAssertEqual(starts.map { $0.subCallId }, ["call-1:ptc:1"])
         XCTAssertEqual(settles.map { $0.subCallId }, ["call-1:ptc:1"])
-        XCTAssertEqual(settles[0].fields["isError"], .bool(true))
+        // 放闸后在飞 body 正常完成（取消检查点在闸前）→ isError=false。
+        XCTAssertEqual(settles[0].fields["isError"], .bool(false))
         // 事件流零 tool/call、tool/result（子派发不进模型历史）。
         for event in stack.writer.events {
             guard case .extensionEvent = event.payload else {
