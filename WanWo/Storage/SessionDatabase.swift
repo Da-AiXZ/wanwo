@@ -75,6 +75,40 @@ final class SessionDatabase {
                 arguments: [GroupStore.defaultGroupID, GroupStore.defaultGroupName,
                             Int64(Date().timeIntervalSince1970 * 1000)])
         }
+        // v4（M6.5 workspace registry，F073 存储锚点上的加法迁移——m6-scope-brief
+        // §5 / dsh workspace.zh.md :12-316 契约；冲突与裁定见 WorkspaceRegistry 文件头）：
+        //   · groups 表加 3 列（workspace 语义增量；default 分组行保持 NULL=Ungrouped 桶）：
+        //       path          规范化 guest 路径（dsh realpath 唯一性规范的锚列）
+        //       updatedAtMs   最后一次持久变更时间戳（dsh updatedAt）
+        //       displayOrder  注册表展示序（DOUBLE 分数键，insertBefore 中点插入）
+        //   · workspaceSessionOrder：组内会话有序账本（dsh sessionIds 有序账本的
+        //     存储面；成员归属仍在 sessionIndex.groupId=单一事实源，本表只管序）
+        //   · workspaceMeta：registry 元数据 KV（首启 bootstrap「已初始化」标记）
+        //   · sessionIndex.archivedAtMs：会话归档时间（dsh archiveSession；NULL=未归档）
+        //   · create/delete 的双写（groups 行 + 账本/序）经 GRDB 同一事务完成——
+        //     SQLite 事务原子性替代 dsh 的 pending 标记两段写方案（更强，见
+        //     WorkspaceRegistry 文件头裁定⑤）。
+        migrator.registerMigration("wanwo.sessionIndex.v4") { db in
+            try db.alter(table: "groups") { t in
+                t.add(column: "path", .text)
+                t.add(column: "updatedAtMs", .integer)
+                t.add(column: "displayOrder", .double)
+            }
+            try db.create(table: "workspaceSessionOrder") { t in
+                t.column("workspaceId", .text).notNull()
+                    .references("groups", onDelete: .cascade)
+                t.column("sessionId", .text).notNull()
+                t.column("position", .integer).notNull()
+                t.primaryKey(["workspaceId", "sessionId"])
+            }
+            try db.create(table: "workspaceMeta") { t in
+                t.column("key", .text).primaryKey()
+                t.column("value", .text).notNull()
+            }
+            try db.alter(table: "sessionIndex") { t in
+                t.add(column: "archivedAtMs", .double)
+            }
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -227,5 +261,25 @@ final class SessionDatabase {
     /// 列表 UI 数据源（仅摘要列，按 updatedAt 倒序）。
     func list() -> [SessionSummary] {
         listWithBaselines().map(\.summary)
+    }
+
+    // MARK: - M6.5：workspace registry 连接缝
+
+    /// 供 WorkspaceRegistry（同为 Storage 层，GRDB import 纪律不破——UI 不触达）
+    /// 在同一 dbQueue 上执行 registry 专用表（groups 增量列 / workspaceSessionOrder /
+    /// workspaceMeta / sessionIndex.archivedAtMs）的事务化读写。
+    /// body 抛错即整事务回滚（GRDB write 语义）——这是 create/delete 崩溃安全
+    /// 的实现底座（单事务替代 dsh 两段写 + pending 标记）。
+    func withConnection<T>(_ body: (Database) throws -> T) throws -> T {
+        return try dbQueue.write { db in
+            try body(db)
+        }
+    }
+
+    /// 只读连接缝（get/list/resolveByPath 同步缓存读）。
+    func readConnection<T>(_ body: (Database) throws -> T) throws -> T {
+        return try dbQueue.read { db in
+            try body(db)
+        }
     }
 }

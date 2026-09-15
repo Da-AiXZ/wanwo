@@ -26,6 +26,18 @@ struct RootView: View {
         // 挂载（OpenMinis 挂 ContentView 同位；sheet(item:) 单槽形态原件
         // 1:1——审批来自内核 offload 分发点，可发生于任意会话/页面）。
         .offloadPermissionDialog()
+        // 万我 M6.5 增（B3）：wanwo:// 深链消费——设置权限页跳转
+        // （OffloadPermissionManager deny 文案 [Open Permissions](wanwo://settings/permissions)
+        // 的消费端；资源 URL 的 UI 呈现面随 B4 右侧栏，路由器内已标注）。
+        .onOpenURL { url in
+            WanwoURLRouter.shared.handle(url)
+        }
+        .onReceive(WanwoURLRouter.shared.$pendingPermissionsRoute) { pending in
+            if pending {
+                environment.selection = .permissionDefaults
+                WanwoURLRouter.shared.consumePermissionsRoute()
+            }
+        }
     }
 
     @ViewBuilder
@@ -49,6 +61,10 @@ struct RootView: View {
             // M4-D D7：设置·技能管理（列表/启停/导入；最小素净版——dsh
             // apps/web 无原件取证，M9 对齐登记）。
             SkillsView(environment: environment)
+        case .mounts:
+            // M6.4（B3）：设置·外挂载文件夹管理（F071——MountedFoldersManager
+            // 状态面 + UIDocumentPicker 挂载流程）。
+            MountedFoldersSettingsView()
         case .shellTest:
             // M0 交付物原样可达（回归验收：手动输入 `ls`）。
             ShellTestView()

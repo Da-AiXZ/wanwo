@@ -114,6 +114,19 @@ targets:
         # 未引入（非本批面）：NSCamera/NSMicrophone/NSFaceID（聊天输入面）、
         # NSLocationAlwaysAndWhenInUse（后台定位，简报 B1b 仅授权 WhenInUse）、
         # NSLocalNetwork/NSAppTransportSecurity（debug 面）。
+        # 万我 M6.5 增（B3）：wanwo:// URL scheme 注册（形态照 OpenMinis
+        # Info.plist:149-175 三件 CFBundleURLTypes）。
+        # 本批实注册一件：资源链接 wanwo（B2 的 WanwoURLSchemeHandler + 本批
+        # resolveWanwoURL 实体 + wanwo://settings/permissions 深链的消费方）。
+        # OpenMinis 另两件——OAuth 回调（com.openminis.app）与 MCP 回调
+        # （minis-mcp）——WanWo 现无对应消费方（Providers=API key 面无 OAuth 流；
+        # MCP servers 配置无 OAuth 授权面），按派单口径先不注册、仅在此注释预留：
+        #   OAuth 回调 → CFBundleURLSchemes: [com.wanwo.juyang]（待 Providers OAuth）
+        #   MCP 回调   → CFBundleURLSchemes: [wanwo-mcp]（待 MCP OAuth 面）
+        CFBundleURLTypes:
+          - CFBundleURLName: WanWo Resource Link
+            CFBundleURLSchemes:
+              - wanwo
         NSAlarmKitUsageDescription: WanWo uses AlarmKit so the AI agent can set alarms and timers on your behalf.
         NSCalendarsFullAccessUsageDescription: WanWo uses calendar access so the AI agent can query your schedule, check availability, and create events on your behalf.
         NSCalendarsUsageDescription: WanWo uses calendar access so the AI agent can query your schedule, check availability, and create events on your behalf.

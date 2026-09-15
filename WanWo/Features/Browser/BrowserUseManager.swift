@@ -2792,20 +2792,140 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
         logger.info("[WanwoScheme] served \(url.absoluteString) → \(fileURL.lastPathComponent) (\(data.count) bytes, \(mimeType))")
     }
 
-    /// 【WanWo 适配 · 降级桩 · B3 接线】wanwo:// 资源 URL 解析。OpenMinis 原件
-    /// 委托 AIChatViewModel.resolveMinisURL 把 wanwo://workspace/... wanwo://shared/...
-    /// 解析为会话/共享桶宿主文件；WanWo 该体系属 B3（M6.5），本批恒 nil
-    /// （fail fast：资源 URL 全部回 URLError.fileDoesNotExist，页面导航不受影响）。
+    /// 【B3 接线 · 原降级桩拆除】wanwo:// 资源 URL 解析实体。语义源 = OpenMinis
+    /// `AIChatViewModel+RequestBudget.swift:305 static resolveMinisURL`（m6-scope-brief
+    /// §5），万我适配：
+    ///   · scheme minis → wanwo；路径体系 /var/minis → /var/wanwo。
+    ///   · 会话四桶（offloads/attachments/workspace/browser）宿主落点为分组维度
+    ///     WanWoPaths.sessionPersistentDir（M4-E+ P2），活动会话取
+    ///     IshExecutorBridge.mountedSessionIdSnapshot（挂载所有者=当前会话）。
+    ///   · 全局桶 = memory/skills/shared/mcp-servers（WanWo 静态挂载全家；
+    ///     OpenMinis 原件边界同含全局桶）。
+    ///   · 兜底扫描：default 分组下全部会话桶目录（原件"Scan all sessions"同语义）。
+    ///   · 安全边界：路径穿越拒绝——子径含 ".." 组件或规范化后逃出桶根一律不返回
+    ///     （fail closed，对齐 OpenMinis 只服务桶内路径的边界 + WanWo P13 沙箱口径）。
     static func resolveWanwoURL(_ url: URL) -> URL? {
-        // B3 接线点：按 FsContextRouter/WorkspaceFileAccess 会话桶解析。
+        guard url.scheme?.lowercased() == "wanwo", let host = url.host else { return nil }
+        return resolveWanwoURL(url, sessionID: IshExecutorBridge.mountedSessionIdSnapshot)
+    }
+
+    /// 测试缝 + 实体：sessionID 可注入（生产路径注入 mountedSessionIdSnapshot）。
+    static func resolveWanwoURL(_ url: URL, sessionID: String?) -> URL? {
+        guard url.scheme?.lowercased() == "wanwo", let host = url.host else { return nil }
+        let subPaths = WanwoURLPathDecoding.subPathCandidates(for: url)
+        let fm = FileManager.default
+
+        // 1. 活动会话四桶（原件 Primary: resolve via active session）。
+        let sessionBuckets = Set(["offloads", "attachments", "workspace", "browser"])
+        if sessionBuckets.contains(host), let sid = sessionID {
+            let base = WanWoPaths.sessionPersistentDir(for: sid, bucket: host)
+            let contained = containedCandidates(base: base, subPaths: subPaths)
+            return contained.first { fm.fileExists(atPath: $0.path) } ?? contained.first
+        }
+
+        // 2. 全局桶（原件 Global directories + WanWo mcp-servers 静态桶）。
+        let globalDirs: [(String, URL)] = [
+            ("skills", WanWoPaths.skillsPersistentDir),
+            ("memory", WanWoPaths.memoryPersistentDir),
+            ("shared", WanWoPaths.sharedPersistentDir),
+            ("mcp-servers", WanWoPaths.mcpServersPersistentDir),
+        ]
+        for (subdir, dir) in globalDirs where host == subdir {
+            let contained = containedCandidates(base: dir, subPaths: subPaths)
+            return contained.first { fm.fileExists(atPath: $0.path) } ?? contained.first
+        }
+
+        // 3. 扫描全部会话（default 分组下 UUID 形状的会话桶目录——原件
+        //    "Scan all sessions" 同语义；分组维度宿主形状 groups/<gid>/<sid>）。
+        let groupRoot = WanWoPaths.groupRoot(base: WanWoPaths.persistentBase,
+                                             groupID: WanWoPaths.defaultGroupID)
+        if sessionBuckets.contains(host),
+           let sessions = try? fm.contentsOfDirectory(atPath: groupRoot.path) {
+            for sid in sessions where UUID(uuidString: sid) != nil {
+                let base = groupRoot
+                    .appendingPathComponent(sid, isDirectory: true)
+                    .appendingPathComponent(host, isDirectory: true)
+                let contained = containedCandidates(base: base, subPaths: subPaths)
+                if let hit = contained.first(where: { fm.fileExists(atPath: $0.path) }) {
+                    return hit
+                }
+            }
+        }
+
+        // wanwo://<mounts>/<name>/... ——外挂载目录（M6.4）经 fakefs linux path
+        // 形态解析：/var/wanwo/mounts/<name> 的宿主真身在 MountedFoldersManager。
+        if host == "mounts", let mountsName = subPaths.first?.split(separator: "/").first {
+            let rest = String(subPaths.first?.dropFirst(mountsName.count + 1) ?? "")
+            let resolved = resolveWanwoMountsPath(name: String(mountsName), subPath: rest)
+            if let resolved { return resolved }
+        }
+
         return nil
+    }
+
+    /// 外挂载桶解析：wanwo://mounts/<name>/<tail> → 激活挂载的宿主路径（含穿越
+    /// 拒绝——tail 规范化后必须仍在挂载根内）。
+    private static func resolveWanwoMountsPath(name: String, subPath: String) -> URL? {
+        let rootString: String? = Thread.isMainThread
+            ? MainActor.assumeIsolated {
+                MountedFoldersManager.shared.canonicalHostPath(forName: name)
+                    ?? MountedFoldersManager.shared.resolvedURL(forName: name)?.path
+            }
+            : DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    MountedFoldersManager.shared.canonicalHostPath(forName: name)
+                        ?? MountedFoldersManager.shared.resolvedURL(forName: name)?.path
+                }
+            }
+        guard var root = rootString else { return nil }
+        if !root.hasSuffix("/") { root += "/" }
+        guard subPath.split(separator: "/", omittingEmptySubsequences: true)
+            .allSatisfy({ $0 != ".." }) else { return nil }
+        let candidate = URL(fileURLWithPath: root + subPath).standardizedFileURL
+        let rootPath = URL(fileURLWithPath: root).standardizedFileURL.path
+        guard candidate.path == rootPath || candidate.path.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        return candidate
+    }
+
+    /// wanwo:// 资源 URL 生成面。语义源 = OpenMinis
+    /// `AIChatViewModel+FileTools.swift:95 linuxPathToMinisURL`（1:1）：Linux 路径
+    /// /var/minis/** → /var/wanwo/**，文件名单层 percent-encoding（.urlPathAllowed）。
+    static func linuxPathToWanwoURL(_ path: String) -> String? {
+        let prefix = "/var/wanwo/"
+        guard path.hasPrefix(prefix) else { return nil }
+        let rest = String(path.dropFirst(prefix.count))  // "attachments/foo.png"
+        guard let slashIdx = rest.firstIndex(of: "/") else { return nil }
+        let namespace = String(rest[rest.startIndex..<slashIdx])
+        let filename = String(rest[rest.index(after: slashIdx)...])  // "foo.png"
+        let encoded = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filename
+        return "wanwo://\(namespace)/\(encoded)"
+    }
+
+    /// 受控候选构造：拒绝 ".." 组件与规范化后逃出 base 的子径（fail closed）；
+    /// 返回按优先序排列的桶内候选。
+    private static func containedCandidates(base: URL, subPaths: [String]) -> [URL] {
+        let rootPath = base.standardizedFileURL.path
+        var out: [URL] = []
+        for sub in subPaths {
+            let comps = sub.split(separator: "/", omittingEmptySubsequences: true)
+            guard !comps.contains("..") else { continue }
+            let candidate = base.appendingPathComponent(sub).standardizedFileURL
+            let p = candidate.path
+            if p == rootPath || p.hasPrefix(rootPath + "/") {
+                out.append(candidate)
+            }
+        }
+        return out
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         // No async work to cancel.
     }
 
-    private static func mimeType(for ext: String) -> String {
+    /// MIME 表（internal 供单测断言；服务面 = WKURLSchemeHandler 响应头）。
+    static func mimeType(for ext: String) -> String {
         switch ext.lowercased() {
         case "html", "htm": return "text/html"
         case "css":         return "text/css"

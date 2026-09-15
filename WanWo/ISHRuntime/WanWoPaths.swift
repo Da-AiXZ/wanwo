@@ -39,8 +39,7 @@ enum WanWoPaths {
     /// 全局（跨会话）静态挂载桶的宿主持久化目录。
     static var memoryPersistentDir: URL {
         persistentBase.appendingPathComponent("memory", isDirectory: true)
-    }
-    static var skillsPersistentDir: URL {
+    }    static var skillsPersistentDir: URL {
         persistentBase.appendingPathComponent("skills", isDirectory: true)
     }
     static var sharedPersistentDir: URL {
@@ -48,6 +47,14 @@ enum WanWoPaths {
     }
     static var mcpServersPersistentDir: URL {
         persistentBase.appendingPathComponent("mcp-servers", isDirectory: true)
+    }
+
+    /// M6.4（B3）：App 配置根（mounted-folders.json 等 App 元数据宿主面）。
+    /// Library 不在 iOS Files 暴露面（UIFileSharingEnabled 只暴露 Documents/），
+    /// 与 OpenMinis 把 mounts 元数据放进 MinisConfig（FileProvider 暴露根之外）
+    /// 的意图一致。
+    static var configPersistentDir: URL {
+        persistentBase.appendingPathComponent("config", isDirectory: true)
     }
 
     // MARK: - 分组维度路径（M4-E+ P2：会话四桶分组化——brief §5.2 路径模型）

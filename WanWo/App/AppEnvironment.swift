@@ -25,6 +25,8 @@ enum RootSelection: Hashable {
     case mcpServers
     /// M4-D D7：设置·技能管理（启停覆盖层+迁移导入）。
     case skills
+    /// M6.4（B3）：设置·外挂载文件夹管理（F071；MountedFoldersManager 状态面）。
+    case mounts
     case none
 }
 
@@ -74,6 +76,15 @@ final class AppEnvironment: ObservableObject {
     /// 非隔离上下文调用——闭包/调度/通知各面）。
     nonisolated(unsafe) private let writerRegistryLock = NSLock()
     nonisolated(unsafe) private var sessionWriters: [String: SessionWriter] = [:]
+    /// M6.5（B3）：workspace registry（F073 存储锚点 + dsh 语义；语义源
+    /// dsh workspace.zh.md :12-316，裁定见 WorkspaceRegistry 文件头）。
+    let workspaceRegistry: WorkspaceRegistry
+    /// M6.5（B3）：workspace controller（dsh 七动词门面 + follow 快照流）。
+    let workspaceController: WorkspaceController
+    /// M6.5 验收对齐（10-design:1077「切 workspace 后会话隔离生效」）：新会话
+    /// cwd 注入点——选中的工作区 path（nil = 缺省 /var/wanwo/workspace，回落
+    /// 既有行为）。侧栏工作区选择 UI 随 B4 左侧栏欠账批；本批先落注入链路。
+    @Published var selectedWorkspaceID: String?
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
@@ -211,6 +222,36 @@ final class AppEnvironment: ObservableObject {
         try? FileManager.default.createDirectory(at: sessionsRoot,
                                                  withIntermediateDirectories: true)
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
+
+        // M6.5（B3）：workspace registry + controller（F073 锚点 + dsh 语义）。
+        // header 缝 = 直读分组维度 sessions/<id>.jsonl 首行（SessionLogScanner
+        // 轻量探针——绝不读事件正文，dsh bootstrap 纪律）；attach 校验与
+        // bootstrap 分组共用。realpath/存在性缝用默认实现（挂载 + 静态 fakefs
+        // 两面，见 WorkspaceRegistry.GuestPathCanonicalizer）。
+        let headerReader: @Sendable (String) -> SessionHeader? = { sid in
+            // id 形态与 SessionStore.fileURL 同校验（fail closed）。
+            guard !sid.isEmpty,
+                  sid.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            else { return nil }
+            let url = GroupStore.groupSessionsRoot(
+                base: WanWoPaths.persistentBase, groupID: GroupStore.defaultGroupID)
+                .appendingPathComponent("\(sid).jsonl")
+            guard let probe = try? SessionLogScanner.probeLightweight(fileURL: url) else {
+                return nil
+            }
+            return probe.header
+        }
+        let registry = WorkspaceRegistry(database: db, headerProvider: headerReader)
+        self.workspaceRegistry = registry
+        self.workspaceController = WorkspaceController(registry: registry)
+        // 首启 bootstrap（dsh :122——按 header cwd 分组一次；标记最后写）。
+        // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量小），之后零开销。
+        _ = registry.bootstrapIfNeeded()
+
+        // M6.4（B3）：外挂载激活——启动后台解析全部 bookmark 并持安全 scope
+        // （MountedFoldersManager.activateAll；绝不阻塞主线程，5s 竞速纪律在件内）。
+        MountedFoldersManager.shared.activateAll()
+
         self.endpointStore = EndpointStore(fileURL: configDir.appendingPathComponent("providers.json"))
         // M3 T2.2：新会话默认权限预设（config/permission-default.json）。
         // P1-4：permission-rules.jsonl 规则库随 F022 砍除，不再装载。
@@ -345,7 +386,31 @@ final class AppEnvironment: ObservableObject {
     }
 
     func createSession() async -> SessionSummary? {
-        let summary = try? await sessionStore.createSession(cwd: WanWoPaths.linuxBaseDir + "/workspace")
+        // M6.5 验收对齐（10-design:1077）：切 workspace 后会话隔离生效——落点 =
+        // 新会话 cwd 解析走所选 workspace path（dsh「先建会话再 attach」流程，
+        // workspace.zh.md :122）；未选工作区回落缺省 /var/wanwo/workspace（既有
+        // 行为零变化）。cwd 落入不可变 SessionHeader 后 attachSession 再校验。
+        var attachedWorkspaceID: String?
+        let cwd: String
+        if let wid = selectedWorkspaceID, let ws = workspaceRegistry.get(wid) {
+            cwd = ws.path
+            attachedWorkspaceID = wid
+        } else {
+            cwd = WanWoPaths.linuxBaseDir + "/workspace"
+        }
+        guard let summary = try? await sessionStore.createSession(cwd: cwd) else {
+            return nil
+        }
+        if let attachedWorkspaceID {
+            do {
+                try workspaceRegistry.attachSession(sessionId: summary.id,
+                                                    to: attachedWorkspaceID)
+            } catch {
+                // attach 校验失败（如 header cwd 与工作区 path 漂移）不阻塞
+                // 会话创建——会话按缺省归属落 Ungrouped，错误进日志。
+                Self.logger.error("workspace attach failed for \(summary.id): \(String(describing: error))")
+            }
+        }
         sessionsRevision += 1
         return summary
     }

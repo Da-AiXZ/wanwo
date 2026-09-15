@@ -45,6 +45,11 @@ struct WanWoApp: App {
                     case .active:
                         BackgroundKeepAlive.shared.end()
                         environment.resourceGovernor.handleWillEnterForeground()
+                        // M6.4（B3）：前台回返重探全部挂载可写性（10-design §6⑤
+                        // 事故纪律——另一个 App 里改了源文件夹权限后回来校正
+                        // effectiveWritable；MountedFoldersManager 内部仅在有
+                        // 变化时落盘+重推快照）。
+                        MountedFoldersManager.shared.refreshAllWritability()
                     case .inactive:
                         break
                     @unknown default:

@@ -318,6 +318,10 @@ struct SessionsSidebarView: View {
                 // P1-4 后唯一权限入口——规则 CRUD 页随 F022 砍除）。
                 selection = .permissionDefaults
             }
+            footButton("外挂载文件夹", icon: "externaldrive.badge.plus") {
+                // M6.4（B3）：设置·外挂载文件夹管理（F071 挂载流程 + 写权限面）。
+                selection = .mounts
+            }
             Text("诊断")
                 .font(.caption)
                 .foregroundStyle(.secondary)
