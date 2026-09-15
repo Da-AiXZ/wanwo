@@ -18,7 +18,7 @@
 import Foundation
 import UIKit
 
-struct BackgroundKeepAlive: @unchecked Sendable {
+final class BackgroundKeepAlive: @unchecked Sendable {
     private static let logger = AppLogger(category: "keepalive")
 
     private let lock = NSLock()
