@@ -56,6 +56,12 @@ final class WorkspaceFileTreeModel: ObservableObject {
         loadError = nil
     }
 
+    /// 清空树（无会话时复位；roots 为 private(set)，视图层经此方法置空）。
+    func clear() {
+        roots = []
+        loadError = nil
+    }
+
     /// 宿主目录一层枚举（目录前、名称序——树形惯例）。
     static func enumerate(hostDir: URL, relativeBase: String) -> [FileTreeNode] {
         let fm = FileManager.default

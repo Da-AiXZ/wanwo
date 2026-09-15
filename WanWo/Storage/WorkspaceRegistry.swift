@@ -206,8 +206,8 @@ final class WorkspaceRegistry: @unchecked Sendable {
         guard id != Self.ungroupedID, id != beforeId else { return false }
         var result = false
         try database.withConnection { db in
-            guard let row = try Self.fetchRow(id: id, db: db),
-                  let moved = try Self.hydrate(row: row, db: db) else { return }
+            guard let row = try Self.fetchRow(id: id, db: db) else { return }
+            let moved = try Self.hydrate(row: row, db: db)
             let newOrder: Double
             if let anchorId = beforeId,
                let anchorRow = try Self.fetchRow(id: anchorId, db: db),
@@ -259,10 +259,10 @@ final class WorkspaceRegistry: @unchecked Sendable {
         }
         var accepted = false
         try database.withConnection { db in
-            guard let row = try Self.fetchRow(id: workspaceId, db: db),
-                  let ws = try Self.hydrate(row: row, db: db) else {
+            guard let row = try Self.fetchRow(id: workspaceId, db: db) else {
                 throw WorkspaceRegistryError.attachRejected(sessionId: sessionId)
             }
+            let ws = try Self.hydrate(row: row, db: db)
             // 成员资格双条件之一：header 规范 cwd 匹配（账本条件由 groupId 承担）。
             guard let header = headerProvider(sessionId),
                   let cwd = header.cwd else {
@@ -306,8 +306,8 @@ final class WorkspaceRegistry: @unchecked Sendable {
         guard workspaceId != Self.ungroupedID else { return }
         var accepted = false
         try database.withConnection { db in
-            guard let row = try Self.fetchRow(id: workspaceId, db: db),
-                  let ws = try Self.hydrate(row: row, db: db) else { return }
+            guard let row = try Self.fetchRow(id: workspaceId, db: db) else { return }
+            let ws = try Self.hydrate(row: row, db: db)
             let accounted = ws.sessionIds.contains(sessionId)
             if accounted {
                 try db.execute(
@@ -338,10 +338,10 @@ final class WorkspaceRegistry: @unchecked Sendable {
         }
         var accepted = false
         try database.withConnection { db in
-            guard let row = try Self.fetchRow(id: workspaceId, db: db),
-                  let ws = try Self.hydrate(row: row, db: db) else {
+            guard let row = try Self.fetchRow(id: workspaceId, db: db) else {
                 throw WorkspaceRegistryError.moveInvalid
             }
+            let ws = try Self.hydrate(row: row, db: db)
             guard ws.sessionIds.contains(sessionId) else {
                 throw WorkspaceRegistryError.moveInvalid
             }

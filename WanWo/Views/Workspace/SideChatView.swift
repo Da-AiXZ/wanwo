@@ -85,37 +85,7 @@ struct SideChatView: View {
     private var messageStream: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if let note = viewModel.boundaryNote, viewModel.bubbles.isEmpty {
-                        Text("侧边聊天是临时聊天，关闭应用后会消失。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.top, 18)
-                    }
-                    ForEach(viewModel.bubbles) { bubble in
-                        bubbleView(bubble).id(bubble.id)
-                    }
-                    if !viewModel.streamingReasoning.isEmpty {
-                        ReasoningRowView(text: viewModel.streamingReasoning, running: true)
-                            .id("side-streaming-reasoning")
-                    }
-                    if !viewModel.streamingText.isEmpty {
-                        Text(viewModel.streamingText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(8)
-                            .id("side-streaming-text")
-                    }
-                    if case .failed(let message) = viewModel.phase {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                    Color.clear.frame(height: 1).id("side-bottom-anchor")
-                }
-                .padding(10)
+                messageStreamContent
             }
             .onChange(of: viewModel.bubbles) { _ in
                 guard autoFollow else { return }
@@ -130,8 +100,45 @@ struct SideChatView: View {
         }
     }
 
+    /// 卡片流内容（从 messageStream 拆出：长 SwiftUI 链会触发编译器
+    /// 类型检查超时——错误 8 的最小拆解，不改动任何语义）。
     @ViewBuilder
-    private func bubbleView(_ bubble: Bubble) -> some View {
+    private var messageStreamContent: some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            if let note = viewModel.boundaryNote, viewModel.bubbles.isEmpty {
+                Text("侧边聊天是临时聊天，关闭应用后会消失。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 18)
+            }
+            ForEach(viewModel.bubbles) { bubble in
+                bubbleView(bubble).id(bubble.id)
+            }
+            if !viewModel.streamingReasoning.isEmpty {
+                ReasoningRowView(text: viewModel.streamingReasoning, running: true)
+                    .id("side-streaming-reasoning")
+            }
+            if !viewModel.streamingText.isEmpty {
+                Text(viewModel.streamingText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(8)
+                    .id("side-streaming-text")
+            }
+            if case .failed(let message) = viewModel.phase {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            Color.clear.frame(height: 1).id("side-bottom-anchor")
+        }
+        .padding(10)
+    }
+
+    @ViewBuilder
+    private func bubbleView(_ bubble: ConversationProjector.Bubble) -> some View {
         switch bubble.kind {
         case .user(let text, _):
             HStack {

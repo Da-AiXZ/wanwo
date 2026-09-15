@@ -192,9 +192,8 @@ struct BrowserUseTool: AgentTool {
         // ── 引擎执行 ─────────────────────────────────────────────────
         let result: BrowserActionResult
         do {
-            result = try await MainActor.run {
-                try await pool.execute(action: input)
-            }
+            // pool 是非隔离类方法（async throws），无需 MainActor.run 包裹。
+            result = try await pool.execute(action: input)
         } catch {
             return .failure(error.localizedDescription,
                             code: "BROWSER_ERROR", name: "BrowserUseError")

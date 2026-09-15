@@ -132,7 +132,7 @@ struct WorkspaceFileTabView: View {
                                                            expanded: tree.expandedPaths)
         }
         let filtered = WorkspaceFileTreeModel.filterTree(tree.roots, query: needle)
-        let forced = WorkspaceFileTreeModel.expandedAncestorPaths(tree.roots,
+        let forced = WorkspaceFileTreeModel.expandedAncestorPaths(in: tree.roots,
                                                                   query: needle)
             .union(tree.expandedPaths)
         return WorkspaceFileTreeModel.flattenedVisible(filtered, expanded: forced)

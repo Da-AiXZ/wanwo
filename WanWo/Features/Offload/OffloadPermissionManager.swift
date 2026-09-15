@@ -49,7 +49,7 @@ enum OffloadPermissionLevel: Int, CaseIterable {
     }
 }
 
-enum PermissionResult {
+enum PermissionResult: Equatable {
     case allowed
     case denied(String)
 }

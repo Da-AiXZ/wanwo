@@ -197,7 +197,7 @@ struct ReviewTabView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(backgroundColor(for: line.kind))
-                    .foregroundStyle(foregroundColor(for: line.kind))
+                    .foregroundStyle(foregroundColor(for: line.kind) ?? Color.primary)
             }
         case .fold(let count):
             let isExpanded = expandedFolds.contains(key)

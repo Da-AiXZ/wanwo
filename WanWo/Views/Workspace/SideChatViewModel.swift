@@ -21,6 +21,7 @@
 
 import Foundation
 import SwiftUI
+import Collections
 
 @MainActor
 final class SideChatViewModel: ObservableObject {

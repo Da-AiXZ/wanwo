@@ -60,7 +60,9 @@ struct RootView: View {
         // 全屏切换 → 左栏折叠（右栏占满整窗）。
         .onChange(of: workspaceSidebar.isFullscreen) { fullscreen in
             withAnimation(.easeInOut(duration: 0.2)) {
-                splitVisibility = fullscreen ? .detail : .all
+                // iOS 16 无 .detail case；两栏 split 的内容列 = .secondary
+                //（语义对应"只留 detail"）。
+                splitVisibility = fullscreen ? .secondary : .all
             }
         }
         // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 权限确认卡全局

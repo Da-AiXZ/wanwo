@@ -39,7 +39,8 @@ enum WanWoPaths {
     /// 全局（跨会话）静态挂载桶的宿主持久化目录。
     static var memoryPersistentDir: URL {
         persistentBase.appendingPathComponent("memory", isDirectory: true)
-    }    static var skillsPersistentDir: URL {
+    }
+    static var skillsPersistentDir: URL {
         persistentBase.appendingPathComponent("skills", isDirectory: true)
     }
     static var sharedPersistentDir: URL {

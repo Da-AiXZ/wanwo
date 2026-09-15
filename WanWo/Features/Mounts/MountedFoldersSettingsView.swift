@@ -164,7 +164,7 @@ struct MountedFoldersSettingsView: View {
             set: { if !$0 { detailEntryID = nil } }
         )) {
             if let id = detailEntryID {
-                MountDetailView(entryID: id, model: model)
+                MountDetailView(model: model, entryID: id)
             }
         }
         .alert("错误", isPresented: Binding(get: { errorText != nil },
