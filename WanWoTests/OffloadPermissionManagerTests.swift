@@ -22,6 +22,7 @@
 //
 
 import XCTest
+import os.lock   // 【终验补】OSAllocatedUnfairLock（attachCountingApproval 计数锁）——主件 import os.lock，测试侧漏带
 @testable import WanWo
 
 @MainActor
