@@ -50,11 +50,12 @@ final class RunCodeToolTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        // 【挂死族·专门修复件】整类 skip（CI 两测试各 20min+ 挂死实证——
-        // 真 JSCore+真 writer+gate 集成面并发时序未定位挂点；两轮修复未
-        // 覆盖全部挂因）。深挖=本地 macOS 调试；真机验收补偿 run_code 验证。
-        throw XCTSkip("挂死族——专门修复件深挖中")
-
+        // 【挂死族·根因已修 2026-09-15】CI 两测试各 20min+ 挂死的真凶=
+        // 车道 drain 等常驻服务循环（driveLoop while true 无退出条件，
+        // waitForWake 永挂）→ run_code 程序成功后 runProgram 永不返回
+        // （真机 run 34903942927 事件流 +124.2s 后 448s 静默同根因）。
+        // 修复=drain 就地泵干（dsh ptc.ts:448-456 "一轮有限推进" 语义）。
+        // 整类解禁作回归验证。
         try super.setUpWithError()
         // 注册表是进程级单例：隔离重建（E3 同款纪律）。
         ExtensionEventRegistry.shared.resetForTests()
@@ -416,13 +417,9 @@ final class RunCodeToolTests: XCTestCase {
     // MARK: - 排队未启动子派发弃单（不落 start 事件；在飞 isError 收敛）
 
     func testAbandonedQueuedSubDispatchLogsNothing() async throws {
-        // 【已知挂死·专门修复件】CI 两轮实证（34802285536/34807308670 各
-        // 20min+ 无进展）：run-cancel 后的收敛链路存在未定位挂点（弃单与
-        // 在飞 isError 收敛的时序组合）。两轮修复（JSCore 在飞 binding 统一
-        // 拒绝+车道丢唤醒窗口）未覆盖全部挂因。跳过拿全量基线；挂死深挖
-        // （带完整 XCTest 日志+时序推演）登记后续件。
-        try XCTSkipIf(true, "已知挂死——专门修复件深挖中")
-    
+        // 【根因已修 2026-09-15】当年 CI 两轮 20min+ 挂死=车道 drain 等
+        // 常驻服务循环（见 setUpWithError 注释）——本测试覆盖的正是
+        // run-cancel 后 drain 收敛路径，修复后应为天然回归面。
         let gate = PtcTestGate()
         let stack = try await makeStack(id: "abandon", gate: gate,
                                         gateParallelSafe: true,

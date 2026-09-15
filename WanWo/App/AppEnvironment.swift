@@ -81,10 +81,22 @@ final class AppEnvironment: ObservableObject {
         writerRegistryLock.lock()
         let writer = sessionWriters[sessionId]
         writerRegistryLock.unlock()
-        guard let writer else { return }
-        Task { _ = try? await writer.append(.extensionEvent(
-            kind: "diag/trace",
-            payload: .object(["note": .string(note)])))
+        guard let writer else {
+            // 真机批 B2：吞错可见化——此前注册表未命中时静默 return，diag
+            // 零事件无法区分「没打点」与「打点丢了」。
+            Self.logger.warning("[diag] no writer for session " + sessionId
+                                + "; dropped: " + note)
+            return
+        }
+        Task {
+            do {
+                _ = try await writer.append(.extensionEvent(
+                    kind: "diag/trace",
+                    payload: .object(["note": .string(note)])))
+            } catch {
+                Self.logger.error("[diag] append failed: "
+                                  + String(describing: error) + " note=" + note)
+            }
         }
     }
     /// M5-B S2：沙箱 provider 注册表——本地 iSH 后端默认（S1）；远程 E2B
