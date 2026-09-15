@@ -463,13 +463,17 @@ actor PtcDispatchLane {
         wake()
     }
 
-    /// 等到车道静默（ptc.ts:448-456 drainDispatches 的车道半；事件 append
-    /// 内联于 commit——登记⑦，settle 事件天然而然全部落在 run 落定前）。
+    /// 等到车道静默（dsh ptc.ts:448-456 drainDispatches 语义：run 落定后
+    /// drive() 是一轮有限推进——aborted 弃单未启动条目、在飞 body 已随外层
+    /// 取消消亡或已落定、有序 commit 车道排干——然后返回）。
+    /// 本类 driveLoop 是常驻服务循环（无活即 waitForWake 等下一个 submit），
+    /// 永不退出——drain 若等 driverTask.value 即永挂（真机实证：run_code
+    /// 程序成功后工具 448s 无结果，run 34903942927 事件流；CI 挂死族
+    /// testAbandoned/testDispatchEvents 同根因）。就地泵干：反复 stepOnce
+    /// 至无可推进；actor 串行化保证与服务循环互斥，removeFirst 先于 commit
+    /// 的同步段防止双 commit。
     func drain() async {
-        ensureDriver()
-        if let task = driverTask {
-            _ = await task.value
-        }
+        while await stepOnce() { }
     }
 
     // MARK: 驱动循环（ptc.ts:392-446 drive 1:1）
@@ -856,7 +860,10 @@ struct RunCodeTool: AgentTool {
                     arguments: entry.argsLogged)
             },
             // settle 事件（ptc.ts:498-521——isError + content（tool/result
-            // 同词汇的单 text 块，登记⑰）；append 失败记日志不回滚）。
+            // 同词汇的单 text 块**数组**，登记⑰；真机批 B2 修复：schema
+            // requiredFields 声明 content=.array（:167），此前写入面给单
+            // .object 被 E1 类型校验拒绝→事件静默丢失（事件流实证 start ×2
+            // /settle ×0，run 34903942927））。
             appendSettle: { entry, output in
                 do {
                     _ = try await PtcDispatchEvents.appendDispatch(
@@ -867,10 +874,10 @@ struct RunCodeTool: AgentTool {
                         name: entry.name,
                         arguments: entry.argsLogged,
                         isError: output.isError,
-                        content: .object([
+                        content: .array([.object([
                             "type": .string("text"),
                             "text": .string(output.text),
-                        ]))
+                        ])]))
                 } catch {
                     Self.logger.error("ptc-dispatch append failed for "
                                       + "\(entry.subCallId): \(String(describing: error))")
