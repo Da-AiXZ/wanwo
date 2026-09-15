@@ -62,6 +62,14 @@ struct JobNotifier: Sendable {
         backgroundedAtLock.unlock()
     }
 
+    /// 单测隔离（@testable 专用；生产代码禁用——ExtensionEventRegistry
+    /// 同款先例）：static 前台时刻是进程级状态，测试间必须清零防泄漏。
+    static func resetForTests() {
+        backgroundedAtLock.lock()
+        _lastBackgroundedAt = nil
+        backgroundedAtLock.unlock()
+    }
+
     /// 授权请求（true=granted）。生产=requestAuthorization 幂等惰性形态
     /// （首次弹窗，之后直返当前设置——不需自持缓存）。
     var requestAuthorization: @Sendable () async -> Bool = {
@@ -101,16 +109,23 @@ struct JobNotifier: Sendable {
         // 前台抑制：active 且作业全程在前台 → inject 已可见，通知=打扰
         // （F007）。作业启动后曾进过后台 → 结算虽回到前台，用户错过的是
         // 后台期间的事件 → 仍发（真机批 C：后台冻结推迟结算的场景）。
+        // 【真机批 B2 修复 2026-09-15】判定方向此前写反：原条件
+        // `bgAt < startedAt` 只覆盖「进后台先于启动」（该场景作业全程
+        // 前台，本就该抑制）；用户实证场景「启动→切后台→冻结推迟结算→
+        // 回前台」需判 `startedAt < bgAt`（通知始终不来即此 bug，事件流
+        // run 34903942927 turn1 结算/通知同刻涌出可证）。
         if await isAppActive() {
             let backgrounded = JobNotifier.lastBackgroundedAt
             let startedMs = Double(snapshot.startedAt)
-            let startedAfter = backgrounded.map { $0.timeIntervalSince1970 * 1000 < startedMs } ?? false
-            Self.logger.info("[jobnotify] active; startedAfter=\(startedAfter) bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil") startedAt=\(startedMs)")
-            diagTrace(ownerSessionId, "[jobnotify] active; startedAfter=\(startedAfter) (bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil"))")
-            if !startedAfter {
-                diagTrace(ownerSessionId, "[jobnotify] suppressed: front-to-back all along")
+            let missedInBackground = backgrounded.map {
+                startedMs < $0.timeIntervalSince1970 * 1000
+            } ?? false
+            Self.logger.info("[jobnotify] active; missedInBackground=\(missedInBackground) bgAt=\(backgrounded.map { String(describing: $0) } ?? "nil") startedAt=\(startedMs)")
+            if !missedInBackground {
+                diagTrace(ownerSessionId, "[jobnotify] suppressed: never backgrounded after start")
                 return
             }
+            diagTrace(ownerSessionId, "[jobnotify] active but missed in background — will notify")
         } else {
             Self.logger.info("[jobnotify] not active — will notify")
             diagTrace(ownerSessionId, "[jobnotify] not active — will notify")

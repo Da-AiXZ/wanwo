@@ -69,6 +69,8 @@ final class JobNotifierTests: XCTestCase {
 
     func testForegroundSuppressed() async {
         // active → 零投递零授权（通知=打扰，inject 已可见——F007 判定钉死）。
+        JobNotifier.resetForTests()
+        defer { JobNotifier.resetForTests() }
         let log = NotifyLog()
         let notifier = makeNotifier(active: true, authGranted: true, log: log)
         await notifier.notifyIfNeeded(snapshot: makeSnapshot(),
@@ -76,6 +78,23 @@ final class JobNotifierTests: XCTestCase {
                                       noticeText: "notice")
         XCTAssertTrue(log.entries.isEmpty, "前台抑制=零投递")
         XCTAssertEqual(log.authRequests, 0, "抑制先于授权（不空耗弹窗预算）")
+    }
+
+    func testActiveButMissedInBackgroundNotifies() async {
+        // 【真机批 B2 修复回归 2026-09-15】判定方向修复：作业启动后曾进
+        // 后台（startedAt < bgAt）→ 结算虽回前台仍发通知。用户实证场景：
+        // 切后台后作业完成 → iOS 冻结推迟结算 → 回前台结算时被旧方向
+        // 判定（bgAt < startedAt）吞掉，通知始终不来。
+        JobNotifier.resetForTests()
+        JobNotifier.noteBackgrounded()   // bgAt=now ≫ startedAt(1ms)
+        defer { JobNotifier.resetForTests() }
+        let log = NotifyLog()
+        let notifier = makeNotifier(active: true, authGranted: true, log: log)
+        await notifier.notifyIfNeeded(snapshot: makeSnapshot(),
+                                      ownerSessionId: "s1",
+                                      noticeText: "missed in background")
+        XCTAssertEqual(log.entries.count, 1, "启动后进过后台→回前台结算仍发通知")
+        XCTAssertEqual(log.authRequests, 1)
     }
 
     func testBackgroundNotifiesWithContent() async throws {
