@@ -85,6 +85,12 @@ final class OriginPolicy {
     /// （视为拒绝——与 P1-3 提权 fail closed 语义同源）。
     var askHandler: ((_ reason: String) async -> Bool)?
 
+    /// M6.6（B4）：UI 层常驻审批缝——右侧栏浏览器页签可见时由
+    /// BrowserDownloadAsker 安装（手动浏览 downloads=ask 的用户可见确认面；
+    /// B2 遗留「无审批缝上下文 fail closed」边缘拍板的落地面）。裁决序：
+    /// 工具层 askHandler（agent 审批缝）优先 → uiAskHandler → 都缺 fail closed。
+    var uiAskHandler: ((_ reason: String) async -> Bool)?
+
     private init() {}
 
     // MARK: 单维判定
@@ -134,9 +140,17 @@ final class OriginPolicy {
         case .deny:
             return false
         case .ask:
-            guard let askHandler else { return false } // 无审批缝 → fail closed
+            // 两层裁决序（B4）：工具层 askHandler 优先（agent 审批缝原语义
+            // 不变）；未接线时回落 uiAskHandler（右侧栏浏览器页签的用户可见
+            // 确认面）；都缺 → fail closed。
             let host = origin ?? "unknown origin"
-            return await askHandler(
+            if let askHandler {
+                return await askHandler(
+                    "browser_use \(dimensionName) is set to ask for \(host). "
+                        + "Allow this action to proceed?")
+            }
+            guard let uiAskHandler else { return false } // 无缝 → fail closed
+            return await uiAskHandler(
                 "browser_use \(dimensionName) is set to ask for \(host). "
                     + "Allow this action to proceed?")
         }

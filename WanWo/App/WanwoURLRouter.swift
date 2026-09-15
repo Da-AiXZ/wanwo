@@ -38,6 +38,9 @@ final class WanwoURLRouter: ObservableObject {
 
     /// 待消费的权限页路由（RootView onReceive 置位消费——selection 跳转后清零）。
     @Published var pendingPermissionsRoute = false
+    /// M6.6（B4）：待消费的资源 URL（右侧栏浏览器页签消费——B3 骨架日志位
+    /// 的接线点落位；RootView openResourceURL 后清零）。
+    @Published var pendingResourceURL: URL?
 
     private init() {}
 
@@ -54,14 +57,20 @@ final class WanwoURLRouter: ObservableObject {
             pendingPermissionsRoute = true
             return
         }
-        // 资源链接：分发骨架（UI 消费端 = B4 右侧栏浏览器/预览面接线点）。
-        Self.logger.info("resource URL routed (B4 右侧栏接线点): \(url.absoluteString)")
-        // 标注：资源 URL 由 WanwoURLSchemeHandler 在 WKWebView 内直接服务
-        // （B2 保留代码路径）；App 级打开（如聊天流链接点按）的呈现面随 B4。
+        // 资源链接：B4 接线点落位——路由到右侧栏浏览器页签（资源 URL 由
+        // WKWebView 内 WanwoURLSchemeHandler 直接服务，B2 保留代码路径；
+        // RootView onReceive 消费后清零）。
+        Self.logger.info("resource URL routed → workspace sidebar browser tab: \(url.absoluteString)")
+        pendingResourceURL = url
     }
 
     /// RootView 消费完毕后复位。
     func consumePermissionsRoute() {
         pendingPermissionsRoute = false
+    }
+
+    /// 资源 URL 消费完毕后复位（B4）。
+    func consumeResourceURL() {
+        pendingResourceURL = nil
     }
 }

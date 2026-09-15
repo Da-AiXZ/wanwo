@@ -161,6 +161,19 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// M6.6（B4）：运行中会话镜像（侧聊父会话状态行数据源——主对话
+    /// 运行中/空闲；ChatViewModel 在 onPhaseChange / onTurnEnd 登记）。
+    @Published private(set) var activeRunSessionIDs: Set<String> = []
+
+    /// 运行态登记（running = 回合进行中；false = 回合收束）。
+    func noteRunState(sessionId: String, running: Bool) {
+        if running {
+            activeRunSessionIDs.insert(sessionId)
+        } else {
+            activeRunSessionIDs.remove(sessionId)
+        }
+    }
+
     // MARK: - F042/T2.6：会话级模型选择宿主（App 级 per-session 字典）
 
     private let selectionRegistryLock = NSLock()

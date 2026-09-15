@@ -534,6 +534,9 @@ final class ChatViewModel: ObservableObject {
                     guard let self else { return }
                     self.flushNow()
                     self.reproject()
+                    // M6.6（B4）：运行态镜像清退（侧聊父会话状态行数据源）。
+                    self.environment.noteRunState(sessionId: self.sessionID,
+                                                  running: false)
                     // F060 可观测性最小纪律：错误必须自解释——turn/end error
                     // 把 failure.message 原文（DeepSeek providerMessage）带进
                     // 状态条（截 200 防撑爆），不能只给 code。
@@ -548,7 +551,12 @@ final class ChatViewModel: ObservableObject {
             onPhaseChange: { [weak self] phase in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if case .running = phase { self.phase = .streaming }
+                    if case .running = phase {
+                        self.phase = .streaming
+                        // M6.6（B4）：运行态镜像登记（侧聊父会话状态行）。
+                        self.environment.noteRunState(sessionId: self.sessionID,
+                                                      running: true)
+                    }
                 }
             },
             onToolCallStarted: { [weak self] _, _, _, _ in
