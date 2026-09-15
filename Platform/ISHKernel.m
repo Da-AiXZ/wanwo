@@ -61,6 +61,8 @@
 #import "SessionsOffload.h"
 #import "ConfigOffload.h"
 #import "DebugOffload.h"
+// 万我 M6.1 增（B2）：wanwo-browser-use（浏览器引擎 App 层适配批接真）
+#import "BrowserUseOffload.h"
 #import "VisionOffload.h"
 #import "OpenOffload.h"
 #import "HealthKitOffload.h"
@@ -696,7 +698,7 @@ static void handle_process_exit(struct task *task, int code) {
     bluetooth_offload_register();   // §8.2 #22 apple-bluetooth（askOnce）
     nfc_offload_register();         // §8.2 #23 apple-nfc（askOnce）
     sessions_offload_register();    // §8.2 #24 wanwo-sessions-cli（askOnce；B1c 降级桩——跨会话桥未移植）
-    // §8.2 #25 wanwo-browser-use——B2（App 层适配）暂不接
+    browser_use_offload_register(); // §8.2 #25 wanwo-browser-use（askOnce；B2 直连 vendored——引擎+桥随批落地，池经 BrowserUseSessionStore 与 agent 工具共享）
     config_offload_register();      // §8.2 #26 wanwo-config（askOnce；B1c 降级桩——无统一设置注册表）
     debug_offload_register();       // §8.2 #27 wanwo-debug（bypass；B1c 直连 vendored——logs 子命令全构建可用，RPC 子命令 DEBUG-only 回原件合成错误）
 

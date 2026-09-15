@@ -471,6 +471,12 @@ final class AppEnvironment: ObservableObject {
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
         FsTools.registerAll(into: registry, sessionId: sessionId)
         WebTools.registerAll(into: registry, policy: networkPolicy)
+        // M6.3 B2：browser_use 工具（F033——schema/执行分发语义源=OpenMinis
+        // AIChatViewModel+ToolDefinitions:102-132 + ConcurrentTools:547-638，
+        // 见 BrowserUseTool.swift 头注）。高风险面审批=提权呈现缝（OriginPolicy.
+        // askHandler ← ctx.escalationApprover 逐调用接线，裁定②）；池经
+        // BrowserUseSessionStore 与 wanwo-browser-use offload CLI 共享。
+        registry.register(BrowserUseTool())
 
         // M3 T1 审批装配（m3-scope-brief §二.3-5）：
         //   · ApprovalDecisionMatrix —— workspace-write 最简矩阵（T1 缺省档）；
