@@ -53,7 +53,7 @@ struct WorkspaceFileTabView: View {
 
     private func reload() {
         guard let sessionID else {
-            tree.roots = []
+            tree.clear()
             selectedPath = nil
             fileContent = nil
             return

@@ -15,10 +15,13 @@ struct RootView: View {
     /// M6.6（B4）：右侧栏容器状态（App 内单实例——页签跨会话切换保持）。
     @StateObject private var workspaceSidebar = WorkspaceRightSidebarModel()
     /// 全屏时折叠左栏（右栏占满整窗——§6.0 全屏语义折算）。
-    @State private var splitVisibility: NavigationSplitViewVisibility = .all
+    // 【终验修正】NavigationSplitViewVisibility 的 .detail/.secondary 在 iOS 16
+    // SDK 实测均不存在（CI 两轮编译错实证）——全屏语义由下方条件布局承载
+    // （右栏 maxWidth .infinity 已占满内容区=截图 #21 形态；左栏保留，
+    // "左栏另行收起"为用户独立操作）。columnVisibility 机制整体不碰。
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $splitVisibility) {
+        NavigationSplitView {
             NavigationStack {
                 SessionsSidebarView(environment: environment,
                                     selection: $environment.selection)
@@ -57,14 +60,8 @@ struct RootView: View {
                 }
             }
         }
-        // 全屏切换 → 左栏折叠（右栏占满整窗）。
-        .onChange(of: workspaceSidebar.isFullscreen) { fullscreen in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                // iOS 16 无 .detail case；两栏 split 的内容列 = .secondary
-                //（语义对应"只留 detail"）。
-                splitVisibility = fullscreen ? .secondary : .all
-            }
-        }
+        // 全屏切换：右栏 maxWidth .infinity 已占满内容区（条件布局承载，
+        // 不触 NavigationSplitViewVisibility——iOS 16 成员可用性见文件头顶注）。
         // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 权限确认卡全局
         // 挂载（OpenMinis 挂 ContentView 同位；sheet(item:) 单槽形态原件
         // 1:1——审批来自内核 offload 分发点，可发生于任意会话/页面）。
