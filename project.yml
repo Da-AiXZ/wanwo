@@ -67,7 +67,9 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_OBJC_BRIDGING_HEADER: WanWo/Bridge/WanWo-Bridging-Header.h
         # 三根：Vendor/include/ish（生成头）+ Vendor/ish（源码内部互 include）+ Vendor/include（ish/ 前缀伞）
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include"
+        # 万我 M6.1 增第 4 根：WanWo/NativeOffload（offload 头；Platform/ISHKernel.m
+        # 需跨目录 import WanWoOffloadGate.h / DeviceOffload.h 等，编译必需）
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
         OTHER_LDFLAGS: "-lish -lish_emu -lfakefs"
         CLANG_ENABLE_MODULES: YES

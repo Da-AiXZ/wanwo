@@ -42,6 +42,12 @@
 #include <netdb.h>
 #include <resolv.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+// 万我 M6.1 增：offload 权限门控注册 + 样板命令（10-design §八；
+// 形态对齐 OpenMinis src/ios/iSH/ISHKernel.m:41-51 集中 import 各 Offload 头）
+#import "WanWoOffloadGate.h"
+#import "NativeOffloadUtils.h"
+#import "DeviceOffload.h"
+#import "ClipboardOffload.h"
 
 NSNotificationName const ISHProcessExitedNotification = @"ISHProcessExited";
 NSNotificationName const ISHTerminalOutputNotification = @"ISHTerminalOutput";
@@ -633,8 +639,13 @@ static void handle_process_exit(struct task *task, int code) {
     }
 
     // 9. Register native binary bindings (ffmpeg, etc.)
-    // app's own runtime log in-process (OSLogStore + LoggingManager) and must
-    // self-report as unavailable in Release.
+    // 万我 M6.1 增：集中注册列表（形态对齐 OpenMinis src/ios/iSH/ISHKernel.m:656-687
+    // 的 27 命令集中注册序——B1b/B1c 按 10-design §8.2 序在下方追加）。
+    // 注册统一走 wanwo_offload_register_checked（权限门控 trampoline，
+    // 10-design:818 v2：检查移进内核分发点，封堵 sh -c/env 间接调用绕过）。
+    // B1a 仅接 2 个样板（bypass 档 apple-device + askOnce 档 apple-clipboard）：
+    device_offload_register();
+    clipboard_offload_register();
 
     _isBooted = YES;
     NSLog(@"ISHKernel: Kernel initialized successfully");
@@ -1429,6 +1440,114 @@ static bool ish_path_reverse_trampoline(const char *host_path,
     return ok;
 }
 
+#pragma mark - Offload permission gate bridge (万我 M6.1 增)
+
+/* 万我 M6.1 增：offload 权限门控（10-design §8.1 v2 / :818）。OpenMinis 原件
+ * 未实现内核侧门控（其 OffloadPermissionManager.swift:205-209 自述 shell 侧
+ * 检查覆盖不到 sh -c/env 间接调用）；本节为 WanWo 设计强制新实现。内核
+ * vendored C 零改动——门控以宿主侧 trampoline 达成：注册时向内核
+ * native_offload_add_handler 递交 trampoline 而非真 handler，trampoline 调
+ * 真 handler 前经 C→Swift 门控块同步检查。块存储沿 g_path_translate_block
+ * 同款原子换针 + 永久持有生命周期模型（见 PathTranslate 注释）。 */
+
+static _Atomic(void *) g_wanwo_offload_gate_block = NULL;
+
+/* 门控登记表：name → 真 handler。boot 线程单写、guest 线程只读（写发生在
+ * 任何 guest 进程运行之前），无需加锁。NATIVE_OFFLOAD_MAX=32 覆盖 27 命令。 */
+typedef struct {
+    char name[64];
+    native_handler_func real_handler;
+} wanwo_offload_checked_entry;
+
+static wanwo_offload_checked_entry g_wanwo_offload_checked[NATIVE_OFFLOAD_MAX];
+static int g_wanwo_offload_checked_count = 0;
+
+/* 权限门控 trampoline：与内核 handler 签名一致。按 argv[0] basename 找回
+ * 登记项（匹配规则与内核 native_offload_lookup 一致，native_offload.h:57-64），
+ * 经门控块检查后放行或拒绝。 */
+static int wanwo_offload_checked_trampoline(int argc, char **argv,
+                                            int stdin_fd, int stdout_fd, int stderr_fd) {
+    const char *invoked = (argv[0] != NULL) ? argv[0] : "";
+    const char *slash = strrchr(invoked, '/');
+    if (slash != NULL) invoked = slash + 1;
+
+    native_handler_func real_handler = NULL;
+    NSString *commandName = nil;
+    for (int i = 0; i < g_wanwo_offload_checked_count; i++) {
+        if (strcmp(g_wanwo_offload_checked[i].name, invoked) == 0) {
+            real_handler = g_wanwo_offload_checked[i].real_handler;
+            commandName = [NSString stringWithUTF8String:g_wanwo_offload_checked[i].name];
+            break;
+        }
+    }
+    if (real_handler == NULL || commandName == nil) {
+        // 不应发生：trampoline 只会因登记命令被内核分发命中。
+        NSLog(@"WanWoOffload: checked trampoline invoked for unregistered name '%s'", invoked);
+        return NOFF_EXIT_ERROR;
+    }
+
+    void *raw = atomic_load_explicit(&g_wanwo_offload_gate_block, memory_order_acquire);
+    if (raw == NULL) {
+        // 门控未安装（boot 后 Swift 尚未接线）：按 bypass 默认档放行并留痕。
+        // OpenMinis 原语义 = shell 侧检查、缺省即无门控，此处保持等价缺省。
+        NSLog(@"WanWoOffload: permission gate not installed — allowing '%@' (bypass default)", commandName);
+        return real_handler(argc, argv, stdin_fd, stdout_fd, stderr_fd);
+    }
+
+    __block int result = NOFF_EXIT_ERROR;
+    @autoreleasepool {
+        WanWoOffloadPermissionGate gate = (__bridge WanWoOffloadPermissionGate)raw;
+
+        // fullCommand：argv 原样拼串（审批卡展示用；与 OpenMinis
+        // PermissionRequest.fullCommand 形态一致）。
+        NSMutableString *fullCommand = [NSMutableString string];
+        for (int a = 0; a < argc; a++) {
+            if (argv[a] == NULL) continue;
+            if (fullCommand.length > 0) [fullCommand appendString:@" "];
+            [fullCommand appendFormat:@"%s", argv[a]];
+        }
+
+        BOOL allowed = gate(commandName, fullCommand);
+        if (!allowed) {
+            // deny envelope：错误码 AUTHORIZATION_DENIED（noff 统一错误码词汇）
+            // + 退出码 3。v2 为设计强制新实现（OpenMinis 无内核侧实现），消息
+            // 措辞对齐 OpenMinis OffloadPermissionManager.swift:241 notAllowed
+            // 文案；深链 scheme minis:// → wanwo://（10-design M6.5）。
+            NSString *action = noff_get_subcommand(argc, argv) ?: @"";
+            NSDictionary *err = noff_json_error(
+                commandName, action, NOFF_ERR_AUTHORIZATION_DENIED,
+                [NSString stringWithFormat:
+                    @"Permission denied: the user has disabled or declined '%@'. "
+                    @"To enable it, go to Settings > Permissions or tap: "
+                    @"[Open Permissions](wanwo://settings/permissions)", commandName]);
+            noff_emit_json(stdout_fd, err, NO, NO);
+            result = NOFF_EXIT_AUTH_DENIED;
+        } else {
+            // allow：调真 handler，返回值原样透传（含其自产 envelope）。
+            result = real_handler(argc, argv, stdin_fd, stdout_fd, stderr_fd);
+        }
+    }
+    return result;
+}
+
+/* 带权限门控的注册入口（声明见 WanWo/NativeOffload/WanWoOffloadGate.h）。 */
+int wanwo_offload_register_checked(const char *guest_name,
+                                   native_handler_func real_handler) {
+    if (guest_name == NULL || real_handler == NULL) return -1;
+    if (g_wanwo_offload_checked_count >= NATIVE_OFFLOAD_MAX) return -1;
+
+    wanwo_offload_checked_entry *slot = &g_wanwo_offload_checked[g_wanwo_offload_checked_count];
+    strncpy(slot->name, guest_name, sizeof(slot->name) - 1);
+    slot->name[sizeof(slot->name) - 1] = '\0';
+    slot->real_handler = real_handler;
+
+    int err = native_offload_add_handler(guest_name, wanwo_offload_checked_trampoline);
+    if (err == 0) {
+        g_wanwo_offload_checked_count++;
+    }
+    return err;
+}
+
 #pragma mark - CPU Throttle (C-only hot path, no ObjC messaging)
 
 // sleep_ratio = (1 - dutyCycle) / dutyCycle.  0 = disabled (foreground).
@@ -1931,6 +2050,23 @@ static void gov_tick(void) {
     void *raw = (void *)CFBridgingRetain(copied);  /* retained forever */
     atomic_store_explicit(&g_path_translate_block, raw, memory_order_release);
     fakefs_set_path_translate_hook(ish_path_translate_trampoline);
+}
+
+@end
+
+@implementation ISHKernel (OffloadGate)
+
+/* 万我 M6.1 增：安装 offload 权限门控块。生命周期模型沿
+ * installPathTranslateHandler:（块永久持有、原子换针——见其注释）。 */
+
+- (void)installOffloadPermissionGate:(WanWoOffloadPermissionGate)gate {
+    if (gate == nil) {
+        atomic_store_explicit(&g_wanwo_offload_gate_block, NULL, memory_order_release);
+        return;
+    }
+    WanWoOffloadPermissionGate copied = [gate copy];
+    void *raw = (void *)CFBridgingRetain(copied);  /* retained forever */
+    atomic_store_explicit(&g_wanwo_offload_gate_block, raw, memory_order_release);
 }
 
 @end

@@ -34,6 +34,8 @@ enum KernelBootCoordinator {
     private static nonisolated(unsafe) var bootTask: Task<Void, Error>?
     /// fs_context 路径翻译钩子是否已安装（boot 后、任何命令前，一次性）。
     private static nonisolated(unsafe) var hookInstalled = false
+    /// offload 权限门控是否已安装（万我 M6.1 增：boot 后一次性）。
+    private static nonisolated(unsafe) var offloadGateInstalled = false
 
     /// 幂等确保内核已 boot。已真直返；否则 rootfs 安装 → 内核 boot（后台线程，
     /// isBooted 轮询兜底）→ fs_context 路径翻译钩子。
@@ -45,6 +47,7 @@ enum KernelBootCoordinator {
         // 快路：已 boot（幂等直返；钩子补装一次以防历史调用未装钩）。
         if ISHKernel.shared.isBooted {
             installHookOnce()
+            installOffloadGateOnce()
             return
         }
         // [T-rootfs-reset-terminal-crash] 毒标记：内核每进程只能 boot 一次，
@@ -71,6 +74,7 @@ enum KernelBootCoordinator {
         }
         clearBootTask()
         installHookOnce()
+        installOffloadGateOnce()
     }
 
     // MARK: - Private
@@ -120,6 +124,28 @@ enum KernelBootCoordinator {
             guard !hookInstalled else { return }
             hookInstalled = true
             FsContextRouter.shared.installHook()
+        }
+    }
+
+    /// 4. offload 权限门控（万我 M6.1 增 · 简报 B1a ③）。
+    ///
+    /// boot 后把 OffloadPermissionManager 的同步检查入口注册进内核 offload
+    /// trampoline（10-design §8.1 v2 / :818"检查移进内核分发点"——封堵
+    /// OpenMinis 已知的 sh -c/env 间接调用绕过残余风险，OpenMinis 原件
+    /// OffloadPermissionManager.swift:205-209 自述 shell 侧检查覆盖不到）。
+    /// 检查本体走 askOnce/bypass/notAllowed 三档语义 + 30s 超时 deny；
+    /// 内核路径无会话上下文 → 全局授权桶（OpenMinis 非聊天调用者回退语义）。
+    private static func installOffloadGateOnce() {
+        withStateLock {
+            guard !offloadGateInstalled else { return }
+            offloadGateInstalled = true
+            ISHKernel.shared.installOffloadPermissionGate { command, fullCommand in
+                // 门控块参数为非可选（ISHKernel.h NS_ASSUME_NONNULL 域）；
+                // trampoline 侧保证 commandName/fullCommand 恒非 nil。
+                OffloadPermissionManager.checkForKernel(
+                    command: command,
+                    fullCommand: fullCommand)
+            }
         }
     }
 

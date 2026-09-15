@@ -238,4 +238,25 @@ typedef NSString * _Nullable (^ISHPathReverseHandler)(NSString *hostPath);
 
 @end
 
+#pragma mark - Offload Permission Gate
+
+/// 【万我 M6.1 增】offload 权限门控回调（10-design §8.1 v2 / :818 "检查移进
+/// 内核分发点"）。由 Platform/ISHKernel.m 的 wanwo_offload_checked_trampoline
+/// 在 guest 线程同步调用；实现方必须内部阻塞等待审批结果（≤30s 超时按 deny，
+/// Swift 侧入口 = OffloadPermissionManager.checkForKernel）。
+/// 返回 YES 放行（调真 handler）；NO 拒绝（内核发 AUTHORIZATION_DENIED
+/// envelope + 退出码 NOFF_EXIT_AUTH_DENIED=3）。
+typedef BOOL (^WanWoOffloadPermissionGate)(NSString *commandName,
+                                           NSString *fullCommand);
+
+@interface ISHKernel (OffloadGate)
+
+/// 【万我 M6.1 增】安装 offload 权限门控块。沿 installPathTranslateHandler:
+/// 同款生命周期模型（块永久持有、原子换针——见 PathTranslate 注释）。
+/// Swift 侧在 boot 成功后调用一次（KernelBootCoordinator）；传 nil 卸除。
+/// 未安装时 trampoline 按 bypass 默认放行并留痕（等价 OpenMinis 无门控缺省）。
+- (void)installOffloadPermissionGate:(nullable WanWoOffloadPermissionGate)gate;
+
+@end
+
 NS_ASSUME_NONNULL_END
