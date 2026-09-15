@@ -649,6 +649,23 @@ final class AppEnvironment: ObservableObject {
             permission.approvalPolicyContextLine
         }
 
+        // 真机批 B4：回合完成 → 用户验收提醒（turn/end 且 App 不在前台时
+        // 触发——JobNotifier.notifyTurnCompleted；前台完成=用户在场不打扰，
+        // 仅自然完成算验收点）。包装既有 onTurnEnd（ChatViewModel UI 刷新）
+        // 不替换——两消费者并存。必须在 deps 构造前包装。
+        var callbacks = callbacks
+        let existingOnTurnEnd = callbacks.onTurnEnd
+        let turnNotifySessionId = sessionId
+        let turnNotifier = jobNotifier
+        callbacks.onTurnEnd = { reason in
+            existingOnTurnEnd(reason)
+            guard case .completed = reason else { return }   // 仅自然完成=验收点
+            Task {
+                await turnNotifier.notifyTurnCompleted(sessionId: turnNotifySessionId,
+                                                       taskLabel: "万我")
+            }
+        }
+
         let deps = AgentLoop.Dependencies(
             sessionId: sessionId,
             writer: writer,
@@ -688,42 +705,34 @@ final class AppEnvironment: ObservableObject {
             })
         let agentLoop = AgentLoop(deps: deps)
 
-        // M5-A J3：完成通知接线（dsh tool-jobs index.ts:278-299 的 owner 归一
+        // M5-A J3：完成纸条接线（dsh tool-jobs index.ts:278-299 的 owner 归一
         // 形态）。每会话一枚 listener：reported / owner nil → 跳过（dsh :279
         // 同语义）；本会话命中 → fitCompletionNotice 文本注入下一步收件箱
         // （AgentLoop.inject——dsh owner.inject 同 API，SessionStart 通道同款
         // await agentLoop?.inject）。busy/idle 分流与 wakeup 预算（dsh :293-297
         // followup + spentWakes）登记不实现：WanWo 单宿主恒注入形态
         // （派单裁定；TODO(wakeup-budget) 上游同注）。
-        // M5-A J4 增补（07 F007）：用户侧可见性——同作业完成追加本地通知
-        // （前台抑制在 notifier 内）；通知无会话隔离，非本会话作业完成只走
-        // 通知不走 inject；同作业多 listener 重复请求由 identifier=job id
-        // 收敛（UNUserNotificationCenter 同 identifier 覆盖）。
+        // 【真机批 B4 用户裁决】作业完成只走 inject（给 AI 的中间事件），
+        // 不再弹系统通知（J4 作业级通知面删除）；系统通知改由"回合完成 +
+        // App 不在前台"触发（callbacks.onTurnEnd 包装，见下）——验收模型：
+        // 发任务 → 切走 → AI 做完 → 通知 → 切回。
+        // 纸条文本带【系统通知】前缀（JobCompletionNotice）——投影层
+        // markerPrefixes 按前缀隐藏（用户无感；AI 侧语义清晰）。
         jobNoticeDisposers.removeValue(forKey: sessionId)?()
         let noticeSessionId = sessionId
-        var notifier = jobNotifier
-        notifier.diagTrace = { [weak self] sessionId, note in
-            guard let sessionId else { return }
-            self?.diagTrace(sessionId: sessionId, note)
-        }
         jobNoticeDisposers[sessionId] = jobRegistry.onJobDone { [weak agentLoop] snapshot, owner in
             if snapshot.reported || owner == nil { return }
             let text = JobCompletionNotice.text(for: snapshot)
             if owner == noticeSessionId {
                 Task { [weak agentLoop] in
                     await agentLoop?.inject(text)
-                    await notifier.notifyIfNeeded(snapshot: snapshot,
-                                                  ownerSessionId: owner,
-                                                  noticeText: text)
-                }
-            } else {
-                Task {
-                    await notifier.notifyIfNeeded(snapshot: snapshot,
-                                                  ownerSessionId: owner,
-                                                  noticeText: text)
                 }
             }
         }
+
+        // 真机批 B4：回合完成 → 用户验收提醒挂点（见 deps 构造前的
+        // callbacks.onTurnEnd 包装——deps 须在构造前拿到包装版 callbacks）。
+
 
         // M4-E E5：SessionStart 挂点（CC index.ts:206-215 detached 火忘——
         // R5：不阻塞 stack 构建；慢 hook 可能错过首请求，dsh TODO(session-

@@ -140,7 +140,10 @@ enum JobCompletionNotice {
     /// prefix+头部保留 detail+omitted+action → prefix+action →
     /// 尾部保留 action / 头部保留 prefix+action。
     static func text(for snapshot: JobSnapshot) -> String {
-        let prefix = "background job \(snapshot.id)"
+        // 【系统通知】前缀（真机批 B4）：投影层 markerPrefixes 据此隐藏
+        // （用户无感——纸条是给 AI 的中间事件，不冒充用户气泡）；AI 侧
+        // 前缀即来源标识，语义清晰。
+        let prefix = "【系统通知】background job \(snapshot.id)"
         let detail = " (\(snapshot.kind.rawValue): \(snapshot.label)) finished "
             + jobStatusLine(status: snapshot.status, detail: snapshot.detail)
         let action = "\nDone; job_output."

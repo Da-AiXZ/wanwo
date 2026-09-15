@@ -37,9 +37,13 @@ struct WanWoApp: App {
                     // .active 即前台返回语义。
                     switch phase {
                     case .background:
-                        JobNotifier.noteBackgrounded()   // 真机批 C 接线：进后台标记（通知判定用）
+                        // 真机批 B4：后台保活（~30s 执行窗口——回合在窗口内
+                        // 继续跑完 → onTurnEnd 通知"回来验收"；到期冻结=
+                        // iOS 硬约束，回前台解冻涌出为既有恢复路径）。
+                        BackgroundKeepAlive.shared.begin()
                         environment.resourceGovernor.handleDidEnterBackground()
                     case .active:
+                        BackgroundKeepAlive.shared.end()
                         environment.resourceGovernor.handleWillEnterForeground()
                     case .inactive:
                         break

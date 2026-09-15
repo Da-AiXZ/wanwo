@@ -199,56 +199,57 @@ final class JobToolsTests: XCTestCase {
     }
 
     func testFitCompletionNoticeFourStages() {
-        // 字节账（逐一对拍 index.ts:145-166）：
-        // prefix=21 / action=18 / omitted=19 / fixed=58 / compact=39。
+        // 字节账（逐一对拍 index.ts:145-166；真机批 B4 加【系统通知】前缀
+        // 15 字节——投影层隐藏标记，各段 maxBytes 相应平移）：
+        // prefix=36 / action=18 / omitted=19 / fixed=73 / compact=54 / complete=132。
         let snapshot = JobSnapshot(id: "bash-1", kind: .bash,
                                    label: "abcdefghij",
                                    outputLimitBytes: nil, ownerSessionId: "s1",
                                    status: .completed, detail: "exit code: 0",
                                    startedAt: 1, finishedAt: 2)
-        let complete = "background job bash-1 (bash: abcdefghij) finished "
+        let complete = "【系统通知】background job bash-1 (bash: abcdefghij) finished "
             + "[status: completed, exit code: 0]. Read its output with job_output."
 
         // 段①：无预算 / 预算足够 → 完整文本。
         XCTAssertEqual(JobCompletionNotice.text(for: snapshot), complete)
         var limited = JobSnapshot(id: "bash-1", kind: .bash, label: "abcdefghij",
-                                  outputLimitBytes: 200, ownerSessionId: "s1",
+                                  outputLimitBytes: 215, ownerSessionId: "s1",
                                   status: .completed, detail: "exit code: 0",
                                   startedAt: 1, finishedAt: 2)
         XCTAssertEqual(JobCompletionNotice.text(for: limited), complete)
 
-        // 段②：58 ≤ max < complete → prefix + retainHead(detail) + omitted + action。
-        // complete=117；maxBytes=70 → detail 头部保留 12 字节。
+        // 段②：73 ≤ max < 132 → prefix + retainHead(detail) + omitted + action。
+        // complete=132；maxBytes=85 → detail 头部保留 12 字节（85-73）。
         limited = JobSnapshot(id: "bash-1", kind: .bash, label: "abcdefghij",
-                              outputLimitBytes: 70, ownerSessionId: "s1",
+                              outputLimitBytes: 85, ownerSessionId: "s1",
                               status: .completed, detail: "exit code: 0",
                               startedAt: 1, finishedAt: 2)
         XCTAssertEqual(JobCompletionNotice.text(for: limited),
-                       "background job bash-1 (bash: abcd\n[notice truncated]\nDone; job_output.")
+                       "【系统通知】background job bash-1 (bash: abcd\n[notice truncated]\nDone; job_output.")
 
-        // 段③：compact ≤ max < fixed（39 ≤ 50 < 58）→ prefix + action。
+        // 段③：compact ≤ max < fixed（54 ≤ 65 < 73）→ prefix + action。
         limited = JobSnapshot(id: "bash-1", kind: .bash, label: "abcdefghij",
-                              outputLimitBytes: 50, ownerSessionId: "s1",
+                              outputLimitBytes: 65, ownerSessionId: "s1",
                               status: .completed, detail: "exit code: 0",
                               startedAt: 1, finishedAt: 2)
         XCTAssertEqual(JobCompletionNotice.text(for: limited),
-                       "background job bash-1\nDone; job_output.")
+                       "【系统通知】background job bash-1\nDone; job_output.")
 
-        // 段④a：action(18) ≥ max(10) → retainTail(action, max)。
+        // 段④a：action(18) ≥ max(10) → retainTail(action, max)（无前缀）。
         limited = JobSnapshot(id: "bash-1", kind: .bash, label: "abcdefghij",
                               outputLimitBytes: 10, ownerSessionId: "s1",
                               status: .completed, detail: "exit code: 0",
                               startedAt: 1, finishedAt: 2)
         XCTAssertEqual(JobCompletionNotice.text(for: limited), "ob_output.")
 
-        // 段④b：compact > max > action(18)（18 < 30 < 39）→
-        // retainHead(prefix, 12) + action。
+        // 段④b：compact > max > action（18 < 45 < 54）→
+        // retainHead(prefix, 27) + action。
         limited = JobSnapshot(id: "bash-1", kind: .bash, label: "abcdefghij",
-                              outputLimitBytes: 30, ownerSessionId: "s1",
+                              outputLimitBytes: 45, ownerSessionId: "s1",
                               status: .completed, detail: "exit code: 0",
                               startedAt: 1, finishedAt: 2)
         XCTAssertEqual(JobCompletionNotice.text(for: limited),
-                       "background j\nDone; job_output.")
+                       "【系统通知】background j\nDone; job_output.")
     }
 
     // MARK: 2. job_output

@@ -516,6 +516,13 @@ actor AgentLoop {
         }
         let finalReason = endReason ?? .completed
 
+        // 真机批 B4：回合收尾清理过时纸条（JobCompletionNotice 前缀）——
+        // 纸条 = "作业完成去取结果"的中间提醒；回合已结束时 AI 多经 job_output
+        // wait 直接拿到结果，纸条已过时（滞留会在后续回合被 claim 出现旧闻）。
+        // 按前缀过滤（非全清）：Stop hook 的 steer 文本同住 nextStepInbox，
+        // 须跨回合存活（强制续步语义），不得误伤。清理位先于 Stop 挂点。
+        nextStepInbox.removeAll { $0.text.hasPrefix("【系统通知】") }
+
         // M4-E E5：Stop 挂点（CC index.ts:270-277 / codex :260-270——dsh
         // agent/turn-stopping 位，turnEnd 落盘前）。仅自然完成边界触发
         // （aborted/error/blocked/maxTokens 非 stopping boundary 语义——取消

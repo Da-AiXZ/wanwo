@@ -580,12 +580,18 @@ private let jsHelperSource = """
   }
 
   // bootstrap.ts:216-229 prepareException 的 message 提取（不可渲染 → null）。
+  // 【真机批 B4 底座差异对拍修】message 优先于 stack：Node(V8) 的 stack
+  // 首行含 "Error: message"（dsh 取 stack = message+栈帧信息更全），而
+  // JavaScriptCore 的 stack 首行只有 "函数名@位置"（message 丢失——CI
+  // 实证 "newError@" 畸形）。JSCore 底座 = message 在前，stack 兜底。
   function messageOf(error) {
     try {
       if (error instanceof I.Error) {
+        const m = error.message;
+        if (m !== undefined && m !== null && m !== '') return I.string(m);
         const stack = error.stack;
         if (stack !== undefined && stack !== null) return I.string(stack);
-        return I.string(error.message);
+        return I.string(error);
       }
       return I.string(error);
     } catch {
@@ -1278,7 +1284,14 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 finish(result: ledger.success(logs, nil))
                 return
             }
-            let encoded = api!.objectForKeyedSubscript("encode")!
+            // 【真机批 B4 竞态防御】api 在 finish 后置 nil（另一线程）——
+            // settled 守卫与读取间存在 TOCTOU 窗口（CI 实证 1316 行 nil 崩
+            // 溃），强解包改守卫解包：api 已清 = 收敛已发生，静默丢弃。
+            guard let liveAPI = api else {
+                config.onTrace("[jscore] resolve dropped (api cleared)")
+                return
+            }
+            let encoded = liveAPI.objectForKeyedSubscript("encode")!
                 .call(withArguments: [value])
             if encoded == nil || encoded!.isUndefined {
                 // bootstrap :178-185——snapshot 失败 = invalid-output。
@@ -1312,8 +1325,12 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 return
             }
             // bootstrap :216-229 prepareException——stack??message→String，
-            // 不可渲染 = 固定文案。
-            let rendered = api!.objectForKeyedSubscript("messageOf")!
+            // 不可渲染 = 固定文案。同上：api 清空竞态防御（守卫解包）。
+            guard let liveAPI = api else {
+                config.onTrace("[jscore] reject dropped (api cleared)")
+                return
+            }
+            let rendered = liveAPI.objectForKeyedSubscript("messageOf")!
                 .call(withArguments: [error])
             let message = rendered.flatMap {
                 ($0.isNull || $0.isUndefined) ? nil : $0.toString()
