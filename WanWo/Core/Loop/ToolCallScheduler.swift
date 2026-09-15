@@ -240,13 +240,13 @@ enum ToolCallScheduler {
         inflightCallIds.insert(call.id)
         inflightLock.unlock()
         let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
-        // 真机批 B：调度层硬超时（15 分钟）——引擎收敛后调用链不唤醒的
+        // 真机批 B：调度层硬超时（20 分钟）——引擎收敛后调用链不唤醒的
         // 真机特有断点的自愈面（run_code 程序 3 秒成功但 execute 16 分钟
         // 不返回的实证）。超时→合成结果落盘+卡片收敛（引擎任务继续后台
         // 自行了断，不影响会话）。并行批路径同款（runParallelBatch）。
         deps.diagTrace("scheduler: runSingle pipeline.run begin " + call.name)
-        let output = await ToolCallScheduler.withHardTimeout(900, fallback: ToolOutput.failure(
-            "工具执行超过 15 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
+        let output = await ToolCallScheduler.withHardTimeout(1200, fallback: ToolOutput.failure(
+            "工具执行超过 20 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
             name: "ToolHardTimeoutError")) {
             await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
         }
@@ -294,8 +294,8 @@ enum ToolCallScheduler {
                     }
                     let ctx = makeContext(deps, turn: turn, step: step, callId: call.id)
                     deps.diagTrace("scheduler: batch pipeline.run returned " + call.name)
-                    let output = await ToolCallScheduler.withHardTimeout(900, fallback: ToolOutput.failure(
-                        "工具执行超过 15 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
+                    let output = await ToolCallScheduler.withHardTimeout(1200, fallback: ToolOutput.failure(
+                        "工具执行超过 20 分钟未返回，已被强制终止。", code: "TOOL_HARD_TIMEOUT",
                         name: "ToolHardTimeoutError")) {
                         await deps.pipeline.run(toolName: call.name, args: args, ctx: ctx)
                     }

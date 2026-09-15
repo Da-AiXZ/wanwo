@@ -9,6 +9,13 @@ struct WanWoApp: App {
     @Environment(\.scenePhase) private var scenePhase
     private let lifecycleLogger = AppLogger(category: "AppLifecycle")
 
+    init() {
+        // 真机批 B3：通知 delegate 注册（启动最早期——OpenMinis :424-430
+        // 时序纪律：didFinishLaunching 返回前未设置则前台投递缺失；SwiftUI
+        // App 的 init 即最早注册点）。
+        WanWoNotificationDelegate.shared.register()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

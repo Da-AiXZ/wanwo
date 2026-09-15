@@ -79,6 +79,9 @@ struct JobNotifier: Sendable {
 
     /// 通知投递（identifier=job id；无 trigger=立即呈现——系统推荐形态；
     /// 无声）。生产=UNUserNotificationCenter.add。
+    /// 【真机批 B3】吞错可见化：此前 try? 静默——投递成功/失败无痕迹，
+    /// "判定通过、授权允许、通知栏无通知"无法定位（前台静默丢弃由
+    /// NotificationDelegate.willPresent 修复，本处消 add 环节盲区）。
     var addNotification: @Sendable (_ identifier: String, _ title: String,
                                     _ body: String) async -> Void
         = { identifier, title, body in
@@ -89,7 +92,13 @@ struct JobNotifier: Sendable {
             let request = UNNotificationRequest(identifier: identifier,
                                                 content: content,
                                                 trigger: nil)
-            try? await UNUserNotificationCenter.current().add(request)
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                Self.logger.info("[jobnotify] added ok: \(identifier)")
+            } catch {
+                Self.logger.error("[jobnotify] add failed for "
+                                  + "\(identifier): \(String(describing: error))")
+            }
         }
 
     /// 作业 settle 后按需发本地通知（onJobDone listener 消费面）。
