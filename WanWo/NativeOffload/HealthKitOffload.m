@@ -2509,10 +2509,15 @@ static NSDictionary *logCategoryTypeInfo(NSString *name) {
             table[@"sleep-apnea-event"]         = Cat(HKCategoryTypeIdentifierSleepApneaEvent, @"sleep", YES, nil,
                                         @"Sleep apnea detection event — iOS 18+.");
         }
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 260200
+        // 【WanWo 终验补】SDK 编译期守卫：CI runner SDK < 26.2 无
+        // HKCategoryTypeIdentifierHypertensionEvent 符号（运行时 @available
+        // 只挡运行、不挡编译——OpenMinis 原件构建于新 SDK 故无需此守卫）。
         if (@available(iOS 26.2, *)) {
             table[@"hypertension-event"]        = Cat(HKCategoryTypeIdentifierHypertensionEvent, @"cardio-event", NO, nil,
                                         @"Hypertension notification — iOS 26.2+.");
         }
+#endif
     });
     return table[[name lowercaseString]];
 }
