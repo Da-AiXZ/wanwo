@@ -436,6 +436,11 @@ actor PtcDispatchLane {
     private var pendingQueue: [PtcDispatchEntry] = []
     private var commitQueue: [PtcDispatchEntry] = []
     private var inFlight = 0
+    /// 在飞 commit 数（stepOnce 已 removeFirst、appendSettle 尚未返回）——
+    /// drain 的等待面之一：dsh ptc.ts:448-451 "drains the ordered commit
+    /// lane — including a commit already in progress when the program
+    /// returned"，泵干只见未提交条目，看不到已在飞的那个。
+    private var commitsInFlight = 0
     private var exclusiveActive = false
     private var driverTask: Task<Void, Never>?
     private var wakeContinuation: CheckedContinuation<Void, Never>?
@@ -463,17 +468,17 @@ actor PtcDispatchLane {
         wake()
     }
 
-    /// 等到车道静默（dsh ptc.ts:448-456 drainDispatches 语义：run 落定后
-    /// drive() 是一轮有限推进——aborted 弃单未启动条目、在飞 body 已随外层
-    /// 取消消亡或已落定、有序 commit 车道排干——然后返回）。
-    /// 本类 driveLoop 是常驻服务循环（无活即 waitForWake 等下一个 submit），
-    /// 永不退出——drain 若等 driverTask.value 即永挂（真机实证：run_code
-    /// 程序成功后工具 448s 无结果，run 34903942927 事件流；CI 挂死族
-    /// testAbandoned/testDispatchEvents 同根因）。就地泵干：反复 stepOnce
-    /// 至无可推进；actor 串行化保证与服务循环互斥，removeFirst 先于 commit
-    /// 的同步段防止双 commit。
+    /// 就地泵干：反复 stepOnce 至无可推进。actor 串行化保证与服务循环
+    /// 互斥，removeFirst 先于 commit 的同步段防止双 commit。
+    /// 在飞 commit（已 removeFirst、appendSettle 挂起中）泵干不可见——
+    /// CI 实证：单子派发测试读事件 count=1，settle 稍后才落盘（迟到），
+    /// testAbandoned settles[0] 越界崩溃同根因——yield 等其在飞落盘。
     func drain() async {
-        while await stepOnce() { }
+        while true {
+            let progressed = await stepOnce()
+            if !progressed && commitsInFlight == 0 { return }
+            if !progressed { await Task.yield() }
+        }
     }
 
     // MARK: 驱动循环（ptc.ts:392-446 drive 1:1）
@@ -611,6 +616,8 @@ actor PtcDispatchLane {
     /// 事件落盘（内联 await = 登记⑦；append 失败记日志不回滚）。
     private func commit(_ entry: PtcDispatchEntry) async {
         guard let output = entry.parkedOutput else { return } // 不可达：settled 翻转时已 park
+        commitsInFlight += 1
+        defer { commitsInFlight -= 1 }
         // 先结算后落盘：程序值绝不等待事件 append（ptc.ts:486-495 注释）。
         entry.fulfill(output)
         await appendSettle(entry, output)

@@ -476,7 +476,8 @@ final class RunCodeToolTests: XCTestCase {
             "name": .string("ptc_echo"),
             "arguments": .object(["i": .int(1)]),
         ])
-        // settle 全形态（types.ts:20-23；content = 单 text 块，登记⑰）。
+        // settle 全形态（types.ts:20-23；content = 单 text 块**数组**——
+        // schema :167 requiredFields 声明 .array，真机批 B2 对齐）。
         let settle = try XCTUnwrap(extensionFields(of: stack.writer.events[1]))
         XCTAssertEqual(settle.kind, PtcDispatchEvents.dispatchKind)
         XCTAssertEqual(settle.fields, [
@@ -486,7 +487,7 @@ final class RunCodeToolTests: XCTestCase {
             "name": .string("ptc_echo"),
             "arguments": .object(["i": .int(1)]),
             "isError": .bool(false),
-            "content": .object(["type": .string("text"), "text": .string("echo-ok")]),
+            "content": .array([.object(["type": .string("text"), "text": .string("echo-ok")])]),
         ])
     }
 

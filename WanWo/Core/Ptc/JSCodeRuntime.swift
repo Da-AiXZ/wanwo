@@ -1083,8 +1083,9 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             // 程序调用 → promise → settlement 桥（bootstrap :412 同构）。
             // fallback 模式：transform 输出已整体求值（__dsh_program__ 在
             // globalObject），直接取用调用；正常模式走 makeProgram 构造。
-            // 真机批 B 定位针：程序体首行执行证明（console 捕获→logs 可见）。
-            stripped = "console.log('[jscore-body] started');\n" + stripped
+            // （真机批 B 定位针 `console.log('[jscore-body] started')` 已移除：
+            //   程序执行证明职责由 onTrace 打点链承载（run start/program
+            //   dispatched），注入行会污染 logs 渲染面——CI 实证渲染断言四连败。）
             let promise: JSValue
             if fallbackMode {
                 context.evaluateScript(stripped)
