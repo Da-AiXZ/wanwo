@@ -78,10 +78,10 @@ final class BrowserUseEngineTests: XCTestCase {
             OriginPolicy.shared.defaultRule = savedDefault
             OriginPolicy.shared.askHandler = savedHandler
         }
-        try body()
+        try await body()
     }
 
-    func testAccessDecisionMatrix() {
+    func testAccessDecisionMatrix() async {
         await withResetPolicy {
             // access：缺省 allow（含任意 origin）。
             XCTAssertEqual(OriginPolicy.shared.decide(\.access, for: "https://a.com"), .allow)
@@ -101,7 +101,7 @@ final class BrowserUseEngineTests: XCTestCase {
     }
 
     /// 最长前缀匹配：更深前缀覆盖胜出（codex origins 前缀语义本地近似）。
-    func testLongestPrefixOverrideWins() {
+    func testLongestPrefixOverrideWins() async {
         await withResetPolicy {
             OriginPolicy.shared.originOverrides = [
                 "https://a.com": OriginPolicyRule(access: .allow, downloads: .allow,
