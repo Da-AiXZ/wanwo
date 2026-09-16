@@ -14,7 +14,17 @@
 //       于"账本未记成员"的直接调用场景，不作为 deriveGroups 的组成员
 //       资格来源——组成员资格 = 账本 ∩ 会话集合，见 deriveGroups）；
 //    7. blank 占位会话语义 = 新建会话的临时行（title nil → 「新会话」）。
-//  平铺模式保留 M3 以来单层列表（既有行为零变化）。
+//  【UI 对齐批 1（C3/C4/C5）增量】
+//    · blank 规则翻转（dsh tree.ts:131）：blank 占位会话仅当它是当前选中
+//      会话才可见（原先恒可见做反了）——deriveGroups 增 currentSessionID；
+//    · 账户视图序（dsh :296-336 折算）：deriveGroups 增 accountOrders——
+//      「按更新」模式下组内/未分组/平铺按排序账户（SidebarOrderAccounts）
+//      对账展示，账本序仍是持久真源；
+//    · 搜索升级（dsh :352-427 本地半边）：本地过滤 = 标题 + 所属工作区名
+//      子串，blank 排除（dsh :384——blank 规范标题恒空，可搜即绑语言）；
+//      查询消毒（去 NUL + 500 UTF-16 code units 上限，:59-67）。
+//
+//  平铺模式保留 M3 以来单层列表（既有交互零变化）。
 //
 
 import Foundation
@@ -50,13 +60,48 @@ enum SidebarGroupingModel {
         return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// 本地标题过滤（dsh :877 trim 语义；服务端内容搜索 = M9.3 FTS 后置）。
+    /// 查询上限（dsh WorkspaceBrowser.tsx:39——500 UTF-16 code units）。
+    static let queryMaxCodeUnits = 500
+
+    /// 查询消毒（dsh sanitizeSearchQuery :59-67）：去 NUL + 代理对安全截断
+    /// 到 500 UTF-16 code units。
+    nonisolated static func sanitizeQuery(_ raw: String) -> String {
+        let withoutNUL = raw.replacingOccurrences(of: "\0", with: "")
+        var units = Array(withoutNUL.utf16)
+        guard units.count > queryMaxCodeUnits else { return withoutNUL }
+        var end = queryMaxCodeUnits
+        // 代理对安全：被截点恰好拆散代理对时回退一位。
+        if units[end - 1] >= 0xD800, units[end - 1] <= 0xDBFF,
+           end < units.count, units[end] >= 0xDC00, units[end] <= 0xDFFF {
+            end -= 1
+        }
+        units.removeSubrange(end...)
+        return String(decoding: units, as: UTF16.self)
+    }
+
+    /// 本地过滤（dsh deriveSearchResults 本地半边 :379-392）：标题 + 所属
+    /// 工作区名子串（工作区标题优先，未归属会话无工作区标签）；blank 排除
+    /// （dsh :384——blank 行规范标题恒空，可搜即绑单一语言）。
+    /// 服务端内容搜索 = M9.3 FTS 后置（挂账不变）。
     nonisolated static func filterSessions(_ sessions: [SessionSummary],
-                                           query: String) -> [SessionSummary] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                                           query: String,
+                                           workspaces: [WorkspaceRecord] = []) -> [SessionSummary] {
+        let needle = sanitizeQuery(query).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return sessions }
-        return sessions.filter {
-            ($0.title ?? "新会话").localizedCaseInsensitiveContains(needle)
+        // 会话 → 工作区标题映射（dsh workspaceBySession :366-371）。
+        var titleBySession: [String: String] = [:]
+        for workspace in workspaces {
+            for sessionID in workspace.sessionIds where titleBySession[sessionID] == nil {
+                titleBySession[sessionID] = workspace.title
+            }
+        }
+        return sessions.filter { summary in
+            if isBlank(summary) { return false }
+            if let title = summary.title,
+               title.localizedCaseInsensitiveContains(needle) { return true }
+            if let workspaceTitle = titleBySession[summary.id],
+               workspaceTitle.localizedCaseInsensitiveContains(needle) { return true }
+            return false
         }
     }
 
@@ -100,18 +145,34 @@ enum SidebarGroupingModel {
 
     /// 分组树（§9 清单 1）：分组开 → 每工作区一组（dsh deriveGroups :25——
     /// 空工作区也出组行）+ Ungrouped 桶（未归工作区会话）；分组关 → 平铺单组。
-    /// 输入会话应为「已过滤+已归档排除」后的渲染集合（本模型不做过滤）。
+    /// 输入会话应为「已过滤+已归档排除」后的渲染集合（本模型不做归档过滤）。
+    /// 【UI 对齐批 1 增量】
+    ///   · currentSessionID：blank 规则翻转（dsh tree.ts:131）——blank 占位
+    ///     会话仅当它是当前选中会话才可见（组内/未分组/平铺全域同规则）；
+    ///   · accountOrders：排序账户展示序（dsh :296-336 折算）——nil = 既有
+    ///     行为（组内账本序 / 其余按 sort），非 nil = 各桶按账户序对账展示。
     nonisolated static func deriveGroups(sessions: [SessionSummary],
                                          workspaces: [WorkspaceRecord],
                                          grouped: Bool,
-                                         sort: SidebarSort) -> [SidebarGroup] {
+                                         sort: SidebarSort,
+                                         currentSessionID: String? = nil,
+                                         accountOrders: [String: [String]]? = nil) -> [SidebarGroup] {
+        // blank 规则翻转（dsh sessionVisible :131-135）：blank 仅当它是当前
+        // 会话才可见——分组/未分组/平铺全域同规则（dsh deriveFlat :332 同源）。
+        let visible = sessions.filter { !isBlank($0) || $0.id == currentSessionID }
+        let byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
         guard grouped else {
-            let ordered = sorted(sessions, by: sort)
+            let ordered: [String]
+            if let accountOrders {
+                ordered = reconciledOrder(stored: accountOrders[flatKey] ?? [],
+                                          within: visible.map(\.id))
+            } else {
+                ordered = sorted(visible, by: sort).map(\.id)
+            }
             return [SidebarGroup(id: flatKey, title: "会话",
                                  workspaceID: nil,
-                                 sessionIds: ordered.map(\.id))]
+                                 sessionIds: ordered)]
         }
-        let byID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         var groups: [SidebarGroup] = []
         var assigned = Set<String>()
         for workspace in workspaces {
@@ -123,16 +184,44 @@ enum SidebarGroupingModel {
             // 账本序对账（reconciledSessionOrder）只作用于账本成员的排序。
             let ledgerMembers = workspace.sessionIds.filter { byID[$0] != nil }
             ledgerMembers.forEach { assigned.insert($0) }
+            let ordered: [String]
+            if let accountOrders {
+                ordered = reconciledOrder(stored: accountOrders[workspace.id] ?? [],
+                                          within: ledgerMembers)
+            } else {
+                ordered = ledgerMembers
+            }
             groups.append(SidebarGroup(id: workspace.id, title: workspace.title,
                                        workspaceID: workspace.id,
-                                       sessionIds: ledgerMembers))
+                                       sessionIds: ordered))
         }
-        // Ungrouped 桶（dsh UNGROUPED_KEY）：未归任何工作区的会话，排序照 sort。
-        let ungrouped = sessions.filter { !assigned.contains($0.id) }
+        // Ungrouped 桶（dsh UNGROUPED_KEY）：未归任何工作区的会话，排序照 sort
+        // （有账户序时按账户对账——dsh ungroupedOrder :344-346）。
+        let ungrouped = visible.filter { !assigned.contains($0.id) }
+        let ungroupedOrdered: [String]
+        if let accountOrders {
+            ungroupedOrdered = reconciledOrder(stored: accountOrders[ungroupedKey] ?? [],
+                                               within: ungrouped.map(\.id))
+        } else {
+            ungroupedOrdered = sorted(ungrouped, by: sort).map(\.id)
+        }
         groups.append(SidebarGroup(id: ungroupedKey, title: "未分组",
                                    workspaceID: nil,
-                                   sessionIds: sorted(ungrouped, by: sort).map(\.id)))
+                                   sessionIds: ungroupedOrdered))
         return groups
+    }
+
+    /// stored 视图序与成员集对账（dsh reconciledSessionOrder :97-113 折算）：
+    /// stored 命中保持序且去重，新成员按传入序补尾。
+    nonisolated static func reconciledOrder(stored: [String], within sessionIds: [String]) -> [String] {
+        let memberSet = Set(sessionIds)
+        var seen = Set<String>()
+        var result = stored.filter { memberSet.contains($0) && seen.insert($0).inserted }
+        let included = Set(result)
+        for id in sessionIds where !included.contains(id) {
+            result.append(id)
+        }
+        return result
     }
 
     /// 折叠视图（§9 清单 2）：收起态可见 = 前 5 条非 blank + 全部 blank 占位

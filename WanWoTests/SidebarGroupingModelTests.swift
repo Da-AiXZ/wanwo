@@ -149,9 +149,94 @@ final class SidebarGroupingModelTests: XCTestCase {
             .map(\.id), ["s2"])
         XCTAssertEqual(SidebarGroupingModel.filterSessions(sessions, query: "")
             .count, 3)
-        // blank 行按「新会话」可搜（dsh blank 行语义）。
+        // 【UI 对齐批 1 C5】blank 排除出搜索（dsh tree.ts:384——blank 规范
+        // 标题恒空，可搜即绑单一语言）。
         XCTAssertEqual(SidebarGroupingModel.filterSessions(sessions, query: "新会话")
-            .map(\.id), ["s3"])
+            .map(\.id), [])
+    }
+
+    func testFilterSessionsByWorkspaceName() {
+        // 【UI 对齐批 1 C5】本地过滤 = 标题 + 所属工作区名子串
+        // （dsh labelOf :372-373）。
+        let wsA = workspace(id: "ws-a", title: "项目A", sessionIds: ["s1"])
+        let sessions = [
+            summary(id: "s1", title: "部署文档整理"),
+            summary(id: "s2", title: "写测试"),
+        ]
+        XCTAssertEqual(SidebarGroupingModel.filterSessions(
+            sessions, query: "项目A", workspaces: [wsA]).map(\.id), ["s1"])
+        XCTAssertEqual(SidebarGroupingModel.filterSessions(
+            sessions, query: "测试", workspaces: [wsA]).map(\.id), ["s2"])
+    }
+
+    func testSanitizeQueryStripsNULAndCapsLength() {
+        // 【UI 对齐批 1 C5】查询消毒（dsh :59-67）：去 NUL + 500 code units。
+        XCTAssertEqual(SidebarGroupingModel.sanitizeQuery("a\0b"), "ab")
+        let long = String(repeating: "测", count: 600)
+        XCTAssertEqual(SidebarGroupingModel.sanitizeQuery(long).utf16.count,
+                       SidebarGroupingModel.queryMaxCodeUnits)
+        XCTAssertEqual(SidebarGroupingModel.sanitizeQuery("正常查询"), "正常查询")
+    }
+
+    // MARK: - 【UI 对齐批 1 C3】blank 规则翻转（dsh tree.ts:131）
+
+    func testBlankVisibleOnlyWhenCurrent() {
+        let wsA = workspace(id: "ws-a", title: "A", sessionIds: ["s1", "b1"])
+        let sessions = [
+            summary(id: "s1", title: "一"),
+            summary(id: "b1", title: nil),
+        ]
+        // blank 是当前选中 → 可见（置于其账本位）。
+        let withCurrentBlank = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [wsA], grouped: true,
+            sort: .updatedDesc, currentSessionID: "b1")
+        XCTAssertEqual(withCurrentBlank[0].sessionIds, ["s1", "b1"])
+        // blank 不是当前选中 → 全域不可见（含 Ungrouped 桶口径）。
+        let withOtherCurrent = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [wsA], grouped: true,
+            sort: .updatedDesc, currentSessionID: "s1")
+        XCTAssertFalse(withOtherCurrent.flatMap(\.sessionIds).contains("b1"))
+        // 无选中 → blank 不可见。
+        let noCurrent = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [wsA], grouped: true,
+            sort: .updatedDesc, currentSessionID: nil)
+        XCTAssertFalse(noCurrent.flatMap(\.sessionIds).contains("b1"))
+    }
+
+    func testBlankVisibilityFlipAppliesToFlatMode() {
+        let sessions = [
+            summary(id: "s1", title: "一"),
+            summary(id: "b1", title: nil),
+        ]
+        let flat = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [], grouped: false,
+            sort: .updatedDesc, currentSessionID: nil)
+        XCTAssertFalse(flat[0].sessionIds.contains("b1"),
+                       "平铺模式同规则（dsh deriveFlat :332 同源）")
+        let flatWithCurrentBlank = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [], grouped: false,
+            sort: .updatedDesc, currentSessionID: "b1")
+        XCTAssertEqual(flatWithCurrentBlank[0].sessionIds, ["s1", "b1"])
+    }
+
+    func testAccountOrdersDriveDisplayOrder() {
+        // 【UI 对齐批 1 C4】账户序展示（dsh :296-336 折算）。
+        let wsA = workspace(id: "ws-a", title: "A", sessionIds: ["s1", "s2"])
+        let sessions = [
+            summary(id: "s1", title: "一"),
+            summary(id: "s2", title: "二"),
+        ]
+        let groups = SidebarGroupingModel.deriveGroups(
+            sessions: sessions, workspaces: [wsA], grouped: true,
+            sort: .updatedDesc, currentSessionID: nil,
+            accountOrders: ["ws-a": ["s2", "s1"]])
+        XCTAssertEqual(groups[0].sessionIds, ["s2", "s1"],
+                       "账户序优先于账本序展示（账本仍是持久真源）")
+        let ungrouped = SidebarGroupingModel.deriveGroups(
+            sessions: [summary(id: "s9", title: "散")], workspaces: [],
+            grouped: true, sort: .updatedDesc, currentSessionID: nil,
+            accountOrders: [SidebarGroupingModel.ungroupedKey: ["s9"]])
+        XCTAssertEqual(ungrouped[0].sessionIds, ["s9"])
     }
 
     func testUpdatedDescSortHasIDTieBreak() {

@@ -81,6 +81,10 @@ final class AppEnvironment: ObservableObject {
     let workspaceRegistry: WorkspaceRegistry
     /// M6.5（B3）：workspace controller（dsh 七动词门面 + follow 快照流）。
     let workspaceController: WorkspaceController
+    /// UI 对齐批 1（A）：会话创建流 workspace 驱动导航器（dsh navigation.ts
+    /// 1:1——connectWorkspace 复用扫描四条件 + startSession 目标解析 +
+    /// watchNavigation 启动语义 + recentWorkspace；详见 WorkspaceNavigator 头注）。
+    let workspaceNavigator: WorkspaceNavigator
     /// M6.5 验收对齐（10-design:1077「切 workspace 后会话隔离生效」）：新会话
     /// cwd 注入点——选中的工作区 path（nil = 缺省 /var/wanwo/workspace，回落
     /// 既有行为）。侧栏工作区选择 UI 随 B4 左侧栏欠账批；本批先落注入链路。
@@ -242,13 +246,7 @@ final class AppEnvironment: ObservableObject {
         // bootstrap 分组共用。realpath/存在性缝用默认实现（挂载 + 静态 fakefs
         // 两面，见 WorkspaceRegistry.GuestPathCanonicalizer）。
         let headerReader: @Sendable (String) -> SessionHeader? = { sid in
-            // id 形态与 SessionStore.fileURL 同校验（fail closed）。
-            guard !sid.isEmpty,
-                  sid.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
-            else { return nil }
-            let url = GroupStore.groupSessionsRoot(
-                base: WanWoPaths.persistentBase, groupID: GroupStore.defaultGroupID)
-                .appendingPathComponent("\(sid).jsonl")
+            guard let url = Self.sessionFileURL(sid) else { return nil }
             guard let probe = try? SessionLogScanner.probeLightweight(fileURL: url) else {
                 return nil
             }
@@ -390,6 +388,33 @@ final class AppEnvironment: ObservableObject {
         // （.offloadPermissionDialog()，全局覆盖——offload 审批可来自任意
         // 会话的内核分发点，非单会话面）。
         OffloadApprovalPresenter.shared.install()
+
+        // UI 对齐批 1（A）：navigation.ts 语义移植——缝闭包注入（weak self；
+        // 测试面同构注入桩，不触真身）。createSessionInWorkspace = createSession
+        // (cwd: ws.path) + attachSession 的 B3 既有注入链收口。
+        // 创建点收口在 init 末尾：闭包捕获 self 须在全部存储属性初始化之后。
+        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
+            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
+            sessions: { [weak self] in self?.database.list() ?? [] },
+            currentSessionID: { [weak self] in
+                if case .session(let id) = self?.selection { return id }
+                return nil
+            },
+            clearSelection: { [weak self] in self?.selection = .none },
+            openSession: { [weak self] in self?.selection = .session(id: $0) },
+            createSessionInWorkspace: { [weak self] in
+                await self?.createSession(inWorkspace: $0)
+            },
+            archivedSessionIDs: { [weak self] in
+                self?.workspaceRegistry.archivedSessionIDs() ?? []
+            },
+            probeSession: { [weak self] in self?.sessionNavProbe($0) },
+            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
+
+        // UI 对齐批 1（A）：watchNavigation 启动语义（navigation.ts:157-200）
+        // ——订阅 sessionsRevision + 工作区 follow 快照流，就绪后无选中会话
+        // 即自动 connectWorkspace(recent) 并打开。
+        workspaceNavigator.attach(environment: self)
     }
 
     // MARK: - 会话
@@ -403,21 +428,31 @@ final class AppEnvironment: ObservableObject {
         // 新会话 cwd 解析走所选 workspace path（dsh「先建会话再 attach」流程，
         // workspace.zh.md :122）；未选工作区回落缺省 /var/wanwo/workspace（既有
         // 行为零变化）。cwd 落入不可变 SessionHeader 后 attachSession 再校验。
-        var attachedWorkspaceID: String?
-        let cwd: String
         if let wid = selectedWorkspaceID, let ws = workspaceRegistry.get(wid) {
-            cwd = ws.path
-            attachedWorkspaceID = wid
-        } else {
-            cwd = WanWoPaths.linuxBaseDir + "/workspace"
+            return await createSession(cwd: ws.path, workspaceID: wid)
         }
+        return await createSession(cwd: WanWoPaths.linuxBaseDir + "/workspace",
+                                   workspaceID: nil)
+    }
+
+    /// UI 对齐批 1（A）：connectWorkspace 落点——指定工作区建会话（cwd =
+    /// workspace.path 注入 + attachSession 校验；B3 既有链路收口，dsh
+    /// sessions.create({workspaceId}) 的 cwd 由服务端定为 workspace.path 同语义）。
+    func createSession(inWorkspace workspaceID: String) async -> SessionSummary? {
+        guard let ws = workspaceRegistry.get(workspaceID) else { return nil }
+        selectedWorkspaceID = workspaceID
+        return await createSession(cwd: ws.path, workspaceID: workspaceID)
+    }
+
+    /// 创建核心（cwd + 预挂工作区 id 注入）。
+    private func createSession(cwd: String, workspaceID: String?) async -> SessionSummary? {
         guard let summary = try? await sessionStore.createSession(cwd: cwd) else {
             return nil
         }
-        if let attachedWorkspaceID {
+        if let workspaceID {
             do {
                 try workspaceRegistry.attachSession(sessionId: summary.id,
-                                                    to: attachedWorkspaceID)
+                                                    to: workspaceID)
             } catch {
                 // attach 校验失败（如 header cwd 与工作区 path 漂移）不阻塞
                 // 会话创建——会话按缺省归属落 Ungrouped，错误进日志。
@@ -426,6 +461,25 @@ final class AppEnvironment: ObservableObject {
         }
         sessionsRevision += 1
         return summary
+    }
+
+    // MARK: - UI 对齐批 1（A）：导航探针缝
+
+    /// 会话事件流文件 URL（id 形态与 SessionStore.fileURL 同校验——fail closed）。
+    fileprivate static func sessionFileURL(_ sessionID: String) -> URL? {
+        guard !sessionID.isEmpty,
+              sessionID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return GroupStore.groupSessionsRoot(
+            base: WanWoPaths.persistentBase, groupID: GroupStore.defaultGroupID)
+            .appendingPathComponent("\(sessionID).jsonl")
+    }
+
+    /// 复用扫描/blank 判定的轻量探针（简报 A.4：只读 header + 首事件窗口，
+    /// 禁止全量读流；probeLightweight 同思路）。
+    fileprivate func sessionNavProbe(_ sessionID: String) -> SessionNavProbeResult? {
+        guard let url = Self.sessionFileURL(sessionID) else { return nil }
+        return SessionNavProbe.probe(fileURL: url)
     }
 
     func deleteSession(id: String) async {

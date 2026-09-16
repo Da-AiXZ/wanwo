@@ -8,28 +8,48 @@
 //  独立新建钮 :189-200（IconNewChat 14 + 'session.new'「新会话」）、
 //  浏览区 :202-209（sidebar.workspaces hole）、foot :211-219（设置入口底部钉住）。
 //  dsh ui-workspace/src/client/rows/WorkspaceBrowser.tsx —— 浏览区：
-//  section header :1072-1181（「会话」label + 搜索）、orderBy.updated 语义
-//  :116-121（updatedAt 降序 + Session id 升序 tie-break）、
+//  section header :1072-1181（「工作区/会话」label + 搜索）、orderBy.updated
+//  语义 :116-121（updatedAt 降序 + Session id 升序 tie-break）、
 //  空态/搜索态词汇 :436-438/:783-785（'empty.none'「暂无会话」/
 //  'search.noMatches'「无匹配会话」）、相对时间词典 :65-71（'time.ago'「{t}前」）。
 //
-//  【M6.6 B4 增量改造（§9 左侧栏欠账 6 项；语义源 WorkspaceBrowser.tsx +
-//  B3 WorkspaceRegistry/Controller）——M3 以来稳定面保持增量，不推倒重写】
-//    ① 工作区分组树（groups 行 + 组内会话 + Ungrouped 桶；SidebarGroupingModel
-//      纯逻辑收口）+ 平铺模式保留（ViewOptionsMenu 切换——既有单层列表原样）；
+//  【M6.6 B4 增量改造（§9 左侧栏欠账 6 项）——M3 以来稳定面保持增量，不推倒重写】
+//    ① 工作区分组树（groups 行 + 组内会话 + Ungrouped 桶）+ 平铺模式保留；
 //    ② 每组 5 条折叠 + 「展开其余 N 个会话」（COLLAPSED_SESSION_LIMIT=5；
 //      blank 占位不计限额）；
-//    ③ 拖拽排序（会话行 draggable → 组内 insertSessionBefore；工作区行 →
-//      insertBefore；另配上移/下移菜单兜底——触屏拖拽形态标注见批次报告）；
-//    ④ 行操作补齐（F072）：重命名（会话标题 / 工作区 groups.name）/ 归档
-//      （archivedAtMs——归档行从列表隐去）；滑动删除保留（平铺模式既有交互）；
-//    ⑤ section header 三钮：搜索（本地标题过滤保留，升级 = M9.3 FTS 后）/
-//      视图选项（分组-平铺 + 排序）/ 添加工作区（+ → 目录选择 → 挂载 →
-//      WorkspaceRegistry.create → 建会话 attach——dsh「选择目录就是添加
-//      工作区的全部」语义，iOS 走 UIDocumentPicker 不可抗力映射）；
-//    ⑥ blank 占位会话（title nil → 「新会话」行，新建会话即占位行）。
-//  诊断区旧 ShellTestView 入口随本批降级为 DEBUG-only（ia-audit §3.1 计划；
-//  终端迁入右侧栏 WorkspaceTerminalTabView）。
+//    ③ 拖拽排序（组内 insertSessionBefore；工作区行 → insertBefore）；
+//    ④ 行操作补齐（F072）：重命名 / 归档（archivedAtMs 行隐去）；
+//    ⑤ section header 三钮：搜索 / 视图选项 / 添加工作区；
+//    ⑥ blank 占位会话（title nil → 「新会话」行）。
+//
+//  【UI 对齐批 1（C 左栏对齐清单）增量——语义源 dsh WorkspaceBrowser.tsx
+//  + Rows.tsx + tree.ts + WorkspacePicker.tsx，逐项锚点见各成员注释】
+//    C1  + 弹层 addOnly：header + → 应用内 Menu（单项「添加工作区」）→ 选中
+//        才进目录流（WorkspacePicker.tsx:101-118）；目录流期间菜单禁用（flowBusy）。
+//    C2  组行 +：hover/操作区加 +，点击 = 展开该组 + startSession(组 id)
+//        （WorkspaceBrowser.tsx:508-513, Rows.tsx:187-194）。
+//    C3  blank 规则翻转（tree.ts:131）：blank 仅当它是当前选中会话才可见；
+//        当前 blank 在其账户 + flat 账户双置顶（promotedBlank :847-864）；
+//        blank 行无相对时间无 ⋯菜单（Rows.tsx:457-461，显示「新会话」标题）。
+//    C4  排序账户（:96-161/865-872）：每工作区 + UNGROUPED + FLAT 各一本地
+//        账户（SidebarOrderAccounts）；「按更新」模式活动提升（新活动会话
+//        一次性置顶 :137-149）+ 切到 updated 全量重排；retainAccountKeys 回收。
+//    C5  搜索内联展开（:1078-1133）：点击图标展开；查询状态跨树存活（不随
+//        收起清空）；本地过滤 = 标题 + 所属工作区名子串，blank 排除；查询
+//        消毒（去 NUL + 500 code units）。Escape/外部点击收起——Escape 为
+//        web 键盘态，触屏无对应（不可抗力省略），外部点击收起已实现。
+//    C6  组展开态持久化（:291-294）：per-key 显式状态（expanded/collapsed
+//        双集合 = dsh groupExpansion Record 显式 0-or-5 折算）+ 当前会话所在
+//        组自动展开（仅未显式碰过的组）。
+//    C7  工作区重命名对话框查重（:970-973）+ 删除工作区确认对话框（确认保持
+//        到列表渲染出无该 id 才关，防 stale frame :1053-1067；删除中状态行）。
+//    C8  文案/形态：分组视图标题「工作区」（平铺视图「会话」，:1075）；去掉
+//        组行计数徽标；会话行 blank 外保留相对时间 + ⋯菜单。fork 不做（待
+//        拍板项——Rows.tsx:385-386 語义已存档）。
+//    C9  悬停卡不移植（iPad 触屏不可抗力）：复制路径/信息保留在长按
+//        contextMenu。
+//    C10 归档维持现状（无恢复入口——用户已拍板）。
+//  诊断区旧 ShellTestView 入口保持 DEBUG-only（B4 既有裁定不动）。
 //
 
 import SwiftUI
@@ -39,14 +59,15 @@ struct SessionsSidebarView: View {
     @Binding var selection: RootSelection
 
     @State private var summaries: [SessionSummary] = []
-    @State private var creating = false
     /// dsh WorkspaceBrowser.tsx:875 query 状态（'search.placeholder'
-    /// 「搜索会话…」）——WanWo 无 session.search 远程 API，本批=本地标题过滤。
+    /// 「搜索会话…」）——WanWo 无 session.search 远程 API，本批=本地过滤
+    /// （标题 + 所属工作区名；blank 排除，见 SidebarGroupingModel.filterSessions）。
+    /// 查询状态跨树存活（:873-875 注释——收起搜索框不清空，:927 无关守卫）。
     @State private var query = ""
     /// 待确认删除的行号集（A6：滑动删除 → 确认对话框 → 执行）。
     @State private var pendingDeleteOffsets: IndexSet?
 
-    // MARK: M6.6（B4）§9 欠账状态
+    // MARK: 工作区树状态（B4 既有）
 
     /// 工作区快照（workspaceController.follow 帧驱动）。
     @State private var workspaces: [WorkspaceRecord] = []
@@ -54,27 +75,82 @@ struct SessionsSidebarView: View {
     @State private var grouped = true
     /// 排序（平铺/未分组桶生效；组内序 = 账本对账）。
     @State private var sort: SidebarSort = .updatedDesc
-    /// 搜索框可见性（header 搜索钮切换）。
+    /// 搜索框可见性（header 搜索钮切换——C5 内联展开）。
     @State private var searchVisible = false
-    /// 展开的组（工作区 id / ungrouped 键）。
-    @State private var expandedGroups: Set<String> = []
     /// follow 订阅取消句柄。
     @State private var followCancel: (() -> Void)?
     /// 已归档会话集（归档行隐去）。
     @State private var archivedIDs: Set<String> = []
-    /// 重命名目标（会话 / 工作区；alert TextField 承载）。
+    /// 会话重命名目标（alert TextField 承载；dsh 会话重命名无查重——确认
+    /// 当前自动标题=钉死，:992-995）。
     @State private var renameTarget: RenameTarget?
     @State private var renameDraft = ""
     /// 添加工作区流程（目录选择 sheet + 失败横幅）。
     @State private var showingWorkspacePicker = false
     @State private var addWorkspaceError: String?
 
+    // MARK: UI 对齐批 1（C）新增状态
+
+    /// 排序账户（C4——每工作区 + UNGROUPED + FLAT 各一；dsh
+    /// sessionOrderByAccount/sessionUpdatedAtByAccount 同位）。
+    @State private var orderAccounts = SidebarOrderAccounts()
+    /// 上次对账时的排序模式（切到「按更新」触发全量重排——dsh :305,323）。
+    @State private var lastAccountSort: SidebarSort?
+    /// 已提升置顶的当前 blank（promotedBlank ref，:847-864 幂等判定）。
+    @State private var promotedBlankRef: PromotedBlankRef?
+    /// 组展开态持久化（C6——显式展开集合；dsh groupExpansion 持久 Record）。
+    @AppStorage("sidebar.groupExpansion.expanded") private var expandedGroupsRaw = "[]"
+    /// 显式折叠集合（= dsh groupExpansion 里的 false 值——挡住自动展开）。
+    @AppStorage("sidebar.groupExpansion.collapsed") private var collapsedGroupsRaw = "[]"
+    /// 工作区重命名对话框（C7 查重——dsh :965-990）。
+    @State private var wsRenameTarget: WorkspaceRenameTarget?
+    @State private var wsRenameDraft = ""
+    @State private var wsRenameError: String?
+    /// 工作区删除确认对话框（C7——dsh :1037-1068）。
+    @State private var wsDeleteTarget: WorkspaceDeleteTarget?
+    @State private var wsDeleting = false
+    @State private var wsDeleteCommittedID: String?
+    @State private var wsDeleteError: String?
+
+    struct PromotedBlankRef: Equatable {
+        let sessionID: String
+        let accountKey: String
+    }
+
+    /// 会话重命名（alert 承载；工作区重命名走专用对话框 C7）。
     enum RenameTarget: Equatable {
         case session(id: String, current: String?)
-        case workspace(id: String, current: String)
+    }
+
+    struct WorkspaceRenameTarget: Equatable {
+        let id: String
+        let current: String
+    }
+
+    struct WorkspaceDeleteTarget: Equatable {
+        let id: String
+        let title: String
+    }
+
+    /// 当前选中会话 id（dsh list.current）。
+    private var currentSessionID: String? {
+        if case .session(let id) = selection { return id }
+        return nil
     }
 
     var body: some View {
+        // C7 两个对话框与主列分挂不同视图（SwiftUI 同视图链多 fullScreenCover
+        // 呈现不可靠——官方指引每个 cover 挂独立视图；零尺寸 Color.clear 作
+        // 挂点不影响布局）。
+        ZStack {
+            sidebarColumn
+            workspaceRenameCover
+            workspaceDeleteCover
+        }
+    }
+
+    /// 主列（品牌行 + 新建钮 + 浏览区 + 列表 + foot；既有呈现链原样）。
+    private var sidebarColumn: some View {
         VStack(spacing: 0) {
             brandRow
             newSessionButton
@@ -93,6 +169,21 @@ struct SessionsSidebarView: View {
         }
         .onChange(of: environment.sessionsRevision) { _ in
             Task { await reload() }
+        }
+        .onChange(of: currentSessionID) { newValue in
+            // C6：当前会话所在组自动展开（:291-294）+ C3：当前 blank 置顶提升。
+            autoExpandCurrentGroup(newValue)
+            syncPromotedBlank()
+        }
+        .onChange(of: workspaces) { newValue in
+            // C7：删除确认保持到列表渲染出无该 id 才关（dsh :1041-1047
+            // 防 stale frame——关早了会把 stale 列表帧漏给下一次添加手势）。
+            if let committed = wsDeleteCommittedID,
+               !newValue.contains(where: { $0.id == committed }) {
+                wsDeleting = false
+                wsDeleteCommittedID = nil
+                wsDeleteTarget = nil
+            }
         }
         // T2.6 件4（用户 #16）：侧栏不参与键盘规避——对话 pane 弹键盘时
         // SplitView 两 pane 同被顶起曾致侧栏整体上移；侧栏无输入面，恒满高。
@@ -145,21 +236,21 @@ struct SessionsSidebarView: View {
         } message: {
             Text(environment.sessionActionError ?? "")
         }
-        // M6.6（B4）④：重命名（会话标题 / 工作区 groups.name）。
+        // B4 ④：会话重命名（dsh 无查重——确认当前自动标题=钉死，:992-995）。
         .alert(renameTitle, isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } })) {
             TextField("名称", text: $renameDraft)
             Button("取消", role: .cancel) {}
-            Button("保存") { commitRename() }
+            Button("保存") { commitSessionRename() }
         }
-        // M6.6（B4）⑤：添加工作区目录选择（UIDocumentPicker 不可抗力映射）。
+        // B4 ⑤：添加工作区目录选择（UIDocumentPicker 不可抗力映射）。
         .sheet(isPresented: $showingWorkspacePicker) {
             FolderPicker { url in
                 // picker sheet 退场后一拍执行（同 MountedFoldersSettingsView 纪律
                 // ——iOS 拒绝叠 sheet，同步处理会被首次选择静默丢失）。
                 DispatchQueue.main.async {
-                    addWorkspace(from: url)
+                    adoptWorkspace(from: url)
                 }
             }
         }
@@ -173,14 +264,114 @@ struct SessionsSidebarView: View {
         }
     }
 
+    // MARK: UI 对齐批 1（C7）：工作区重命名 / 删除对话框（挂独立视图）
+
+    /// 工作区重命名对话框（查重冲突报错——dsh :970-973, 1297-1299；IME
+    /// composition 防误提交为 web 键盘态，触屏输入法由 UIKit 自管——
+    /// 不可抗力省略）。
+    private var workspaceRenameCover: some View {
+        // 空形状占位挂点（覆盖呈现经 fullScreenCover 挂本视图）。
+        Color.clear
+            .frame(width: 0, height: 0)
+            .fullScreenCover(isPresented: Binding(
+                get: { wsRenameTarget != nil },
+                set: { if !$0 { wsRenameTarget = nil } })) {
+                ZStack {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("重命名工作区")
+                            .font(.system(size: 17, weight: .semibold))
+                        TextField("名称", text: $wsRenameDraft)
+                            .textFieldStyle(.roundedBorder)
+                        if wsRenameDuplicate {
+                            Text("已存在同名工作区「\(wsRenameTrimmed)」")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        if let wsRenameError {
+                            Text(wsRenameError)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        HStack(spacing: 10) {
+                            Spacer()
+                            Button("取消") { wsRenameTarget = nil }
+                                .buttonStyle(.bordered)
+                            Button("保存") { commitWorkspaceRename() }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(wsRenameBlocked)
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: 420)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                    .padding(24)
+                }
+                .presentationBackground(.clear)
+            }
+    }
+
+    /// 删除工作区确认对话框（dsh :1037-1068 + 删除中状态行 :1356；确认保持
+    /// 到列表渲染出无该 id 才关——onChange(of: workspaces) 收口）。
+    private var workspaceDeleteCover: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .fullScreenCover(isPresented: Binding(
+                get: { wsDeleteTarget != nil },
+                set: { if !$0 { wsDeleteTarget = nil } })) {
+                ZStack {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("删除工作区？")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("「\(wsDeleteTarget?.title ?? "")」将从列表移除，其中会话回落未分组；目录与文件不受影响。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if wsDeleting {
+                            // 删除中状态行（dsh 'delete.pending' :1356）。
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("删除中…")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if let wsDeleteError {
+                            Text(wsDeleteError)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        HStack(spacing: 10) {
+                            Spacer()
+                            Button("取消") { closeWorkspaceDelete() }
+                                .buttonStyle(.bordered)
+                                .disabled(wsDeleting)
+                            Button("删除工作区") { confirmWorkspaceDelete() }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                                .disabled(wsDeleting)
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: 420)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                    .padding(24)
+                }
+                .presentationBackground(.clear)
+            }
+    }
+
     // MARK: - 品牌行 + 新建钮（dsh SidebarRoot.tsx:140-200）
 
-    /// 品牌行：mark + name 双元素；点按 = 新建会话（dsh :141-148「展开态品牌
-    /// 即新建会话快捷径」，aria-label = session.new.label「新建会话」）。
-    /// WanWo 无 buildVersion 缝（dsh localBuildVersion :38-45），品牌名固定「万我」。
+    /// 品牌行：mark + name 双元素；点按 = 新会话（dsh :141-148「展开态品牌
+    /// 即新建会话快捷径」）。UI 对齐批 1（A5）：改调 startSession()——
+    /// workspace 驱动创建流（替换既有无条件 createSession）。
     private var brandRow: some View {
         Button {
-            newSession()
+            environment.workspaceNavigator.startSession()
         } label: {
             HStack(spacing: 8) {
                 Text("万")
@@ -203,10 +394,11 @@ struct SessionsSidebarView: View {
     }
 
     /// 独立新建钮（dsh :189-200：IconNewChatOutline16 size 14 + 「新会话」
-    /// label——与品牌行同写通 newSession 一径）。新建即 blank 占位行（⑥）。
+    /// label）。UI 对齐批 1（A5）：startSession()——无工作区时清空选择落
+    /// 空态项目选择页，不产生游离会话。
     private var newSessionButton: some View {
         Button {
-            newSession()
+            environment.workspaceNavigator.startSession()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "plus.bubble")
@@ -223,26 +415,24 @@ struct SessionsSidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(creating)
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
     }
 
     // MARK: - 浏览区 header（dsh WorkspaceBrowser.tsx:1072-1181 + 三钮）
 
-    /// section header：「会话」label + 搜索 / 视图选项 / 添加工作区 三钮
-    /// （dsh ViewOptionsMenu + WorkspacePicker 落点；⑤）。
+    /// section header：C8 文案——分组视图「工作区」/ 平铺视图「会话」
+    /// （dsh :1075 groupBy 条件）+ 搜索 / 视图选项 / 添加工作区 三钮。
     private var browseHeader: some View {
         VStack(spacing: 8) {
             HStack(spacing: 2) {
-                Text("会话")
+                Text(grouped ? "工作区" : "会话")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                // 搜索钮（本地标题过滤保留；内容搜索升级 = M9.3 FTS 后——挂账）。
+                // C5 搜索钮：内联展开输入框；展开/收起不清 query（跨树存活）。
                 Button {
                     searchVisible.toggle()
-                    if !searchVisible { query = "" }
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 12))
@@ -267,14 +457,20 @@ struct SessionsSidebarView: View {
                         .font(.system(size: 12))
                 }
                 .accessibilityLabel("视图选项")
-                // 添加工作区（+：选择目录即全部——挂载 + 注册 + 建会话 attach）。
-                Button {
-                    showingWorkspacePicker = true
+                // C1 + 弹层 addOnly（WorkspacePicker.tsx:101-118）：应用内
+                // Menu 单项「添加工作区」，选中才进目录流；目录流占用期间
+                // 全禁用（flowBusy——dsh :86 同语义）。
+                Menu {
+                    Button {
+                        showingWorkspacePicker = true
+                    } label: {
+                        Label("添加工作区", systemImage: "folder.badge.plus")
+                    }
+                    .disabled(flowBusy)
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 12))
                 }
-                .buttonStyle(.borderless)
                 .accessibilityLabel("添加工作区")
             }
             if searchVisible {
@@ -285,20 +481,28 @@ struct SessionsSidebarView: View {
         .padding(.bottom, 6)
     }
 
-    /// 搜索框（dsh :1079-1133 search 语义：placeholder + clear 按钮；
-    /// Escape 收起属 web 键盘态——触屏无对应，省略）。
+    /// 目录流占用（sheet 打开 = native chooser pending——dsh flowBusy :86）。
+    private var flowBusy: Bool {
+        showingWorkspacePicker
+    }
+
+    /// 搜索框（dsh :1079-1133 search 语义：placeholder + clear 按钮）。
+    /// C5：收起不清 query；Escape 收起属 web 键盘态（触屏无对应，省略）。
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            TextField("搜索会话…", text: $query)
+            TextField("搜索会话…", text: Binding(
+                get: { query },
+                set: { query = SidebarGroupingModel.sanitizeQuery($0) }))
                 .textFieldStyle(.plain)
                 .font(.callout)
                 .autocorrectionDisabled()
             if !query.isEmpty {
                 Button {
                     query = ""
+                    searchVisible = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -315,26 +519,33 @@ struct SessionsSidebarView: View {
 
     // MARK: - 会话列表（分组树 / 平铺双形态）
 
-    /// 渲染集合 = 查询过滤 + 归档排除（归档行隐去——④ archiveSession 语义）。
+    /// 渲染集合 = 查询过滤（标题+工作区名，blank 排除）+ 归档排除。
     private var filteredSummaries: [SessionSummary] {
         let base = summaries.filter { !archivedIDs.contains($0.id) }
-        return SidebarGroupingModel.filterSessions(base, query: query)
+        return SidebarGroupingModel.filterSessions(base, query: query,
+                                                   workspaces: workspaces)
     }
 
     private var summariesByID: [String: SessionSummary] {
         Dictionary(uniqueKeysWithValues: filteredSummaries.map { ($0.id, $0) })
     }
 
-    /// 分组视图模型（SidebarGroupingModel 纯逻辑——§9 ①②③⑦ 收口）。
+    /// 分组视图模型（SidebarGroupingModel 纯逻辑——§9 ①②③⑦ + 批 1 C3/C4）。
+    /// 「按更新」模式传排序账户（活动提升后的展示序）；「标题」模式沿用
+    /// 既有计算排序（M3 稳定面零变化）。
     private var displayGroups: [SidebarGroup] {
-        SidebarGroupingModel.deriveGroups(sessions: filteredSummaries,
-                                          workspaces: workspaces,
-                                          grouped: grouped,
-                                          sort: sort)
+        SidebarGroupingModel.deriveGroups(
+            sessions: filteredSummaries,
+            workspaces: workspaces,
+            grouped: grouped,
+            sort: sort,
+            currentSessionID: currentSessionID,
+            accountOrders: sort == .updatedDesc ? orderAccounts.ordersSnapshot : nil)
     }
 
     /// 会话列表：分组模式 = 工作区 Section 树（每组 5 条折叠）；平铺模式 =
-    /// M3 既有单层列表原样（滑动删除承载）。
+    /// M3 既有单层列表原样（滑动删除承载）。C5：外部点击收起搜索（dsh
+    /// :915-925——query 非空时只 blur 不收起的 web 焦点语义折算为不收起）。
     private var sessionList: some View {
         List {
             if grouped {
@@ -353,6 +564,9 @@ struct SessionsSidebarView: View {
             }
         }
         .listStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded {
+            collapseSearchOnOutsideTap()
+        })
         .overlay {
             if displayGroups.allSatisfy({ $0.sessionIds.isEmpty }) {
                 Text(query.isEmpty ? "暂无会话" : "无匹配会话")
@@ -360,6 +574,12 @@ struct SessionsSidebarView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// C5 外部点击收起（dsh :915-925：外部点击 blur；query 为空才收起）。
+    private func collapseSearchOnOutsideTap() {
+        guard searchVisible, query.isEmpty else { return }
+        searchVisible = false
     }
 
     /// 一个分组 Section（工作区行 header + 组内会话行 + 折叠展开行；
@@ -380,9 +600,20 @@ struct SessionsSidebarView: View {
             if collapse.hiddenCount > 0 {
                 // dsh :41-56 + 截图 #23「展开其余 N 个会话」。
                 Button {
-                    expandedGroups.insert(group.id)
+                    setGroupExpanded(group.id, true)
                 } label: {
                     Text("展开其余 \(collapse.hiddenCount) 个会话")
+                        .font(.footnote)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+            } else if expanded,
+                      group.sessionIds.count > SidebarGroupingModel.collapsedSessionLimit {
+                // dsh 'sessions.collapse'（:579-581）——展开态回收折叠限额。
+                Button {
+                    setGroupExpanded(group.id, false)
+                } label: {
+                    Text("收起")
                         .font(.footnote)
                         .foregroundStyle(Color.accentColor)
                 }
@@ -395,8 +626,8 @@ struct SessionsSidebarView: View {
         }
     }
 
-    /// 工作区行（Ungrouped 桶 = 静态 label；工作区行带折叠 chevron + 重命名
-    /// + 拖拽落点（insertBefore 锚）。
+    /// 工作区行（Ungrouped 桶 = 静态 label；工作区行带折叠 chevron + 行操作
+    /// + 拖拽落点（insertBefore 销）。C8：去掉组行计数徽标（dsh 组行无计数）。
     @ViewBuilder
     private func groupHeader(_ group: SidebarGroup) -> some View {
         if let workspaceID = group.workspaceID {
@@ -412,20 +643,40 @@ struct SessionsSidebarView: View {
                     .font(.footnote.weight(.medium))
                     .lineLimit(1)
                 Spacer()
-                Text("\(group.sessionIds.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                // C2 组行 +（Rows.tsx:187-194）：展开该组 + 组内新建会话
+                // （WorkspaceBrowser.tsx:508-513——onCreate = startSession）。
+                Button {
+                    setGroupExpanded(group.id, true)
+                    environment.workspaceNavigator.startSession(workspaceID)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("在「\(group.title)」中新建会话")
             }
             .contentShape(Rectangle())
             .onTapGesture {
                 toggleGroup(group.id)
             }
+            // C7/C9：工作区行操作（dsh Rows.tsx:129-131 ⋯菜单 = 重命名/删除；
+            // 悬停卡不移植——触屏不可抗力，操作保留在长按菜单）。
             .contextMenu {
                 Button {
-                    renameTarget = .workspace(id: workspaceID, current: group.title)
-                    renameDraft = group.title
+                    wsRenameTarget = WorkspaceRenameTarget(id: workspaceID,
+                                                           current: group.title)
+                    wsRenameDraft = group.title
+                    wsRenameError = nil
                 } label: {
                     Label("重命名工作区", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    wsDeleteTarget = WorkspaceDeleteTarget(id: workspaceID,
+                                                           title: group.title)
+                    wsDeleteError = nil
+                } label: {
+                    Label("删除工作区", systemImage: "trash")
                 }
             }
             // 工作区行拖拽排序（③：insertBefore 语义——M6.5 dsh 契约）。
@@ -449,23 +700,27 @@ struct SessionsSidebarView: View {
         }
     }
 
-    /// 单行会话：标题（dsh blank 行语义「新会话」）+ 相对时间（time.ago
-    /// 词典）+ 琥珀警示点 + 选中高亮（dsh currentId 高亮语义）。
-    /// M6.6（B4）④：contextMenu 重命名/归档/删除；③：draggable + 组内落点。
+    /// 单行会话：标题 + 相对时间（time.ago 词典）+ 琥珀警示点 + 选中高亮。
+    /// C3：blank 行 = 「新会话」标题、无相对时间、无 ⋯菜单（Rows.tsx
+    /// :457-461——blank 是临时占位，rename/fork/archive 皆无内容可作用）。
+    /// B4 ④：contextMenu 重命名/归档/删除（仅非 blank）；③：draggable。
     private func sessionRow(_ summary: SessionSummary,
                             group: SidebarGroup?) -> some View {
-        Button {
+        let blank = SidebarGroupingModel.isBlank(summary)
+        return Button {
             selection = .session(id: summary.id)
         } label: {
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.title ?? "新会话")
+                    Text(blank ? "新会话" : (summary.title ?? "新会话"))
                         .font(.callout)
                         .lineLimit(1)
                         .foregroundStyle(.primary)
-                    Text(relativeTime(summary.updatedAt))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if !blank {
+                        Text(relativeTime(summary.updatedAt))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 // M3 T1：琥珀警示圆点（dsh 2026-07-23 笔记——sidebar
@@ -484,36 +739,38 @@ struct SessionsSidebarView: View {
         .buttonStyle(.plain)
         .listRowBackground(isCurrent(summary) ? Color(.secondarySystemFill) : nil)
         .contextMenu {
-            Button {
-                renameTarget = .session(id: summary.id, current: summary.title)
-                renameDraft = summary.title ?? ""
-            } label: {
-                Label("重命名", systemImage: "pencil")
-            }
-            Button {
-                archiveSession(summary.id)
-            } label: {
-                Label("归档", systemImage: "archivebox")
-            }
-            // ③ 拖拽兜底：组内上移/下移（工作区组才有账本序语义）。
-            if let group, group.workspaceID != nil {
+            if !blank {
                 Button {
-                    moveSession(summary.id, in: group, offset: -1)
+                    renameTarget = .session(id: summary.id, current: summary.title)
+                    renameDraft = summary.title ?? ""
                 } label: {
-                    Label("上移", systemImage: "arrow.up")
+                    Label("重命名", systemImage: "pencil")
                 }
-                .disabled(isFirstNonBlank(summary.id, in: group))
                 Button {
-                    moveSession(summary.id, in: group, offset: +1)
+                    archiveSession(summary.id)
                 } label: {
-                    Label("下移", systemImage: "arrow.down")
+                    Label("归档", systemImage: "archivebox")
                 }
-                .disabled(isLast(summary.id, in: group))
-            }
-            Button(role: .destructive) {
-                Task { await environment.deleteSession(id: summary.id) }
-            } label: {
-                Label("删除", systemImage: "trash")
+                // ③ 拖拽兜底：组内上移/下移（工作区组才有账本序语义）。
+                if let group, group.workspaceID != nil {
+                    Button {
+                        moveSession(summary.id, in: group, offset: -1)
+                    } label: {
+                        Label("上移", systemImage: "arrow.up")
+                    }
+                    .disabled(isFirstNonBlank(summary.id, in: group))
+                    Button {
+                        moveSession(summary.id, in: group, offset: +1)
+                    } label: {
+                        Label("下移", systemImage: "arrow.down")
+                    }
+                    .disabled(isLast(summary.id, in: group))
+                }
+                Button(role: .destructive) {
+                    Task { await environment.deleteSession(id: summary.id) }
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
             }
         }
         // ③ 拖拽排序（工作区组内；Ungrouped/平铺无账本——不挂）。
@@ -530,7 +787,7 @@ struct SessionsSidebarView: View {
     // MARK: - foot（dsh SidebarRoot.tsx:211-219）
 
     /// 底部钉住区：设置段（Providers / 权限）+ 诊断段（事件流；Shell 测试
-    /// M0 入口随 B4 降级为 DEBUG-only——终端迁入右侧栏，ia-audit §3.1 收口）。
+    /// M0 入口 DEBUG-only——终端迁入右侧栏，ia-audit §3.1 收口）。
     private var footArea: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("设置")
@@ -614,6 +871,8 @@ struct SessionsSidebarView: View {
         archivedIDs = environment.workspaceRegistry.archivedSessionIDs()
         // 工作区基线快照（follow 订阅在 task 里；此处直读 registry 兜底首帧前空窗）。
         workspaces = environment.workspaceRegistry.list()
+        // C4：排序账户对账 + C3：当前 blank 置顶提升。
+        syncAccounts()
     }
 
     /// workspaceController.follow 订阅（B3 follow 快照流——工作区行数据源；
@@ -625,52 +884,143 @@ struct SessionsSidebarView: View {
         Task { @MainActor in
             for await frame in stream {
                 workspaces = frame.workspaces
+                syncAccounts()
             }
         }
+    }
+
+    // MARK: UI 对齐批 1（C4/C3）：排序账户与 blank 置顶
+
+    /// 各账户对账（dsh useEffect :303-329）：「按更新」模式下每工作区 +
+    /// UNGROUPED + FLAT 各一账户 reconcile；retainAccountKeys 回收已删工作区
+    /// 账户（:865-872）。
+    private func syncAccounts() {
+        // 归档排除后的账户基线（dsh 账户口径不含 archived；查询过滤仅显示层）。
+        let base = summaries.filter { !archivedIDs.contains($0.id) }
+        let byID = Dictionary(uniqueKeysWithValues: base.map { ($0.id, $0) })
+        // retainAccountKeys（:865-872）：现存工作区 + UNGROUPED + FLAT 之外回收。
+        orderAccounts.retain(keys: Set(workspaces.map(\.id))
+            .union([SidebarGroupingModel.ungroupedKey, SidebarGroupingModel.flatKey]))
+        guard sort == .updatedDesc else { return }
+        // 切到「按更新」→ 全量重排（dsh :305,323 sortByRecency）。
+        let fullResort = (lastAccountSort != .updatedDesc)
+        lastAccountSort = .updatedDesc
+        for workspace in workspaces {
+            let members = workspace.sessionIds.filter { byID[$0] != nil }
+            orderAccounts.reconcile(accountKey: workspace.id,
+                                    sessionIds: members,
+                                    sessions: base,
+                                    activityPromotion: true,
+                                    fullResort: fullResort)
+        }
+        let accounted = Set(workspaces.flatMap(\.sessionIds))
+        let ungroupedIDs = base.filter { !accounted.contains($0.id) }.map(\.id)
+        orderAccounts.reconcile(accountKey: SidebarGroupingModel.ungroupedKey,
+                                sessionIds: ungroupedIDs,
+                                sessions: base,
+                                activityPromotion: true,
+                                fullResort: fullResort)
+        orderAccounts.reconcile(accountKey: SidebarGroupingModel.flatKey,
+                                sessionIds: base.map(\.id),
+                                sessions: base,
+                                activityPromotion: true,
+                                fullResort: fullResort)
+        syncPromotedBlank()
+    }
+
+    /// promotedBlank（dsh :847-864）：当前 blank 会话在其账户 + flat 账户
+    /// 双置顶（同一 blank/账户组合只提升一次——ref 幂等）。
+    private func syncPromotedBlank() {
+        let base = summaries.filter { !archivedIDs.contains($0.id) }
+        guard let current = currentSessionID,
+              let summary = base.first(where: { $0.id == current }),
+              SidebarGroupingModel.isBlank(summary) else {
+            promotedBlankRef = nil
+            return
+        }
+        let accountKey = workspaces.first(where: { $0.sessionIds.contains(current) })?.id
+            ?? SidebarGroupingModel.ungroupedKey
+        if let ref = promotedBlankRef,
+           ref.sessionID == current, ref.accountKey == accountKey {
+            return
+        }
+        promotedBlankRef = PromotedBlankRef(sessionID: current, accountKey: accountKey)
+        orderAccounts.promoteSessionToTop(
+            current,
+            accountKeys: [accountKey, SidebarGroupingModel.flatKey])
+    }
+
+    // MARK: UI 对齐批 1（C6）：组展开态持久化
+
+    /// 有效展开集 = 显式展开 − 显式折叠（dsh groupExpansion Record 的
+    /// true/false 显式值折算；缺席 = 从未碰过）。
+    private var expandedGroups: Set<String> {
+        var set = Self.decodeSet(expandedGroupsRaw)
+        set.subtract(Self.decodeSet(collapsedGroupsRaw))
+        return set
     }
 
     private func toggleGroup(_ id: String) {
-        if expandedGroups.contains(id) {
-            expandedGroups.remove(id)
+        setGroupExpanded(id, !expandedGroups.contains(id))
+    }
+
+    /// dsh actions.setGroupExpanded——显式写 0-or-5 状态并持久化。
+    private func setGroupExpanded(_ id: String, _ on: Bool) {
+        var expanded = Self.decodeSet(expandedGroupsRaw)
+        var collapsed = Self.decodeSet(collapsedGroupsRaw)
+        if on {
+            expanded.insert(id)
+            collapsed.remove(id)
         } else {
-            expandedGroups.insert(id)
+            expanded.remove(id)
+            collapsed.insert(id)
+        }
+        expandedGroupsRaw = Self.encodeSet(expanded)
+        collapsedGroupsRaw = Self.encodeSet(collapsed)
+    }
+
+    /// 当前会话所在组自动展开（dsh :291-294——仅未显式碰过的组；用户显式
+    /// 折叠过的组不再自动展开）。
+    private func autoExpandCurrentGroup(_ sessionID: String?) {
+        guard let sessionID else { return }
+        let groupKey = workspaces
+            .first(where: { $0.sessionIds.contains(sessionID) })?.id
+            ?? SidebarGroupingModel.ungroupedKey
+        var expanded = Self.decodeSet(expandedGroupsRaw)
+        let collapsed = Self.decodeSet(collapsedGroupsRaw)
+        if !expanded.contains(groupKey), !collapsed.contains(groupKey) {
+            expanded.insert(groupKey)
+            expandedGroupsRaw = Self.encodeSet(expanded)
         }
     }
 
-    private func newSession() {
-        creating = true
-        Task {
-            if let summary = await environment.createSession() {
-                selection = .session(id: summary.id)
-            }
-            creating = false
+    private static func decodeSet(_ raw: String) -> Set<String> {
+        guard let data = raw.data(using: .utf8),
+              let array = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
         }
+        return Set(array)
     }
 
-    private func delete(at offsets: IndexSet) {
-        // a②（搜索态 offset 错位修复）：onDelete 的 offsets 是渲染行集
-        // （filteredSummaries）的索引——此前对全量 summaries 取值，搜索态下
-        // 两集合下标错位=删错行。按渲染行集映射回 id（含越界防御）。
-        let rows = filteredSummaries
-        let ids = offsets.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
-        Task {
-            for id in ids {
-                await environment.deleteSession(id: id)
-            }
+    private static func encodeSet(_ set: Set<String>) -> String {
+        let sorted = set.sorted()
+        guard let data = try? JSONEncoder().encode(sorted),
+              let string = String(data: data, encoding: .utf8) else {
+            return "[]"
         }
+        return string
     }
 
-    // MARK: M6.6（B4）④：重命名 / 归档
+    // MARK: B4 ④：重命名 / 归档
 
     private var renameTitle: String {
         switch renameTarget {
         case .session: return "重命名会话"
-        case .workspace: return "重命名工作区"
         case nil: return "重命名"
         }
     }
 
-    private func commitRename() {
+    private func commitSessionRename() {
         let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         switch renameTarget {
@@ -679,12 +1029,6 @@ struct SessionsSidebarView: View {
             // 标题非模型上下文事实源，事件流侧由标题生成器同口径管理）。
             environment.database.setTitle(id: id, title: name)
             environment.sessionsRevision += 1
-        case .workspace(let id, _):
-            do {
-                _ = try environment.workspaceController.rename(id: id, to: name)
-            } catch {
-                addWorkspaceError = "重命名失败：\(String(describing: error))"
-            }
         case nil:
             break
         }
@@ -791,53 +1135,79 @@ struct SessionsSidebarView: View {
         group.sessionIds.last == sid
     }
 
-    // MARK: M6.6（B4）⑤：添加工作区（选择目录即全部）
+    // MARK: UI 对齐批 1（B4/C1/B）：添加工作区（选择目录即全部）
 
-    private func addWorkspace(from url: URL) {
-        // 挂载名 = 目录名清洗（isValidMountName 词汇：字母/数字/-/_/.）。
-        let sanitized = url.lastPathComponent.map { ch -> Character in
-            let ok = ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == "."
-            return ok ? ch : "-"
-        }
-        var name = sanitized.isEmpty ? "workspace" : String(sanitized)
+    /// 添加流（简报 B.4，与空态页共用 WorkspaceAdoption）：挂载 + 激活 +
+    /// create（幂等）→ startSession(新工作区)——「+ 的终点是开着的新会话」。
+    private func adoptWorkspace(from url: URL) {
         do {
-            let entry = try MountedFoldersManager.shared.add(
-                pickedURL: url, customName: name, userAllowWrite: true)
-            finishAddWorkspace(entry: entry)
-        } catch MountedFoldersManager.AddError.nameTaken {
-            // 重名：追加短随机后缀重试一次（幂等性归 registry.create）。
-            name += "-" + String(UUID().uuidString.prefix(4))
-            do {
-                let entry = try MountedFoldersManager.shared.add(
-                    pickedURL: url, customName: name, userAllowWrite: true)
-                finishAddWorkspace(entry: entry)
-            } catch {
-                addWorkspaceError = "挂载目录失败：\(String(describing: error))"
-            }
+            let workspace = try WorkspaceAdoption.adopt(
+                pickedURL: url, environment: environment)
+            // dsh WorkspaceBrowser.tsx:1175-1178——onPick → startSession。
+            environment.workspaceNavigator.startSession(workspace.id)
         } catch {
-            addWorkspaceError = "挂载目录失败：\(String(describing: error))"
+            addWorkspaceError = "添加工作区失败：\(String(describing: error))"
         }
     }
 
-    private func finishAddWorkspace(entry: MountedFolderEntry) {
+    // MARK: UI 对齐批 1（C7）：工作区重命名 / 删除
+
+    private var wsRenameTrimmed: String {
+        wsRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 重名查重（dsh :970-973：draft 非空 && 与原题不同 && 与任一工作区重名）。
+    private var wsRenameDuplicate: Bool {
+        guard let target = wsRenameTarget else { return false }
+        return !wsRenameTrimmed.isEmpty
+            && wsRenameTrimmed != target.current
+            && workspaces.contains(where: { $0.title == wsRenameTrimmed })
+    }
+
+    private var wsRenameBlocked: Bool {
+        guard let target = wsRenameTarget else { return true }
+        return wsRenameTrimmed.isEmpty
+            || wsRenameTrimmed == target.current
+            || wsRenameDuplicate
+    }
+
+    private func commitWorkspaceRename() {
+        guard let target = wsRenameTarget, !wsRenameBlocked else { return }
         do {
-            let guestPath = WanWoPaths.mountsLinuxDir + "/" + entry.name
-            // dsh「选择目录就是添加工作区的全部」：create（幂等）→ 建会话
-            // attach（selectedWorkspaceID 注入 cwd 落点——B3 既有链路）。
-            let (ws, _) = try environment.workspaceController.create(
-                path: guestPath, title: nil)
-            environment.selectedWorkspaceID = ws.id
-            expandedGroups.insert(ws.id)
-            creating = true
-            Task {
-                if let summary = await environment.createSession() {
-                    selection = .session(id: summary.id)
-                }
-                creating = false
+            _ = try environment.workspaceController.rename(id: target.id,
+                                                           to: wsRenameTrimmed)
+            wsRenameTarget = nil
+        } catch {
+            wsRenameError = "重命名失败：\(String(describing: error))"
+        }
+    }
+
+    private func confirmWorkspaceDelete() {
+        guard let target = wsDeleteTarget, !wsDeleting else { return }
+        wsDeleting = true
+        wsDeleteCommittedID = nil
+        wsDeleteError = nil
+        do {
+            let deleted = try environment.workspaceController.delete(id: target.id)
+            if deleted {
+                // 确认保持到列表渲染出无该 id 才关（dsh :1053-1067——防 stale
+                // frame）；由 onChange(of: workspaces) 收口。
+                wsDeleteCommittedID = target.id
+            } else {
+                // 幂等 no-op（id 已不存在）——直接收口关闭。
+                wsDeleting = false
+                wsDeleteTarget = nil
             }
         } catch {
-            addWorkspaceError = "注册工作区失败：\(String(describing: error))"
+            wsDeleting = false
+            wsDeleteError = "删除失败：\(String(describing: error))"
         }
+    }
+
+    private func closeWorkspaceDelete() {
+        guard !wsDeleting else { return }
+        wsDeleteTarget = nil
+        wsDeleteError = nil
     }
 
     // MARK: - 展示辅助

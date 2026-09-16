@@ -120,8 +120,9 @@ struct RootView: View {
             // M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
             EventStreamView(environment: environment)
         case .none:
-            Text("选择或新建一个会话")
-                .foregroundStyle(.secondary)
+            // UI 对齐批 1（B）：主区空态项目选择页（dsh WorkspacePicker 空态
+            // 注册的整页折算——替换原「选择或新建一个会话」占位）。
+            ConversationEmptyStateView(environment: environment)
         }
     }
 }
