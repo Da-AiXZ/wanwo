@@ -17,13 +17,15 @@ final class WorkspaceRightSidebarModelTests: XCTestCase {
 
     @MainActor
     func testOpenSingletonDeduplicatesAndActivates() {
-        var tabs = [WorkspaceTab.singleton(.files)]
-        let result = WorkspaceRightSidebarModel.opening(.singleton(.files), in: tabs)
+        // 【批 3】文件页改多开（codex「新开文件页」语义）——单例去重用
+        // terminal 验证（terminal/sideChat/审查保持单例）。
+        var tabs = [WorkspaceTab.singleton(.terminal)]
+        let result = WorkspaceRightSidebarModel.opening(.singleton(.terminal), in: tabs)
         XCTAssertEqual(result.tabs.count, 1)
         XCTAssertFalse(result.created)
-        XCTAssertEqual(result.activatedID, WorkspaceTabKind.files.rawValue)
+        XCTAssertEqual(result.activatedID, WorkspaceTabKind.terminal.rawValue)
         tabs = result.tabs
-        XCTAssertEqual(tabs.first?.kind, .files)
+        XCTAssertEqual(tabs.first?.kind, .terminal)
     }
 
     @MainActor
@@ -134,7 +136,8 @@ final class WorkspaceRightSidebarModelTests: XCTestCase {
         model.reviewAvailable = false
         let kinds = model.menuKinds()
         XCTAssertFalse(kinds.contains(.review))
-        XCTAssertEqual(kinds.count, 4)
+        // 【批 2 2C】轨迹页签入列：文件/侧聊/浏览器/终端/轨迹 = 5。
+        XCTAssertEqual(kinds.count, 5)
     }
 
     @MainActor
