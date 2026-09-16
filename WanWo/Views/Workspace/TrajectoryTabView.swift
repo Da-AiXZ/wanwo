@@ -63,8 +63,14 @@ enum TrajectoryLedger {
         /// 轮次墙钟（turnStart → turnEnd；缺 = nil）。
         var runMs: Int64?
         /// 轮次 token 汇总（billedInput + output；全零 = nil——dsh 无数据
-        /// 组缺席语义）。
-        var tokenSummary: (billed: Int, output: Int)?
+        /// 组缺席语义）。具名结构体：Swift 元组不合 Equatable（CI 35121872255
+        /// 实证 TurnGroup 自动合成失败），结构体走合成一致性。
+        struct TokenSummary: Equatable {
+            var billed: Int
+            var output: Int
+            static let zero = TokenSummary(billed: 0, output: 0)
+        }
+        var tokenSummary: TokenSummary?
     }
 
     // MARK: build
@@ -182,7 +188,7 @@ enum TrajectoryLedger {
             }
             // 轮次 token 汇总。
             if case .assistantMessage(_, _, _, let usage, _) = event.payload, let usage {
-                var tokens = g.tokenSummary ?? (0, 0)
+                var tokens = g.tokenSummary ?? .zero
                 tokens.0 += usage.inputTokens + (usage.cacheReadTokens ?? 0)
                 tokens.1 += usage.outputTokens
                 g.tokenSummary = tokens
@@ -196,7 +202,7 @@ enum TrajectoryLedger {
                 out[idx].runMs = max(0, end - start)
             }
             out[idx].stepGroups.sort { $0.step < $1.step }
-            if out[idx].tokenSummary == (0, 0) { out[idx].tokenSummary = nil }
+            if out[idx].tokenSummary == .zero { out[idx].tokenSummary = nil }
         }
         return out
     }
