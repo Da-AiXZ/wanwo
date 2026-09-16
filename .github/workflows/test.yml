@@ -57,7 +57,7 @@ jobs:
           echo "=== available runtimes ==="
           xcrun simctl list runtimes
           SIM_UDID=$(xcrun simctl list devices available | awk '
-            /^-- iOS/ { ver = $2 + 0 }
+            /^-- iOS/ { ver = $3 + 0 }   # 节头="-- iOS 26.2 --"：版本在 $3（$2 是"iOS"）
             /iPhone/ && ver > 0 { print ver, $0 }
           ' | sort -nr | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
           echo "Using simulator UDID: $SIM_UDID (newest runtime preferred)"
