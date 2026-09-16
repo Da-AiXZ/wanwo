@@ -71,11 +71,11 @@ targets:
         # 需跨目录 import WanWoOffloadGate.h / DeviceOffload.h 等，编译必需）
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
-        # 弱链接 WebKit Swift overlay（终验补）：iOS 18.5 模拟器 runtime/新工具链
-        # 已移除 /usr/lib/swift/libswiftWebKit.dylib（Xcode16.4 SDK 实测无此文件），
-        # 但 Swift driver 对 import WebKit 仍自动 -lswiftWebKit——弱链接=缺失时
-        # 容忍（真机 16.6 库存在照常加载；模拟器测试不触 WKWebView 面）。
-        OTHER_LDFLAGS: "-lish -lish_emu -lfakefs -Wl,-weak_library,/usr/lib/swift/libswiftWebKit.dylib"
+        # 【回退登记】weak_library 方案（弱链接 WebKit Swift overlay）实测链接期
+        # 即需文件存在（-weak_library 全路径缺失=ld 报 Build input file cannot
+        # be found，35043089816）——回退；改走 CI 测试选旧 runtime 路线
+        # （test.yml SIM_UDID 解析：旧 runtime 卷自带该库）。
+        OTHER_LDFLAGS: "-lish -lish_emu -lfakefs"
         CLANG_ENABLE_MODULES: YES
         # 万我 M6.1 增（B1b）：entitlements（HealthKit/HomeKit/NFC，按 OpenMinis
         # src/ios/Minis.entitlements 原样引入，见 WanWo.entitlements 注释）
