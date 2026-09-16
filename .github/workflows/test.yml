@@ -54,6 +54,12 @@ jobs:
           SIM_UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
           echo "Using simulator UDID: $SIM_UDID"
           test -n "$SIM_UDID"
+          # 终验补（35039966287 实证）：iOS 18.5 模拟器 runtime 不带
+          # /usr/lib/swift/libswiftWebKit.dylib（WebKit Swift overlay——B2
+          # 引擎 import WebKit 触链），dyld 早崩。嵌入 Swift 运行库到
+          # .app 包（含各 framework overlay）解决；真机 16.6 自带不受影响。
+          # 【注意】注释不得插进 xcodebuild 反斜杠续行链（bash 续行拼接后
+          # # 会把链尾全部注释掉——35040692833 实证）。放命令块之前。
           xcodebuild \
             -project WanWo.xcodeproj \
             -scheme WanWo \
@@ -64,10 +70,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            # 终验补（35039966287 实证）：iOS 18.5 模拟器 runtime 不带
-            # /usr/lib/swift/libswiftWebKit.dylib（WebKit Swift overlay——B2
-            # 引擎 import WebKit 触链），dyld 早崩。嵌入 Swift 运行库到
-            # .app 包（含各 framework overlay）解决；真机 16.6 自带不受影响。
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
             test | tee test.log
 
