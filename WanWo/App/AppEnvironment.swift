@@ -494,7 +494,7 @@ final class AppEnvironment: ObservableObject {
     // MARK: - UI 对齐批 1（A）：导航探针缝
 
     /// 会话事件流文件 URL（id 形态与 SessionStore.fileURL 同校验——fail closed）。
-    fileprivate static func sessionFileURL(_ sessionID: String) -> URL? {
+    nonisolated fileprivate static func sessionFileURL(_ sessionID: String) -> URL? {
         guard !sessionID.isEmpty,
               sessionID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
         else { return nil }

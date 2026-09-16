@@ -225,7 +225,7 @@ struct BrowserUseTool: AgentTool {
             try? data.write(to: persistPath)
             let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(filename)"
             text += "\nimage_path: \(linuxPath)"
-            if let link = BrowserUseManager.linuxPathToWanwoURL(linuxPath) {
+            if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {
                 text += "\nwanwo_url: \(link)"
             }
         }
@@ -236,7 +236,7 @@ struct BrowserUseTool: AgentTool {
             try? fetchData.write(to: persistPath)
             let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(fetchName)"
             text += "\nfetched_path: \(linuxPath)"
-            if let link = BrowserUseManager.linuxPathToWanwoURL(linuxPath) {
+            if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {
                 text += "\nwanwo_url: \(link)"
             }
         }
