@@ -207,7 +207,7 @@ final class JSCodeRuntimeTests: XCTestCase {
             program: "try {\n  await tools.fail();\n  return 'unreached';\n} catch (e) {\n  return [e.name, e.memberName, e instanceof Error, e.message];\n}",
             bindings: [CodeBindingNamespace(
                 global: "tools",
-                functions: ["fail": { _ in throw ToolFailure() }],
+                functions: ["fail": { _, _ in throw ToolFailure() }],
                 errorClass: CodeBindingErrorClass(
                     name: "ToolsError", memberNameProperty: "memberName"))])
         let result = await runtime.run(request)
