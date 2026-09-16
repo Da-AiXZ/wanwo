@@ -73,11 +73,11 @@ final class WorkspaceNavigatorTests: XCTestCase {
                 fixture.lock.unlock()
             },
             createSessionInWorkspace: { workspaceID in
-                fixture.lock.lock()
-                fixture._createdIn.append(workspaceID)
-                let created = summary(id: "created-\(fixture._createdIn.count)")
-                fixture._sessions.append(created)
-                fixture.lock.unlock()
+                self.fixture.lock.lock()
+                self.fixture._createdIn.append(workspaceID)
+                let created = self.summary(id: "created-\(self.fixture._createdIn.count)")
+                self.fixture._sessions.append(created)
+                self.fixture.lock.unlock()
                 if createDelayNs > 0 {
                     try? await Task.sleep(nanoseconds: createDelayNs)
                 }
