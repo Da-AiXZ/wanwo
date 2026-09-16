@@ -233,74 +233,10 @@ struct ChatView: View {
     private var content: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    if let banner = viewModel.resumeBanner {
-                        Text(banner)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(6)
-                            .background(Color.yellow.opacity(0.12))
-                            .cornerRadius(6)
-                    }
-                    // 【批2 2B 件3】视图层折叠投影（TurnProcessNodeView 语义）
-                    // ——bubbles 本体保持平铺（ChatViewModel 续接面不动），
-                    // 折叠在展示节点流上做；展开态按组 id 记忆。
-                    ForEach(ConversationProjector.foldTurnProcess(viewModel.bubbles)) { node in
-                        switch node {
-                        case .plain(let bubble):
-                            bubbleView(bubble).id(bubble.id)
-                        case .process(let group):
-                            VStack(alignment: .leading, spacing: 10) {
-                                TurnProcessRowView(group: group,
-                                                   open: expandedProcesses.contains(group.id)) {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        if expandedProcesses.contains(group.id) {
-                                            expandedProcesses.remove(group.id)
-                                        } else {
-                                            expandedProcesses.insert(group.id)
-                                        }
-                                    }
-                                }
-                                if expandedProcesses.contains(group.id) {
-                                    ForEach(group.bubbles) { inner in
-                                        bubbleView(inner)
-                                    }
-                                }
-                            }
-                            .id(group.id)
-                        }
-                    }
-                    if !viewModel.streamingReasoning.isEmpty {
-                        // P2-⑬：流式思考走披露行（dsh ReasoningRow running 态——
-                        // 折叠 + 尾行跟随）。
-                        ReasoningRowView(text: viewModel.streamingReasoning,
-                                         running: true)
-                            .id("streaming-reasoning")
-                    }
-                    if !viewModel.streamingText.isEmpty {
-                        Text(viewModel.streamingText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(8)
-                            .id("streaming-text")
-                    }
-                    if case .failed(let message) = viewModel.phase {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    // bc①：恒渲染底部兜底锚——流式锚只在 live 面存在，
-                    // reproject 清空流式缓冲后 scrollTo 死锚 no-op，视口停在
-                    // 旧偏移（「内容消失重来时视口卡住」的根因）；兜底锚保证
-                    // 跟随滚动在任何投影状态下都有可达目标。
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom-anchor")
-                }
-                .padding(12)
+                // 【批3 编译十三】内容主体拆为独立 @ViewBuilder 变量——
+                // 长 LazyVStack 链类型检查超时（:233 CI 实证）机械消解。
+                messageStreamStack
+                    .padding(12)
             }
             .onChange(of: viewModel.bubbles) { _ in followIfEnabled(proxy) }
             .onChange(of: viewModel.streamingText) { _ in followIfEnabled(proxy) }
@@ -339,6 +275,78 @@ struct ChatView: View {
             // 区域不被压缩（对话不被挤没）；composer chrome 保持键盘安全位
             // （输入可用硬要求）。规避责任只在 composer 侧。
             .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
+    }
+
+    /// 消息流主体（banner + 折叠投影流 + 流式行 + 失败行 + 底部锚）。
+    @ViewBuilder
+    private var messageStreamStack: some View {
+        LazyVStack(alignment: .leading, spacing: 10) {
+            if let banner = viewModel.resumeBanner {
+                Text(banner)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(6)
+                    .background(Color.yellow.opacity(0.12))
+                    .cornerRadius(6)
+            }
+            // 【批2 2B 件3】视图层折叠投影（TurnProcessNodeView 语义）
+            // ——bubbles 本体保持平铺（ChatViewModel 续接面不动），
+            // 折叠在展示节点流上做；展开态按组 id 记忆。
+            ForEach(ConversationProjector.foldTurnProcess(viewModel.bubbles)) { node in
+                switch node {
+                case .plain(let bubble):
+                    bubbleView(bubble).id(bubble.id)
+                case .process(let group):
+                    VStack(alignment: .leading, spacing: 10) {
+                        TurnProcessRowView(group: group,
+                                           open: expandedProcesses.contains(group.id)) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                if expandedProcesses.contains(group.id) {
+                                    expandedProcesses.remove(group.id)
+                                } else {
+                                    expandedProcesses.insert(group.id)
+                                }
+                            }
+                        }
+                        if expandedProcesses.contains(group.id) {
+                            ForEach(group.bubbles) { inner in
+                                bubbleView(inner)
+                            }
+                        }
+                    }
+                    .id(group.id)
+                }
+            }
+            if !viewModel.streamingReasoning.isEmpty {
+                // P2-⑬：流式思考走披露行（dsh ReasoningRow running 态——
+                // 折叠 + 尾行跟随）。
+                ReasoningRowView(text: viewModel.streamingReasoning,
+                                 running: true)
+                    .id("streaming-reasoning")
+            }
+            if !viewModel.streamingText.isEmpty {
+                Text(viewModel.streamingText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(8)
+                    .id("streaming-text")
+            }
+            if case .failed(let message) = viewModel.phase {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // bc①：恒渲染底部兜底锚——流式锚只在 live 面存在，
+            // reproject 清空流式缓冲后 scrollTo 死锚 no-op，视口停在
+            // 旧偏移（「内容消失重来时视口卡住」的根因）；兜底锚保证
+            // 跟随滚动在任何投影状态下都有可达目标。
+            Color.clear
+                .frame(height: 1)
+                .id("bottom-anchor")
         }
     }
 
@@ -985,7 +993,7 @@ private struct ToolCardView: View {
     /// wanwo:// → 宿主文件（会话桶锚 = 本卡会话）→ 缩略图；任一步失败
     /// 返回 nil（调用面降级纯链接行）。
     private func resolveThumbnail(_ url: URL) -> UIImage? {
-        guard let fileURL = BrowserUseManager.resolveWanwoURL(url, sessionID: sessionID)
+        guard let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url, sessionID: sessionID)
         else { return nil }
         return UIImage(contentsOfFile: fileURL.path)
     }
