@@ -69,7 +69,7 @@ final class BrowserUseEngineTests: XCTestCase {
     }
 
     /// 共享单例复位缺省档（矩阵测试前置；用后恢复，防串测）。
-    private func withResetPolicy(_ body: () throws -> Void) rethrows {
+    private func withResetPolicy(_ body: () async throws -> Void) async rethrows {
         let savedDefault = OriginPolicy.shared.defaultRule
         let savedHandler = OriginPolicy.shared.askHandler
         OriginPolicy.shared.defaultRule = .default
@@ -82,7 +82,7 @@ final class BrowserUseEngineTests: XCTestCase {
     }
 
     func testAccessDecisionMatrix() {
-        withResetPolicy {
+        await withResetPolicy {
             // access：缺省 allow（含任意 origin）。
             XCTAssertEqual(OriginPolicy.shared.decide(\.access, for: "https://a.com"), .allow)
             XCTAssertEqual(OriginPolicy.shared.allowsAccess(for: "https://a.com"), true)
@@ -102,7 +102,7 @@ final class BrowserUseEngineTests: XCTestCase {
 
     /// 最长前缀匹配：更深前缀覆盖胜出（codex origins 前缀语义本地近似）。
     func testLongestPrefixOverrideWins() {
-        withResetPolicy {
+        await withResetPolicy {
             OriginPolicy.shared.originOverrides = [
                 "https://a.com": OriginPolicyRule(access: .allow, downloads: .allow,
                                                   uploads: .allow, fullCDPAccess: .deny),
@@ -116,7 +116,7 @@ final class BrowserUseEngineTests: XCTestCase {
 
     /// downloads：ask + 无审批缝 → fail closed（authorizeDownloads=false）。
     func testDownloadsAskFailsClosedWithoutHandler() async {
-        withResetPolicy {
+        await withResetPolicy {
             OriginPolicy.shared.askHandler = nil
             let allowed = await OriginPolicy.shared.authorizeDownloads(for: "https://a.com")
             XCTAssertFalse(allowed, "ask 档无审批缝必须 fail closed")
@@ -125,7 +125,7 @@ final class BrowserUseEngineTests: XCTestCase {
 
     /// downloads：ask + 审批缝 → 审批结果透传（reason 随行）。
     func testDownloadsAskRoutesThroughHandler() async {
-        withResetPolicy {
+        await withResetPolicy {
             var receivedReason: String?
             OriginPolicy.shared.askHandler = { reason in
                 receivedReason = reason
@@ -144,7 +144,7 @@ final class BrowserUseEngineTests: XCTestCase {
 
     /// uploads：缺省 deny（结构性——引擎无文件选取入口；判定函数在位）。
     func testUploadsDeniedByDefault() async {
-        withResetPolicy {
+        await withResetPolicy {
             OriginPolicy.shared.askHandler = { _ in true } // 即便审批放行也不可达 deny
             let allowed = await OriginPolicy.shared.authorizeUploads(for: "https://a.com")
             XCTAssertFalse(allowed)
