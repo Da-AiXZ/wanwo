@@ -320,19 +320,9 @@ struct CodeRunFailedError: Error, LocalizedError {
     static let errorName = "CodeRunFailedError"  // ptc.ts:141
 }
 
-/// 提交序计数器（ptc.ts:341 `let dispatches = 0` + :468 `++dispatches`——
-/// JS 单线程原子自增的 Swift 形态；编号 = 提交序）。
-final class PtcDispatchCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var n = 0
-
-    func next() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        n += 1
-        return n
-    }
-}
+// （PtcDispatchCounter 已删：ptc.ts:341/:468 `++dispatches` 的提交序编号改由
+//   CodeBindingSubmission 承载——dsh 在 binding 同步段编号，WanWo 对应盖章点
+//   在 JS 桥同步段；Task 内自增的到达序≠程序序，CI 实证同根因。）
 
 // MARK: - 调度条目（ptc.ts:357-370 PendingDispatch）
 
@@ -350,6 +340,9 @@ final class PtcDispatchEntry: @unchecked Sendable {
     let argsLogged: JSONValue
 
     // 车道独占状态（仅在 PtcDispatchLane actor 内读写）。
+    /// 提交序凭据（bridge 同步段盖章；ptc.ts:348-349 starts strictly
+    /// submission-ordered 的 Swift 承载——车道据此按程序序启动）。
+    var submissionOrder = 0
     /// 本条目启动时的分类；exclusive 屏障持有至 commit 完成（ptc.ts:369）。
     var mode: ToolExecutionMode?
     /// body 已落定产出（commit 游标等待位，ptc.ts:367）。
@@ -436,6 +429,17 @@ actor PtcDispatchLane {
     private var pendingQueue: [PtcDispatchEntry] = []
     private var commitQueue: [PtcDispatchEntry] = []
     private var inFlight = 0
+    /// 期望的下一启动序号（ptc.ts:348-349 starts strictly submission-ordered
+    /// 的 Swift 闭环面）：bridge 盖章（程序序）与车道到达（Task 转交）之间存在
+    /// 窗口，到达序≠程序序——pendingQueue 按序号有序插入，队首序号必须等于
+    /// 本值才可启动；前序已盖章未到达（或弃单未释位）时不得越序启动。
+    /// dsh 无此状态（同步段入队，到达序=程序序），本字段为 WanWo 桥 Task 化
+    /// 的等价承载，非语义偏离。
+    private var nextExpectedOrder = 0
+    /// 已释位弃单的序号集合（洞闭环：abandon 与到达乱序，见
+    /// abandonSubmission）。start 后序号即离开本机制的管辖（nextExpectedOrder
+    /// 前移），集合只容纳未启动序号。
+    private var releasedOrders: Set<Int> = []
     /// 在飞 commit 数（stepOnce 已 removeFirst、appendSettle 尚未返回）——
     /// drain 的等待面之一：dsh ptc.ts:448-451 "drains the ordered commit
     /// lane — including a commit already in progress when the program
@@ -461,10 +465,27 @@ actor PtcDispatchLane {
 
     // MARK: 提交（ptc.ts:584-586 wakeup + void drive()）
 
-    /// 绑定提交一笔子派发；驱动车道按需唤醒。
-    func submit(_ entry: PtcDispatchEntry) {
-        pendingQueue.append(entry)
+    /// 绑定提交一笔子派发；驱动车道按需唤醒。`order` = bridge 盖章的程序序
+    /// （CodeBindingSubmission.order）：按序有序插入（到达序≠程序序）。
+    func submit(_ entry: PtcDispatchEntry, order: Int) {
+        entry.submissionOrder = order
+        releasedOrders.remove(order)
+        // 有序插入：首个严格大于 order 的位置（同序不可能——一笔调用一枚章）。
+        let index = pendingQueue.firstIndex { $0.submissionOrder > order } ?? pendingQueue.count
+        pendingQueue.insert(entry, at: index)
         ensureDriver()
+        wake()
+    }
+
+    /// 弃单释位（洞闭环）：本序号已盖章必达，但 binding 在提交前以弃单拒绝
+    /// （run 落定检查）——必须通知车道放行后续序号，否则 nextExpectedOrder
+    /// 永久卡死。abandon 与到达乱序（谁先谁后都可能），故经集合收敛。
+    func abandonSubmission(_ order: Int) {
+        releasedOrders.insert(order)
+        while releasedOrders.contains(nextExpectedOrder) {
+            releasedOrders.remove(nextExpectedOrder)
+            nextExpectedOrder += 1
+        }
         wake()
     }
 
@@ -519,6 +540,8 @@ actor PtcDispatchLane {
         if let head = commitQueue.first, head.settled { return true }
         if let head = pendingQueue.first {
             if scope.isAborted() { return true }
+            // 洞阻塞：前序已盖章未到达时不得越序（ptc.ts:348-349）。
+            if head.submissionOrder != nextExpectedOrder { return false }
             let mode = classify(head)
             let capacity = !exclusiveActive
                 && (mode == .exclusive ? inFlight == 0 : inFlight < maxParallel)
@@ -558,6 +581,11 @@ actor PtcDispatchLane {
             }
             // ③ 启动时重分类（fail closed；ptc.ts:417-418）。
             let mode = classify(head)
+            // ③' 洞阻塞：队首序号必须等于期望序号——已盖章未到达的前序
+            //    （弃单未释位）未决时不得越序启动（ptc.ts:348-349 starts
+            //    strictly submission-ordered；dsh 同步段入队无此窗口，本判定
+            //    为 WanWo 桥 Task 化的等价承载）。中止面不适用：② 先行放行。
+            guard head.submissionOrder == nextExpectedOrder else { return false }
             // ④ 容量判定（ptc.ts:419-420）。
             let capacity = !exclusiveActive
                 && (mode == .exclusive ? inFlight == 0 : inFlight < maxParallel)
@@ -565,6 +593,7 @@ actor PtcDispatchLane {
                 if mode == .exclusive { exclusiveActive = true }
                 head.mode = mode
                 pendingQueue.removeFirst()
+                nextExpectedOrder += 1
                 // commitQueue 先入队再启动（ptc.ts:425-427——提交序保证；
                 // settled 翻转前提交游标不动它）。
                 commitQueue.append(head)
@@ -901,11 +930,9 @@ struct RunCodeTool: AgentTool {
         // functions 集（ptc.ts:606-614）：枚举 registry 可见集、跳过 run_code
         // 本名；Swift 字典 own-key 天然等价（P1 登记③同源）。
         var functions: [String: CodeBindingFunction] = [:]
-        let counter = PtcDispatchCounter()
         for schema in pipeline.registry.schemas() where schema.name != Self.runCodeName {
             functions[schema.name] = makeBinding(name: schema.name, ctx: ctx,
-                                                 scope: scope, lane: lane,
-                                                 counter: counter)
+                                                 scope: scope, lane: lane)
         }
 
         // ptc.ts:619-627——runtime.run{program, bindings:[tools], errorClass
@@ -952,24 +979,29 @@ struct RunCodeTool: AgentTool {
     private func makeBinding(name: String,
                              ctx: ToolExecutionContext,
                              scope: RunCodeRunScope,
-                             lane: PtcDispatchLane,
-                             counter: PtcDispatchCounter) -> CodeBindingFunction {
-        return { args in
-            // ptc.ts:464-466——run 已落定/中止：不派发（文案逐字）。
+                             lane: PtcDispatchLane) -> CodeBindingFunction {
+        return { args, submission in
+            // ptc.ts:464-466——run 已落定/中止：不派发（文案逐字）。弃单须先
+            // 释位（本序号已盖章必达；不通知则车道 nextExpectedOrder 卡死）。
             if scope.isAborted() {
+                await lane.abandonSubmission(submission.order)
                 throw RunCodeBindingError(message:
                     "run_code run is over (\(scope.abortReason())); \(name) not dispatched")
             }
             // ptc.ts:467——双快照（登记③）。
             let normalized = RunCodeTool.jsonNormalizeArgs(args)
-            // ptc.ts:468-469——提交序编号 + subCallId 形态逐字。
-            let n = counter.next()
+            // ptc.ts:468-469——提交序编号：dsh `++dispatches` 在 binding 同步段
+            // （编号=提交序）；Swift 以 bridge 同步段盖章的提交凭据承载，
+            // +1 对齐 dsh 的 1-based。subCallId 序=程序序（CI 实证：Task 化
+            // 转交下 counter 到达序乱——同根因修复一并收敛）。
+            let n = submission.order + 1
             let subCallId = "\(ctx.callId):ptc:\(n)"
             let entry = PtcDispatchEntry(name: name, subCallId: subCallId,
                                          argsDispatched: normalized.dispatched,
                                          argsLogged: normalized.logged)
-            // ptc.ts:584-586——提交进车道，等待结算（弃单/落盘失败经 reject）。
-            await lane.submit(entry)
+            // ptc.ts:584-586——提交进车道（携带程序序，车道按序启动），等待
+            // 结算（弃单/落盘失败经 reject）。
+            await lane.submit(entry, order: submission.order)
             let output = try await entry.awaitOutcome()
             // ptc.ts:591-593——结算后重读 runOver：来自已终结 run 的产出
             // 丢弃（文案逐字）。

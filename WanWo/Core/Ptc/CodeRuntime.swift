@@ -76,10 +76,12 @@
 //  对拍测试锚：packages/code-runtime/code-runtime/tests/reserved.spec.ts:15-57。
 //
 //  WanWo 形态适配（登记）：
-//    ① CodeBindingFunction = (JSONValue) async throws -> JSONValue——dsh 的
-//      Promise rejection（:16 binding 拒绝 = 程序内对位调用 rejection）以
-//      Swift throws 承载；args 直接收 JSONValue（无损由类型面保证，dsh
-//      unknown→运行时校验的等价物）。
+//    ① CodeBindingFunction = (JSONValue, CodeBindingSubmission) async throws
+//      -> JSONValue——dsh 的 Promise rejection（:16 binding 拒绝 = 程序内对位
+//      调用 rejection）以 Swift throws 承载；args 直接收 JSONValue（无损由
+//      类型面保证，dsh unknown→运行时校验的等价物）。第二参为提交序凭据
+//      （见 CodeBindingSubmission 文档）：dsh 同步段入队 → 提交序零成本；
+//      WanWo 桥 Task 转交起跑序无保证 → JS 串行队列同步段盖章下传。
 //    ② CodeJsonValue → 既有 JSONValue（enum null/bool/int/double/string/
 //      array/object）：number 以 int/double 双 case 无损承载；object 键为
 //      Swift 字典 own key——`__proto__`/`constructor` 键无原型冲突面（dsh
@@ -104,7 +106,26 @@ import Foundation
 /// 无损 JSON——Swift 形态 args/resolution 直接收发 JSONValue（无损由类型面
 /// 保证）；throws = dsh Promise rejection 形态（程序内对位调用的 rejection，
 /// types.ts:16 注释语义）。无 seam 级字节上限（:15 注释）。
-typealias CodeBindingFunction = @Sendable (_ args: JSONValue) async throws -> JSONValue
+///
+/// 第二参 `submission` = 提交序凭据（ptc.ts:348-349 "Starts are strictly
+/// submission-ordered" 的 Swift 承载）：dsh worker 的 binding 在同步段入队
+/// （ptc.ts:524 pendingQueue.push 于 binding 首个 await 之前同步执行），
+/// 提交序=调用序零成本成立；WanWo 的 JS 桥把每次调用经独立 Task 转交，
+/// Task 起跑序无保证——凭据由桥在 JS 串行队列同步段盖章（盖章序=程序调用
+/// 序），binding 据此向消费者（车道）声明提交序。不关心提交序的实现可忽略。
+struct CodeBindingSubmission: Sendable, Equatable {
+    /// 0-based 程序序（run 内单调递增；JS 串行队列同步段盖章）。
+    public let order: Int
+
+    init(order: Int) {
+        self.order = order
+    }
+}
+
+typealias CodeBindingFunction = @Sendable (
+    _ args: JSONValue,
+    _ submission: CodeBindingSubmission
+) async throws -> JSONValue
 
 /// 一次性类型化拒绝契约（types.ts:30-40）：runtime 在 `name` 下注入真 error
 /// 构造器，被拒成员调用成为其实例并经 `memberNameProperty` 暴露确切成员名。

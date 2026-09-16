@@ -595,8 +595,8 @@ final class RunCodeToolTests: XCTestCase {
         let entryB = PtcDispatchEntry(name: "ptc_b", subCallId: "call-1:ptc:2",
                                       argsDispatched: .object([:]),
                                       argsLogged: .object([:]))
-        await lane.submit(entryA)
-        await lane.submit(entryB)
+        await lane.submit(entryA, order: 0)
+        await lane.submit(entryB, order: 1)
         // A 已启动（start 事件落盘、body 在飞），B 仍排队。
         await latch.awaitOpen()
         try? await Task.sleep(nanoseconds: 50_000_000) // B 无容量确认窗口

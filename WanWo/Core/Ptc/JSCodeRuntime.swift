@@ -846,6 +846,17 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         private var api: JSValue?
         private var contextGroupRef: JSContextGroupRef?
         private var stopStateRef: Unmanaged<RunStopState>?
+        /// 提交序盖章计数（CodeBindingSubmission：ptc.ts:348-349 提交序的
+        /// Swift 承载）。仅在 JS 串行队列的 bridge 同步段递增——盖章点唯一，
+        /// 序=程序调用序，零锁。
+        private var submissionOrderCounter = 0
+
+        /// bridge 同步段盖章：返回本笔 binding 调用的程序序号（0-based）。
+        func nextSubmissionOrder() -> Int {
+            let order = submissionOrderCounter
+            submissionOrderCounter += 1
+            return order
+        }
 
         init(config: JSCodeRuntimeConfig, request: CodeRunRequest) {
             self.config = config
@@ -1175,19 +1186,32 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                     return rejectedFn.call(withArguments: [error])!
                 }
                 self.config.onTrace("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
+                // args 解码在同步段完成（原 Task 内解码迁出）：解码失败与
+                // 无损预检同面（rejected promise，errorClass 实例化）且**不
+                // 盖章**——提交序号只发给确实发起派发的调用（ptc.ts:468
+                // ++dispatches 语义：拒绝不编号）。
+                let argsText = encoded!.toString() ?? "null"
+                guard let decoded = try? JSONDecoder().decode(
+                    JSONValue.self, from: Data(argsText.utf8)) else {
+                    let error = RunState.rejectionError(
+                        context: context, errorClass: errorClassValue,
+                        name: nameValue, message: "binding arguments must be lossless JSON",
+                        newErrorFn: api.objectForKeyedSubscript("newError")!)
+                    return rejectedFn.call(withArguments: [error])!
+                }
+                // 提交序盖章（必须在本同步段——JS 串行队列保证盖章序=程序
+                // 调用序；Task 起跑序无保证，故不能延后到 Task 内）。
+                let submission = CodeBindingSubmission(order: state.nextSubmissionOrder())
                 let deferred = deferredFn.call(withArguments: [])
                 let promise = deferred!.objectForKeyedSubscript("promise")!
                 let resolve = deferred!.objectForKeyedSubscript("resolve")!
                 let reject = deferred!.objectForKeyedSubscript("reject")!
                 let bindingToken = UUID()
                 state.registerBindingReject(bindingToken, reject)
-                let argsText = encoded!.toString() ?? "null"
                 Task {
                     var outcome: Result<JSONValue, Error>
                     do {
-                        let decoded = try JSONDecoder().decode(
-                            JSONValue.self, from: Data(argsText.utf8))
-                        let value = try await function(decoded)
+                        let value = try await function(decoded, submission)
                         outcome = .success(value)
                     } catch {
                         outcome = .failure(error)

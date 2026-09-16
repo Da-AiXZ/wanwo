@@ -113,7 +113,7 @@ final class JSCodeRuntimeTests: XCTestCase {
     func testBindingCallLosslessJSONRoundtrip() async throws {
         let runtime = try makeRuntime()
         let box = Box()
-        let binding: CodeBindingFunction = { args in
+        let binding: CodeBindingFunction = { args, _ in
             box.value = args
             return .object(["b": .int(42)])
         }
@@ -160,7 +160,7 @@ final class JSCodeRuntimeTests: XCTestCase {
     func testTaskCancellationBecomesAbort() async throws {
         let runtime = try makeRuntime()
         // 挂起型 binding（永不结算——运行时只停止询问）。
-        let binding: CodeBindingFunction = { _ in
+        let binding: CodeBindingFunction = { _, _ in
             try await Task.sleep(nanoseconds: 30_000_000_000)
             return .null
         }
@@ -272,7 +272,7 @@ final class JSCodeRuntimeTests: XCTestCase {
     func testDisposeAbortsInflightRunsAndRejectsLaterRuns() async throws {
         try XCTSkipIf(true, "深挖件：dispose 时序与 reject drain 交错需实证定位")
         let runtime = try makeRuntime()
-        let binding: CodeBindingFunction = { _ in
+        let binding: CodeBindingFunction = { _, _ in
             try await Task.sleep(nanoseconds: 30_000_000_000)
             return .null
         }
