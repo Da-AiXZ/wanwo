@@ -604,7 +604,7 @@ struct SessionsSidebarView: View {
             collapseSearchOnOutsideTap()
         })
         .overlay {
-            if rows.isEmpty {
+            if filteredSummaries.isEmpty {
                 Text(query.isEmpty ? "暂无会话" : "无匹配会话")
                     .font(.callout)
                     .foregroundStyle(.secondary)
