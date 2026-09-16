@@ -251,7 +251,7 @@ struct ChatView: View {
             // ForEach .plain 分支 bubbleView(bubble).id(bubble.id) 同源）。
             .overlay(alignment: .trailing) {
                 TurnNavigatorRailView(
-                    anchors: ConversationProjector.turnAnchors(viewModel.bubbles)) { anchor in
+                    anchors: TurnNavigator.turnAnchors(viewModel.bubbles)) { anchor in
                     withAnimation(.easeInOut(duration: 0.2)) {
                         proxy.scrollTo(anchor.bubbleID, anchor: .top)
                     }
