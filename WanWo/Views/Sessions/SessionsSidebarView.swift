@@ -439,39 +439,8 @@ struct SessionsSidebarView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("搜索会话")
-                // 视图选项（分组-平铺 + 排序；dsh ViewOptionsMenu 语义）。
-                Menu {
-                    Toggle(isOn: $grouped) {
-                        Label("按工作区分组", systemImage: "folder")
-                    }
-                    Menu {
-                        Picker("排序", selection: $sort) {
-                            Text("更新时间").tag(SidebarSort.updatedDesc)
-                            Text("标题").tag(SidebarSort.titleAsc)
-                        }
-                    } label: {
-                        Label("排序", systemImage: "arrow.up.arrow.down")
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 12))
-                }
-                .accessibilityLabel("视图选项")
-                // C1 + 弹层 addOnly（WorkspacePicker.tsx:101-118）：应用内
-                // Menu 单项「添加工作区」，选中才进目录流；目录流占用期间
-                // 全禁用（flowBusy——dsh :86 同语义）。
-                Menu {
-                    Button {
-                        showingWorkspacePicker = true
-                    } label: {
-                        Label("添加工作区", systemImage: "folder.badge.plus")
-                    }
-                    .disabled(flowBusy)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12))
-                }
-                .accessibilityLabel("添加工作区")
+                viewOptionsMenu
+                addWorkspaceMenu
             }
             if searchVisible {
                 searchField
@@ -479,6 +448,48 @@ struct SessionsSidebarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 6)
+    }
+
+    /// 视图选项（分组-平铺 + 排序；dsh ViewOptionsMenu 语义）。
+    /// 【批3 编译八】从 browseHeader 拆出——Menu 内嵌 Menu/Picker 是 SwiftUI
+    /// 类型检查炸弹（:154 超时实证），拆为独立 @ViewBuilder 变量。
+    @ViewBuilder
+    private var viewOptionsMenu: some View {
+        Menu {
+            Toggle(isOn: $grouped) {
+                Label("按工作区分组", systemImage: "folder")
+            }
+            Menu {
+                Picker("排序", selection: $sort) {
+                    Text("更新时间").tag(SidebarSort.updatedDesc)
+                    Text("标题").tag(SidebarSort.titleAsc)
+                }
+            } label: {
+                Label("排序", systemImage: "arrow.up.arrow.down")
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 12))
+        }
+        .accessibilityLabel("视图选项")
+    }
+
+    /// C1 + 弹层 addOnly（WorkspacePicker.tsx:101-118）：应用内 Menu 单项
+    /// 「添加工作区」，选中才进目录流；目录流占用期间全禁用（flowBusy）。
+    @ViewBuilder
+    private var addWorkspaceMenu: some View {
+        Menu {
+            Button {
+                showingWorkspacePicker = true
+            } label: {
+                Label("添加工作区", systemImage: "folder.badge.plus")
+            }
+            .disabled(flowBusy)
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12))
+        }
+        .accessibilityLabel("添加工作区")
     }
 
     /// 目录流占用（sheet 打开 = native chooser pending——dsh flowBusy :86）。
@@ -547,20 +558,20 @@ struct SessionsSidebarView: View {
     /// M3 既有单层列表原样（滑动删除承载）。C5：外部点击收起搜索（dsh
     /// :915-925——query 非空时只 blur 不收起的 web 焦点语义折算为不收起）。
     private var sessionList: some View {
+        // 【批3 编译八】分组/平铺拆为独立变量 + AnyView 擦除——表达式超时
+        // （:154）的机械消解；两分支本体零变化。
+        if grouped {
+            AnyView(groupedSessionList)
+        } else {
+            AnyView(flatSessionList)
+        }
+    }
+
+    /// 分组树（每组 5 条折叠；组行 + 组内会话行 + 展开其余）。
+    private var groupedSessionList: some View {
         List {
-            if grouped {
-                ForEach(displayGroups) { group in
-                    groupSection(group)
-                }
-            } else {
-                let rows = filteredSummaries
-                ForEach(rows) { summary in
-                    sessionRow(summary, group: nil)
-                }
-                .onDelete { indexSet in
-                    // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
-                    pendingDeleteOffsets = indexSet
-                }
+            ForEach(displayGroups) { group in
+                groupSection(group)
             }
         }
         .listStyle(.plain)
@@ -569,6 +580,31 @@ struct SessionsSidebarView: View {
         })
         .overlay {
             if displayGroups.allSatisfy({ $0.sessionIds.isEmpty }) {
+                Text("暂无会话")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 平铺单层列表（M3 既有形态；滑动删除承载——onDelete 只在平铺挂）。
+    private var flatSessionList: some View {
+        List {
+            let rows = filteredSummaries
+            ForEach(rows) { summary in
+                sessionRow(summary, group: nil)
+            }
+            .onDelete { indexSet in
+                // M3 T2.2 A6：删除前确认（滑动删除不再直删——派单项 6）。
+                pendingDeleteOffsets = indexSet
+            }
+        }
+        .listStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded {
+            collapseSearchOnOutsideTap()
+        })
+        .overlay {
+            if rows.isEmpty {
                 Text(query.isEmpty ? "暂无会话" : "无匹配会话")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -580,6 +616,20 @@ struct SessionsSidebarView: View {
     private func collapseSearchOnOutsideTap() {
         guard searchVisible, query.isEmpty else { return }
         searchVisible = false
+    }
+
+    /// M3 滑动删除确认卡的落点（批 1 重写时函数体误删而调用点保留——
+    /// CI 35127800820 实证 cannot find 'delete' in scope。a② 搜索态 offset
+    /// 错位修复语义原样：onDelete 的 offsets 是渲染行集（filteredSummaries）
+    /// 的索引，映射回 id 含越界防御）。
+    private func delete(at offsets: IndexSet) {
+        let rows = filteredSummaries
+        let ids = offsets.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
+        Task {
+            for id in ids {
+                await environment.deleteSession(id: id)
+            }
+        }
     }
 
     /// 一个分组 Section（工作区行 header + 组内会话行 + 折叠展开行；

@@ -116,7 +116,10 @@ struct SettingsPanelView: View {
         // Esc/macOS、Cmd+. /iOS。触屏无键盘=降级登记报告）。
         .background {
             Button("") { environment.closeSettings() }
-                .keyboardShortcut(.cancelAction, modifiers: [])
+                // 【批3 编译八】.cancelAction 是 KeyboardShortcut 的静态成员
+                // （非 KeyEquivalent）——keyboardShortcut(_:modifiers:) 重载
+                // 不适用，直接传 KeyboardShortcut。
+                .keyboardShortcut(.cancelAction)
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
