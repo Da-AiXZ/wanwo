@@ -239,7 +239,7 @@ final class JSCodeRuntimeTests: XCTestCase {
             program: "return 1;",
             bindings: [CodeBindingNamespace(
                 global: "console",
-                functions: ["x": { _ in .null }])])
+                functions: ["x": { _, _ in .null }])])
         // 显式校验面：契约文案逐字（P1 worker :333）。
         XCTAssertThrowsError(try runtime.validate(request)) { failure in
             XCTAssertEqual(

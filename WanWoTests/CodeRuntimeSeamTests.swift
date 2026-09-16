@@ -132,7 +132,7 @@ final class CodeRuntimeSeamTests: XCTestCase {
         XCTAssertNoThrow(try CodeRuntimeSeam.validateBindings([
             CodeBindingNamespace(
                 global: "tools",
-                functions: ["lookup": { _ in .null }],
+                functions: ["lookup": { _, _ in .null }],
                 errorClass: CodeBindingErrorClass(
                     name: "ToolsError", memberNameProperty: "memberName")),
         ]))
@@ -245,9 +245,9 @@ final class CodeRuntimeSeamTests: XCTestCase {
         // types.ts:45-47——`__proto__`/`constructor` 是普通 own property，
         // 非原型冲突（Swift 字典 own-key 天然等价，适配登记③）。校验不拒之。
         let namespace = CodeBindingNamespace(global: "tools", functions: [
-            "__proto__": { _ in .null },
-            "constructor": { _ in .null },
-            "hasOwnProperty": { _ in .null },
+            "__proto__": { _, _ in .null },
+            "constructor": { _, _ in .null },
+            "hasOwnProperty": { _, _ in .null },
         ])
         XCTAssertNoThrow(try CodeRuntimeSeam.validateBindings([namespace]))
         XCTAssertEqual(namespace.functions.count, 3)

@@ -28,7 +28,7 @@ final class JSCodeEngineProbeTests: XCTestCase {
             """,
             bindings: [CodeBindingNamespace(
                 global: "tools",
-                functions: ["echo": { args in return args }])])
+                functions: ["echo": { args, _ in return args }])])
         let result = await runtime.run(request)
         XCTAssertNil(result.error, "error: \(result.error?.message ?? "")")
         XCTAssertEqual(result.value, .array([
@@ -48,7 +48,7 @@ final class JSCodeEngineProbeTests: XCTestCase {
             """,
             bindings: [CodeBindingNamespace(
                 global: "tools",
-                functions: ["echo": { args in return args }])])
+                functions: ["echo": { args, _ in return args }])])
         let result = await runtime.run(request)
         XCTAssertNil(result.error, "error: \(result.error?.message ?? "")")
         XCTAssertTrue(result.logs.contains("before"), "logs=\(result.logs)")
@@ -65,7 +65,7 @@ final class JSCodeEngineProbeTests: XCTestCase {
             """,
             bindings: [CodeBindingNamespace(
                 global: "tools",
-                functions: ["slow": { args in
+                functions: ["slow": { args, _ in
                     try await Task.sleep(nanoseconds: 800_000_000)
                     return args
                 }])])
@@ -85,7 +85,7 @@ final class JSCodeEngineProbeTests: XCTestCase {
             """,
             bindings: [CodeBindingNamespace(
                 global: "tools",
-                functions: ["echo": { args in return args }])])
+                functions: ["echo": { args, _ in return args }])])
         let result = await runtime.run(request)
         let error = try XCTUnwrap(result.error,
                                   "undefined host API must fail fast, got value=\(String(describing: result.value))")
