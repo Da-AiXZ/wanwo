@@ -29,11 +29,18 @@ enum ConversationProjector {
         var name: String
         var title: String
         var detail: String?
+        /// 【批2 2B 件5 DetailsPanel 对齐】模型原始参数 JSON 文本（tool/call
+        /// 的 arguments 原文；详情展开态 pretty 化呈现——dsh DetailsPanel
+        /// input 段 material.argsRaw 同语义）。
+        var argsRaw: String?
         /// 流式输出（shell 行等；E2：环形窗口封顶，见 ChatViewModel 纪律）。
         var liveOutput: String = ""
         /// 结果文本（收敛后）。
         var resultText: String?
         var isError: Bool = false
+        /// 【批2 2B 件5】结构化失败身份（dsh DetailsPanel error.name:code 行）。
+        var errorName: String?
+        var errorCode: String?
         var isRunning: Bool = true
         /// 交互状态行（M3 T1：审批 waiting/结算态、提问 waiting——dsh 流内
         /// toolview 行的 WanWo 形态；琥珀语义行）。
@@ -50,10 +57,35 @@ enum ConversationProjector {
             case tool(ToolCard)
             case command(kind: String, text: String)
             case note(String)
+            /// 【批2 2B 件4】轮次用量/用时 pill（TurnUsagePanel.tsx:99-235
+            /// 语义——轮次尾 pill，点开明细）。
+            case turnUsage(TurnUsageSummary)
         }
 
         let id: String
         var kind: Kind
+    }
+
+    // MARK: 批2 2B 件4：轮次用量投影（TurnUsagePanel 数据面）
+
+    /// 单轮用量/用时折叠（事件流 turnStart→turnEnd 区间；数据源核实结论：
+    /// assistantMessage 每 step 落盘 TokenUsage——inputTokens=uncached 口径
+    /// （LLMTypes.swift:18-25 mapUsage 对齐），TTFT/decode 时长事件流无记录
+    /// → 吞吐/TTFT 行缺席（dsh「组缺席」语义，同 StatsLine 头注口径）。
+    struct TurnUsageSummary: Equatable {
+        let turn: Int
+        /// uncached 输入（TokenUsage.inputTokens 原口径）。
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheReadTokens: Int?
+        var reasoningTokens: Int?
+        /// 计费输入（dsh TurnUsagePanel cacheHit 分母 = total-output 三桶口径；
+        /// WanWo cacheWrite 恒 0 → uncached + cacheRead，同 StatsLine billedInput）。
+        var billedInputTokens: Int { inputTokens + (cacheReadTokens ?? 0) }
+        /// 消耗总量（dsh totalTokens = billedInput + output）。
+        var totalTokens: Int { billedInputTokens + outputTokens }
+        /// 轮次墙钟（turnStart → turnEnd；ms；turnStart 缺失 = 0 不显示）。
+        var runMs: Int64 = 0
     }
 
     // MARK: - 注入/标记消息过滤（F038/F039/F040 + 压缩摘要呈现；不渲染气泡）
@@ -89,8 +121,15 @@ enum ConversationProjector {
                         callArgs: inout [String: (name: String, args: JSONValue)],
                         previousCards: [String: ToolCard] = [:]) -> [Bubble] {
         var result: [Bubble] = []
+        // 【批2 2B 件4】轮次用量累积（turn → 累积值 + 起始墙钟）。
+        var turnUsage: [Int: TurnUsageSummary] = [:]
+        var turnStartMs: [Int: Int64] = [:]
         for event in events {
             switch event.payload {
+            case .turnStart(let turn):
+                turnStartMs[turn] = event.timeMs
+                turnUsage[turn] = TurnUsageSummary(turn: turn)
+
             case .userMessage(let text):
                 guard !isMarkerMessage(text) else { continue }
                 result.append(Bubble(id: "u\(event.seq)", kind: .user(text, [])))
@@ -108,7 +147,25 @@ enum ConversationProjector {
                     result[index].kind = .user(text, parsed.refs)
                 }
 
-            case .assistantMessage(_, _, let message, _, _):
+            case .assistantMessage(let turn, let step, let message, let usage, _):
+                // 【批2 2B 件4】轮次用量累积（assistantMessage usage = 每 step
+                // 落盘的 TokenUsage；缺 turnStart 的旧流兜底建桶）。
+                if usage != nil, turnUsage[turn] == nil {
+                    turnUsage[turn] = TurnUsageSummary(turn: turn)
+                }
+                if var summary = turnUsage[turn], let usage {
+                    summary.inputTokens += usage.inputTokens
+                    summary.outputTokens += usage.outputTokens
+                    // cacheRead/reasoning 逐 step 可选——任一 step 出现即汇总
+                    // （nil = 该维度事件流无记录，呈现面缺席）。
+                    if let read = usage.cacheReadTokens {
+                        summary.cacheReadTokens = (summary.cacheReadTokens ?? 0) + read
+                    }
+                    if let reasoning = usage.reasoningTokens {
+                        summary.reasoningTokens = (summary.reasoningTokens ?? 0) + reasoning
+                    }
+                    turnUsage[turn] = summary
+                }
                 // 思考/回复按块分立（E2）：块序 = content 数组序；气泡 id 锚定
                 // 事件 seq + 块下标（对前后事件增删稳定——LazyVStack 身份不抖，
                 // 长文本不被无谓重建）。
@@ -132,7 +189,10 @@ enum ConversationProjector {
                     ?? ToolCardIntent(title: name)
                 var card = ToolCard(callId: callId, name: name,
                                     title: intent.title,
-                                    detail: intent.detail ?? "turn \(turn) · step \(step)")
+                                    detail: intent.detail ?? "turn \(turn) · step \(step)",
+                                    // 【批2 2B 件5】模型原始参数 JSON 随卡
+                                    //（DetailsPanel input 段 argsRaw 语义）。
+                                    argsRaw: arguments)
                 // 瞬态续接（dsh current map 语义）：liveOutput/statusNote 不在
                 // 事件流中，按 callId 从上一投影带入。
                 if let previous = previousCards[callId] {
@@ -160,6 +220,10 @@ enum ConversationProjector {
                     }
                     card.resultText = content
                     card.isError = isError
+                    // 【批2 2B 件5】结构化失败身份随卡（DetailsPanel
+                    // error.name:code 头行语义）。
+                    card.errorName = errorName
+                    card.errorCode = errorCode
                     card.isRunning = false
                     // 结算态即事件可证状态：审批未通过（NOT_APPROVED）琥珀行；
                     // 其余瞬态行（等待审批/N/M 已回答）让位于 presentResult 复现
@@ -168,6 +232,18 @@ enum ConversationProjector {
                         ? "未获批准" : nil
                     result[index].kind = .tool(card)
                 }
+
+            case .turnEnd(let turn, _):
+                // 【批2 2B 件4】轮次尾用量 pill 发射（TurnUsagePanel 轮次尾
+                // 锚定语义）。零用量轮（无 assistantMessage，如空轮）不发射
+                // ——dsh「无数据组缺席」同口径。
+                guard var summary = turnUsage[turn],
+                      summary.inputTokens > 0 || summary.outputTokens > 0
+                else { break }
+                if let started = turnStartMs[turn] {
+                    summary.runMs = max(0, event.timeMs - started)
+                }
+                result.append(Bubble(id: "tu-\(turn)", kind: .turnUsage(summary)))
 
             case .commandRun(_, let name, _):
                 result.append(Bubble(id: "cr\(event.seq)", kind: .command(kind: "run", text: name)))
@@ -203,5 +279,87 @@ enum ConversationProjector {
         let text = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "\n", with: " ")
         return text.count <= 80 ? text : String(text.prefix(80)) + "…"
+    }
+
+    // MARK: 批2 2B 件3：轮次过程折叠投影（TurnProcessNodeView.tsx:7-60）
+
+    /// 折叠摘要组（turn-process 节点）。
+    struct TurnProcessGroup: Equatable {
+        let id: String
+        var toolCallCount = 0
+        /// 中间消息计数（WanWo 词汇 = reasoning 块；dsh messageCount 同位）。
+        var messageCount = 0
+        /// 子代理计数——WanWo 事件词汇无 subagent 事件，恒 0（标签缺席，
+        /// dsh count>0 才 push 的语义同形；已核实登记报告）。
+        var subagentCount = 0
+        /// 折叠成员（展开态原样渲染）。
+        var bubbles: [Bubble] = []
+    }
+
+    /// 展示节点 = 平铺气泡 | 折叠组（视图层消费；bubbles 本体保持平铺——
+    /// ChatViewModel setCardStatus/toolCards 续接面不动）。
+    enum DisplayNode: Identifiable, Equatable {
+        case plain(Bubble)
+        case process(TurnProcessGroup)
+
+        var id: String {
+            switch self {
+            case .plain(let bubble): return bubble.id
+            case .process(let group): return group.id
+            }
+        }
+    }
+
+    /// 气泡流 → 展示节点流（纯函数；锚点 TurnProcessNodeView.tsx:7-60 +
+    /// 派单简报 2B 件3）。规则：极大连续 tool/reasoning 游程折叠为摘要行；
+    /// 游程 ≥2 才折叠（单工具卡保持平铺——万我工具卡自带完成收敛态，单卡
+    /// 再折叠徒增一次点按；偏差登记报告）。摘要文案在视图层组表
+    /// （TurnProcessRowView），本函数只产计数。
+    static func foldTurnProcess(_ bubbles: [Bubble]) -> [DisplayNode] {
+        var out: [DisplayNode] = []
+        var run: [Bubble] = []
+        func flush() {
+            guard run.count >= 2 else {
+                out.append(contentsOf: run.map(DisplayNode.plain))
+                run.removeAll()
+                return
+            }
+            var group = TurnProcessGroup(id: "tp-\(run.first!.id)")
+            for bubble in run {
+                switch bubble.kind {
+                case .tool: group.toolCallCount += 1
+                case .reasoning: group.messageCount += 1
+                default: break
+                }
+            }
+            group.bubbles = run
+            out.append(.process(group))
+            run.removeAll()
+        }
+        for bubble in bubbles {
+            switch bubble.kind {
+            case .tool, .reasoning:
+                run.append(bubble)
+            default:
+                flush()
+                out.append(.plain(bubble))
+            }
+        }
+        flush()
+        return out
+    }
+
+    // MARK: 批2 2B 件5：DetailsPanel 对齐（pretty JSON 纯函数）
+
+    /// 参数 JSON pretty 化（DetailsPanel.tsx:32-38 pretty 同语义：可解析则
+    /// 2 空格缩进重排，不可解析原样返回——模型原始 arguments 非法 JSON 时
+    /// 兜底直呈）。
+    static func prettyJSON(_ raw: String) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(raw.utf8)),
+              let data = try? JSONSerialization.data(withJSONObject: object,
+                                                     options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else { return raw }
+        return text
     }
 }

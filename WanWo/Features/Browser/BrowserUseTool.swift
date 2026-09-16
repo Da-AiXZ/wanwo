@@ -207,8 +207,14 @@ struct BrowserUseTool: AgentTool {
         }
 
         // ── 截图 / fetch 产物落盘（ConcurrentTools:582-615 语义）──────
-        // 落会话 browser 桶（=guest /var/wanwo/browser/）；wanwo_url 待 B3
-        // scheme 体系接入（裁定④），本批以 guest 路径随行。
+        // 落会话 browser 桶（=guest /var/wanwo/browser/）。
+        // 【批2 B⑥】B3 遗留"B4 后补"兑现（批2 简报 2A B⑥）：结果文本在
+        // guest 路径之外追加 wanwo:// 资源链接（BrowserUseManager.
+        // linuxPathToWanwoURL 生成面 = OpenMinis linuxPathToMinisURL 同款，
+        // FileTools 写工具同族语义）——chat 呈现面（ChatView ToolCardView）
+        // 识别该链接渲染为可点条目，点击经 WanwoURLRouter 打开右侧栏浏览器
+        // 页签（RootView 既有消费端）。AI 侧仍读 guest 路径（模型可读），
+        // 链接仅供用户侧呈现，模型上下文不因此膨胀（每产物一行）。
         let browserDir = WanWoPaths.sessionPersistentDir(for: ctx.sessionId,
                                                          bucket: "browser")
         if let b64 = result.base64Image, let data = Data(base64Encoded: b64) {
@@ -217,14 +223,22 @@ struct BrowserUseTool: AgentTool {
                                                      withIntermediateDirectories: true)
             let persistPath = browserDir.appendingPathComponent(filename)
             try? data.write(to: persistPath)
-            text += "\nimage_path: \(WanWoPaths.browserLinuxDir)/\(filename)"
+            let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(filename)"
+            text += "\nimage_path: \(linuxPath)"
+            if let link = BrowserUseManager.linuxPathToWanwoURL(linuxPath) {
+                text += "\nwanwo_url: \(link)"
+            }
         }
         if let fetchData = result.fetchedFileData, let fetchName = result.fetchedFileName {
             try? FileManager.default.createDirectory(at: browserDir,
                                                      withIntermediateDirectories: true)
             let persistPath = browserDir.appendingPathComponent(fetchName)
             try? fetchData.write(to: persistPath)
-            text += "\nfetched_path: \(WanWoPaths.browserLinuxDir)/\(fetchName)"
+            let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(fetchName)"
+            text += "\nfetched_path: \(linuxPath)"
+            if let link = BrowserUseManager.linuxPathToWanwoURL(linuxPath) {
+                text += "\nwanwo_url: \(link)"
+            }
         }
 
         // 原生 WKDownload 活动报告随行（ConcurrentTools:624-638 语义；

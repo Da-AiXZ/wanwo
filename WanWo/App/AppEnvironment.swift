@@ -415,6 +415,18 @@ final class AppEnvironment: ObservableObject {
         // ——订阅 sessionsRevision + 工作区 follow 快照流，就绪后无选中会话
         // 即自动 connectWorkspace(recent) 并打开。
         workspaceNavigator.attach(environment: self)
+
+        // 【批2 B⑦】权限判定观测缝接线：判定注记 → diagTrace（进会话事件流
+        // diag/trace，logOnly 不进模型上下文——AppEnvironment.diagTrace 既有
+        // 通道）。内核路径无会话上下文 → sessionId=OFFLOAD_GLOBAL_SESSION_ID
+        // 全局桶（OffloadPermissionManager.checkPermission 解析后回落）——无
+        // writer 时 diagTrace 降级 OSLog 警告，判定留痕不丢（简报 B⑦「落全局
+        // 注记」的形态拍板：注记统一走既有 diag 通道，全局桶即全局注记面）。
+        // 闭包捕获 self 须在全部存储属性初始化之后（init 末尾，同上方
+        // navigator 纪律）。
+        OffloadPermissionManager.shared.decisionObserver = { [weak self] sessionId, note in
+            self?.diagTrace(sessionId: sessionId, "[offload-perm] " + note)
+        }
     }
 
     // MARK: - 会话

@@ -225,6 +225,16 @@ final class OffloadPermissionManager: ObservableObject {
     /// 当前在途审批请求 id（超时判定锚；语义对齐 OpenMinis pendingRequest?.id）。
     private var activeApprovalID: String?
 
+    /// 【批2 B⑦】判定观测缝：AppEnvironment 注入（判定注记 → diagTrace 进
+    /// 会话事件流 diag/trace + OSLog 双落点）。参数 = 解析后的 sessionId
+    /// （含 OFFLOAD_GLOBAL_SESSION_ID 全局桶——内核路径无会话上下文落此桶，
+    /// 无 writer 时 diagTrace 自行降级 OSLog 警告，判定留痕不丢）。
+    /// 验收（批2 简报 B⑦）：下次事件流/日志能回答"这条命令为什么被允许/拒绝"
+    /// ——checkPermission 每个判定分支（bypass 直通/notAllowed/askOnce 桶命中/
+    /// 弹卡/用户允许/用户拒绝/30s 超时/超时竞态）必须各发一条。
+    /// 单测不注入 = 缺省 nil，行为零变化（OffloadPermissionManagerTests 前置）。
+    var decisionObserver: ((_ sessionId: String, _ note: String) -> Void)?
+
     /// 审批超时（秒）。生产恒 30s（OpenMinis :266 的 30_000_000_000 ns）；
     /// 仅单测经此注入缩短（万我 M6.1 增 · 测试缝，生产路径不触碰）。
     var approvalTimeoutSeconds: TimeInterval = 30
@@ -289,15 +299,21 @@ final class OffloadPermissionManager: ObservableObject {
 
         switch level {
         case .bypass:
+            // 【批2 B⑦】判定打点：bypass 直通（原分支零打点）。
+            logger.info("Permission bypass: \(command)")
+            decisionObserver?(sessionId, "bypass 直通：\(command)")
             return .allowed
 
         case .notAllowed:
             logger.info("Permission denied (Not Allowed): \(command)")
+            decisionObserver?(sessionId, "notAllowed 档拒绝：\(command)（用户已在设置禁用）")
             return .denied("Permission denied: the user has disabled '\(command)'. To enable it, go to Settings > Permissions or tap: [Open Permissions](wanwo://settings/permissions)")
 
         case .askOnce:
             // Check session grant
             if sessionGrants[sessionId]?.contains(command) == true {
+                // 【批2 B⑦】判定打点：会话桶命中免弹。
+                decisionObserver?(sessionId, "askOnce 会话桶命中（本会话已授权，免弹）：\(command)")
                 return .allowed
             }
 
@@ -333,6 +349,11 @@ final class OffloadPermissionManager: ObservableObject {
                     // TODO(审批接线)：缝未接线时 presentApproval 为 nil——
                     // 等价于无人应答，30s 超时按 deny 收敛（与 OpenMinis
                     // 审批卡无人应答路径语义一致）。
+                    // 【批2 B⑦】判定打点：弹卡（呈现面缝未接线时同义=无人应答）。
+                    self.decisionObserver?(sessionId,
+                                           self.presentApproval == nil
+                                           ? "askOnce 审批缝未接线（无人应答，30s 超时=deny）：\(command)"
+                                           : "askOnce 弹卡等待用户裁决（30s 超时=deny）：\(command) fullCommand=\(fullCommand)")
                     self.presentApproval?(request, resumeOnce)
 
                     // 30s timeout（OpenMinis :264-271 同款）
@@ -340,6 +361,10 @@ final class OffloadPermissionManager: ObservableObject {
                     try? await Task.sleep(nanoseconds: timeoutNanos)
                     if self.activeApprovalID == request.id {
                         self.activeApprovalID = nil
+                        // 【批2 B⑦】判定打点：30s 超时 deny（resumeOnce 与
+                        // 应答竞争，仅首个生效——应答已先行则本打点不发，
+                        // 由 allow/deny 分支打点）。
+                        self.decisionObserver?(sessionId, "askOnce 30s 超时未应答 → deny：\(command)")
                         resumeOnce(false)
                     }
                 }
@@ -348,13 +373,16 @@ final class OffloadPermissionManager: ObservableObject {
             if allowed {
                 sessionGrants[sessionId, default: []].insert(command)
                 logger.info("Permission granted (Ask Once): \(command)")
+                decisionObserver?(sessionId, "askOnce 用户允许（写入会话桶）：\(command)")
                 return .allowed
             } else {
                 logger.info("Permission denied (Ask Once): \(command)")
                 if sessionGrants[sessionId]?.contains(command) == true {
                     // Was granted via timeout race — treat as denied
+                    decisionObserver?(sessionId, "askOnce 超时竞态收敛 → deny（应答晚于超时，授权不生效）：\(command)")
                     return .denied("Permission denied: authorization for '\(command)' timed out. To change permissions: [Open Permissions](wanwo://settings/permissions)")
                 }
+                decisionObserver?(sessionId, "askOnce 用户拒绝：\(command)")
                 return .denied("Permission denied: the user declined '\(command)' for this session. To change permissions: [Open Permissions](wanwo://settings/permissions)")
             }
         }

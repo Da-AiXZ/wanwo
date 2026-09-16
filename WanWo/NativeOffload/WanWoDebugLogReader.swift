@@ -35,7 +35,11 @@ import OSLog
 ///      lines land here with the full "[Category] [LEVEL] message" text as the
 ///      composed message.
 ///
-@objc public final class WanWoDebugLogReader: NSObject {
+// 【批2 B④】@objc(WanWoDebugLogReader)——运行时名钉死为 "WanWoDebugLogReader"，
+// 与 DebugOffload.m:126 NSClassFromString 字符串逐字一致（修"裸 @objc 不改
+// 运行时名 → 桥接恒 nil"）。
+@objc(WanWoDebugLogReader)
+public final class WanWoDebugLogReader: NSObject {
 
     @objc(sharedInstance)
     public static let shared = WanWoDebugLogReader()

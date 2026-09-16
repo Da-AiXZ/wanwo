@@ -22,6 +22,9 @@ struct WorkspaceBrowserTabView: View {
     /// 打开即导航的目标（wanwo:// 资源深链；nil = 空白起始）。
     let initialURL: URL?
 
+    /// 【批2 B①】宿主环境——当前选中会话 id 的锚（pool.sessionId 绑定源）。
+    @ObservedObject var environment: AppEnvironment
+
     @StateObject private var pool = BrowserTabPool()
     @ObservedObject private var asker = BrowserDownloadAsker.shared
     @State private var navigated = false
@@ -30,11 +33,23 @@ struct WorkspaceBrowserTabView: View {
         BrowserSheetView(pool: pool)
             .onAppear {
                 asker.install()
+                // 【批2 B①】pool.sessionId 绑定当前选中会话——BrowserTabPool
+                // 把它经 sessionIdProvider（:1323）喂给 BrowserUseManager 的
+                // WKDownload decideDestination（:2582）；此前本页签的 pool 从未
+                // 设置 sessionId → 手动页签下载批准后被静默取消（用户允许了
+                // 却无落盘、无任何可见反馈）。didSet 副作用 = loadPersistedURLs
+                // （BrowserTabPool:304-310），绑定即恢复该会话的页签 URL 持久化
+                // ——原设计能力顺带接通。
+                pool.sessionId = WorkspaceRightSidebarView.sessionID(of: environment.selection)
                 if !navigated, let initialURL {
                     navigated = true
                     pool.ensureTabForUI()
                     pool.activeManager?.loadURL(initialURL.absoluteString)
                 }
+            }
+            // 会话切换跟随（批2 简报 B① 修法原句：onChange）。
+            .onChange(of: environment.selection) { selection in
+                pool.sessionId = WorkspaceRightSidebarView.sessionID(of: selection)
             }
             .onDisappear {
                 asker.uninstall()

@@ -43,6 +43,23 @@ struct MountedFoldersSettingsView: View {
     @State private var detailEntryID: UUID?
 
     var body: some View {
+        // 【批2 B③】ZStack 零尺寸挂点（批 1 C7 同款方案）：第二层「命名确认」
+        // 从 `.sheet(item: $pendingMount)` 改为 fullScreenCover——iOS 同链双
+        // .sheet 叠放静默丢失（picker sheet 尚未完全退场时呈现第二个 sheet 被
+        // 系统丢弃，真机实证"选完文件夹无反应"）。fullScreenCover 走独立
+        // presentation 通道 + 挂点视图与 List 分离，绕开叠放约束。
+        ZStack {
+            listContent
+            Color.clear
+                .frame(width: 0, height: 0)
+                .fullScreenCover(item: $pendingMount) { pending in
+                    addMountSheet(pending)
+                }
+        }
+    }
+
+    /// 列表主体（原 body 的 List 段，原样搬移）。
+    private var listContent: some View {
         List {
             Section {
                 infoBanner
@@ -112,52 +129,19 @@ struct MountedFoldersSettingsView: View {
         .sheet(isPresented: $showingPicker) {
             FolderPicker { url in
                 // `UIDocumentPickerViewController` 的 `didPickDocumentsAt` 委托
-                // 回调在 SwiftUI 已开始 dismiss picker sheet 之后才到——但呈现
-                // 第二个 sheet 前必须等第一个完全退场（iOS 拒绝叠 sheet），同步
-                // 赋值 pendingMount 会在首次选择时静默丢失。跳到下一 runloop
-                // tick 让 picker sheet 先离开层级（原件同纪律）。
+                // 回调在 SwiftUI 已开始 dismiss picker sheet 之后才到。命名确认
+                // 已改走 fullScreenCover（B③），叠放约束解除；此处仍跳一拍让
+                // picker sheet 先离开层级（防御性——picker 退场动画期间的
+                // presentation 竞态不加戏）。
                 mountUILogger.info("FolderPicker onPick url=\(url.path)")
                 DispatchQueue.main.async {
-                    let pm = PendingMount(
+                    pendingMount = PendingMount(
                         url: url,
                         name: Self.defaultMountName(for: url),
                         allowWrite: true
                     )
-                    pendingMount = pm
                 }
             }
-        }
-        .sheet(item: $pendingMount) { pending in
-            // 重要：从 `pending` 闭包参数读值而非 `pendingMount?.url`——Optional
-            // 状态绑定在 SwiftUI 重路由 sheet 的瞬时 nil 会清空来源路径字段
-            // （原件同纪律）。
-            AddMountSheet(
-                sourceURL: pending.url,
-                name: Binding(
-                    get: { pendingMount?.name ?? pending.name },
-                    set: { pendingMount?.name = $0 }
-                ),
-                allowWrite: Binding(
-                    get: { pendingMount?.allowWrite ?? pending.allowWrite },
-                    set: { pendingMount?.allowWrite = $0 }
-                ),
-                onCancel: {
-                    pendingMount = nil
-                },
-                onConfirm: {
-                    let current = pendingMount ?? pending
-                    do {
-                        _ = try model.add(
-                            pickedURL: current.url,
-                            customName: current.name,
-                            userAllowWrite: current.allowWrite
-                        )
-                    } catch {
-                        errorText = error.localizedDescription
-                    }
-                    pendingMount = nil
-                }
-            )
         }
         .sheet(isPresented: Binding(
             get: { detailEntryID != nil },
@@ -173,6 +157,41 @@ struct MountedFoldersSettingsView: View {
         } message: {
             Text(errorText ?? "")
         }
+    }
+
+    /// 【批2 B③】新建挂载命名确认卡（原 `.sheet(item: $pendingMount)` 内容，
+    /// 呈现通道改 fullScreenCover——挂点见 body）。
+    private func addMountSheet(_ pending: PendingMount) -> some View {
+        // 重要：从 `pending` 闭包参数读值而非 `pendingMount?.url`——Optional
+        // 状态绑定在 SwiftUI 重路由 sheet 的瞬时 nil 会清空来源路径字段
+        // （原件同纪律）。
+        AddMountSheet(
+            sourceURL: pending.url,
+            name: Binding(
+                get: { pendingMount?.name ?? pending.name },
+                set: { pendingMount?.name = $0 }
+            ),
+            allowWrite: Binding(
+                get: { pendingMount?.allowWrite ?? pending.allowWrite },
+                set: { pendingMount?.allowWrite = $0 }
+            ),
+            onCancel: {
+                pendingMount = nil
+            },
+            onConfirm: {
+                let current = pendingMount ?? pending
+                do {
+                    _ = try model.add(
+                        pickedURL: current.url,
+                        customName: current.name,
+                        userAllowWrite: current.allowWrite
+                    )
+                } catch {
+                    errorText = error.localizedDescription
+                }
+                pendingMount = nil
+            }
+        )
     }
 
     // MARK: - 子视图（素净版，原件行/徽章语义保留）

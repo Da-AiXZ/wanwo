@@ -144,26 +144,51 @@ struct WorkspaceRightSidebarView: View {
 
     // MARK: - 内容路由
 
+    /// 【批2 B②】页签内容容器——ZStack 全量挂载 + opacity 切换。
+    /// 语义源 = dsh ui-layout AppFrame.tsx:35-38「右栏宽 0 时保持挂载不卸载」
+    /// 同语义：原 `switch tab.kind` 条件渲染下切页签 = 旧视图销毁重建（浏览器
+    /// 网页状态/终端 shell 随切丢）。全量挂载后每页签视图身份稳定（ForEach
+    /// id 锚定），隐藏面 opacity 0 + 关 hit-testing + 关辅助功能；页签资源
+    /// （BrowserTabPool / 终端 shell）随页签存续、切走不回收（关闭页签才随
+    /// ForEach 移除而释放）。
     @ViewBuilder
     private var content: some View {
         if model.tabs.isEmpty {
             emptyTabsState
-        } else if let tab = model.activeTab {
-            switch tab.kind {
-            case .files:
-                WorkspaceFileTabView(environment: environment)
-            case .terminal:
-                WorkspaceTerminalTabView(environment: environment)
-            case .browser:
-                WorkspaceBrowserTabView(initialURL: tab.initialURL)
-            case .sideChat:
-                SideChatView(environment: environment,
-                             parentSessionID: Self.sessionID(of: environment.selection))
-            case .review:
-                ReviewTabView(environment: environment)
-            }
         } else {
-            emptyTabsState
+            ZStack {
+                ForEach(model.tabs) { tab in
+                    tabContent(tab)
+                        .opacity(tab.id == model.activeTabID ? 1 : 0)
+                        .allowsHitTesting(tab.id == model.activeTabID)
+                        .accessibilityHidden(tab.id != model.activeTabID)
+                }
+            }
+        }
+    }
+
+    /// 单页签内容路由（原 content 的 switch 体，视图种类不变）。
+    @ViewBuilder
+    private func tabContent(_ tab: WorkspaceTab) -> some View {
+        switch tab.kind {
+        case .files:
+            WorkspaceFileTabView(environment: environment)
+        case .terminal:
+            WorkspaceTerminalTabView(environment: environment)
+        case .browser:
+            // 【批2 B①】environment 传入——页签内 pool.sessionId 绑定当前选中
+            // 会话（下载落盘依赖；原构造无 environment，下载批准后被静默取消）。
+            WorkspaceBrowserTabView(initialURL: tab.initialURL,
+                                    environment: environment)
+        case .sideChat:
+            SideChatView(environment: environment,
+                         parentSessionID: Self.sessionID(of: environment.selection))
+        case .review:
+            ReviewTabView(environment: environment)
+        case .trajectory:
+            // 【批2 2C】轨迹页签（dsh ui-trajectory 台账版；锚定当前选中会话）。
+            TrajectoryTabView(environment: environment,
+                              sessionID: Self.sessionID(of: environment.selection))
         }
     }
 

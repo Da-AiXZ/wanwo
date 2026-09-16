@@ -25,6 +25,9 @@ enum WorkspaceTabKind: String, Equatable, CaseIterable {
     case browser
     case sideChat
     case review
+    /// 【批2 2C】轨迹页签（dsh ui-trajectory 台账版——事件台账 + 记录
+    /// 检查器；时间线四模式明确降级不做，见 TrajectoryTabView 头注）。
+    case trajectory
 
     /// 页签缺省标题（dsh Web UI / codex 词汇）。
     var title: String {
@@ -34,6 +37,7 @@ enum WorkspaceTabKind: String, Equatable, CaseIterable {
         case .browser: return "浏览器"
         case .sideChat: return "侧边聊天"
         case .review: return "审查"
+        case .trajectory: return "轨迹"
         }
     }
 
@@ -45,6 +49,7 @@ enum WorkspaceTabKind: String, Equatable, CaseIterable {
         case .browser: return "globe"
         case .sideChat: return "bubble.left.and.bubble.right"
         case .review: return "plus.slash.minus"
+        case .trajectory: return "list.bullet.rectangle"
         }
     }
 }
@@ -171,11 +176,12 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         tabs.first { $0.id == activeTabID }
     }
 
-    /// 「+」菜单的候选（审查仅 git 项目可见；其余恒可见——浏览器恒可新开）。
+    /// 「+」菜单的候选（审查仅 git 项目可见；其余恒可见——浏览器恒可新开；
+    /// 【批2 2C】轨迹页签入列）。
     func menuKinds() -> [WorkspaceTabKind] {
         var kinds: [WorkspaceTabKind] = []
         if reviewAvailable { kinds.append(.review) }
-        kinds.append(contentsOf: [.files, .sideChat, .browser, .terminal])
+        kinds.append(contentsOf: [.files, .sideChat, .browser, .terminal, .trajectory])
         return kinds
     }
 

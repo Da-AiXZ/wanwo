@@ -41,9 +41,45 @@ struct WebFetchTool: AgentTool {
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
+    // MARK: B⑤ 孤立 % 预编码（批2）
+
+    /// 【批2 B⑤】孤立 %（后随非两位十六进制）预编码为 %25——`URL(string:)`
+    /// 对 "%l:+%c" 等非法转义序列返回 nil（wttr.in 天气格式串实证），模型拿到
+    /// 的 URL 语法上无害、只是不含 RFC 合法转义，直接 INVALID_ARGS 拒绝过严。
+    /// 规则：`%` 后随两位十六进制 → 原样保留（合法转义 %20 等不动）；
+    /// 否则（含结尾孤 %、%后仅一位 hex）→ 编码为 %25。编码失败仍走原
+    /// INVALID_ARGS 错误（修法不改变最终失败面）。
+    /// 锚点：批2 简报 2A B⑤；WebTools.swift 原 :43-47 判定点。
+    static func encodeLonePercent(_ raw: String) -> String {
+        let scalars = Array(raw.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        // ASCII hex 判定（Unicode.Scalar 无 isHexDigit；手写区间最直白）。
+        func isHex(_ s: Unicode.Scalar) -> Bool {
+            (s >= "0" && s <= "9") || (s >= "A" && s <= "F") || (s >= "a" && s <= "f")
+        }
+        var i = 0
+        while i < scalars.count {
+            let c = scalars[i]
+            if c == "%",
+               !(i + 2 < scalars.count && isHex(scalars[i + 1]) && isHex(scalars[i + 2])) {
+                // 孤立 %：后随不足两位或非 hex → 编码。
+                out.append(contentsOf: "%25".unicodeScalars)
+            } else {
+                out.append(c)
+            }
+            i += 1
+        }
+        return String(out)
+    }
+
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-        guard let urlText = args.objectValue?["url"]?.stringValue,
-              let url = URL(string: urlText), let scheme = url.scheme?.lowercased(),
+        guard let urlText = args.objectValue?["url"]?.stringValue else {
+            return .failure("invalid or non-http(s) url", code: "INVALID_ARGS")
+        }
+        // 【批2 B⑤】孤立 % 预编码后再解析（合法转义原样保留；仍解析失败
+        // 走原错误——错误面零变化）。
+        guard let url = URL(string: Self.encodeLonePercent(urlText)),
+              let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
             return .failure("invalid or non-http(s) url", code: "INVALID_ARGS")
         }

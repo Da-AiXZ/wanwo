@@ -167,6 +167,10 @@ struct SideChatView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
+        case .turnUsage:
+            // 【批2 2B 件4】侧聊为紧凑只读面——轮次用量 pill 不呈现
+            //（主对话区 ChatView 专属；投影枚举新增 case 的编译完备项）。
+            EmptyView()
         }
     }
 

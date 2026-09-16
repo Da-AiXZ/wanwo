@@ -14,6 +14,9 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
+    /// 【批2 B⑥】当前会话 id（透传 ToolCardView——wanwo:// 缩略的会话桶
+    /// 解析锚 resolveWanwoURL(_:sessionID:)；复用 init 入参，不改 VM 可见性）。
+    private let sessionID: String
 
     /// 命令菜单开合（C7；+ 按钮与 "/" 触发共用一菜单）。
     @State private var commandMenuOpen = false
@@ -49,8 +52,12 @@ struct ChatView: View {
     /// bc②：用户拖动在途标记——拖动期间暂停一切程序化滚动；同时是 bug d
     /// 第二层的修复（流式期 0.2s 程序化滚动打断「拖动收起键盘」手势）。
     @State private var userDragging = false
+    /// 【批2 2B 件3】轮次过程折叠组展开态（组 id 记忆——重投影组 id 锚定
+    /// 首成员气泡 id，身份稳定）。
+    @State private var expandedProcesses: Set<String> = []
 
     init(environment: AppEnvironment, sessionID: String) {
+        self.sessionID = sessionID
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
                                                              sessionID: sessionID))
     }
@@ -236,8 +243,33 @@ struct ChatView: View {
                             .background(Color.yellow.opacity(0.12))
                             .cornerRadius(6)
                     }
-                    ForEach(viewModel.bubbles) { bubble in
-                        bubbleView(bubble).id(bubble.id)
+                    // 【批2 2B 件3】视图层折叠投影（TurnProcessNodeView 语义）
+                    // ——bubbles 本体保持平铺（ChatViewModel 续接面不动），
+                    // 折叠在展示节点流上做；展开态按组 id 记忆。
+                    ForEach(ConversationProjector.foldTurnProcess(viewModel.bubbles)) { node in
+                        switch node {
+                        case .plain(let bubble):
+                            bubbleView(bubble).id(bubble.id)
+                        case .process(let group):
+                            VStack(alignment: .leading, spacing: 10) {
+                                TurnProcessRowView(group: group,
+                                                   open: expandedProcesses.contains(group.id)) {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        if expandedProcesses.contains(group.id) {
+                                            expandedProcesses.remove(group.id)
+                                        } else {
+                                            expandedProcesses.insert(group.id)
+                                        }
+                                    }
+                                }
+                                if expandedProcesses.contains(group.id) {
+                                    ForEach(group.bubbles) { inner in
+                                        bubbleView(inner)
+                                    }
+                                }
+                            }
+                            .id(group.id)
+                        }
                     }
                     if !viewModel.streamingReasoning.isEmpty {
                         // P2-⑬：流式思考走披露行（dsh ReasoningRow running 态——
@@ -333,7 +365,7 @@ struct ChatView: View {
             // 点击展开全文）。
             ReasoningRowView(text: text, running: false)
         case .tool(let card):
-            ToolCardView(card: card)
+            ToolCardView(card: card, sessionID: sessionID)
         case .command(_, let text):
             Text("⌘ " + text)
                 .font(.footnote.monospaced())
@@ -344,6 +376,9 @@ struct ChatView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
+        case .turnUsage(let summary):
+            // 【批2 2B 件4】轮次尾用量/用时 pill（TurnUsagePanel 语义）。
+            TurnUsagePillView(summary: summary)
         }
     }
 
@@ -765,12 +800,16 @@ private struct ComposerToolBar: View, Equatable {
 /// 结束后收起（dsh：完成即收敛，点击行头可再展开回看）。
 private struct ToolCardView: View {
     let card: ChatViewModel.ToolCard
+    /// 【批2 B⑥】会话 id（wanwo:// 缩略解析的会话桶锚；nil = 解析走
+    /// mountedSessionId 快照兜底）。
+    let sessionID: String?
 
     /// 展开态（初值随卡片在途性：running 展开、完成收起；用户手动切换后保留）。
     @State private var expanded: Bool
 
-    init(card: ChatViewModel.ToolCard) {
+    init(card: ChatViewModel.ToolCard, sessionID: String? = nil) {
         self.card = card
+        self.sessionID = sessionID
         _expanded = State(initialValue: card.isRunning)
     }
 
@@ -804,12 +843,20 @@ private struct ToolCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // 参数摘要（展开态）。
+            // 【批2 2B 件5】输入分节（DetailsPanel.tsx:81-85 input 段形态：
+            // pretty JSON 代码块；argsRaw 缺失回退 detail 摘要）。dsh 详情为
+            // 独立 dock 槽面板，万我主区无该槽位 → 对齐为展开态内联分节
+            // （偏差登记：形态 inline、语义同源）。
             if expanded, let detail = card.detail, !detail.isEmpty {
-                Text(detail)
+                sectionLabel("输入")
+                Text(ConversationProjector.prettyJSON(card.argsRaw ?? detail))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(10)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(6)
+                    .background(Color(.tertiarySystemBackground))
+                    .cornerRadius(6)
             }
             // 交互状态行（M3 T1：审批 waiting/结算态、提问等待——琥珀语义行；
             // 交互态恒显，不随折叠消失）。
@@ -833,21 +880,103 @@ private struct ToolCardView: View {
                     .background(Color(.tertiarySystemBackground))
                     .cornerRadius(6)
             }
-            // 结果文本（展开态）。
+            // 结果文本（展开态）→【批2 2B 件5】输出分节（DetailsPanel.tsx:87-104
+            // output 段形态：错误头行 error.name:code + 原文，不再 12 行截断
+            // ——dsh 详情面板原文无截断）。
             if expanded, let result = card.resultText, !result.isEmpty {
-                Text(result)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(card.isError ? Color.red : Color.secondary)
-                    .lineLimit(12)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(6)
-                    .background(Color(.tertiarySystemBackground))
-                    .cornerRadius(6)
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionLabel("输出")
+                    if card.isError, let errorName = card.errorName {
+                        Text(card.errorCode.map { "\(errorName): \($0)" } ?? errorName)
+                            .font(.caption2.monospaced().weight(.semibold))
+                            .foregroundStyle(.red)
+                    }
+                    Text(result)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(card.isError ? Color.red : Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    // 【批2 B⑥】wanwo:// 资源链接行（browser_use 截图/抓取产物
+                    // 随行的 "wanwo_url:" 锚）——可点缩略（最小可行）；点击经
+                    // WanwoURLRouter 打开右侧栏浏览器页签（RootView 既有消费端）。
+                    ForEach(Self.wanwoLinks(in: result), id: \.self) { link in
+                        wanwoResourceRow(link)
+                    }
+                }
+                .padding(6)
+                .background(Color(.tertiarySystemBackground))
+                .cornerRadius(6)
             }
         }
         .padding(8)
         .background(Color(.secondarySystemBackground))
         .cornerRadius(8)
+    }
+
+    /// 分节标签（DetailsPanel sectionLabel 形态——小号加粗次级文本）。
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    // MARK: 【批2 B⑥】wanwo:// 资源链接呈现
+
+    /// 结果文本中的 wanwo:// 资源链接提取（BrowserUseTool 截图/抓取产物随行的
+    /// "wanwo_url: wanwo://browser/…" 行）。扫描到首个空白字符止——纯函数
+    /// （单测面）。
+    nonisolated static func wanwoLinks(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "wanwo://\\S+")
+        else { return [] }
+        let ns = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+    }
+
+    /// 链接行：可解析到宿主文件且可解码 → 缩略 + 链接；否则降级纯链接行
+    /// （呈现面不阻断——resolveWanwoURL fail closed 返回 nil 属常态边缘：
+    /// 会话已切换/文件已清理）。点击 → WanwoURLRouter.handle 分发
+    /// （RootView onReceive 消费 → 右侧栏新开浏览器页签，WanwoURLSchemeHandler
+    /// 服务资源字节）。
+    @ViewBuilder
+    private func wanwoResourceRow(_ link: String) -> some View {
+        let url = URL(string: link)
+        Button {
+            if let url { WanwoURLRouter.shared.handle(url) }
+        } label: {
+            HStack(spacing: 8) {
+                if let url, let thumbnail = resolveThumbnail(url) {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 48)
+                        .clipped()
+                        .cornerRadius(4)
+                } else {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+                Text(link)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("打开资源 \(link)")
+    }
+
+    /// wanwo:// → 宿主文件（会话桶锚 = 本卡会话）→ 缩略图；任一步失败
+    /// 返回 nil（调用面降级纯链接行）。
+    private func resolveThumbnail(_ url: URL) -> UIImage? {
+        guard let fileURL = BrowserUseManager.resolveWanwoURL(url, sessionID: sessionID)
+        else { return nil }
+        return UIImage(contentsOfFile: fileURL.path)
     }
 
     private func iconName(for tool: String) -> String {

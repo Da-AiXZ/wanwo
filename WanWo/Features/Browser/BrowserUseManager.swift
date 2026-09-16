@@ -2582,6 +2582,21 @@ extension BrowserUseManager: WKDownloadDelegate {
             guard let sid = self.sessionIdProvider?(), !sid.isEmpty else {
                 logger.warning("Download rejected — no session id to resolve a destination")
                 self.inflightDownloads.removeValue(forKey: ObjectIdentifier(download))
+                // 【批2 B⑧】下载失败可见化（批2 简报 B① ⑧并入件）：批准后被
+                // 拒绝不允许静默消失——补记 BrowserDownloadCenter 失败条目
+                // （红点 + 原因）。sessionId 回落 ""：BrowserDownloadBanner 以
+                // `manager.sessionIdProvider?() ?? ""` 过滤（BrowserSheetView:412），
+                // 无会话态下两侧同为 "" → 条目在下载面板可见；并发残留竞态
+                // （批准后会话被切走）落旧会话键，OSLog 仍留痕。
+                // completionHandler(nil) 后 WebKit 不再回调 delegate（同
+                // cancel(_:) 契约），本条目是唯一终态记录——不能省。
+                let name = suggestedFilename.isEmpty ? "download" : suggestedFilename
+                let rejectedId = BrowserDownloadCenter.shared.began(
+                    sessionId: self.sessionIdProvider?() ?? "", filename: name,
+                    progress: download.progress, onCancel: nil)
+                BrowserDownloadCenter.shared.failed(
+                    id: rejectedId,
+                    reason: "无所属会话——下载无法落盘，已取消（批2 B⑧ 可见化）")
                 completionHandler(nil)
                 return
             }
