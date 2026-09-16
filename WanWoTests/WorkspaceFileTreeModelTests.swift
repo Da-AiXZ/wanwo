@@ -87,8 +87,13 @@ final class WorkspaceFileTreeModelTests: XCTestCase {
             "docs/a.md", "src/main.swift",
         ])
         let rows = WorkspaceFileTreeModel.flattenedVisible(tree, expanded: [])
-        XCTAssertEqual(rows.map(\.node.name), ["docs", "src", "main.swift"])
-        XCTAssertEqual(rows.map(\.depth), [0, 0, 0])
+        // 【终验修·测试修】fixture 里 main.swift 位于 src 之下（"src/main.swift"），
+        // 根层只有 docs/src 两个目录。目录默认折叠 ⇒ 只渲染到目录层，
+        // src 折叠时其下 main.swift 不出现（与
+        // testFlattenedVisibleExpandsMarkedDirectories 的"展开才见子层"同
+        // 一语义）。原期望把嵌套文件误算作根层输出。
+        XCTAssertEqual(rows.map(\.node.name), ["docs", "src"])
+        XCTAssertEqual(rows.map(\.depth), [0, 0])
     }
 
     func testFlattenedVisibleExpandsMarkedDirectories() {

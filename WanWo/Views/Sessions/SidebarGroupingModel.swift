@@ -10,7 +10,9 @@
 //       会话"；blank 占位会话（title nil/空）不计入限额（:43-56）；
 //    3. 存储视图序与工作区账本对账（reconciledSessionOrder :97+）——组内
 //       序 = workspaceSessionOrder 账本（WorkspaceRecord.sessionIds），
-//       账本外成员按 updatedAt 降序补尾；
+//       账本成员按账本序排定（reconciledSessionOrder 的账本外补尾只服务
+//       于"账本未记成员"的直接调用场景，不作为 deriveGroups 的组成员
+//       资格来源——组成员资格 = 账本 ∩ 会话集合，见 deriveGroups）；
 //    7. blank 占位会话语义 = 新建会话的临时行（title nil → 「新会话」）。
 //  平铺模式保留 M3 以来单层列表（既有行为零变化）。
 //
@@ -113,13 +115,17 @@ enum SidebarGroupingModel {
         var groups: [SidebarGroup] = []
         var assigned = Set<String>()
         for workspace in workspaces {
-            let ordered = reconciledSessionOrder(ledger: workspace.sessionIds,
-                                                 sessions: sessions)
-                .compactMap { byID[$0] }
-            ordered.forEach { assigned.insert($0.id) }
+            // 【终验修】组成员资格 = 账本（workspace.sessionIds）∩ 会话集合。
+            // 此前直接取 reconciledSessionOrder 的输出当组成员——其"账本外
+            // 按 updatedAt 补尾"会把不属于本工作区的会话（含应落 Ungrouped
+            // 桶的会话）补进组并标记 assigned，Ungrouped 桶恒空。dsh
+            // UNGROUPED_KEY 语义：不在任何工作区账本的会话 = 未分组；
+            // 账本序对账（reconciledSessionOrder）只作用于账本成员的排序。
+            let ledgerMembers = workspace.sessionIds.filter { byID[$0] != nil }
+            ledgerMembers.forEach { assigned.insert($0) }
             groups.append(SidebarGroup(id: workspace.id, title: workspace.title,
                                        workspaceID: workspace.id,
-                                       sessionIds: ordered.map(\.id)))
+                                       sessionIds: ledgerMembers))
         }
         // Ungrouped 桶（dsh UNGROUPED_KEY）：未归任何工作区的会话，排序照 sort。
         let ungrouped = sessions.filter { !assigned.contains($0.id) }

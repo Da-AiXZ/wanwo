@@ -248,11 +248,17 @@ final class OffloadPermissionManager: ObservableObject {
     }
 
     func permissionLevel(for command: String) -> OffloadPermissionLevel {
-        let raw = defaults.integer(forKey: defaultsKey(for: command))
-        if let level = OffloadPermissionLevel(rawValue: raw) {
-            return level
+        // 万我 M6.1 修：未存储判定必须用 object(forKey:) —— integer(forKey:)
+        // 未存储返回 0，而 rawValue 0 = .bypass 是合法档位，会把"未存储"
+        // 误判为 bypass，导致注册表默认档（如 apple-clipboard 的 askOnce）
+        // 永远不生效。object(forKey:) 返回 nil 才是真正的未存储。
+        if defaults.object(forKey: defaultsKey(for: command)) != nil {
+            let raw = defaults.integer(forKey: defaultsKey(for: command))
+            if let level = OffloadPermissionLevel(rawValue: raw) {
+                return level
+            }
         }
-        // 万我 M6.1 增：未存储时回落注册表默认档（10-design §8.2 每命令默认档；
+        // 未存储时回落注册表默认档（10-design §8.2 每命令默认档；
         // OpenMinis 原件一律回落 .bypass——其表无 defaultLevel 字段）。
         return Self.allCommands.first(where: { $0.name == command })?.defaultLevel ?? .bypass
     }

@@ -462,10 +462,14 @@ final class WorkspaceRegistry: @unchecked Sendable {
 
         // 2. 按规范 cwd 分组；组内按创建时间升序（attach 前插 ⇒ 最新在前）。
         let grouped = Dictionary(grouping: valid, by: \.canonicalCWD)
-        // 3. 工作区序 = 组内最新会话时间倒序（最新在前）。
+        // 3. 工作区序 = 组内最新会话时间倒序（最新在前）。create 为前插
+        //    （displayOrder 现最小值 -1，每个新工作区落到注册表最前）——
+        //    【终验修】此前按最新在前遍历，前插使最后创建的（最旧）反而
+        //    排最前，方向反了。改为按最新在后升序遍历：最后前插的即最新
+        //    工作区，终序 = 最新在前（dsh bootstrap 语义不变）。
         let orderedPaths = grouped
             .map { (path: $0.key, newest: $0.value.map(\.createdAtMs).max() ?? 0) }
-            .sorted { $0.newest > $1.newest }
+            .sorted { $0.newest < $1.newest }
             .map(\.path)
 
         for path in orderedPaths {

@@ -136,12 +136,27 @@ final class MountedFoldersStoreTests: XCTestCase {
         let manager = MountedFoldersManager(storeURL: storeURL)
         let added = try manager.add(pickedURL: sourceDir, customName: "old",
                                     userAllowWrite: true)
-        // 非法名 / 重名拒绝（校验先于任何写）。
+        // 非法名拒绝（校验先于任何写）。
         XCTAssertThrowsError(try manager.rename(id: added.id, to: "../escape"))
-        XCTAssertThrowsError(try manager.rename(id: added.id, to: "old"))
+        // 【终验修·测试修】重名拒绝 = 跨条目冲突（nameTaken）；同名自改在
+        // vendored 原件（OpenMinis MountedFoldersManager.swift:367）即以
+        // isNameAvailable(name, excludingId: id) 判定——不含自身，合法幂等
+        // 不抛。原测试把同名自改误当"重名"期望抛错，与原件语义不符。
+        let otherDir = workDir.appendingPathComponent("other", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherDir, withIntermediateDirectories: true)
+        let second = try manager.add(pickedURL: otherDir, customName: "taken",
+                                     userAllowWrite: true)
+        XCTAssertThrowsError(try manager.rename(id: added.id, to: "taken")) { error in
+            guard case MountedFoldersManager.AddError.nameTaken = error else {
+                return XCTFail("expected nameTaken, got \(error)")
+            }
+        }
+        // 同名自改：不抛（幂等）。
+        try manager.rename(id: added.id, to: "old")
         // 合法重命名持久化。
         try manager.rename(id: added.id, to: "new")
         XCTAssertEqual(MountedFoldersManager(storeURL: storeURL).entries.first?.name, "new")
+        _ = second
     }
 
     @MainActor

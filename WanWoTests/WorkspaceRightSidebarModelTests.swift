@@ -64,14 +64,14 @@ final class WorkspaceRightSidebarModelTests: XCTestCase {
     // MARK: - close（邻居激活状态机）
 
     @MainActor
-    func testCloseActiveActivatesPreviousNeighbor() {
+    func testCloseActiveActivatesNextNeighbor() {
         let tabs = [WorkspaceTab.singleton(.files),
                     WorkspaceTab.singleton(.terminal),
                     WorkspaceTab.singleton(.sideChat)]
         let result = WorkspaceRightSidebarModel.closing(
             id: WorkspaceTabKind.terminal.rawValue, tabs: tabs,
             activeID: WorkspaceTabKind.terminal.rawValue)
-        XCTAssertEqual(result.newActive, WorkspaceTabKind.files.rawValue)
+        XCTAssertEqual(result.newActive, WorkspaceTabKind.sideChat.rawValue)
         XCTAssertEqual(result.tabs.count, 2)
     }
 
@@ -83,6 +83,17 @@ final class WorkspaceRightSidebarModelTests: XCTestCase {
             id: WorkspaceTabKind.files.rawValue, tabs: tabs,
             activeID: WorkspaceTabKind.files.rawValue)
         XCTAssertEqual(result.newActive, WorkspaceTabKind.terminal.rawValue)
+    }
+
+    @MainActor
+    func testCloseLastTabActivatesPreviousNeighbor() {
+        let tabs = [WorkspaceTab.singleton(.files),
+                    WorkspaceTab.singleton(.terminal)]
+        let result = WorkspaceRightSidebarModel.closing(
+            id: WorkspaceTabKind.terminal.rawValue, tabs: tabs,
+            activeID: WorkspaceTabKind.terminal.rawValue)
+        XCTAssertEqual(result.newActive, WorkspaceTabKind.files.rawValue)
+        XCTAssertEqual(result.tabs.count, 1)
     }
 
     @MainActor

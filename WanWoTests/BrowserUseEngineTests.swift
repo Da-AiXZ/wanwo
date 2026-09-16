@@ -69,14 +69,21 @@ final class BrowserUseEngineTests: XCTestCase {
     }
 
     /// 共享单例复位缺省档（矩阵测试前置；用后恢复，防串测）。
+    /// 【终验修·B1】originOverrides 同入保存/恢复面——此前只复位
+    /// defaultRule/askHandler，前面用例写入的 per-origin 覆盖（如
+    /// testLongestPrefixOverrideWins 的 a.com uploads=.allow）残留到
+    /// testUploadsDeniedByDefault，把缺省 deny 判成 allow（跨用例单例污染）。
     private func withResetPolicy(_ body: () async throws -> Void) async rethrows {
         let savedDefault = OriginPolicy.shared.defaultRule
         let savedHandler = OriginPolicy.shared.askHandler
+        let savedOverrides = OriginPolicy.shared.originOverrides
         OriginPolicy.shared.defaultRule = .default
         OriginPolicy.shared.askHandler = nil
+        OriginPolicy.shared.originOverrides = [:]
         defer {
             OriginPolicy.shared.defaultRule = savedDefault
             OriginPolicy.shared.askHandler = savedHandler
+            OriginPolicy.shared.originOverrides = savedOverrides
         }
         try await body()
     }

@@ -109,8 +109,9 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         return (tabs + [tab], tab.id, true)
     }
 
-    /// close 落点：关闭后激活邻近页签——优先前一邻居，无前邻居取后一邻居；
-    /// 关非活动页签 → 活动不变；关空 → nil。
+    /// close 落点：关闭后激活邻近页签——优先右侧邻居（下一位，codex/VS Code
+    /// 系生态惯例：关页签激活右邻），无右邻取前邻；关非活动页签 → 活动不变；
+    /// 关空 → nil。
     nonisolated static func closing(id: String,
                                     tabs: [WorkspaceTab],
                                     activeID: String?)
@@ -121,11 +122,14 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         var remaining = tabs
         remaining.remove(at: index)
         guard id == activeID else { return (remaining, activeID) }
-        if let previous = index > 0 ? tabs[index - 1] : nil {
-            return (remaining, previous.id)
+        // 【终验修】右邻回退必须在 `remaining`（关后数组）上取——原实现用
+        // `tabs[index]`（原数组）取到的是被关页签自身，导致关末签激活自己、
+        // 关最后一签兜底回被关页签而非 nil（codex 语义：关最后页签=内容区空态）。
+        if let next = index < remaining.count ? remaining[index] : nil {
+            return (remaining, next.id)
         }
-        let next = index < tabs.count ? tabs[index] : nil
-        return (remaining, next?.id)
+        let previous = index > 0 ? tabs[index - 1] : nil
+        return (remaining, previous?.id)
     }
 
     // MARK: - 状态机操作
