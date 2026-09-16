@@ -64,6 +64,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            # 终验补（35039966287 实证）：iOS 18.5 模拟器 runtime 不带
+            # /usr/lib/swift/libswiftWebKit.dylib（WebKit Swift overlay——B2
+            # 引擎 import WebKit 触链），dyld 早崩。嵌入 Swift 运行库到
+            # .app 包（含各 framework overlay）解决；真机 16.6 自带不受影响。
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
             test | tee test.log
 
       - name: Upload test log (always)
