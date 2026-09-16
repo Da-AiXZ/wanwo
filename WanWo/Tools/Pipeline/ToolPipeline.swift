@@ -47,7 +47,17 @@ final class ToolPipeline: @unchecked Sendable {
     func run(toolName: String, args: JSONValue, ctx: ToolExecutionContext,
              isSubDispatch: Bool = false) async -> ToolOutput {
         // 0. 工具可见性：未注册/hidden → 未知工具失败（dsh UNKNOWN_TOOL）。
+        //    【M6.6 修】guard 先于未知工具兜底：guard 语义=对白名单外一切
+        //    工具名给拒绝理由（含 apply 注销后的名字、晚到注册与未知名——
+        //    fail closed 无放行路径）。被 guard 否定的名字（如侧聊白名单
+        //    apply 后的写类工具）必须给 DENIED_BY_GUARD 安全语义拒绝，
+        //    而非退化为 UNKNOWN_TOOL 拼写错误面；guard 放行（无否定）才落
+        //    UNKNOWN_TOOL。已注册可见工具的 guard 复核仍在步骤 1。
         guard let tool = registry.get(toolName), tool.exposure != .hidden else {
+            if let reason = registry.guardReason(name: toolName, args: args) {
+                return .failure(reason, code: "DENIED_BY_GUARD",
+                                name: "ToolGuardError")
+            }
             return .failure("unknown tool \"\(toolName)\"", code: "UNKNOWN_TOOL",
                             name: "ToolNotFoundError")
         }

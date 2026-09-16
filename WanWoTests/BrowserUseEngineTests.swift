@@ -39,9 +39,13 @@ final class BrowserUseEngineTests: XCTestCase {
     }
 
     /// 工具 schema 的 action enumValues 与引擎枚举同源同序。
+    /// 【终验修】真实嵌套 = schemaObject 根 {type, properties, required,
+    /// additionalProperties}，action 在根["properties"] 下——断言路径对齐
+    /// JSONValue.schemaObject 的实际产物。
     func testToolSchemaActionEnumMatchesEngine() {
         let tool = BrowserUseTool()
-        guard case .object(let props) = tool.parameters,
+        guard case .object(let root) = tool.parameters,
+              case .object(let props) = root["properties"],
               case .object(let actionSchema) = props["action"],
               case .array(let enumValues) = actionSchema["enum"] else {
             return XCTFail("browser_use schema 缺 action.enum")

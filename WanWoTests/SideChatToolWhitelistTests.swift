@@ -81,8 +81,17 @@ final class SideChatToolWhitelistTests: XCTestCase {
 
     func testApplyRemovesWriteToolsFromRegistry() {
         let registry = ToolRegistry()
+        // 【终验修】fixture 补齐只读白名单全集：allowed 六件（read/glob/grep/
+        // read_image/web_search/web_fetch）+ 写类三件（bash/write/edit）。
+        // 此前只读四件（grep/read_image/web_search/web_fetch）从未注册，
+        // apply 后 schemaNames={read,glob} ≠ allowed——集合不等的病根在
+        // fixture 缺注册，不在产品注销语义。
         registry.register(StubTool(name: "read"))
         registry.register(StubTool(name: "glob"))
+        registry.register(StubTool(name: "grep"))
+        registry.register(StubTool(name: "read_image"))
+        registry.register(StubTool(name: "web_search"))
+        registry.register(StubTool(name: "web_fetch"))
         registry.register(StubTool(name: "bash"))
         registry.register(StubTool(name: "write"))
         registry.register(StubTool(name: "edit"))
@@ -93,6 +102,10 @@ final class SideChatToolWhitelistTests: XCTestCase {
         XCTAssertNil(registry.get("edit"))
         XCTAssertNotNil(registry.get("read"))
         XCTAssertNotNil(registry.get("glob"))
+        XCTAssertNotNil(registry.get("grep"))
+        XCTAssertNotNil(registry.get("read_image"))
+        XCTAssertNotNil(registry.get("web_search"))
+        XCTAssertNotNil(registry.get("web_fetch"))
         // 模型可见 schema 同步收窄。
         let schemaNames = Set(registry.schemas().map(\.name))
         XCTAssertEqual(schemaNames, SideChatToolWhitelist.allowed)

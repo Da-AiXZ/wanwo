@@ -221,6 +221,7 @@ final class UserQuestionService: @unchecked Sendable {
         }
         entry.settled = true
         entry.error = nil
+        entry.answer = answer
         let continuation = entry.continuation
         entry.continuation = nil
         pending[requestId] = entry
