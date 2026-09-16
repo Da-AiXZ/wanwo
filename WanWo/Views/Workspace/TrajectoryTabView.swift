@@ -189,8 +189,8 @@ enum TrajectoryLedger {
             // 轮次 token 汇总。
             if case .assistantMessage(_, _, _, let usage, _) = event.payload, let usage {
                 var tokens = g.tokenSummary ?? .zero
-                tokens.0 += usage.inputTokens + (usage.cacheReadTokens ?? 0)
-                tokens.1 += usage.outputTokens
+                tokens.billed += usage.inputTokens + (usage.cacheReadTokens ?? 0)
+                tokens.output += usage.outputTokens
                 g.tokenSummary = tokens
             }
             setGroup(g)
