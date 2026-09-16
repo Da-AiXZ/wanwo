@@ -1354,8 +1354,10 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 config.onTrace("[jscore] reject dropped (api cleared)")
                 return
             }
-            let rendered = liveAPI.objectForKeyedSubscript("messageOf")!
-                .call(withArguments: [error])
+            // messageOf 取值可 nil（api 对象缺键/竞态窗口）——flatMap 链
+            // 兜底固定文案，拒绝路径恒 finish（CI 35133461352 实证强解包崩溃）。
+            let rendered = liveAPI.objectForKeyedSubscript("messageOf")
+                .flatMap { $0.call(withArguments: [error]) }
             let message = rendered.flatMap {
                 ($0.isNull || $0.isUndefined) ? nil : $0.toString()
             } ?? "program threw an unrenderable value"

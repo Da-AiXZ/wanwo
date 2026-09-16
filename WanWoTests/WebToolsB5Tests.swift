@@ -57,7 +57,9 @@ final class WebToolsB5Tests: XCTestCase {
         // 修前：URL(string: "https://wttr.in/%l?format=%c+%t") == nil。
         // 修后：预编码可解析且 scheme 正常。
         let raw = "https://wttr.in/%l?format=%c+%t"
-        XCTAssertNil(URL(string: raw), "修前基线：孤立 % 直解析必 nil")
+        // 修前基线断言（URL(string: raw) == nil）环境相关：新 Foundation 对
+        // 部分非法转义宽松解析——基线断言不可靠，删除；修复有效性由下方
+        // 预编码可解析 + scheme 断言承载。
         let url = URL(string: WebFetchTool.encodeLonePercent(raw))
         XCTAssertNotNil(url)
         XCTAssertEqual(url?.scheme?.lowercased(), "https")

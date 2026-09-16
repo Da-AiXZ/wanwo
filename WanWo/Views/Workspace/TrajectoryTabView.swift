@@ -85,6 +85,7 @@ enum TrajectoryLedger {
         var turnStartMs: [Int: Int64] = [:]
         var turnEndMs: [Int: Int64] = [:]
         for event in events {
+            var isStructural = false
             switch event.payload {
             case .toolCall(_, _, let callId, _, _):
                 callStartMs[callId] = event.timeMs
@@ -119,8 +120,10 @@ enum TrajectoryLedger {
             switch event.payload {
             case .turnStart(let t): turnOfPayload = t; stepOfPayload = nil; currentTurn = t
             case .turnEnd(let t, _): turnOfPayload = t; stepOfPayload = nil
-            case .stepStart(let t, let s): turnOfPayload = t; stepOfPayload = s; currentTurn = t
-            case .stepEnd(let t, let s): turnOfPayload = t; stepOfPayload = s
+            case .stepStart(let t, let s):
+                turnOfPayload = t; stepOfPayload = s; currentTurn = t; isStructural = true
+            case .stepEnd(let t, let s):
+                turnOfPayload = t; stepOfPayload = s; isStructural = true
             case .assistantMessage(let t, let s, _, _, _),
                  .toolCall(let t, let s, _, _, _),
                  .toolResult(let t, let s, _, _, _, _, _, _),
@@ -133,7 +136,9 @@ enum TrajectoryLedger {
             }
             let owner = turnOfPayload ?? currentTurn
             var g = group(owner)
-            g.eventCount += 1
+            // 结构标记（stepStart/stepEnd）只承担分组/配对职责——不进
+            // records、不计 eventCount（dsh 台账语义：step 边界是结构）。
+            if !isStructural { g.eventCount += 1 }
 
             var record = makeRecord(event)
             // 配对时长补算（tool/result 与 assistantMessage）。
@@ -162,7 +167,7 @@ enum TrajectoryLedger {
                 let key = "\(owner):\(step)"
                 var sg = g.stepGroups.first(where: { $0.turn == owner && $0.step == step })
                     ?? StepGroup(id: key, turn: owner, step: step)
-                sg.records.append(record)
+                if !isStructural { sg.records.append(record) }
                 if case .assistantMessage(_, _, _, let usage, _) = event.payload, let usage {
                     var u = stepUsages[key]
                         ?? ConversationProjector.TurnUsageSummary(turn: owner)

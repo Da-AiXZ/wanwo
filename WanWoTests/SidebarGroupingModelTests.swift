@@ -216,7 +216,9 @@ final class SidebarGroupingModelTests: XCTestCase {
         let flatWithCurrentBlank = SidebarGroupingModel.deriveGroups(
             sessions: sessions, workspaces: [], grouped: false,
             sort: .updatedDesc, currentSessionID: "b1")
-        XCTAssertEqual(flatWithCurrentBlank[0].sessionIds, ["s1", "b1"])
+        // dsh promotedBlank（WorkspaceBrowser.tsx:857-863）：当前 blank 在
+        // flat 账户置顶 → [b1, s1]。
+        XCTAssertEqual(flatWithCurrentBlank[0].sessionIds, ["b1", "s1"])
     }
 
     func testAccountOrdersDriveDisplayOrder() {
