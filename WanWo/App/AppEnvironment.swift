@@ -271,6 +271,30 @@ final class AppEnvironment: ObservableObject {
         let registry = WorkspaceRegistry(database: db, headerProvider: headerReader)
         self.workspaceRegistry = registry
         self.workspaceController = WorkspaceController(registry: registry)
+
+        // UI 对齐批 1（A）：navigation.ts 语义移植——缝闭包注入（weak self；
+        // 测试面同构注入桩，不触真身）。createSessionInWorkspace = createSession
+        // (cwd: ws.path) + attachSession 的 B3 既有注入链收口。
+        // 赋值点在依赖（database/workspaceRegistry/workspaceController）初始化后、init 内
+        // 首个 self 捕获闭包之前——Swift 两阶段初始化：逃逸闭包 [weak self] 捕获
+        // 须待全部存储属性完成阶段一（CI 35124325714 实证 :371 Task 捕获被否）。
+        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
+            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
+            sessions: { [weak self] in self?.database.list() ?? [] },
+            currentSessionID: { [weak self] in
+                if case .session(let id) = self?.selection { return id }
+                return nil
+            },
+            clearSelection: { [weak self] in self?.selection = .none },
+            openSession: { [weak self] in self?.selection = .session(id: $0) },
+            createSessionInWorkspace: { [weak self] in
+                await self?.createSession(inWorkspace: $0)
+            },
+            archivedSessionIDs: { [weak self] in
+                self?.workspaceRegistry.archivedSessionIDs() ?? []
+            },
+            probeSession: { [weak self] in self?.sessionNavProbe($0) },
+            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
         // 首启 bootstrap（dsh :122——按 header cwd 分组一次；标记最后写）。
         // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量小），之后零开销。
         _ = registry.bootstrapIfNeeded()
@@ -405,27 +429,7 @@ final class AppEnvironment: ObservableObject {
         // 会话的内核分发点，非单会话面）。
         OffloadApprovalPresenter.shared.install()
 
-        // UI 对齐批 1（A）：navigation.ts 语义移植——缝闭包注入（weak self；
-        // 测试面同构注入桩，不触真身）。createSessionInWorkspace = createSession
-        // (cwd: ws.path) + attachSession 的 B3 既有注入链收口。
-        // 创建点收口在 init 末尾：闭包捕获 self 须在全部存储属性初始化之后。
-        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
-            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
-            sessions: { [weak self] in self?.database.list() ?? [] },
-            currentSessionID: { [weak self] in
-                if case .session(let id) = self?.selection { return id }
-                return nil
-            },
-            clearSelection: { [weak self] in self?.selection = .none },
-            openSession: { [weak self] in self?.selection = .session(id: $0) },
-            createSessionInWorkspace: { [weak self] in
-                await self?.createSession(inWorkspace: $0)
-            },
-            archivedSessionIDs: { [weak self] in
-                self?.workspaceRegistry.archivedSessionIDs() ?? []
-            },
-            probeSession: { [weak self] in self?.sessionNavProbe($0) },
-            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
+
 
         // UI 对齐批 1（A）：watchNavigation 启动语义（navigation.ts:157-200）
         // ——订阅 sessionsRevision + 工作区 follow 快照流，就绪后无选中会话
