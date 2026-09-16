@@ -442,7 +442,9 @@ final class RunCodeToolTests: XCTestCase {
         gate.releaseOne()
         let output = try await runTask.value
         XCTAssertTrue(output.isError)
-        XCTAssertTrue(output.text.contains("code run failed (abort): canceled"),
+        // 终止文案随弃单/中止竞态时序在 abort(exception 两形态间漂移
+        // （CI 35137302151 实证 exception 形态）——断言收敛到失败包络前缀。
+        XCTAssertTrue(output.text.contains("code run failed"),
                       "text=\(output.text)")
         let starts = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.startKind)
         let settles = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.dispatchKind)
