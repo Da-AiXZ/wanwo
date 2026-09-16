@@ -25,6 +25,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
 #import "NativeOffloadUtils.h"
+#import "WanWoOffloadGate.h"   // 【终验补】B1c 直连件 register 走 wanwo_offload_register_checked——漏带门控声明头（同族扫尾统一补）
 #import "WanWo-Swift.h"
 #include "kernel/native_offload.h"
 #include <unistd.h>
