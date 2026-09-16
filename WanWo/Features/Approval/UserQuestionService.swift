@@ -95,6 +95,10 @@ final class UserQuestionService: @unchecked Sendable {
         var continuation: CheckedContinuation<AskUserQuestionAnswer, Error>?
         var settled = false
         var error: Error?
+        /// 【M6.6 竞速修】answer() 抢在续体注册前落定时暂存整组回答——
+        /// awaitAnswer ③ settled 分支据此按值恢复（原实现 error=nil 时
+        /// resume(throwing: .aborted()) 吞真实用户批准——PlanModeTests 回归根因）。
+        var answer: AskUserQuestionAnswer?
     }
 
     private let lock = NSLock()
@@ -283,6 +287,14 @@ final class UserQuestionService: @unchecked Sendable {
                 return
             }
             if entry.settled {
+                // 【M6.6 竞速修】answer() 抢在续体注册前落定 → error=nil 且
+                // answer 已暂存 → 按值恢复（原实现恒 resume(throwing:
+                // error ?? .aborted()) 吞真实用户批准——PlanModeTests 回归根因）。
+                if let answer = entry.answer {
+                    lock.unlock()
+                    continuation.resume(returning: answer)
+                    return
+                }
                 let error = entry.error ?? UserQuestionError.aborted()
                 lock.unlock()
                 continuation.resume(throwing: error)
