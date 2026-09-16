@@ -54,12 +54,12 @@ jobs:
           SIM_UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
           echo "Using simulator UDID: $SIM_UDID"
           test -n "$SIM_UDID"
-          # 终验补（35039966287 实证）：iOS 18.5 模拟器 runtime 不带
-          # /usr/lib/swift/libswiftWebKit.dylib（WebKit Swift overlay——B2
-          # 引擎 import WebKit 触链），dyld 早崩。嵌入 Swift 运行库到
-          # .app 包（含各 framework overlay）解决；真机 16.6 自带不受影响。
-          # 【注意】注释不得插进 xcodebuild 反斜杠续行链（bash 续行拼接后
-          # # 会把链尾全部注释掉——35040692833 实证）。放命令块之前。
+          # 终验补（35039966287/35041393412 双实证）：iOS 18.5 模拟器 runtime
+          # 不带 /usr/lib/swift/libswiftWebKit.dylib（WebKit Swift overlay——B2
+          # 引擎 import WebKit 触链），dyld 早崩；ALWAYS_EMBED 不含 framework
+          # overlay——改两阶段：build-for-testing → 从本机任一 sim runtime 卷/
+          # 工具链复制 overlay dylib 到产物目录（dyld rpath 首查位）→
+          # test-without-building。真机 16.6 自带该库不受影响。
           xcodebuild \
             -project WanWo.xcodeproj \
             -scheme WanWo \
@@ -71,7 +71,22 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
-            test | tee test.log
+            build-for-testing | tee build-for-testing.log
+          SW_WEBKIT_DYLIB=$(find /Library/Developer/CoreSimulator/Volumes /Applications/Xcode_16.4.app -name "libswiftWebKit.dylib" 2>/dev/null | head -1)
+          echo "WebKit overlay dylib source: ${SW_WEBKIT_DYLIB:-NOT-FOUND}"
+          test -n "$SW_WEBKIT_DYLIB"
+          cp "$SW_WEBKIT_DYLIB" "$PWD/build/Build/Products/Debug-iphonesimulator/"
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -scheme WanWo \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            test-without-building | tee test.log
 
       - name: Upload test log (always)
         if: always()
