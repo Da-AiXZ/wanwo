@@ -73,11 +73,13 @@ final class WorkspaceNavigatorTests: XCTestCase {
                 fixture.lock.unlock()
             },
             createSessionInWorkspace: { workspaceID in
-                self.fixture.lock.lock()
-                self.fixture._createdIn.append(workspaceID)
-                let created = self.summary(id: "created-\(self.fixture._createdIn.count)")
-                self.fixture._sessions.append(created)
-                self.fixture.lock.unlock()
+                fixture.lock.lock()
+                fixture._createdIn.append(workspaceID)
+                // summary 是测试类方法——async 闭包内隐式 self 被否，须显式
+                // （fixture 是本函数参数局部量，隐式捕获合法，勿动）。
+                let created = self.summary(id: "created-\(fixture._createdIn.count)")
+                fixture._sessions.append(created)
+                fixture.lock.unlock()
                 if createDelayNs > 0 {
                     try? await Task.sleep(nanoseconds: createDelayNs)
                 }
