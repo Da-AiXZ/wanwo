@@ -5,6 +5,20 @@
 //  【按设计新写 · 非原件】出处：10-design §7.2（设置 · Providers：BYOK 凭据、
 //  模型启停）、§十一 M1.5（多端点配置管理：名称/base URL/key/model 增删改查 +
 //  启用切换；key 入 Keychain）。§7.4 视觉素净占位。
+//  【批3 B 增强】dsh ui-settings-models 语义（审计矩阵 §6.3）：
+//    · B1 BYOK 首跑引导（DeepSeekOnboardingDialog.tsx:99-124——credentialOnly
+//      复用编辑表单 + 「稍后配置」；确认态 UserDefaults 持久，键
+//      wanwo.settings.byokOnboardingConfirmed，待迁移标注见报告）；
+//    · B2 API 密钥状态点（实心=已配置 / 空心=缺失；role title 语义 → 辅助
+//      功能标签）；
+//    · B3 删除确认 Modal（有凭证/无凭证两版描述 + 删除中状态行；dsh conflict
+//      文案无本地对应面——本地移除为同步操作无服务端冲突，取舍登记报告）；
+//    · B4 API key 形校验（EndpointStore.apiKeyFailure——dsh apiKey.ts:12-58
+//      四类裁剪，报告注明）；
+//    · B5 discoverModels：核实不做（万我 provider 协议无 /v1/models 拉取面，
+//      model 为静态字符串字段——LLM 层 grep 零命中，报告注明）。
+//  【批3 A】本页原样迁入设置面板（SettingsPanelView contentBody 路由）；
+//  navigationTitle 在面板容器内无 NavigationStack 时惰性（无害）。
 //
 
 import SwiftUI
@@ -14,6 +28,15 @@ struct ProvidersView: View {
     @ObservedObject private var store: EndpointStore
 
     @State private var showingAddSheet = false
+    /// 【批3 B1】BYOK 首跑引导确认态（UserDefaults 持久；万我无统一设置域
+    /// → 键直接落 UserDefaults.standard，迁移至 config 域随报告登记）。
+    @AppStorage("wanwo.settings.byokOnboardingConfirmed")
+    private var byokOnboardingConfirmed = false
+    @State private var showingOnboarding = false
+    /// 【批3 B3】删除确认 Modal 状态。
+    @State private var pendingDelete: EndpointConfig?
+    @State private var showingDeleteDialog = false
+    @State private var deleteInFlight = false
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -30,6 +53,18 @@ struct ProvidersView: View {
                 Text("OpenAI 兼容格式接入（base URL + API Key + model 自填，09 #16）。"
                     + "API Key 优先存 Keychain，侧载环境 Keychain 不可用时自动以沙箱文件兜底（ERR-016）；均不写入配置文件。")
             }
+            // 【批3 B3】删除中状态行（本地移除为同步操作，实践中转瞬即逝——
+            // 状态机真实存在，报告注明）。
+            if deleteInFlight {
+                Section {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在删除…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .navigationTitle("Providers")
         .toolbar {
@@ -38,6 +73,48 @@ struct ProvidersView: View {
             } label: {
                 Image(systemName: "plus")
             }
+        }
+        // 【批3 B1】BYOK 首跑引导 gate（DeepSeekOnboardingDialog.tsx:99-124）：
+        // 用户未确认过且无任何端点持有凭据 → credentialOnly 引导卡。出厂默认
+        // DeepSeek 端点恒存在（EndpointStore init）→「无已配置 provider」口径
+        // = 无凭据端点（gate 纯函数 EndpointStore.byokOnboardingNeeded）。
+        .onAppear {
+            if EndpointStore.byokOnboardingNeeded(
+                confirmed: byokOnboardingConfirmed,
+                endpointsWithCredential: credentialCount) {
+                showingOnboarding = true
+            }
+        }
+        .sheet(isPresented: $showingOnboarding, onDismiss: {
+            // 「稍后配置」与保存同路落确认态（dsh onboardingLater 结束引导
+            // 语义；确认态持久——下次打开不再弹）。
+            byokOnboardingConfirmed = true
+        }) {
+            EndpointEditSheet(store: store, endpoint: nil,
+                              credentialOnly: true,
+                              cancelLabel: "稍后配置",
+                              submitLabel: "保存")
+        }
+        // 【批3 B3】删除确认 Modal（两版描述——有凭证/无凭证；原行卡直删
+        // 撤除）。
+        .confirmationDialog("删除端点", isPresented: $showingDeleteDialog,
+                            titleVisibility: .visible,
+                            presenting: pendingDelete) { endpoint in
+            Button("删除", role: .destructive) {
+                deleteInFlight = true
+                Task {
+                    store.remove(endpoint)
+                    deleteInFlight = false
+                    pendingDelete = nil
+                }
+            }
+            .disabled(deleteInFlight)
+            Button("取消", role: .cancel) {
+                pendingDelete = nil
+            }
+        } message: { endpoint in
+            Text(ProvidersView.deleteMessage(for: endpoint,
+                                             hasCredential: hasCredential(endpoint)))
         }
         .sheet(isPresented: $showingAddSheet) {
             EndpointEditSheet(store: store, endpoint: nil)
@@ -49,10 +126,32 @@ struct ProvidersView: View {
 
     @State private var editingEndpoint: EndpointConfig?
 
+    // MARK: - 【批3 B1/B2/B3】辅助
+
+    /// 端点是否已持有凭据（Keychain/文件兜底任一通道非空——dsh 行卡状态点口径）。
+    private func hasCredential(_ endpoint: EndpointConfig) -> Bool {
+        guard let key = store.apiKey(for: endpoint) else { return false }
+        return !key.isEmpty
+    }
+
+    private var credentialCount: Int {
+        store.endpoints.filter(hasCredential).count
+    }
+
+    /// 删除确认两版描述（dsh 删除 Modal：有凭证版点明凭据一并清除；
+    /// nonisolated static——单测直呼）。
+    nonisolated static func deleteMessage(for endpoint: EndpointConfig,
+                                          hasCredential: Bool) -> String {
+        hasCredential
+            ? "「\(endpoint.name)」已配置 API Key，删除将一并清除凭据，且无法恢复。"
+            : "删除端点「\(endpoint.name)」？此操作无法恢复。"
+    }
+
     @ViewBuilder
     private func endpointRow(_ endpoint: EndpointConfig) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
+                keyStatusDot(hasCredential(endpoint))
                 Text(endpoint.name)
                     .font(.headline)
                 Spacer()
@@ -68,19 +167,47 @@ struct ProvidersView: View {
                 Button("编辑") { editingEndpoint = endpoint }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                Button("删除", role: .destructive) { store.remove(endpoint) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                Button("删除", role: .destructive) {
+                    pendingDelete = endpoint
+                    showingDeleteDialog = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 Spacer()
             }
+        }
+    }
+
+    /// 【批3 B2】API 密钥状态点（实心=已配置 / 空心=缺失；dsh role title
+    /// 语义 → 辅助功能标签）。
+    @ViewBuilder
+    private func keyStatusDot(_ present: Bool) -> some View {
+        if present {
+            Circle()
+                .fill(Color.green)
+                .frame(width: 8, height: 8)
+                .accessibilityLabel("已配置 API Key")
+        } else {
+            Circle()
+                .strokeBorder(Color.secondary, lineWidth: 1)
+                .frame(width: 8, height: 8)
+                .accessibilityLabel("未配置 API Key")
         }
     }
 }
 
 /// 端点编辑表单（新增与编辑共用）。
+/// 【批3 B1】credentialOnly：BYOK 首跑引导形态——仅凭据分节（端点三字段
+/// 出厂默认预填，DeepSeekOnboardingDialog ProviderEditor credentialOnly +
+/// credentialRequired + autoFocusCredential 语义）；取消/提交钮文案可换
+/// （引导卡 = 「稍后配置」/「保存」——dsh cancelLabelKey onboardingLater +
+/// submitLabelKey onboardingSave 词汇）。
 struct EndpointEditSheet: View {
     @ObservedObject var store: EndpointStore
     let endpoint: EndpointConfig?
+    var credentialOnly: Bool = false
+    var cancelLabel: String = "取消"
+    var submitLabel: String = "保存"
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
@@ -94,18 +221,28 @@ struct EndpointEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("端点") {
-                    TextField("名称（如 DeepSeek）", text: $name)
-                    TextField("Base URL（https://api.deepseek.com）", text: $baseURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("model（如 deepseek-v4-flash）", text: $model)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                // 【批3 B1】引导形态仅凭据（端点三字段已出厂预填，不呈现）。
+                if !credentialOnly {
+                    Section("端点") {
+                        TextField("名称（如 DeepSeek）", text: $name)
+                        TextField("Base URL（https://api.deepseek.com）", text: $baseURL)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("model（如 deepseek-v4-flash）", text: $model)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } else {
+                    Section {
+                        Text("添加一个 API Key 开始使用。")
+                            .font(.subheadline)
+                    }
                 }
                 Section("凭据") {
                     SecureField("API Key", text: $apiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     if endpoint != nil {
                         Text("留空则保留已保存的 Key。")
                             .font(.caption)
@@ -131,14 +268,15 @@ struct EndpointEditSheet: View {
                 // 链保留（解码兼容；新写入恒 nil→request.thinking nil→effort
                 // 决定 thinkingType）。
             }
-            .navigationTitle(endpoint == nil ? "新增端点" : "编辑端点")
+            .navigationTitle(credentialOnly ? "开始使用"
+                             : (endpoint == nil ? "新增端点" : "编辑端点"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(cancelLabel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { save() }
+                    Button(submitLabel) { save() }
                         .disabled(name.isEmpty || baseURL.isEmpty || model.isEmpty)
                 }
             }
@@ -149,6 +287,13 @@ struct EndpointEditSheet: View {
     private func loadInitial() {
         guard !loaded else { return }
         loaded = true
+        if credentialOnly && endpoint == nil {
+            // 【批3 B1】出厂默认预填（EndpointStore init 同源三字段——引导卡
+            // 只收 Key，端点身份由默认值承载）。
+            name = "DeepSeek"
+            baseURL = "https://api.deepseek.com"
+            model = "deepseek-v4-flash"
+        }
         if let endpoint = endpoint {
             name = endpoint.name
             baseURL = endpoint.baseURL
@@ -163,6 +308,15 @@ struct EndpointEditSheet: View {
         var normalizedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedBase.hasSuffix("/") {
             normalizedBase.removeLast()
+        }
+        // 【批3 B4】API key 形校验（dsh apiKey.ts:12-58 四类裁剪——空=通过
+        // 保留已存 / 纯空白=keyRequired / 环境变量行·引号包裹·非可打印 ASCII
+        // =keyIllegalCharacters）。失败留在页面显示具体原因，不落盘。
+        if !apiKey.isEmpty, let failure = EndpointStore.apiKeyFailure(apiKey) {
+            credentialNotice = failure == "keyRequired"
+                ? "API Key 不能为空白字符。"
+                : "API Key 含非法字符：形如环境变量行（NAME=value）、引号包裹，或包含非可打印/非 ASCII 字符。"
+            return
         }
         var config = endpoint ?? EndpointConfig(name: name, baseURL: normalizedBase, model: model)
         config.name = name

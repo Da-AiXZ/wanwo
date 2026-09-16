@@ -5,15 +5,18 @@
 //  【M6.6 新写（B4）· 语义源 m6-scope-brief §6.0（codex 桌面截图讲解版布局总则）】
 //  右侧边栏页签容器（A 骨架）：
 //    · 多页签混开（文件/终端/浏览器/侧聊/审查任意组合），每页签 × 可关；
-//    · 「+」= 弹出菜单五项新开（codex :202+ 词汇）；
-//    · 收起/展开 + 全屏（全屏 = 右侧栏占满整窗，左栏可另行收起——RootView 折算
-//      为 NavigationSplitViewVisibility.detail）。
+//    · 「+」= 弹出菜单新开（codex :202+ 词汇）；
+//    · 收起/展开 + 全屏（全屏 = 右侧栏占满整窗——【批3 C⑤】左栏联动由
+//      RootView 条件根布局承载，isFullscreen 驱动换根）。
 //  页签数据结构直接做成可扩展枚举（派单口径：M6 骨架期不过度建模）：
-//    · 文件/终端/侧聊/审查 = 单例页签（重复点选 = 激活既有页签，codex 同形态）；
-//    · 浏览器 = 可多开（每次「+」新开一枚，id 唯一）。
+//    · 终端/侧聊/审查 = 单例页签（重复点选 = 激活既有页签，codex 同形态）；
+//    · 浏览器 = 可多开（每次「+」新开一枚，id 唯一）；
+//    · 【批3 C⑥】文件页随 codex「+ 菜单·新开文件页」语义改可多开
+//      （WorkspaceTab.filesPage()，id 唯一；原 M6 骨架单例形态放开）。
 //  状态机核心（open/close 的选择落点）提为纯函数（单测直呼；页签容器状态机
 //  为本批验收单测面）。
 //
+
 
 import Foundation
 import SwiftUI
@@ -56,13 +59,13 @@ enum WorkspaceTabKind: String, Equatable, CaseIterable {
 
 /// 一枚右侧栏页签。
 struct WorkspaceTab: Identifiable, Equatable {
-    /// 单例页签 id = kind rawValue；浏览器页签 id 唯一（browser-<uuid>）。
+    /// 单例页签 id = kind rawValue；浏览器/文件页签 id 唯一（<kind>-<uuid>）。
     let id: String
     let kind: WorkspaceTabKind
     /// 浏览器页签初始导航目标（wanwo:// 资源深链接线；其余 nil）。
     var initialURL: URL?
 
-    /// 单例页签（文件/终端/侧聊/审查）。
+    /// 单例页签（终端/侧聊/审查）。
     static func singleton(_ kind: WorkspaceTabKind) -> WorkspaceTab {
         WorkspaceTab(id: kind.rawValue, kind: kind, initialURL: nil)
     }
@@ -71,6 +74,13 @@ struct WorkspaceTab: Identifiable, Equatable {
     static func browser(initialURL: URL? = nil) -> WorkspaceTab {
         WorkspaceTab(id: "browser-" + UUID().uuidString,
                      kind: .browser, initialURL: initialURL)
+    }
+
+    /// 【批3 C⑥】文件页签（可多开——codex「+ 菜单·新开文件页」语义；
+    /// 每「+」新开一枚，id 唯一）。
+    static func filesPage() -> WorkspaceTab {
+        WorkspaceTab(id: "files-" + UUID().uuidString,
+                     kind: .files, initialURL: nil)
     }
 }
 
@@ -87,20 +97,20 @@ final class WorkspaceRightSidebarModel: ObservableObject {
     @Published var activeTabID: String?
     /// 侧栏展开/收起（收起 = 整栏不渲染，主对话区全宽）。
     @Published var isExpanded = true
-    /// 全屏（右侧栏占满整窗；左栏由 RootView 折叠）。
+    /// 全屏（右侧栏占满整窗；【批3 C⑤】左栏由 RootView 条件根布局隐藏）。
     @Published var isFullscreen = false
     /// 「审查」入口可见性（仅 git 仓库项目——工作区宿主根存在 .git 目录时）。
     @Published var reviewAvailable = false
 
     // MARK: - 状态机纯函数（单测直呼）
 
-    /// open 落点：单例页签已存在 → 激活不新建；浏览器页签恒新建；容量满 → 拒绝。
+    /// open 落点：单例页签已存在 → 激活不新建；浏览器/文件页签恒新建；容量满 → 拒绝。
     /// 返回 (新页签数组, 应激活 id, 是否实际新建)。
     nonisolated static func opening(_ tab: WorkspaceTab,
                                     in tabs: [WorkspaceTab],
                                     maxTabs: Int = WorkspaceRightSidebarModel.maxTabs)
         -> (tabs: [WorkspaceTab], activatedID: String, created: Bool) {
-        if tab.kind != .browser,
+        if tab.kind != .browser && tab.kind != .files,
            let existing = tabs.first(where: { $0.id == tab.id }) {
             return (tabs, existing.id, false)
         }
@@ -137,6 +147,15 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         return (remaining, previous?.id)
     }
 
+    /// 【批3 C③】「+」菜单/页签列表页候选（纯函数——空态页签列表页与
+    /// 「+」菜单同源；审查仅 git 项目；【批2 2C】轨迹页签入列）。
+    nonisolated static func candidateKinds(reviewAvailable: Bool) -> [WorkspaceTabKind] {
+        var kinds: [WorkspaceTabKind] = []
+        if reviewAvailable { kinds.append(.review) }
+        kinds.append(contentsOf: [.files, .sideChat, .browser, .terminal, .trajectory])
+        return kinds
+    }
+
     // MARK: - 状态机操作
 
     /// 打开（或激活）一枚页签。
@@ -154,11 +173,14 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         activeTabID = result.newActive
     }
 
-    /// 「+」菜单五项（派单口径：审查/git 项目第一位；浏览器每次新开）。
+    /// 「+」菜单落点（审查/git 项目第一位；浏览器每次新开；
+    /// 【批3 C⑥】文件页随 codex「新开文件页」改可多开）。
     func openFromMenu(_ kind: WorkspaceTabKind) {
         switch kind {
         case .browser:
             open(.browser())
+        case .files:
+            open(.filesPage())
         default:
             open(.singleton(kind))
         }
@@ -176,13 +198,20 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         tabs.first { $0.id == activeTabID }
     }
 
-    /// 「+」菜单的候选（审查仅 git 项目可见；其余恒可见——浏览器恒可新开；
-    /// 【批2 2C】轨迹页签入列）。
+    /// 「+」菜单的候选（与页签列表页空态同源——批3 C③）。
     func menuKinds() -> [WorkspaceTabKind] {
-        var kinds: [WorkspaceTabKind] = []
-        if reviewAvailable { kinds.append(.review) }
-        kinds.append(contentsOf: [.files, .sideChat, .browser, .terminal, .trajectory])
-        return kinds
+        Self.candidateKinds(reviewAvailable: reviewAvailable)
+    }
+
+    /// 【批3 C②】无会话强制收起（codex 截图 #3：右栏只在会话场景可用——
+    /// selection 非 .session 时开关钮隐藏 + 右栏收起 + 退出全屏；RootView
+    /// onAppear/onChange 落点）。
+    func reconcileForSelection(sessionID: String?) {
+        guard sessionID == nil else { return }
+        if isExpanded || isFullscreen {
+            isExpanded = false
+            isFullscreen = false
+        }
     }
 
     /// 会话切换时刷新「审查」入口可见性（工作区宿主根存在 .git 即可见——

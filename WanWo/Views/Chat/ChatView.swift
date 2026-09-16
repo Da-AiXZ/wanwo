@@ -310,6 +310,17 @@ struct ChatView: View {
             // 只能靠键盘自带途径；配合下方拖动闸门，流式期的程序化滚动不再
             // 打断收起手势。
             .scrollDismissesKeyboard(.immediately)
+            // 【批3 C⑧】轮次导航轨道（右缘刻度，点按跳轮；悬停预览触屏省略
+            // ——TurnNavigatorRailView 头注）。锚点=user 起轮气泡 id（与
+            // ForEach .plain 分支 bubbleView(bubble).id(bubble.id) 同源）。
+            .overlay(alignment: .trailing) {
+                TurnNavigatorRailView(
+                    anchors: ConversationProjector.turnAnchors(viewModel.bubbles)) { anchor in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(anchor.bubbleID, anchor: .top)
+                    }
+                }
+            }
             // d①：点按消息区任意处收起第一响应者（零 affordance 修复的
             // 第二通道；simultaneousGesture=不吞气泡内按钮/卡片的点按）。
             .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })

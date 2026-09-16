@@ -192,19 +192,45 @@ struct WorkspaceRightSidebarView: View {
         }
     }
 
-    /// 空页签态（「+」新开引导；词汇对齐 codex 新标签语义）。
+    /// 【批3 C③】空态 = 页签列表页（codex 截图 #3 逐字形态：大按钮行 =
+    /// 图标+名称+快捷键提示位；候选与「+」菜单同源——审查=git 项目时入列，
+    /// 【批2 2C】轨迹页签随 menuKinds 口径入列）。原「+」菜单空态撤除
+    /// （plusMenu 仍保留在页签条）。
     private var emptyTabsState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "square.split.2x1")
-                .font(.system(size: 34))
-                .foregroundStyle(.tertiary)
-            Text("从「+」打开文件、终端、浏览器或侧边聊天")
+        VStack(spacing: 16) {
+            Text("打开一个页签")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            plusMenu
+            VStack(spacing: 8) {
+                ForEach(WorkspaceRightSidebarModel.candidateKinds(
+                    reviewAvailable: model.reviewAvailable), id: \.self) { kind in
+                    Button {
+                        model.openFromMenu(kind)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: kind.iconName)
+                                .font(.system(size: 16))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22)
+                            Text(kind.title)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            // 快捷键提示位（codex #3 逐字形态；iOS 触屏无
+                            // 键盘——占位留空，登记报告）。
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(Color(.secondarySystemBackground),
+                                    in: RoundedRectangle(cornerRadius: 10,
+                                                         style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
+        .padding(20)
     }
 }

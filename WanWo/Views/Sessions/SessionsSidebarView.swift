@@ -786,52 +786,22 @@ struct SessionsSidebarView: View {
 
     // MARK: - foot（dsh SidebarRoot.tsx:211-219）
 
-    /// 底部钉住区：设置段（Providers / 权限）+ 诊断段（事件流；Shell 测试
-    /// M0 入口 DEBUG-only——终端迁入右侧栏，ia-audit §3.1 收口）。
+    /// 底部钉住区：【批3 A】设置单入口（dsh SettingsRoot 语义——原六项列表
+    /// 撤除，Providers/MCP/Skills/权限/外挂载/诊断六分区收拢进设置面板
+    /// SettingsPanelView 左 nav；深链 wanwo://settings/permissions 落点同步改
+    /// RootView openSettings(at: .permissions)，B1c 闭环勿断）。
+    /// Shell 测试 M0 入口保留 DEBUG-only（回归面，非用户设置项——Release
+    /// 侧栏仅「设置」一行，简报 A.1 口径）。
     private var footArea: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("设置")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 2)
-            footButton("Providers", icon: "cpu") {
-                selection = .providers
+            footButton("设置", icon: "gearshape") {
+                environment.openSettings()
             }
-            footButton("MCP", icon: "puzzlepiece.extension") {
-                // M4-A 件11：设置·MCP server 管理（配置存储+最小设置页）。
-                selection = .mcpServers
-            }
-            footButton("Skills", icon: "square.stack.3d.up") {
-                // M4-D D7：设置·技能管理（启停覆盖层+迁移导入）。
-                selection = .skills
-            }
-            footButton("权限", icon: "lock.shield") {
-                // M3 T2.2：设置·新会话默认权限行（PermissionRow.tsx 1:1；
-                // P1-4 后唯一权限入口——规则 CRUD 页随 F022 砍除）。
-                selection = .permissionDefaults
-            }
-            footButton("外挂载文件夹", icon: "externaldrive.badge.plus") {
-                // M6.4（B3）：设置·外挂载文件夹管理（F071 挂载流程 + 写权限面）。
-                selection = .mounts
-            }
-            Text("诊断")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
-                .padding(.bottom, 2)
-            // M6.6（B4）：Shell 测试 M0 入口降级 DEBUG-only（ia-audit §3.1；
-            // 终端已迁右侧栏 WorkspaceTerminalTabView——Release 侧栏不再露出）。
             #if DEBUG
             footButton("Shell 测试（M0）", icon: "terminal") {
                 selection = .shellTest
             }
             #endif
-            footButton("事件流", icon: "list.bullet.rectangle") {
-                // M2.8 只读事件流诊断页（页内自选会话，取更简单方案）。
-                selection = .eventStream
-            }
         }
         .padding(.vertical, 10)
     }

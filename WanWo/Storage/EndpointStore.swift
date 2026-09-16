@@ -189,6 +189,49 @@ final class EndpointStore: ObservableObject {
         return "已保存（Keychain + 文件双写）"
     }
 
+    // MARK: - 【批3 B1/B4】BYOK gate + API key 形校验（dsh apiKey.ts 裁剪）
+
+    /// BYOK 首跑引导 gate 纯函数（DeepSeekOnboardingDialog.tsx:99-124 语义——
+    /// 无任何已配置 provider 且未确认过 → 引导；「稍后配置」/保存均落确认态）。
+    /// 出厂默认 DeepSeek 端点恒存在（init 兜底）→「无已配置 provider」口径
+    /// = 无任何端点持有凭据（ProvidersView credentialCount 供数）。
+    nonisolated static func byokOnboardingNeeded(confirmed: Bool,
+                                                 endpointsWithCredential: Int) -> Bool {
+        !confirmed && endpointsWithCredential == 0
+    }
+
+    /// API key 形校验（dsh apiKey.ts:12-58 四类，按 EndpointStore 字段裁剪
+    /// ——报告注明：万我无 ENV 来源面，keyRequired 对应 dsh keyBlank 词汇）：
+    ///   · 空串 = 通过（UI 层「留空保留已存」语义天然对齐 dsh 空=通过）；
+    ///   · 纯空白（trim 后空）= keyRequired；
+    ///   · `NAME=value` 环境变量行 / 引号包裹 / 含非可打印 ASCII（LEGAL
+    ///     `/^[\x21-\x7E]+$/` 之外，含非 ASCII）= keyIllegalCharacters。
+    nonisolated static func apiKeyFailure(_ raw: String) -> String? {
+        // dsh apiKey.ts:26——空串 = 通过（保留已存）。
+        if raw.isEmpty { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // dsh apiKey.ts:29——trim 后空 = 必填缺失（简报 B4 词汇 keyRequired）。
+        if trimmed.isEmpty { return "keyRequired" }
+        // ENV_LINE（apiKey.ts:20）：大写开头名 + `=` 后非 `=`（防 base64
+        // padding 形态误判）。
+        if trimmed.range(of: "^[A-Z][A-Z0-9_]*=[^=]",
+                         options: .regularExpression) != nil {
+            return "keyIllegalCharacters"
+        }
+        // isQuoted（apiKey.ts:23-26）：三种引号整串包裹。
+        if let first = trimmed.first, let last = trimmed.last, trimmed.count >= 2,
+           (first == "\"" && last == "\"")
+               || (first == "'" && last == "'")
+               || (first == "`" && last == "`") {
+            return "keyIllegalCharacters"
+        }
+        // LEGAL_API_KEY（apiKey.ts:12）：仅可打印 ASCII（0x21-0x7E）。
+        for scalar in trimmed.unicodeScalars where !(0x21...0x7E).contains(scalar.value) {
+            return "keyIllegalCharacters"
+        }
+        return nil
+    }
+
     // MARK: - 持久化
 
     private func persist() {

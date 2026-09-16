@@ -21,47 +21,40 @@ struct RootView: View {
     // "左栏另行收起"为用户独立操作）。columnVisibility 机制整体不碰。
 
     var body: some View {
-        NavigationSplitView {
-            NavigationStack {
-                SessionsSidebarView(environment: environment,
-                                    selection: $environment.selection)
-            }
-        } detail: {
-            HStack(spacing: 0) {
-                NavigationStack {
-                    detail
-                }
-                // M6.6（B4）：右侧工作区侧栏（可收起/展开 + 全屏）。
-                if workspaceSidebar.isExpanded {
-                    Divider()
-                    WorkspaceRightSidebarView(model: workspaceSidebar,
-                                              environment: environment)
-                        .frame(width: workspaceSidebar.isFullscreen ? nil
-                               : WorkspaceRightSidebarModel.expandedWidth)
-                        .frame(maxWidth: workspaceSidebar.isFullscreen ? .infinity : nil,
-                               maxHeight: .infinity)
-                }
-            }
-            // 收起态的重开钮（§6.0 侧栏开关的另一向；悬浮于主对话区右缘）。
-            .overlay(alignment: .trailing) {
-                if !workspaceSidebar.isExpanded {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            workspaceSidebar.isExpanded = true
-                        }
-                    } label: {
-                        Image(systemName: "sidebar.trailing")
-                            .font(.system(size: 12, weight: .medium))
-                            .padding(8)
-                            .background(.regularMaterial, in: Circle())
-                    }
-                    .padding(.trailing, 8)
-                    .accessibilityLabel("展开工作区侧栏")
-                }
+        Group {
+            if workspaceSidebar.isFullscreen
+                && WorkspaceRightSidebarView.sessionID(of: environment.selection) != nil {
+                // 【批3 C⑤】全屏：右栏独占整窗、左栏隐藏（codex 截图 #22/#23）。
+                // 条件根布局承载——NavigationSplitViewVisibility 的 .detail/
+                // .secondary 在 iOS 16 SDK 实测不存在（文件头顶注 CI 实证），
+                // 换根容器的 NavigationStack 状态丢失取舍登记报告；再点退出
+                // 全屏即还原 splitLayout。
+                WorkspaceRightSidebarView(model: workspaceSidebar,
+                                          environment: environment)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+            } else {
+                splitLayout
             }
         }
-        // 全屏切换：右栏 maxWidth .infinity 已占满内容区（条件布局承载，
-        // 不触 NavigationSplitViewVisibility——iOS 16 成员可用性见文件头顶注）。
+        // 【批3 C②】无会话不显示右栏：切到非会话选中态 → 强制收起 + 退出全屏
+        // （codex 截图 #3——右栏只在会话场景可用；开关钮隐藏见 splitLayout
+        // overlay 条件）。onAppear 兜底首帧（初始 .none 也收起）。
+        .onAppear {
+            workspaceSidebar.reconcileForSelection(
+                sessionID: WorkspaceRightSidebarView.sessionID(of: environment.selection))
+        }
+        .onChange(of: environment.selection) { selection in
+            workspaceSidebar.reconcileForSelection(
+                sessionID: WorkspaceRightSidebarView.sessionID(of: selection))
+        }
+        // 【批3 A】设置面板（全窗 overlay——dsh SettingsRoot 为 app 级对话框
+        // 同位；settingsPane 非 nil 即呈现，detail 区不切换）。
+        .overlay {
+            if environment.settingsPane != nil {
+                SettingsPanelView(environment: environment)
+            }
+        }
         // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 权限确认卡全局
         // 挂载（OpenMinis 挂 ContentView 同位；sheet(item:) 单槽形态原件
         // 1:1——审批来自内核 offload 分发点，可发生于任意会话/页面）。
@@ -75,7 +68,9 @@ struct RootView: View {
         }
         .onReceive(WanwoURLRouter.shared.$pendingPermissionsRoute) { pending in
             if pending {
-                environment.selection = .permissionDefaults
+                // 【批3 A】深链落点改设置面板·权限分区（原 selection=
+                // .permissionDefaults 推栈页随设置域重组撤除；B1c 闭环勿断）。
+                environment.openSettings(at: .permissions)
                 WanwoURLRouter.shared.consumePermissionsRoute()
             }
         }
@@ -84,6 +79,56 @@ struct RootView: View {
             workspaceSidebar.isExpanded = true
             workspaceSidebar.openResourceURL(url)
             WanwoURLRouter.shared.consumeResourceURL()
+        }
+    }
+
+    /// 常规布局（非全屏）：左栏会话列表 + detail（主区 + 右侧栏）。
+    private var splitLayout: some View {
+        NavigationSplitView {
+            NavigationStack {
+                SessionsSidebarView(environment: environment,
+                                    selection: $environment.selection)
+            }
+        } detail: {
+            HStack(spacing: 0) {
+                NavigationStack {
+                    detail
+                }
+                // M6.6（B4）：右侧工作区侧栏（可收起/展开 + 全屏）。
+                // 【批3 C②】非会话选中态整栏不渲染（codex #3：右栏只在会话
+                // 场景可用；reconcileForSelection 已强制收起，此处双保险）。
+                if workspaceSidebar.isExpanded,
+                   WorkspaceRightSidebarView.sessionID(of: environment.selection) != nil {
+                    Divider()
+                    WorkspaceRightSidebarView(model: workspaceSidebar,
+                                              environment: environment)
+                        .frame(width: workspaceSidebar.isFullscreen ? nil
+                               : WorkspaceRightSidebarModel.expandedWidth)
+                        .frame(maxWidth: workspaceSidebar.isFullscreen ? .infinity : nil,
+                               maxHeight: .infinity)
+                }
+            }
+            // 【批3 C①】收起态重开钮移右上角（codex 截图 #3——与头部工具区
+            // 并排；原主区右缘中部悬浮改 .topTrailing）。无会话时同样隐藏
+            // （C②——开关钮只在会话场景可用）。
+            .overlay(alignment: .topTrailing) {
+                if !workspaceSidebar.isExpanded,
+                   WorkspaceRightSidebarView.sessionID(of: environment.selection) != nil {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            workspaceSidebar.isExpanded = true
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.trailing")
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(8)
+                            .background(.regularMaterial, in: Circle())
+                    }
+                    .padding(.top, 8)
+                    .padding(.trailing, 12)
+                    .accessibilityLabel("展开工作区侧栏")
+                }
+            }
         }
     }
 

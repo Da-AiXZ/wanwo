@@ -152,6 +152,22 @@ final class AppEnvironment: ObservableObject {
     /// 会话秒开、消除重复 replay 堆积。容量 2（插入序淘汰），MainActor 域。
     let eventStreamReplayCache = EventStreamReplayCache()
     @Published var selection: RootSelection = .none
+    /// 【批3 A】设置面板当前分区（nil = 面板关闭——dsh SettingsRoot activeId
+    /// undefined 语义）。面板挂 RootView 全窗 overlay（取舍见 SettingsPanelView
+    /// 头注：detail 区不切换，免 preSettings 记忆与 NavigationStack 状态丢失）。
+    @Published var settingsPane: SettingsPane?
+
+    /// 【批3 A】打开设置面板（缺省 Providers 分区；深链 wanwo://settings/
+    /// permissions → openSettings(at: .permissions)——OffloadPermissionManager
+    /// deny 文案落点，B1c 闭环勿断）。
+    func openSettings(at pane: SettingsPane = .providers) {
+        settingsPane = pane
+    }
+
+    /// 【批3 A】关闭设置面板（dsh close 回调 activeId=undefined 语义）。
+    func closeSettings() {
+        settingsPane = nil
+    }
     /// 待决交互镜像（侧栏琥珀点数据源；dsh 2026-07-23 笔记——sidebar mirrors
     /// every blocked interaction with an amber warning dot，优先级高于运行中圆环）。
     @Published private(set) var pendingInteractionSessionIDs: Set<String> = []
