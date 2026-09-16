@@ -85,7 +85,6 @@ enum TrajectoryLedger {
         var turnStartMs: [Int: Int64] = [:]
         var turnEndMs: [Int: Int64] = [:]
         for event in events {
-            var isStructural = false
             switch event.payload {
             case .toolCall(_, _, let callId, _, _):
                 callStartMs[callId] = event.timeMs
@@ -115,6 +114,7 @@ enum TrajectoryLedger {
         func setGroup(_ g: TurnGroup) { groups[g.id] = g }
 
         for event in events {
+            var isStructural = false
             let turnOfPayload: Int?
             let stepOfPayload: Int?
             switch event.payload {
