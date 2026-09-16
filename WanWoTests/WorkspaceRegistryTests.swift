@@ -37,7 +37,7 @@ final class WorkspaceRegistryTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        try? FileManager.default.removeItem(at: dbPath.path)
+        try? FileManager.default.removeItem(at: dbPath)
     }
 
     /// 纯逻辑缝：realpath=词法规范、存在性=虚拟目录集合、header=内存表。

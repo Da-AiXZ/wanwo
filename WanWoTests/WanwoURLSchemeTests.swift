@@ -18,7 +18,7 @@ final class WanwoURLSchemeTests: XCTestCase {
 
     override func setUp() async throws {
         // 会话工作区桶根（真机测试宿主容器——可写；用后清理）。
-        bucketRoot = WanWoPaths.sessionPersistentDir(for: testSID, bucket: "workspace")
+        bucketRoot = WanWoPaths.sessionPersistentDir(for: Self.testSID, bucket: "workspace")
         try FileManager.default.createDirectory(at: bucketRoot, withIntermediateDirectories: true)
     }
 

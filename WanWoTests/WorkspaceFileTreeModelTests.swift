@@ -76,7 +76,7 @@ final class WorkspaceFileTreeModelTests: XCTestCase {
         let tree = WorkspaceFileTreeModel.buildTree(relativePaths: [
             "docs/design/spec.md", "src/main.swift",
         ])
-        let paths = WorkspaceFileTreeModel.expandedAncestorPaths(tree, query: "spec")
+        let paths = WorkspaceFileTreeModel.expandedAncestorPaths(in: tree, query: "spec")
         XCTAssertEqual(paths, ["docs", "docs/design"])
     }
 

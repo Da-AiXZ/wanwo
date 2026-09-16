@@ -43,7 +43,7 @@ final class WorkspaceRightSidebarModelTests: XCTestCase {
         for _ in 0..<WorkspaceRightSidebarModel.maxTabs {
             tabs.append(.browser())
         }
-        let result = WorkspaceRightSidebarModel.opening(.terminal, in: tabs)
+        let result = WorkspaceRightSidebarModel.opening(.singleton(.terminal), in: tabs)
         XCTAssertFalse(result.created)
         XCTAssertEqual(result.tabs.count, WorkspaceRightSidebarModel.maxTabs)
         // 容量满拒新：激活尾页签（可解释落点）。

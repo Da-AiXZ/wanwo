@@ -127,7 +127,7 @@ final class SideChatToolWhitelistTests: XCTestCase {
         let registry = ToolRegistry()
         registry.register(StubTool(name: "read", output: .success("file content")))
         SideChatToolWhitelist.apply(to: registry)
-        let pipeline = ToolPipeline(registry: registry)
+        let pipeline = ToolPipeline(registry: registry, repeatAdviser: RepeatCallAdviser())
         let output = await pipeline.run(toolName: "read", args: .object([:]),
                                         ctx: makeContext())
         XCTAssertFalse(output.isError)
