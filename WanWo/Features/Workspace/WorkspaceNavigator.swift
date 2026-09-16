@@ -106,7 +106,24 @@ final class WorkspaceNavigator: ObservableObject {
         case createFailed(String)
     }
 
-    private let seams: Seams
+    /// 占位缝（两阶段初始化用）：AppEnvironment 在自身存储属性全部就绪前
+    /// 先以 noops 创建本类实例，init 尾再 bind 真缝——逃逸闭包捕获 self
+    /// 须待全部存储属性完成阶段一（CI 35125985389 实证：Seams 闭包在
+    /// workspaceNavigator 自身初始化期间捕获 self 被否）。
+    static let noops = Seams(
+        workspaces: { [] },
+        sessions: { [] },
+        currentSessionID: { nil },
+        clearSelection: {},
+        openSession: { _ in },
+        createSessionInWorkspace: { _ in nil },
+        archivedSessionIDs: { [] },
+        probeSession: { _ in nil },
+        isReady: { false })
+
+    /// 可重绑（AppEnvironment init 尾以真缝替换 noops 占位——真缝闭包
+    /// 捕获 self 须待全部存储属性就绪）。
+    private var seams: Seams
     private let logger = AppLogger(category: "workspace-navigator")
     /// navigation.ts:96-97 connecting map——同 workspaceId 在飞连接共享。
     private var connecting: [String: Task<String, Error>] = [:]
@@ -120,6 +137,11 @@ final class WorkspaceNavigator: ObservableObject {
     private var followCancel: (() -> Void)?
 
     init(seams: Seams) {
+        self.seams = seams
+    }
+
+    /// 真缝替换（AppEnvironment init 尾调用——一次性；此后不再重绑）。
+    func bind(seams: Seams) {
         self.seams = seams
     }
 

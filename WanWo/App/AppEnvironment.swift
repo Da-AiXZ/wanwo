@@ -371,23 +371,10 @@ final class AppEnvironment: ObservableObject {
         JscoreTraceEvents.registerEventSchemas()
         DiagTraceEvents.registerEventSchemas()
 
-        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
-            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
-            sessions: { [weak self] in self?.database.list() ?? [] },
-            currentSessionID: { [weak self] in
-                if case .session(let id) = self?.selection { return id }
-                return nil
-            },
-            clearSelection: { [weak self] in self?.selection = .none },
-            openSession: { [weak self] in self?.selection = .session(id: $0) },
-            createSessionInWorkspace: { [weak self] in
-                await self?.createSession(inWorkspace: $0)
-            },
-            archivedSessionIDs: { [weak self] in
-                self?.workspaceRegistry.archivedSessionIDs() ?? []
-            },
-            probeSession: { [weak self] in self?.sessionNavProbe($0) },
-            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
+        // 【批3 编译五】noops 占位创建：Seams 真闭包捕获 self，而逃逸闭包
+        // 捕获 self 须待全部存储属性完成阶段一（Swift 两阶段初始化）——
+        // 真缝在 init 尾 bind（见 workspaceNavigator.attach 前）。
+        workspaceNavigator = WorkspaceNavigator(seams: .noops)
 
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
@@ -436,6 +423,25 @@ final class AppEnvironment: ObservableObject {
         // UI 对齐批 1（A）：watchNavigation 启动语义（navigation.ts:157-200）
         // ——订阅 sessionsRevision + 工作区 follow 快照流，就绪后无选中会话
         // 即自动 connectWorkspace(recent) 并打开。
+        // 【批3 编译五】init 尾 bind 真缝：此处全部存储属性已完成阶段一，
+        // Seams 闭包捕获 self 方才合法（noops 占位见上）。
+        workspaceNavigator.bind(seams: WorkspaceNavigator.Seams(
+            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
+            sessions: { [weak self] in self?.database.list() ?? [] },
+            currentSessionID: { [weak self] in
+                if case .session(let id) = self?.selection { return id }
+                return nil
+            },
+            clearSelection: { [weak self] in self?.selection = .none },
+            openSession: { [weak self] in self?.selection = .session(id: $0) },
+            createSessionInWorkspace: { [weak self] in
+                await self?.createSession(inWorkspace: $0)
+            },
+            archivedSessionIDs: { [weak self] in
+                self?.workspaceRegistry.archivedSessionIDs() ?? []
+            },
+            probeSession: { [weak self] in self?.sessionNavProbe($0) },
+            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
         workspaceNavigator.attach(environment: self)
 
         // 【批2 B⑦】权限判定观测缝接线：判定注记 → diagTrace（进会话事件流
