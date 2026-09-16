@@ -99,27 +99,28 @@ final class WorkspaceNavigator: ObservableObject {
         var probeSession: (String) -> SessionNavProbeResult?
         /// 列表就绪（dsh phase === 'ready'——WanWo 折算为首轮对账完成）。
         var isReady: () -> Bool
+
+        /// 占位缝（两阶段初始化用）：AppEnvironment 先以 noops 创建本类
+        /// 实例，init 尾再 bind 真缝——真缝闭包捕获 self 须待全部存储属性
+        /// 完成阶段一（CI 35125985389 实证：Seams 闭包在 workspaceNavigator
+        /// 自身初始化参数位捕获 self 被否；noops 挂 Seams 级供 `seams: .noops`
+        /// 推断解析）。
+        static let noops = Seams(
+            workspaces: { [] },
+            sessions: { [] },
+            currentSessionID: { nil },
+            clearSelection: {},
+            openSession: { _ in },
+            createSessionInWorkspace: { _ in nil },
+            archivedSessionIDs: { [] },
+            probeSession: { _ in nil },
+            isReady: { false })
     }
 
     enum NavigatorError: Error, Equatable {
         case unknownWorkspace(String)
         case createFailed(String)
     }
-
-    /// 占位缝（两阶段初始化用）：AppEnvironment 在自身存储属性全部就绪前
-    /// 先以 noops 创建本类实例，init 尾再 bind 真缝——逃逸闭包捕获 self
-    /// 须待全部存储属性完成阶段一（CI 35125985389 实证：Seams 闭包在
-    /// workspaceNavigator 自身初始化期间捕获 self 被否）。
-    static let noops = Seams(
-        workspaces: { [] },
-        sessions: { [] },
-        currentSessionID: { nil },
-        clearSelection: {},
-        openSession: { _ in },
-        createSessionInWorkspace: { _ in nil },
-        archivedSessionIDs: { [] },
-        probeSession: { _ in nil },
-        isReady: { false })
 
     /// 可重绑（AppEnvironment init 尾以真缝替换 noops 占位——真缝闭包
     /// 捕获 self 须待全部存储属性就绪）。
