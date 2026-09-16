@@ -278,23 +278,7 @@ final class AppEnvironment: ObservableObject {
         // 赋值点在依赖（database/workspaceRegistry/workspaceController）初始化后、init 内
         // 首个 self 捕获闭包之前——Swift 两阶段初始化：逃逸闭包 [weak self] 捕获
         // 须待全部存储属性完成阶段一（CI 35124325714 实证 :371 Task 捕获被否）。
-        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
-            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
-            sessions: { [weak self] in self?.database.list() ?? [] },
-            currentSessionID: { [weak self] in
-                if case .session(let id) = self?.selection { return id }
-                return nil
-            },
-            clearSelection: { [weak self] in self?.selection = .none },
-            openSession: { [weak self] in self?.selection = .session(id: $0) },
-            createSessionInWorkspace: { [weak self] in
-                await self?.createSession(inWorkspace: $0)
-            },
-            archivedSessionIDs: { [weak self] in
-                self?.workspaceRegistry.archivedSessionIDs() ?? []
-            },
-            probeSession: { [weak self] in self?.sessionNavProbe($0) },
-            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
+
         // 首启 bootstrap（dsh :122——按 header cwd 分组一次；标记最后写）。
         // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量小），之后零开销。
         _ = registry.bootstrapIfNeeded()
@@ -386,6 +370,24 @@ final class AppEnvironment: ObservableObject {
         PtcDispatchEvents.registerEventSchemas()
         JscoreTraceEvents.registerEventSchemas()
         DiagTraceEvents.registerEventSchemas()
+
+        workspaceNavigator = WorkspaceNavigator(seams: WorkspaceNavigator.Seams(
+            workspaces: { [weak self] in self?.workspaceRegistry.list() ?? [] },
+            sessions: { [weak self] in self?.database.list() ?? [] },
+            currentSessionID: { [weak self] in
+                if case .session(let id) = self?.selection { return id }
+                return nil
+            },
+            clearSelection: { [weak self] in self?.selection = .none },
+            openSession: { [weak self] in self?.selection = .session(id: $0) },
+            createSessionInWorkspace: { [weak self] in
+                await self?.createSession(inWorkspace: $0)
+            },
+            archivedSessionIDs: { [weak self] in
+                self?.workspaceRegistry.archivedSessionIDs() ?? []
+            },
+            probeSession: { [weak self] in self?.sessionNavProbe($0) },
+            isReady: { [weak self] in (self?.sessionsRevision ?? 0) >= 1 }))
 
         // 启动列表零对账（启动空窗根治）：索引是写路径同步维护的持久表，
         // 首帧 listSessions 直查持久索引即秒出——启动路径不做任何 JSONL 扫描。
