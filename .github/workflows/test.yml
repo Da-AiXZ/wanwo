@@ -48,19 +48,19 @@ jobs:
           # （真机产物路径与脚本默认行为零影响）。
           ./scripts/build_ish.sh release ios-sim "$PWD/build/simlibs"
           cp build/simlibs/*.a Vendor/libs/
-          # 终验补二（2026-09-16）：iOS 18.5 runtime 被苹果移除了 WebKit Swift
-          # overlay（libswiftWebKit.dylib——B2 引擎 import WebKit 触链，dyld 早崩
-          # 35041393412 实证；weak_library 回退见 project.yml 登记）——优先选
-          # 运行时版本最老的 iPhone 模拟器（旧 runtime 卷自带该库）；并在日志
-          # 打印 runtimes 清单供诊断。若 runner 只有 18.5 一个 runtime → 显式
-          # 失败（带证据），后续走"换 runner 镜像/延时等 Xcode 修复"的用户决策。
+          # 终验补三（2026-09-16）：WebKit Swift overlay（libswiftWebKit.dylib）
+          # 在 18.4+ sim runtime 被移除（18.5 dyld 早崩 35041393412 实证）——
+          # runner 实测 runtimes=18.5/18.6/26.0/26.1/26.2（无旧可逃）→ 改选
+          # 最新 runtime（26.x 或已恢复 overlay/或其 dyld cache 含之）。
+          # awk 匹配修正："/iPhone/"（设备名带空格，原 /iPhone \( / 永不命中
+          # = UDID 空实证 35043626399）。
           echo "=== available runtimes ==="
           xcrun simctl list runtimes
           SIM_UDID=$(xcrun simctl list devices available | awk '
             /^-- iOS/ { ver = $2 + 0 }
-            /iPhone \(/ && ver > 0 { print ver, $0 }
-          ' | sort -n | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
-          echo "Using simulator UDID: $SIM_UDID (oldest runtime preferred)"
+            /iPhone/ && ver > 0 { print ver, $0 }
+          ' | sort -nr | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          echo "Using simulator UDID: $SIM_UDID (newest runtime preferred)"
           test -n "$SIM_UDID"
           # 终验（项目侧弱链接方案，见 project.yml OTHER_LDFLAGS）：WebKit
           # Swift overlay 在新 sim runtime/新工具链已被移除——弱链接=缺失容忍，
