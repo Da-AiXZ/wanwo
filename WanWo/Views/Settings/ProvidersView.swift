@@ -45,6 +45,16 @@ struct ProvidersView: View {
 
     var body: some View {
         List {
+            // 【批4】添加入口实体化：SettingsPanelView 容器无 NavigationStack，
+            // .toolbar 的「+」在其中不渲染——改为 List 显式按钮行，两种容器
+            // （面板 / RootView detail）下均可见可用（与 EventStreamView 同案）。
+            Section {
+                Button {
+                    showingAddSheet = true
+                } label: {
+                    Label("添加端点", systemImage: "plus.circle.fill")
+                }
+            }
             Section {
                 ForEach(store.endpoints) { endpoint in
                     endpointRow(endpoint)
@@ -67,6 +77,9 @@ struct ProvidersView: View {
             }
         }
         .navigationTitle("Providers")
+        // 【批4】toolbar「+」保留（RootView detail 导航容器语境正常渲染），
+        // 与上方「添加端点」实体行并存（面板语境由实体行承载）——同
+        // EventStreamView 一致性方案。
         .toolbar {
             Button {
                 showingAddSheet = true

@@ -19,6 +19,11 @@
 //  六分区（简报 A.4 迁移映射；「通用」按"并入现有项"口径不单列，登记报告）：
 //  Providers / MCP / Skills / 权限 / 外挂载文件夹 / 诊断。
 //
+//  【批4 配色统一】面板底 .regularMaterial → Color(.systemGroupedBackground)：
+//  六个子页全是 List（默认绘制不透明 systemGroupedBackground），material 底
+//  造成「左灰右白」割裂；统一同底色后左 nav 与右内容贯通，深浅色均成立
+//  （理由：子页 List 零改动——其中三个子页视图不在本工程师域内）。
+//
 
 import SwiftUI
 
@@ -104,7 +109,16 @@ struct SettingsPanelView: View {
                 .accessibilityAddTraits(.isButton)
             panelContent
                 .frame(maxWidth: Self.maxPanelWidth, maxHeight: Self.maxPanelHeight)
-                .background(.regularMaterial,
+                // 【批4 配色统一】面板底色 = systemGroupedBackground（统一自绘
+                // 底色路线）：右侧六个子页全是 List，默认绘制不透明的
+                // systemGroupedBackground——原 .regularMaterial 与之灰白割裂
+                // （左灰右白）。整面板改同底色后左 nav（透明透出面板底）与右
+                // List 完全同色，深浅色模式均自适应；选中态高亮
+                // （navRow accentColor.opacity(0.14)）保留。子页 List 零改动
+                // （ProvidersView/MCPServersView/PermissionDefaultsView 不在本
+                // 工程师域内；且 MountedFoldersSettingsView 在 RootView detail
+                // 的 NavigationStack 容器下保持默认分组背景不受影响）。
+                .background(Color(.systemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -162,7 +176,10 @@ struct SettingsPanelView: View {
     private func navRow(_ pane: SettingsPane) -> some View {
         let isActive = environment.settingsPane == pane
         return Button {
-            environment.settingsPane = pane
+            // 批4 动画标准：分区切换（右内容列路由随之过渡）统一 spring。
+            withAnimation(Animation.spring(response: 0.3, dampingFraction: 0.85)) {
+                environment.settingsPane = pane
+            }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: pane.iconName)

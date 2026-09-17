@@ -8,8 +8,6 @@
 //  PermissionDefaultsView 同款素净 List/Form 中文风格），不做 OpenMinis 视觉。
 //
 //  承接原件的状态机/校验纪律：
-//    · PendingMount 两段 sheet 竞态规避（picker 回调后下一 runloop tick 才入
-//      pendingMount——iOS 拒绝叠 two sheets，同步赋值首次静默丢失）
 //    · AddMountSheet 从 pending 闭包参数读值（Optional binding 重路由瞬时 nil
 //      会清空 Source path 字段）
 //    · 名称校验 = MountedFolderEntry.isValidMountName（无 /、非空、非 . / ..）
@@ -19,13 +17,32 @@
 //    · 目录选择 = UIDocumentPickerViewController(.folder)（dsh pick 动词的 iOS
 //      不可抗力映射，10-design §6⑤:669 同款）
 //
+//  【批4 挂载修复】「选完文件夹无反应」根因与修法（替换批2 B③ 方案）：
+//    · 根因：B③ 把命名确认卡改成 fullScreenCover，但挂在一个 0×0 的
+//      Color.clear 上，且 FolderPicker onPick 只延一拍（单 runloop tick）就
+//      设 pendingMount——picker sheet 的退场动画（约 0.3s）远未结束时
+//      fullScreenCover 的 UIKit presentation 提呈被系统静默丢弃（同一
+//      presenting VC 上「dismiss 进行中再 present」是未定义行为），model.add
+//      根本没执行到，列表无变化也无错误。
+//    · 修法：命名确认卡改为 **SwiftUI overlay**（ZStack 覆盖层）呈现，彻底
+//      脱离 UIKit presentation 通道——overlay 不是 presentation controller，
+//      与 picker sheet 的退场在构造上就不可能竞态；也不再依赖任何挂点视图
+//      尺寸（0×0 问题随之消失）。AddMountSheet 自带 NavigationStack，
+//      取消/挂载 toolbar 照常渲染。业务链路 PendingMount→命名→model.add→
+//      refresh 与错误 alert 通道全部保留；呈现/收束统一走
+//      withAnimation(spring(response:0.3, dampingFraction:0.85))。
+//    · 「+」入口同时从 .toolbar（SettingsPanelView 无 NavigationStack 容器
+//      内不渲染）实体化为 List 显式「添加挂载文件夹」按钮行（isAtCapacity
+//      禁用逻辑保留）。
+//
 
 import SwiftUI
 import UniformTypeIdentifiers
 
 private let mountUILogger = AppLogger(category: "MountedFoldersUI")
 
-/// Add-Mount 表单的 `.sheet(item:)` 载体（原件 PendingMount 同形）。
+/// Add-Mount 表单的状态载体（原件 PendingMount 同形；批4 起经 ZStack overlay
+/// 呈现，非 presentation）。
 private struct PendingMount: Identifiable {
     let id = UUID()
     let url: URL
@@ -42,27 +59,40 @@ struct MountedFoldersSettingsView: View {
     /// 详情编辑态（rename / allowWrite / 刷新可写性）。`entry.id == nil` 视为关闭。
     @State private var detailEntryID: UUID?
 
+    /// 批4 动画标准：所有交互变化统一 spring（response≈0.3, damping≈0.85）。
+    private static let interactionSpring = Animation.spring(response: 0.3,
+                                                            dampingFraction: 0.85)
+
     var body: some View {
-        // 【批2 B③】ZStack 零尺寸挂点（批 1 C7 同款方案）：第二层「命名确认」
-        // 从 `.sheet(item: $pendingMount)` 改为 fullScreenCover——iOS 同链双
-        // .sheet 叠放静默丢失（picker sheet 尚未完全退场时呈现第二个 sheet 被
-        // 系统丢弃，真机实证"选完文件夹无反应"）。fullScreenCover 走独立
-        // presentation 通道 + 挂点视图与 List 分离，绕开叠放约束。
+        // 【批4 挂载修复】命名确认卡改为 ZStack overlay（非 UIKit presentation）：
+        // 与 picker sheet 退场在构造上无竞态、无挂点尺寸依赖，见文件头根因记录。
         ZStack {
             listContent
-            Color.clear
-                .frame(width: 0, height: 0)
-                .fullScreenCover(item: $pendingMount) { pending in
-                    addMountSheet(pending)
-                }
+            if let pending = pendingMount {
+                addMountOverlay(pending)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .zIndex(2)
+            }
         }
     }
 
-    /// 列表主体（原 body 的 List 段，原样搬移）。
+    /// 列表主体（原 body 的 List 段；批4：toolbar「+」实体化为显式按钮行）。
     private var listContent: some View {
         List {
             Section {
                 infoBanner
+            }
+
+            // 【批4】添加入口实体化：SettingsPanelView 容器无 NavigationStack，
+            // .toolbar 内的「+」在其中不渲染（等于消失）——改为 List 显式行，
+            // 两种容器（面板 / RootView detail）下均可见可用。
+            Section {
+                Button {
+                    showingPicker = true
+                } label: {
+                    Label("添加挂载文件夹", systemImage: "plus.circle.fill")
+                }
+                .disabled(model.isAtCapacity)
             }
 
             if model.entries.isEmpty {
@@ -73,7 +103,7 @@ struct MountedFoldersSettingsView: View {
                             .foregroundStyle(.secondary)
                         Text("暂无外挂文件夹")
                             .font(.headline)
-                        Text("点右上角 +，从「文件」App 中选择一个文件夹（如 iCloud Drive 里的资料库）。")
+                        Text("点上方「添加挂载文件夹」，从「文件」App 中选择一个文件夹（如 iCloud Drive 里的资料库）。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -116,30 +146,23 @@ struct MountedFoldersSettingsView: View {
         }
         .navigationTitle("外挂载文件夹")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showingPicker = true
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .disabled(model.isAtCapacity)
-            }
-        }
+        // 【批4】原 .toolbar「+」已实体化为上方「添加挂载文件夹」按钮行
+        // （toolbar 在设置面板的无导航容器内不渲染，见按钮行注释）。
         .sheet(isPresented: $showingPicker) {
             FolderPicker { url in
                 // `UIDocumentPickerViewController` 的 `didPickDocumentsAt` 委托
                 // 回调在 SwiftUI 已开始 dismiss picker sheet 之后才到。命名确认
-                // 已改走 fullScreenCover（B③），叠放约束解除；此处仍跳一拍让
-                // picker sheet 先离开层级（防御性——picker 退场动画期间的
-                // presentation 竞态不加戏）。
+                // 卡已改走 overlay（批4）——非 UIKit presentation，与 picker
+                // 退场在构造上无竞态；此处跳一拍仅为让 picker 先离开视觉层级。
                 mountUILogger.info("FolderPicker onPick url=\(url.path)")
                 DispatchQueue.main.async {
-                    pendingMount = PendingMount(
-                        url: url,
-                        name: Self.defaultMountName(for: url),
-                        allowWrite: true
-                    )
+                    withAnimation(Self.interactionSpring) {
+                        pendingMount = PendingMount(
+                            url: url,
+                            name: Self.defaultMountName(for: url),
+                            allowWrite: true
+                        )
+                    }
                 }
             }
         }
@@ -159,8 +182,34 @@ struct MountedFoldersSettingsView: View {
         }
     }
 
-    /// 【批2 B③】新建挂载命名确认卡（原 `.sheet(item: $pendingMount)` 内容，
-    /// 呈现通道改 fullScreenCover——挂点见 body）。
+    /// 【批4】新建挂载命名确认卡（原 `.sheet(item: $pendingMount)` 内容）：
+    /// 呈现通道改 ZStack overlay——遮罩点击 = 取消（与导航栏「取消」等价），
+    /// 卡片居中（面板容器内限宽，小容器自适应收窄）。
+    private func addMountOverlay(_ pending: PendingMount) -> some View {
+        ZStack {
+            // 遮罩：点击取消（关闭路径 2；路径 1=卡片导航栏「取消」按钮）。
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(Self.interactionSpring) { pendingMount = nil }
+                }
+                .accessibilityLabel("取消新建挂载")
+                .accessibilityAddTraits(.isButton)
+            addMountSheet(pending)
+                .frame(maxWidth: 640)
+                .background(Color(.systemBackground),
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+                .shadow(color: .black.opacity(0.22), radius: 24, y: 8)
+                .padding(24)
+        }
+    }
+
+    /// 新建挂载命名确认卡内容（原 addMountSheet 主体；取消/挂载收束统一
+    /// withAnimation 走过渡）。
     private func addMountSheet(_ pending: PendingMount) -> some View {
         // 重要：从 `pending` 闭包参数读值而非 `pendingMount?.url`——Optional
         // 状态绑定在 SwiftUI 重路由 sheet 的瞬时 nil 会清空来源路径字段
@@ -176,7 +225,7 @@ struct MountedFoldersSettingsView: View {
                 set: { pendingMount?.allowWrite = $0 }
             ),
             onCancel: {
-                pendingMount = nil
+                withAnimation(Self.interactionSpring) { pendingMount = nil }
             },
             onConfirm: {
                 let current = pendingMount ?? pending
@@ -189,7 +238,7 @@ struct MountedFoldersSettingsView: View {
                 } catch {
                     errorText = error.localizedDescription
                 }
-                pendingMount = nil
+                withAnimation(Self.interactionSpring) { pendingMount = nil }
             }
         )
     }
