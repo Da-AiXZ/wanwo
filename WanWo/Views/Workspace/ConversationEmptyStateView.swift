@@ -431,23 +431,8 @@ struct ConversationEmptyStateView: View {
 
     /// hero 进场 modifier（R1 动画补强：淡入 + 上移 8pt 回位，stage 级联
     /// 每级延迟 0.05s，spring(0.3/0.85)——headline → 胶囊 → composer）。
-    private struct HeroEntrance: ViewModifier {
-        let appeared: Bool
-        let stage: Int
-
-        func body(content: Content) -> some View {
-            content
-                .opacity(appeared ? 1 : 0)
-                .offset(y: appeared ? 0 : 8)
-                .animation(Animation.spring(response: 0.3, dampingFraction: 0.85)
-                            .delay(Double(stage) * 0.05),
-                           value: appeared)
-        }
-    }
-
-    private func heroEntrance(appeared: Bool, stage: Int) -> some View {
-        modifier(HeroEntrance(appeared: appeared, stage: stage))
-    }
+    /// 定义在文件尾的 `extension View`（CI 出包一跑实证：嵌套在本结构体内
+    /// 时 `some View` 链上无此成员——成员方法不在 View 协议扩展上）。
 
     /// dock 卡形态（InputBar.module.css .card:32-64 逐值）：r22；底色纯白
     /// rgb(255,255,255)（--dsw-static-neutral-bluish-00，design-platform.css
@@ -594,5 +579,30 @@ struct ConversationEmptyStateView: View {
                 workspaces = frame.workspaces
             }
         }
+    }
+}
+
+// MARK: - hero 进场动画（文件级：View 协议扩展供任意 some View 链调用）
+
+/// hero 进场 modifier（R1 动画补强：淡入 + 上移 8pt 回位，stage 级联
+/// 每级延迟 0.05s，spring(0.3/0.85)——headline → 胶囊 → composer）。
+private struct HeroEntrance: ViewModifier {
+    let appeared: Bool
+    let stage: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 8)
+            .animation(Animation.spring(response: 0.3, dampingFraction: 0.85)
+                        .delay(Double(stage) * 0.05),
+                       value: appeared)
+    }
+}
+
+extension View {
+    /// 同文件内可见（private 于扩展内=文件内可见性）；出处见 HeroEntrance。
+    fileprivate func heroEntrance(appeared: Bool, stage: Int) -> some View {
+        modifier(HeroEntrance(appeared: appeared, stage: stage))
     }
 }
