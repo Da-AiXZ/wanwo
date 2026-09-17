@@ -338,11 +338,15 @@ enum WorkspaceAdoption {
     }
 
     /// 名字清洗：去首尾空白 → 逐字符过滤（闭集外替换 -）。清洗后为空 /
-    /// "." / ".." → nil（调用方抛 AddError.invalidName）。
+    /// "." / ".." / 无任何实质字符（字母/数字/中文——即纯 "- . " 占位组合，
+    /// 如 "///"→"---"）→ nil（调用方抛 AddError.invalidName，让用户重输
+    /// 而非默默建无意义目录；WorkspaceAdoptionTests 矩阵语义）。
     nonisolated static func sanitizeName(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleaned = String(trimmed.map { isNameCharacter($0) ? $0 : "-" })
-        guard !cleaned.isEmpty, cleaned != ".", cleaned != ".." else { return nil }
+        guard !cleaned.isEmpty, cleaned != ".", cleaned != "..",
+              cleaned.contains(where: { $0.isLetter || $0.isNumber })
+        else { return nil }
         return cleaned
     }
 
