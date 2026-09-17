@@ -134,40 +134,47 @@ struct RootView: View {
 
     @ViewBuilder
     private var detail: some View {
-        switch environment.selection {
-        case .session(let id):
-            // .id(id)：切换会话时强制重建 StateObject（新会话新 ViewModel）。
-            ChatView(environment: environment, sessionID: id)
-                .id(id)
-        case .providers:
-            ProvidersView(environment: environment)
-        case .permissionDefaults:
-            // M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；P1-4 后
-            // 唯一权限入口——规则 CRUD 页随 F022 砍除）。
-            PermissionDefaultsView(environment: environment)
-        case .mcpServers:
-            // M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView
-            // 交互参照；配置→MCPRuntime 装配收口）。
-            MCPServersView(environment: environment)
-        case .skills:
-            // M4-D D7：设置·技能管理（列表/启停/导入；最小素净版——dsh
-            // apps/web 无原件取证，M9 对齐登记）。
-            SkillsView(environment: environment)
-        case .mounts:
-            // M6.4（B3）：设置·外挂载文件夹管理（F071——MountedFoldersManager
-            // 状态面 + UIDocumentPicker 挂载流程）。
-            MountedFoldersSettingsView()
-        case .shellTest:
-            // M0 交付物原样可达（DEBUG-only 入口——B4 起侧栏不再露出，
-            // 回归验收仍可从诊断面进入；手动输入 `ls`）。
-            ShellTestView()
-        case .eventStream:
-            // M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
-            EventStreamView(environment: environment)
-        case .none:
-            // UI 对齐批 1（B）：主区空态项目选择页（dsh WorkspacePicker 空态
-            // 注册的整页折算——替换原「选择或新建一个会话」占位）。
-            ConversationEmptyStateView(environment: environment)
+        // hero ↔ 会话/设置页边界过渡（UI 修复批 2 接线：ConversationEmptyStateView
+        // 根层 .transition(.opacity) 的生效条件——仅空态进出动画化；会话间/设置
+        // 分支间切换不动画，避免 ChatView .id 重建叠加闪烁）。spring 全局标准。
+        Group {
+            switch environment.selection {
+            case .session(let id):
+                // .id(id)：切换会话时强制重建 StateObject（新会话新 ViewModel）。
+                ChatView(environment: environment, sessionID: id)
+                    .id(id)
+            case .providers:
+                ProvidersView(environment: environment)
+            case .permissionDefaults:
+                // M3 T2.2 设置·新会话默认权限行（PermissionRow.tsx 1:1；P1-4 后
+                // 唯一权限入口——规则 CRUD 页随 F022 砍除）。
+                PermissionDefaultsView(environment: environment)
+            case .mcpServers:
+                // M4-A 件11：设置·MCP server 管理（OpenMinis MCPIntegrationsView
+                // 交互参照；配置→MCPRuntime 装配收口）。
+                MCPServersView(environment: environment)
+            case .skills:
+                // M4-D D7：设置·技能管理（列表/启停/导入；最小素净版——dsh
+                // apps/web 无原件取证，M9 对齐登记）。
+                SkillsView(environment: environment)
+            case .mounts:
+                // M6.4（B3）：设置·外挂载文件夹管理（F071——MountedFoldersManager
+                // 状态面 + UIDocumentPicker 挂载流程）。
+                MountedFoldersSettingsView()
+            case .shellTest:
+                // M0 交付物原样可达（DEBUG-only 入口——B4 起侧栏不再露出，
+                // 回归验收仍可从诊断面进入；手动输入 `ls`）。
+                ShellTestView()
+            case .eventStream:
+                // M2.8 只读事件流诊断页（dsh ui-trajectory 最小移植；F060 M8.2 前置）。
+                EventStreamView(environment: environment)
+            case .none:
+                // UI 对齐批 1（B）→ UI 修复批 2（W3 重做）：主区空态 dsh hero
+                // 形态（品牌+工作区胶囊+composer 同屏；inert/菜单语义 1:1）。
+                ConversationEmptyStateView(environment: environment)
+            }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85),
+                   value: environment.selection == nil)
     }
 }

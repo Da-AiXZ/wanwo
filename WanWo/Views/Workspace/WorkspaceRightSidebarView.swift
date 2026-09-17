@@ -164,6 +164,10 @@ struct WorkspaceRightSidebarView: View {
                         .accessibilityHidden(tab.id != model.activeTabID)
                 }
             }
+            // 页签切换丝滑淡切（UI 修复批 2：保活 ZStack 的 opacity 跳变 →
+            // spring 过渡；全局动画标准 response 0.3 / damping 0.85）。
+            .animation(.spring(response: 0.3, dampingFraction: 0.85),
+                       value: model.activeTabID)
         }
     }
 
