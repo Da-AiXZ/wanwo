@@ -44,8 +44,63 @@
 //  dampingFraction: 0.85)；hero ↔ 会话切换 = opacity 渐变（transition 挂
 //  本视图根层，切换侧 withAnimation 在 RootView 挂载点）。
 //
+//  【批 1 返修 R1 · hero 逐值重皮（结构已对，样式值对齐 dsh 原始 CSS）】
+//  数值出处（逐值，注释内随点再标）：
+//    · InputBar.module.css .card:32-64 —— r22、--dsw-specific-input-major
+//      面（--dsw-static-neutral-bluish-00 = 纯白 rgb(255,255,255)，design-
+//      platform.css:53）、elevation hairline = --dsw-alias-border-l2
+//      （rgba(0,0,0,0.1)）、box-shadow: var(--dsw-elevation-soft)
+//      （gradient-shadow-text.css:33-34 = 0 4px 16px rgba(0,0,0,0.03) +
+//      0 0 24px rgba(0,0,0,0.03)）、padding-top 10、gap 12、
+//      font-size var(--dsh-content-font-size, 14px)。
+//    · InputBar.module.css .input:158-164 —— 文本区 padding 4/8/0/16；
+//      .hero .input:208-210 —— 最小高 52。
+//    · InputBar.module.css .row:214-230 —— padding 2/8/6、space-between。
+//    · ConversationRoot.module.css:28-32 —— --dsh-composer-card-max-width
+//      = calc(--dsh-chat-content-width + 32px)，其中 content-width =
+//      clamp(680px, 64% 列宽, 920px) → 卡上限 = 下限 712 / 上限 952；
+//      iPad hero 静态布局（无宽度拖拽偏好）取下限 712。
+//    · HeroShell.module.css .root/.stack:5-24 —— 横向 pad 24、纵向 gap 12；
+//      .headline:29-39 —— 34px 槽位 + gap 10、26/32 wt500；.previewBadge:
+//      46-62 —— mono 12/18 wt500、padding 1px 7px 0、r24、0.5px 描边、
+//      顶部随行（align-self start + margin-top 2 / margin-left -3）；
+//      .workspaceRow:126-133 —— 行左内边距 8。
+//    · HeroShell.module.css .workspace:136-151 —— 胶囊 gap 4、min-height
+//      28、padding 0 8、r16、rest 态透明底（hover 才填色——iOS 无 hover
+//      折算为恒透明）、13/20 wt500、max-width 360、label 恒全对比度；
+//      .folder:164-167 label-primary；.chevron:175-178 label-caption。
+//
 
 import SwiftUI
+
+// MARK: - 局部共享件（补-1：inert 触发卡虚线描边按压态）
+
+/// 按压态环境键（iOS 无 hover → 折算按压时虚线变业务蓝；dsh
+/// InputBar.module.css .cardWorkspaceTrigger:hover::after:96-98 折算）。
+private struct InertTriggerPressedKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+private extension EnvironmentValues {
+    var inertTriggerPressed: Bool {
+        get { self[InertTriggerPressedKey.self] }
+        set { self[InertTriggerPressedKey.self] = newValue }
+    }
+}
+
+/// dsh 业务蓝（--dsw-alias-state-business-primary = --dsw-static-deepseek-500
+/// = rgb(65,118,230)，design-platform.css:27,222——浅色档）。
+private let dshBusinessBlue = Color(red: 65 / 255.0, green: 118 / 255.0, blue: 230 / 255.0)
+
+/// inert 触发卡按钮样式：把 isPressed 经环境键传进卡皮（虚线色切换）。
+private struct DashedTriggerButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .environment(\.inertTriggerPressed, configuration.isPressed)
+            .animation(Animation.spring(response: 0.3, dampingFraction: 0.85),
+                       value: configuration.isPressed)
+    }
+}
 
 struct ConversationEmptyStateView: View {
     @ObservedObject var environment: AppEnvironment
@@ -65,6 +120,8 @@ struct ConversationEmptyStateView: View {
     @State private var heroDraft = ""
     /// 添加失败的用户可见反馈（alert 呈现后清零）。
     @State private var errorText: String?
+    /// hero 进场动画驱动（onAppear 触发一次：三件依次淡入+上移 8pt）。
+    @State private var heroAppeared = false
 
     /// 焦点工作区（胶囊标题）：仅 selectedWorkspaceID 命中时 featured
     /// （adopt / 侧栏 / 菜单显式挑选写入）；否则为 nil = inert 态。
@@ -120,26 +177,38 @@ struct ConversationEmptyStateView: View {
 
     // MARK: - hero 同屏三件（品牌头条 + 胶囊 + composer）
 
-    /// hero 主体（居中纵列；ConversationRoot.tsx:346-353 composerStack 顺序：
-    /// HeroShell → heroWorkspaceRow → inputBar）。
+    /// hero 主体（居中纵列；HeroShell.module.css .root:5-12 横 pad 24 +
+    /// .stack:15-24 纵 gap 12、max-width = --dsh-composer-card-max-width）。
+    /// 卡宽换算：ConversationRoot.module.css:28-32 content-width =
+    /// clamp(680px, 64% 列宽, 920px)，卡 = content + 32 → 下限 712 / 上限
+    /// 952；iPad hero 静态布局（无宽度拖拽偏好）取下限 712。
+    /// 进场动画：三件依次淡入 + 上移 8pt（每级延迟 0.05s，spring 0.3/0.85，
+    /// onAppear 触发一次——headline → 胶囊 → composer）。
     private var heroStack: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 12) {
             heroHeadline
+                .heroEntrance(appeared: heroAppeared, stage: 0)
             workspaceControl
-                .padding(.top, 28)
+                .padding(.leading, 8) // .workspaceRow:126-133 行左内边距 8
+                .heroEntrance(appeared: heroAppeared, stage: 1)
             heroComposer
-                .padding(.top, 14)
+                .heroEntrance(appeared: heroAppeared, stage: 2)
         }
-        .padding(.horizontal, 24)
-        .frame(maxWidth: 560)
+        .padding(.horizontal, 24) // .root:11 padding 0 24px
+        .frame(maxWidth: 712)     // --dsh-composer-card-max-width 下限（见上换算）
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            guard !heroAppeared else { return }
+            heroAppeared = true
+        }
     }
 
-    /// hero 头条行（EmptyHero.tsx:137-156：品牌标 leading + headline 文本 +
-    /// 预览 badge 同排，标 34 宽、gap 10）。文案 locales.ts:66-67 逐字。
+    /// hero 头条行（HeroShell.module.css .headline:29-39：34px 槽位 +
+    /// headline 文本 + 预览 badge，column-gap 10、26px/32px 行高 wt500、
+    /// 居中）。文案 locales.ts:66-67 逐字。
     private var heroHeadline: some View {
         HStack(alignment: .center, spacing: 10) {
-            // 品牌标（万我；dsh fish 34 宽位）。
+            // 品牌标（万我；dsh fish 34px 槽位 .fishHitbox:66-72）。
             Text("万")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(.white)
@@ -147,17 +216,28 @@ struct ConversationEmptyStateView: View {
                 .background(Circle().fill(Color.accentColor))
                 .accessibilityHidden(true)
             Text("探索未至之境")
-                .font(.system(size: 26, weight: .semibold))
+                // .headline:35-37 font-size 26px / line-height 32px / wt500。
+                .font(.system(size: 26, weight: .medium))
                 .foregroundStyle(.primary)
-            // 预览 badge（EmptyHero.tsx:155 previewBadge 位；locales.ts:67 逐字）。
+            // 预览 badge（.previewBadge:46-62：mono 12/18 wt500、padding
+            // 1px 7px 0、r24、0.5px 描边——描边原值 rgba(38,49,72,0.06)
+            // （--dsw-alias-interactive-bg-hover 浅色档，QA 实证）、底色
+            // --dsw-alias-state-business-tertiary 折算 blue 10%、字色
+            // label-primary-bluish 折算 primary；顶部随行 align-self start
+            // + margin-top 2 / margin-left -3（HeroShell.module.css:50-51）
+            // → 居中 HStack 内 offset(x:-3, y:-5)（行高 32、badge 高 18+1、
+            // margin 2 → 顶部 y=2，相对居中位上移 (32-19)/2-2 ≈ 4.5 取 5）。
+            // locales.ts:67 逐字。
             Text("预览版")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(
-                    Capsule().strokeBorder(Color.secondary.opacity(0.45), lineWidth: 1)
-                )
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
+                .padding(EdgeInsets(top: 1, leading: 7, bottom: 0, trailing: 7))
+                .background(Capsule().fill(Color.blue.opacity(0.10)))
+                .overlay(Capsule().strokeBorder(
+                    Color(red: 38 / 255.0, green: 49 / 255.0, blue: 72 / 255.0)
+                        .opacity(0.06),
+                    lineWidth: 0.5))
+                .offset(x: -3, y: -5)
                 .accessibilityLabel("预览版")
         }
     }
@@ -217,28 +297,31 @@ struct ConversationEmptyStateView: View {
         }
     }
 
-    /// 胶囊外观（EmptyHero.tsx:45-61：folder + label + chevron，恒可交互）。
-    /// 无项目 = 闭合文件夹 +「选择工作区」占位（:55-58；locales.ts:68 逐字）；
-    /// 有项目 = 打开文件夹 + 项目名（iOS 无 open-folder SF Symbol，以
-    /// folder.fill 折算——见交付清单不可抗力条目）。
+    /// 胶囊外观（HeroShell.module.css .workspace:136-151 逐值：gap 4、
+    /// min-height 28、padding 0 8、r16、rest 态透明底（web hover 才填色
+    /// ——iOS 无 hover 折算为恒透明）、13px/20px wt500、max-width 360、
+    /// label 恒全对比度；.folder:164-167 = label-primary（非 accent）；
+    /// .chevron:175-178 = label-caption）。占位 = 闭合文件夹 +「选择工作区」
+    /// （EmptyHero.tsx:55-58；locales.ts:68 逐字）；有项目 = 打开文件夹 +
+    /// 项目名（iOS 无 open-folder SF Symbol，以 folder.fill 折算）。
     private func chipLabel(featured: WorkspaceRecord?) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) { // .workspace:139 gap 4px
             Image(systemName: featured == nil ? "folder" : "folder.fill")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(featured == nil
-                                 ? Color.secondary : Color.accentColor)
+                .font(.system(size: 16)) // IconFolderClose/Open16 = 16px
+                .foregroundStyle(Color.primary) // .folder:166 label-primary
             Text(featured?.title ?? "选择工作区")
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 13, weight: .medium)) // :147-149 13/20 wt500
                 .lineLimit(1)
-                .foregroundStyle(.primary)
+                .foregroundStyle(.primary) // label 恒全对比度（占位同）
             Image(systemName: "chevron.down")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12)) // IconChevronDownOutline14 @ 12px
+                .foregroundStyle(Color.secondary) // .chevron label-caption
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(Color(.secondarySystemFill), in: Capsule())
+        .padding(.horizontal, 8)  // :142 padding 0 8px
+        .frame(minHeight: 28)     // :141 min-height 28px
+        .background(Color.clear, in: Capsule()) // :145 rest 透明（r16→Capsule）
         .contentShape(Capsule())
+        .frame(maxWidth: 360, alignment: .leading) // :140 max-width 360
     }
 
     /// 选中一个工作区（ConversationRoot.tsx:306-312 onPick 终点语义）：
@@ -278,9 +361,13 @@ struct ConversationEmptyStateView: View {
                 } label: {
                     inertComposerCard
                 }
-                .buttonStyle(.plain)
+                // 补-1：DashedTriggerButtonStyle 把 isPressed 经环境键传给
+                // 虚线环（按压变业务蓝，:96-98 hover 折算）。
+                .buttonStyle(DashedTriggerButtonStyle())
                 .accessibilityLabel("选择一个工作区开始")
             } else {
+                // Menu 触发态：虚线 rest 色恒定（环境键无 isPressed 注入源
+                // ——Menu 展开高亮由系统接管，登记为边界）。
                 Menu {
                     workspaceMenuContent
                 } label: {
@@ -291,56 +378,121 @@ struct ConversationEmptyStateView: View {
         } else {
             // 可输入态（本批简版 composer：文本区 + 发送；工具行 / 权限 chip /
             // QueueDock 等全量 composer 在批 3——不超前实现）。
-            composerCard {
-                TextField(heroPlaceholder, text: $heroDraft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...5)
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Button {
-                        sendHeroDraft()
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(Color.accentColor))
+            // 内容布局照 .card 结构：gap 12（:39）+ 文本区 .input:158-164
+            // padding 4/8/0/16 + .hero .input:208-210 最小高 52 + 底行
+            // .row:214-230 padding 2/8/6、space-between；正文 14。
+            ComposerCard {
+                VStack(spacing: 12) { // .card:39 gap 12px
+                    TextField(heroPlaceholder, text: $heroDraft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...5)
+                        .font(.system(size: 14)) // :55 content-font-size 14
+                        .padding(EdgeInsets(top: 4, leading: 16, bottom: 0, trailing: 8))
+                        .frame(minHeight: 52, alignment: .topLeading) // :209 min-h 52
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0) // .row:218 space-between
+                        Button {
+                            sendHeroDraft()
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                                .background(Circle().fill(Color.accentColor))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(heroDraft.trimmingCharacters(in: .whitespaces)
+                                      .isEmpty)
+                        .accessibilityLabel("开始会话")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(heroDraft.trimmingCharacters(in: .whitespaces)
-                                  .isEmpty)
-                    .accessibilityLabel("开始会话")
+                    .padding(EdgeInsets(top: 2, leading: 8, bottom: 6, trailing: 8))
                 }
-                .padding(.top, 12)
             }
         }
     }
 
     /// inert composer 卡（占位文本整卡即触发点；dsh「同一个框 inert」语义——
-    /// InputBar.tsx:382-393 触发点击落在卡上、整卡即选择目标）。
+    /// InputBar.tsx:382-393 触发点击落在卡上、整卡即选择目标）。文本区照
+    /// .input:158-164 padding 4/8/0/16 + .hero .input:208-210 最小高 52、
+    /// 正文 14；卡皮 = 虚线触发态（补-1，.cardWorkspaceTrigger:72-98）。
     private var inertComposerCard: some View {
-        composerCard {
+        ComposerCard(dashedStroke: true) {
             Text(heroPlaceholder)
-                .font(.body)
+                .font(.system(size: 14)) // content-font-size 14
                 // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
-                // 系统语义占位色 placeholderText 同观感（dsh caption 灰）。
+                // 系统语义占位色 placeholderText 同观感（dsh .placeholder:189-195
+                // caption 灰 #ADB2B8/#81858C 同族）。
                 .foregroundStyle(Color(uiColor: .placeholderText))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(EdgeInsets(top: 4, leading: 16, bottom: 0, trailing: 8))
+                .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
         }
         .contentShape(Rectangle())
     }
 
-    /// dock 卡形态（InputBar.module.css .card 语义：大圆角、上 pad、文本区与
-    /// 底行间距 12——ChatView inputBar 同一形态，双处一致）。
-    private func composerCard<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-            .padding(EdgeInsets(top: 14, leading: 16, bottom: 10, trailing: 12))
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20)
-                .stroke(Color(.separator).opacity(0.4), lineWidth: 0.5))
+    /// hero 进场 modifier（R1 动画补强：淡入 + 上移 8pt 回位，stage 级联
+    /// 每级延迟 0.05s，spring(0.3/0.85)——headline → 胶囊 → composer）。
+    private struct HeroEntrance: ViewModifier {
+        let appeared: Bool
+        let stage: Int
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 8)
+                .animation(Animation.spring(response: 0.3, dampingFraction: 0.85)
+                            .delay(Double(stage) * 0.05),
+                           value: appeared)
+        }
+    }
+
+    private func heroEntrance(appeared: Bool, stage: Int) -> some View {
+        modifier(HeroEntrance(appeared: appeared, stage: stage))
+    }
+
+    /// dock 卡形态（InputBar.module.css .card:32-64 逐值）：r22；底色纯白
+    /// rgb(255,255,255)（--dsw-static-neutral-bluish-00，design-platform.css
+    /// :53——static 令牌不随深色模式自适应；**固定浅色拍板 2026-09-18**，
+    /// 深色适配不采纳）；描边 1px rgba(0,0,0,0.1)（--dsw-alias-border-l2）；
+    /// 双层柔和投影 --dsw-elevation-soft（gradient-shadow-text.css:33-34 =
+    /// 0 4px 16px rgba(0,0,0,0.03) + 0 0 24px rgba(0,0,0,0.03) → SwiftUI
+    /// blur÷2 映射 radius 8/y4 叠 radius 12）；卡顶 pad 10；正文 14
+    /// （--dsh-content-font-size 默认）。
+    /// 补-1：dashedStroke = inert 触发态（.cardWorkspaceTrigger:72-98）——
+    /// 无实线描边，改 r22 虚线环（dasharray 4/4、可见 1px、色
+    /// --dsw-alias-border-l4 = rgba(0,0,0,0.16)，design-platform.css:176），
+    /// 按压时虚线变业务蓝（:96-98 hover 折算，iOS 无 hover）；可输入卡
+    /// 保持实线不变。
+    private struct ComposerCard<Content: View>: View {
+        var dashedStroke: Bool = false
+        @ViewBuilder var content: () -> Content
+        @Environment(\.inertTriggerPressed) private var pressed
+
+        var body: some View {
+            content()
+                .padding(.top, 10) // .card:42 padding-top 10px
+                .background(Color.white) // --dsw-static-neutral-bluish-00 纯白
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous)) // :48 r22
+                .overlay(stroke)
+                .shadow(color: .black.opacity(0.03), radius: 8, y: 4) // 0 4px 16px @3%
+                .shadow(color: .black.opacity(0.03), radius: 12)      // 0 0 24px @3%
+                .animation(Animation.spring(response: 0.3, dampingFraction: 0.85),
+                           value: pressed)
+        }
+
+        /// 描边：实线态 = .card:47 border-l2 1px rgba(0,0,0,0.1)；虚线态 =
+        /// .cardWorkspaceTrigger:72-98（r22 虚线环 1px dash 4/4，rest
+        /// rgba(0,0,0,0.16) → pressed 业务蓝 rgb(65,118,230)）。
+        @ViewBuilder
+        private var stroke: some View {
+            if dashedStroke {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(pressed ? dshBusinessBlue : Color.black.opacity(0.16),
+                            style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            } else {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.black.opacity(0.1), lineWidth: 1)
+            }
+        }
     }
 
     /// 发送（dsh hero onPick 终点语义）：草稿经 pendingFirstDraft 缝交接给

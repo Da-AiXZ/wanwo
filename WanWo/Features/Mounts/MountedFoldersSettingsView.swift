@@ -22,6 +22,28 @@
 //    · 批4 过渡动画纪律（spring 0.3/0.85）改由系统 sheet 呈现/收束动画承接，
 //      overlay 自定义 transition 随之删除。
 //
+//  【批 1 返修 R2 · 选择器改窗口根直弹（预登记平台不可抗力折算，现执行）】
+//    真机复验锤死「选完没反应」根因在前三刀的上游——从设置面板（RootView
+//    裸 overlay 容器）挂 SwiftUI .sheet 弹 UIDocumentPickerViewController，
+//    其委托回调在真机上从未到达。本刀改 UIKit 正统呈现：
+//    · 「添加挂载文件夹」按钮直接构造 UIDocumentPickerViewController(forOpening
+//      ContentTypes:[.folder])，经 keyWindowScene.keyWindow.rootViewController
+//      （逐层找最顶层 presentedViewController）present——彻底脱离 SwiftUI
+//      sheet 容器通道；
+//    · delegate = MountFolderPickerCoordinator 长驻 NSObject 协调器（ViewModel
+//      强持有——present 后屏幕旋转 View 结构体重建而 @StateObject 存活，
+//      delegate 不丢，绝不依赖 SwiftUI sheet 生命周期。边界登记：设置面板
+//      关闭 = ViewModel 释放 = coordinator 释放 = UIKit 侧 weak delegate 变
+//      nil，回调自然丢弃；该场景 pendingMount 亦随视图销毁，语义无解）；
+//      picker 为全屏模态，pick 进行中用户无法操作面板，正常操作序不触发
+//      该边界。
+//    · 委托回调链不变：didPick → 日志 → DispatchQueue.main.async 跳一拍 →
+//      pendingMount 赋值（原件 :109-126 竞态纪律逐语义保留）；命名卡仍走
+//      .sheet(item:)（原件 :129-161 形态不动）；取消/add 成败日志保留；
+//      补 picker present 成功/失败日志。
+//    · FolderPicker（UIViewControllerRepresentable）随之退役删除（唯一消费
+//      点即本页；Storage/DirectoryPicker.swift 仅注释提及）。
+//
 //  承接原件的状态机/校验纪律（保留）：
 //    · 名称校验 = MountedFolderEntry.isValidMountName（无 /、非空、非 . / ..）
 //    · 双层写开关呈现：R/W（OS 可写+用户放行）/ Locked（OS 可写+用户锁）/ 只读
@@ -34,6 +56,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 private let mountUILogger = AppLogger(category: "MountedFoldersUI")
@@ -52,7 +75,6 @@ private struct PendingMount: Identifiable {
 /// 设置·外挂载文件夹管理页（挂 WanWo 设置页体系，侧栏「设置」段进入）。
 struct MountedFoldersSettingsView: View {
     @StateObject private var model = MountedFoldersViewModel()
-    @State private var showingPicker = false
     @State private var pendingMount: PendingMount?
     @State private var errorText: String?
     /// 详情编辑态（rename / allowWrite / 刷新可写性）。`entry.id == nil` 视为关闭。
@@ -67,9 +89,10 @@ struct MountedFoldersSettingsView: View {
             // 添加入口实体化：SettingsPanelView 容器无 NavigationStack，
             // .toolbar 内的「+」在其中不渲染（等于消失）——List 显式行，
             // 两种容器（面板 / RootView detail）下均可见可用。
+            // 【返修 R2】按钮直弹 UIKit 选择器（窗口根直呈，见文件头 R2 段）。
             Section {
                 Button {
-                    showingPicker = true
+                    presentFolderPicker()
                 } label: {
                     Label("添加挂载文件夹", systemImage: "plus.circle.fill")
                 }
@@ -127,30 +150,9 @@ struct MountedFoldersSettingsView: View {
         }
         .navigationTitle("外挂载文件夹")
         .navigationBarTitleDisplayMode(.inline)
-        // 【批 1 工作项 1A】呈现链恢复原件 :107-128 双 sheet 第一环：
-        // picker 用 .sheet(isPresented:)。
-        .sheet(isPresented: $showingPicker) {
-            FolderPicker { url in
-                // `UIDocumentPickerViewController` 的 `didPickDocumentsAt` 委托
-                // 回调在 SwiftUI 已开始 dismiss picker sheet 之后才到，而第二
-                // 张 sheet 必须等退场彻底完成才能提呈——iOS 拒绝叠两张 sheet，
-                // 此处同步赋 pendingMount 会在首次选择时静默丢掉提呈。跳到下一
-                // 个 runloop tick 让 picker sheet 先离开视图层级（原件 :109-126
-                // 竞态注释纪律逐语义保留）。
-                mountUILogger.info("FolderPicker onPick url=\(url.path)")
-                DispatchQueue.main.async {
-                    let pm = PendingMount(
-                        url: url,
-                        name: Self.defaultMountName(for: url),
-                        allowWrite: true
-                    )
-                    mountUILogger.info("async assign pendingMount id=\(pm.id.uuidString) url=\(url.path)")
-                    pendingMount = pm
-                }
-            }
-        }
-        // 【批 1 工作项 1A】命名确认卡 = 原件 :129-161 双 sheet 第二环：
-        // .sheet(item:) 真第二弹窗（非 overlay）。
+        // 【批 1 工作项 1A + 返修 R2】命名确认卡 = 原件 :129-161 第二环：
+        // .sheet(item:) 真第二弹窗。选择器本体已改窗口根直弹（R2），本
+        // .sheet(item:) 通道不动。
         .sheet(item: $pendingMount) { pending in
             // 重要：从 `pending` 闭包参数读值而非 `pendingMount?.url`——Optional
             // 状态绑定在 SwiftUI 重路由 sheet 的瞬时 nil 会清空来源路径字段
@@ -200,6 +202,63 @@ struct MountedFoldersSettingsView: View {
         } message: {
             Text(errorText ?? "")
         }
+    }
+
+    // MARK: - 选择器直弹（返修 R2：窗口根 UIKit 正统呈现）
+
+    /// 构造 UIDocumentPickerViewController 并从 keyWindow 根的最顶层
+    /// presentedVC present（R2 预登记折算：SwiftUI sheet 容器在真机上委托
+    /// 丢失——日志锤死 didPickDocumentsAt 从未回调，见文件头）。delegate 挂
+    /// ViewModel 长驻协调器：present 后屏幕旋转 delegate 存活直到回调完成；
+    /// 面板关闭 = ViewModel/coordinator 释放 = weak delegate 变 nil、回调
+    /// 自然丢弃（pendingMount 亦销毁，语义无解——文件头边界登记）。
+    private func presentFolderPicker() {
+        let coordinator = model.folderPickerCoordinator
+        // 委托回调链（原件 :109-126 竞态纪律逐语义保留）：didPick 在 picker
+        // 开始 dismiss 之后才到，而第二张 sheet 必须等退场彻底完成才能提呈
+        // ——iOS 拒绝叠两张 sheet，同步赋 pendingMount 会静默丢掉提呈。跳到
+        // 下一个 runloop tick 让 picker 先离开视图层级。
+        coordinator.onPick = { url in
+            mountUILogger.info("FolderPicker onPick url=\(url.path)")
+            DispatchQueue.main.async {
+                let pm = PendingMount(
+                    url: url,
+                    name: Self.defaultMountName(for: url),
+                    allowWrite: true
+                )
+                mountUILogger.info("async assign pendingMount id=\(pm.id.uuidString) url=\(url.path)")
+                pendingMount = pm
+            }
+        }
+        // 取消仅日志（协调器内已记 documentPickerWasCancelled）。
+        coordinator.onCancel = nil
+        guard let topVC = Self.topmostViewController() else {
+            mountUILogger.info("folder picker present FAILED: no key window root VC")
+            errorText = "无法打开文件夹选择器：找不到可用的窗口。"
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+        picker.delegate = coordinator
+        picker.allowsMultipleSelection = false
+        topVC.present(picker, animated: true) {
+            mountUILogger.info("folder picker presented from "
+                               + String(describing: type(of: topVC)))
+        }
+    }
+
+    /// keyWindowScene → keyWindow.rootViewController → 逐层最顶层
+    /// presentedViewController（R2 呈现宿主；设置面板/详情 sheet 在弹时
+    /// 也能正确落到其上层）。
+    private static func topmostViewController() -> UIViewController? {
+        let windowScenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        let scene = windowScenes.first { $0.activationState == .foregroundActive }
+            ?? windowScenes.first
+        guard var top = scene?.keyWindow?.rootViewController else { return nil }
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        return top
     }
 
     // MARK: - 子视图（素净版，原件行/徽章语义保留）
@@ -514,37 +573,29 @@ struct MountDetailView: View {
     }
 }
 
-// MARK: - 目录选择器（原件 :401-424 FolderPicker 1:1 + 批 1 补取消日志；
-// dsh pick 动词的 iOS 不可抗力映射 = UIDocumentPicker(.folder)）
+// MARK: - 选择器长驻协调器（返修 R2；原 FolderPicker UIViewControllerRepresentable
+// 退役删除——唯一消费点即本页，呈现通道已改窗口根直弹）
 
-struct FolderPicker: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
+/// UIDocumentPickerDelegate 长驻 NSObject 协调器：由 MountedFoldersViewModel
+/// 强持有，生命周期与 ViewModel 一致（跨视图重建/面板开合/屏幕旋转存活），
+/// 绝不依赖 SwiftUI sheet 生命周期——R2 根因即 SwiftUI sheet 容器内委托
+/// 丢失。回调链：didPick → 日志 → onPick（视图侧跳一拍赋 pendingMount）；
+/// 取消 → 日志 → onCancel。
+final class MountFolderPickerCoordinator: NSObject, UIDocumentPickerDelegate {
+    var onPick: ((URL) -> Void)?
+    var onCancel: (() -> Void)?
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        return picker
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        mountUILogger.info("didPickDocumentsAt url=\(url.path)")
+        onPick?(url)
     }
 
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else { return }
-            onPick(url)
-        }
-
-        /// 批 1 增补：用户取消硬日志（picker 取消路径与「选了没反应」在
-        /// 真机日志中必须可区分——取消时 sheet 自动退场，无需手动 dismiss）。
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            mountUILogger.info("documentPickerWasCancelled (user cancelled folder pick)")
-        }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // 用户取消硬日志：取消路径与「选了没反应」在真机日志中必须可区分
+        // （UIKit 取消时自动退场，无需手动 dismiss）。
+        mountUILogger.info("documentPickerWasCancelled (user cancelled folder pick)")
+        onCancel?()
     }
 }
 
@@ -554,6 +605,10 @@ struct FolderPicker: UIViewControllerRepresentable {
 final class MountedFoldersViewModel: ObservableObject {
     @Published private(set) var entries: [MountedFolderEntry] = []
     @Published private(set) var states: [UUID: MountActivationState] = [:]
+
+    /// R2：文件夹选择器长驻协调器（强持有——跨视图/面板生命周期存活，
+    /// delegate 生命周期绝不随 SwiftUI sheet/View 重建丢失）。
+    let folderPickerCoordinator = MountFolderPickerCoordinator()
 
     var isAtCapacity: Bool {
         entries.count >= MountedFoldersManager.maxMountCount
