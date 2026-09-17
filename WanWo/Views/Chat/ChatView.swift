@@ -22,6 +22,16 @@ struct ChatView: View {
     @State private var commandMenuOpen = false
     /// 本轮菜单是否由 "/" 触发（决定草稿离开 "/" 形态时是否收起）。
     @State private var slashTriggeredMenu = false
+
+    // MARK: UI 对齐批 2 · 动画与形态标准
+    /// 交互动画标准（丝滑不华丽）：所有交互状态变化一律 spring
+    /// （response≈0.3 / dampingFraction≈0.85）。
+    static let interactiveSpring = Animation.spring(response: 0.3,
+                                                    dampingFraction: 0.85)
+    /// composer 座位换装过渡（任务 3：审批卡/提问卡出现 = move + opacity，
+    /// 进出成对）。
+    static let seatTransition: AnyTransition =
+        .move(edge: .bottom).combined(with: .opacity)
     /// composer 座位 + 状态条 dock 的合计高度（P1-5：菜单锚定与捕获层开洞
     /// 的度量——「composer chrome」区段）。
     @State private var composerChromeHeight: CGFloat = 0
@@ -81,7 +91,11 @@ struct ChatView: View {
                 // P1-5：座位+dock 作为一个「chrome 块」度量（菜单锚定其上缘、
                 // 捕获层在其区段开洞）。
                 VStack(spacing: 0) {
+                    // 任务 3：座位换装（审批卡/提问卡↔输入框）以路由为键
+                    // 挂 spring——transition 进出成对生效。
                     composerSeat
+                        .animation(Self.interactiveSpring,
+                                   value: composerRoute)
                     // T2.7 件2：StatsLine 恒渲染（dsh StatsLine.tsx:2 dock 槽
                     // 恒挂载语义 1:1——无数据时以等高空白占位、不为空塌陷，
                     // chrome 高度全程稳定；首条统计出现只做内容填充，不再撑高
@@ -221,7 +235,7 @@ struct ChatView: View {
     }
 
     private func closeCommandMenu() {
-        withAnimation(.easeOut(duration: 0.12)) {
+        withAnimation(Self.interactiveSpring) {
             commandMenuOpen = false
         }
         slashTriggeredMenu = false
@@ -513,12 +527,20 @@ struct ChatView: View {
     // the first pending question ahead of concurrent approvals to match
     // composer routing"：提问先于审批接管；原注释误引该句为审批优先依据）
 
+    /// 座位路由快照（.animation(value:) 的键——提问/审批接管与退位都有
+    /// 确定性动画驱动值）。
+    private var composerRoute: ComposerSeatRoute {
+        ComposerSeatRoute.route(
+            hasPendingQuestion: !viewModel.pendingQuestions.isEmpty,
+            hasPendingApproval: !viewModel.pendingApprovals.isEmpty)
+    }
+
     @ViewBuilder
     private var composerSeat: some View {
-        switch ComposerSeatRoute.route(
-            hasPendingQuestion: !viewModel.pendingQuestions.isEmpty,
-            hasPendingApproval: !viewModel.pendingApprovals.isEmpty) {
+        switch composerRoute {
         case .question:
+            // 任务 3：接管卡出现/退位 = move+opacity（进出成对，spring 由
+            // 上层 .animation(value: composerRoute) 驱动）。
             QuestionComposerView(pending: viewModel.pendingQuestions.first!,
                                  busy: viewModel.questionBusy,
                                  onSubmit: { answer in
@@ -529,14 +551,17 @@ struct ChatView: View {
                                  },
                                  onCancel: { viewModel.cancelQuestion(
                                     viewModel.pendingQuestions.first!) })
+                .transition(Self.seatTransition)
         case .approval:
             ApprovalPanelView(pending: viewModel.pendingApprovals.first!,
                               answering: viewModel.approvalAnswering) { allow in
                 viewModel.answerApproval(viewModel.pendingApprovals.first!,
                                          allow: allow)
             }
+            .transition(Self.seatTransition)
         case .input:
             inputBar
+                .transition(Self.seatTransition)
         }
     }
 
@@ -567,7 +592,7 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 16)
                     .padding(.top, 8)
             }
             // 附件拒绝横幅（F042；intake 预检/提交失败文案——dsh showToast）。
@@ -576,15 +601,16 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 16)
                     .padding(.top, 6)
             }
-            // 文本面（占位文案随 plan 态切换——B12）。
+            // 文本面（占位文案随 plan 态切换——B12）。dock 卡 .input 锚点
+            // （InputBar.module.css:158-164 padding 4/8/0/16 + .card 上 pad 10
+            // :32-38 → 合成 top 14 / leading 16 / bottom 0 / trailing 8）。
             TextField(composerPlaceholder, text: $viewModel.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+                .padding(EdgeInsets(top: 14, leading: 16, bottom: 0, trailing: 8))
             // 待发送图片 chip（T2.7 件1：用户指定形态覆盖 dsh rail 缩略图——
             // 登记为用户偏好；蓝色文件名 chip 横排可换行，点 chip=原图预览，
             // 左滑/长按=移除；键盘删除键方案评估呈报见 T2.7 汇报）。
@@ -593,11 +619,12 @@ struct ChatView: View {
                                     onPreview: { draftPreview = $0 },
                                     onRemove: { viewModel.removeDraftImage(id: $0) })
             }
-            // 底部工具行（dsh InputBar css.row：tools 左 / trailing 右）。
+            // 底部工具行（dsh InputBar css.row：tools 左 / trailing 右，
+            // flex space-between；与文本区间距 12px——.card gap :32-38）。
             HStack(spacing: 8) {
                 // + 按钮 = 打开命令菜单（C7；InputBar.tsx:441-454——非附件）。
                 Button {
-                    withAnimation(.easeOut(duration: 0.12)) {
+                    withAnimation(Self.interactiveSpring) {
                         commandMenuOpen.toggle()
                     }
                 } label: {
@@ -670,11 +697,16 @@ struct ChatView: View {
                     // 打开中的 Menu 弹层确定性关闭、不悬空。
                     .id(keyboardEpoch)
             }
+            // .row 底行（:214-220）：与文本区 gap 12、下缘留 8——行内
+            // space-between 由 ComposerToolBar 内部 Spacer 承担。
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
         }
         .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        // dock 卡大圆角（InputBar.module.css .card :32-38 语义；与
+        // ApprovalPanelStyle.cardCornerRadius 同值 20——接管卡同族观感）。
+        .clipShape(RoundedRectangle(cornerRadius: 20))
         // 拖放图片（F042；dsh drop 对应物——iPad 分屏拖入；intake 同一径）。
         .onDrop(of: [UTType.image], isTargeted: nil) { providers in
             guard viewModel.attachmentStore != nil else { return false }
@@ -689,12 +721,14 @@ struct ChatView: View {
         // 且菜单由 "/" 触发时收起（"+" 直开的菜单不受草稿影响）。
         .onChange(of: viewModel.draft) { newValue in
             if newValue.hasPrefix("/") {
-                withAnimation(.easeOut(duration: 0.12)) {
+                withAnimation(Self.interactiveSpring) {
                     commandMenuOpen = true
                 }
                 slashTriggeredMenu = true
             } else if slashTriggeredMenu {
-                commandMenuOpen = false
+                withAnimation(Self.interactiveSpring) {
+                    commandMenuOpen = false
+                }
                 slashTriggeredMenu = false
             }
         }
@@ -798,14 +832,20 @@ private struct ComposerToolBar: View, Equatable {
             if let pressure {
                 ContextMeterView(pressure: pressure)
             }
-            // 主按钮（A5：发送/停止同位切换；dsh :313-326）。
+            // 主按钮（A5：发送/停止同位切换；dsh :313-326）。UI 对齐批 2
+            // （任务 2）：改圆形 dock 主钮（trailing 末位；dsh InputBar 圆形
+            // send/stop 语义），发送 = accent 圆底上行箭头、停止 = 红圆底。
             Button {
                 onPrimary()
             } label: {
-                Image(systemName: primaryStops ? "stop.fill" : "paperplane.fill")
-                    .font(.system(size: 15, weight: .medium))
+                Image(systemName: primaryStops ? "stop.fill" : "arrow.up")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(primaryStops
+                                              ? Color.red : Color.accentColor))
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .disabled(primaryStops ? false : !canSend || isDraftEmpty)
             .accessibilityLabel(primaryStops ? "停止生成" : "发送消息")
         }
