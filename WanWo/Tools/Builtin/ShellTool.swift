@@ -76,6 +76,11 @@ struct ShellTool: AgentTool {
 
     let sessionId: String
 
+    /// 【工作区模型修正】会话 header cwd（创建时定格；nil = /root 既有行为）。
+    /// 前台/后台两条执行通道的脚本模板均 `cd <cwd> 2>/dev/null || cd /root`
+    /// ——cwd 无效/为空回落 /root（IshExecutorBridge 同源兜底语义）。
+    var sessionCwd: String?
+
     /// M5-A J2：后台作业注册表缝（AppEnvironment 装配注入；nil = 后台面
     /// 不可用——dsh ctx.jobs 缺失同语义，错误文案 :355 逐字）。
     var jobs: JobRegistryProtocol?
@@ -87,8 +92,9 @@ struct ShellTool: AgentTool {
 
     /// M5-A J2 注入缝②：同步 detached spawn（JobStart.run 同步契约——
     /// dsh ctx.shell.start 同款；生产=executeDetached，测试=桩句柄工厂）。
-    var spawnDetached: @Sendable (_ sessionId: String, _ command: String) throws -> DetachedShellHandle = { sid, cmd in
-        try IshExecutorBridge.shared.executeDetached(sessionId: sid, command: cmd)
+    var spawnDetached: @Sendable (_ sessionId: String, _ cwd: String?, _ command: String) throws -> DetachedShellHandle = { sid, cwd, cmd in
+        try IshExecutorBridge.shared.executeDetached(
+            sessionId: sid, command: cmd, workingDirectory: cwd)
     }
 
     private static let defaultTimeoutSeconds: TimeInterval = 900
@@ -134,11 +140,12 @@ struct ShellTool: AgentTool {
             await prepareBackground(sessionId)
             let spawner = spawnDetached
             let sid = sessionId
+            let cwd = sessionCwd
             do {
                 // CI 实证（run 34784934683）：复杂嵌套表达式里闭包签名推断退化
                 // （extra argument 报到 run 大括号）——显式类型锚定消除歧义。
                 let runHooks: @Sendable () throws -> JobHooks = {
-                    let handle = try spawner(sid, command)
+                    let handle = try spawner(sid, cwd, command)
                     return JobHooks(
                         cancel: { _ in handle.cancel() },
                         done: {
@@ -302,6 +309,8 @@ struct ShellTool: AgentTool {
         // exitCode 保持 nil，面包屑记 abort 而非伪造退出状态。
         let result: ISHCommandResult
         do {
+            // 【工作区模型修正】会话 cwd 透传（dsh session.header.cwd 语义——
+            // 选项目 A 开对话，pwd 应输出项目 A 路径）。nil = /root 既有行为。
             result = try await IshExecutorBridge.shared.execute(
                 sessionId: sid,
                 command: command,
@@ -312,7 +321,8 @@ struct ShellTool: AgentTool {
                     guard !clean.isEmpty else { return }
                     onShellLine(callId, clean)
                 },
-                pidCallback: { _ in })
+                pidCallback: { _ in },
+                workingDirectory: sessionCwd)
         } catch {
             await ring.didAbort(index: cmdIdx)
             throw error

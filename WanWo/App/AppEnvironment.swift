@@ -280,8 +280,15 @@ final class AppEnvironment: ObservableObject {
         // 须待全部存储属性完成阶段一（CI 35124325714 实证 :371 Task 捕获被否）。
 
         // 首启 bootstrap（dsh :122——按 header cwd 分组一次；标记最后写）。
-        // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量小），之后零开销。
+        // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量级小），之后零开销。
         _ = registry.bootstrapIfNeeded()
+
+        // 【工作区模型修正】项目目录快照初始推送（boot 后 performMount 兜底
+        // 补注册 meta.db——既有项目在 kernel 冷启动完成前 adopt 的兜底面）。
+        let projectDirs = registry.list()
+            .map(\.path)
+            .filter { WanWoPaths.isProjectsGuestPath($0) && $0 != WanWoPaths.projectsLinuxDir }
+        IshExecutorBridge.setProjectDirectories(projectDirs)
 
         // M6.4（B3）：外挂载激活——启动后台解析全部 bookmark 并持安全 scope
         // （MountedFoldersManager.activateAll；绝不阻塞主线程，5s 竞速纪律在件内）。
@@ -464,15 +471,13 @@ final class AppEnvironment: ObservableObject {
     }
 
     func createSession() async -> SessionSummary? {
-        // M6.5 验收对齐（10-design:1077）：切 workspace 后会话隔离生效——落点 =
-        // 新会话 cwd 解析走所选 workspace path（dsh「先建会话再 attach」流程，
-        // workspace.zh.md :122）；未选工作区回落缺省 /var/wanwo/workspace（既有
-        // 行为零变化）。cwd 落入不可变 SessionHeader 后 attachSession 再校验。
-        if let wid = selectedWorkspaceID, let ws = workspaceRegistry.get(wid) {
-            return await createSession(cwd: ws.path, workspaceID: wid)
+        // 【工作区模型修正】缺省 cwd 退役——无工作区时绝不创建会话（与
+        // WorkspaceNavigator.startSession 的 clear 语义收口一致：无任何工作区
+        // → 清空当前选择落空态项目选择页，绝不产生游离会话）。
+        guard let wid = selectedWorkspaceID, let ws = workspaceRegistry.get(wid) else {
+            return nil
         }
-        return await createSession(cwd: WanWoPaths.linuxBaseDir + "/workspace",
-                                   workspaceID: nil)
+        return await createSession(cwd: ws.path, workspaceID: wid)
     }
 
     /// UI 对齐批 1（A）：connectWorkspace 落点——指定工作区建会话（cwd =
@@ -484,20 +489,22 @@ final class AppEnvironment: ObservableObject {
         return await createSession(cwd: ws.path, workspaceID: workspaceID)
     }
 
-    /// 创建核心（cwd + 预挂工作区 id 注入）。
-    private func createSession(cwd: String, workspaceID: String?) async -> SessionSummary? {
+    /// 创建核心（cwd + 工作区 attach——无游离会话语义收口）。
+    private func createSession(cwd: String, workspaceID: String) async -> SessionSummary? {
         guard let summary = try? await sessionStore.createSession(cwd: cwd) else {
             return nil
         }
-        if let workspaceID {
-            do {
-                try workspaceRegistry.attachSession(sessionId: summary.id,
-                                                    to: workspaceID)
-            } catch {
-                // attach 校验失败（如 header cwd 与工作区 path 漂移）不阻塞
-                // 会话创建——会话按缺省归属落 Ungrouped，错误进日志。
-                Self.logger.error("workspace attach failed for \(summary.id): \(String(describing: error))")
-            }
+        do {
+            try workspaceRegistry.attachSession(sessionId: summary.id,
+                                                to: workspaceID)
+        } catch {
+            // attach 校验失败（如 header cwd 与工作区 path 漂移）→ 未分组桶已
+            // 删除，孤儿会话在侧栏不可见——绝不留游离会话：回滚刚建的会话并
+            // 以 nil 报告创建失败（错误进日志；调用方按失败收口）。
+            Self.logger.error("workspace attach failed for \(summary.id): \(String(describing: error)); rolling back orphan session")
+            await sessionStore.closeWriter(id: summary.id)
+            try? await sessionStore.deleteSession(id: summary.id)
+            return nil
         }
         sessionsRevision += 1
         return summary
@@ -637,7 +644,11 @@ final class AppEnvironment: ObservableObject {
         // 禁触——不读 config/；独立 NetworkPolicy 配置，非 SandboxMode 维度）。
         let networkPolicy = NetworkPolicy.unrestricted
         let registry = ToolRegistry(presentationMode: .both)
-        registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry))
+        // 【工作区模型修正】会话 header cwd（创建时定格）——shell 前台/后台
+        // 通道、hooks、技能 project 根与文件工具直读根的单一事实源。
+        let sessionCwd = writer.header.cwd
+        registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry,
+                                    sessionCwd: sessionCwd))
         // M5-A J3：job_output / job_list / job_kill 三工具（dsh tool-jobs
         // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
@@ -719,20 +730,27 @@ final class AppEnvironment: ObservableObject {
         // /mcp_server_config 等内置元工具走协议默认 .direct，不受影响。
         let toolSearchAssembly = ToolSearchAssembly(registry: registry)
 
-        // M4-D D2：技能三根（project=分组级技能根——M4-E+ P3 升格：groups/
-        // <gid>/workspace/.agents/skills，无 sid 层同分组跨会话共享（guest 写
-        // 路径 /var/wanwo/workspace/.agents/skills 形状不变，经 FsContextRouter/
-        // WorkspaceFileAccess project 特判翻译）；user=容器 skills/ /
-        // bundled=安装位 skills/.bundled——安装已前移至 AppEnvironment init
+        // M4-D D2：技能三根（project=工作区项目技能根——【工作区模型修正】cwd
+        // 落 projects 根时 = 项目目录内 .agents/skills（fakefs 持久层真实目录，
+        // shell 写入与宿主直读同源同真）；legacy cwd（存量会话）= 分组级技能根
+        // groups/<gid>/workspace/.agents/skills 既有语义不动。user=容器 skills/
+        // / bundled=安装位 skills/.bundled——安装已前移至 AppEnvironment init
         // （App 启动一次；D7 验收实证会话栈时机过晚）。
         let skillsUserRoot = WanWoPaths.skillsPersistentDir
         let skillsBundledRoot = skillsUserRoot
             .appendingPathComponent(".bundled", isDirectory: true)
+        let projectSkillsRoot: URL
+        if let cwd = sessionCwd,
+           let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: cwd) {
+            projectSkillsRoot = projectHost.appendingPathComponent(
+                ".agents/skills", isDirectory: true)
+        } else {
+            projectSkillsRoot = WanWoPaths.groupSkillsProjectRoot(
+                base: WanWoPaths.persistentBase,
+                groupID: WanWoPaths.defaultGroupID)
+        }
         let skillRegistry = SkillRegistry(roots: [
-            .init(source: .project,
-                  baseURL: WanWoPaths.groupSkillsProjectRoot(
-                      base: WanWoPaths.persistentBase,
-                      groupID: WanWoPaths.defaultGroupID)),
+            .init(source: .project, baseURL: projectSkillsRoot),
             .init(source: .user, baseURL: skillsUserRoot),
             .init(source: .bundled, baseURL: skillsBundledRoot),
         ], settings: skillSettingsStore)
@@ -761,7 +779,10 @@ final class AppEnvironment: ObservableObject {
             sessionId: sessionId,
             writer: writer,
             runtimes: hookRuntimes,
-            executor: IshHookCommandExecutor(sessionId: sessionId))
+            executor: IshHookCommandExecutor(sessionId: sessionId),
+            // 【工作区模型修正】hooks cwd 跟随会话工作区（dsh session.header.cwd
+            // 语义）；cwd 缺失回落既有缺省 /var/wanwo/workspace。
+            cwd: sessionCwd ?? WanWoPaths.workspaceLinuxDir)
         // P1-3：提权审批通道（审批只由 sandbox_permissions 请求触发——dsh
         // escalation.ts:173）。'never' 政策在 dispatch 之前确定性 rejected
         // （dsh user-approval index.ts:266——不呈现、不落审计对）；ask 交给
@@ -889,7 +910,10 @@ final class AppEnvironment: ObservableObject {
             // 真机批 B 全方位诊断：写进会话事件流（diag/trace logOnly）。
             diagTrace: { [weak self] note in
                 self?.diagTrace(sessionId: sessionId, note)
-            })
+            },
+            // 【工作区模型修正】会话 header cwd——文件工具直读根 + workspacePath
+            // 注入的单一事实源（nil = legacy 缺省语义）。
+            sessionCwd: sessionCwd)
         let agentLoop = AgentLoop(deps: deps)
 
         // M5-A J3：完成纸条接线（dsh tool-jobs index.ts:278-299 的 owner 归一

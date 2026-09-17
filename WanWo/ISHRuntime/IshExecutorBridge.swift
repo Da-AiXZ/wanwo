@@ -237,7 +237,8 @@ actor IshExecutorBridge {
         command: String,
         timeout: TimeInterval?,
         lineCallback: @escaping (String) -> Void,
-        pidCallback: @escaping (Int32) -> Void
+        pidCallback: @escaping (Int32) -> Void,
+        workingDirectory: String? = nil
     ) async throws -> ISHCommandResult {
         guard ISHKernel.shared.isBooted else {
             throw ISHCoordinatorError.kernelNotBooted
@@ -274,12 +275,20 @@ actor IshExecutorBridge {
             command: command,
             timeout: timeout,
             mergeOutput: true,
-            workingDirectory: "/root",
+            workingDirectory: Self.effectiveWorkingDirectory(workingDirectory),
             extraEnvironment: [:],
             lineCallback: lineCallback,
             pidCallback: pidCallback
         )
         return ISHCommandResult(output: decorated.output, exitCode: decorated.exitCode)
+    }
+
+    /// 会话 cwd 通道的缺省折叠：nil/空串回落 /root（既有行为零变化；
+    /// 调用方传会话 header cwd 时命令在该目录内执行——dsh session.header.cwd
+    /// 语义）。cwd 无效（目录不存在）由脚本模板的 `|| cd /root` 兜底回落。
+    nonisolated private static func effectiveWorkingDirectory(_ cwd: String?) -> String {
+        guard let cwd, !cwd.isEmpty else { return "/root" }
+        return cwd
     }
 
     // MARK: - M4-E E2：hooks 执行面（分离 stdout/stderr 的 run-to-completion）
@@ -527,7 +536,9 @@ actor IshExecutorBridge {
         // terminator and fails deterministically with
         // `unexpected end of file (expecting ")")`. A newline puts the closing
         // `)` on its own line; it is a no-op for every other command.
-        let scriptContent = "cd \(workingDirectory)\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
+        // cwd 兜底回落：目录不存在/无权限时回落 /root，绝不因 cd 失败吞掉
+        // 命令本体（2>/dev/null 抑制 cd 错误输出——合并流不被噪音污染）。
+        let scriptContent = "cd \(workingDirectory) 2>/dev/null || cd /root\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
         let stdinData = scriptContent.data(using: .utf8)
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -728,15 +739,22 @@ actor IshExecutorBridge {
     /// script 包装与 runCommand :428 同款（heredoc 尾换行 + stdin /dev/null
     /// 子壳）；无超时面（后台作业跑到退出或 kill 为止——dsh 后台语义同，
     /// 前台 900s 缺省不适用，登记）。
-    nonisolated func executeDetached(sessionId: String, command: String) throws -> DetachedShellHandle {
+    nonisolated func executeDetached(
+        sessionId: String,
+        command: String,
+        workingDirectory: String? = nil
+    ) throws -> DetachedShellHandle {
         guard ISHKernel.shared.isBooted else {
             throw ISHCoordinatorError.kernelNotBooted
         }
         let fsContext = FsContextRouter.shared.context(for: sessionId)
         let customEnv = WanWoEnvStore.shared.allAsDict()
         let env: [String: String]? = customEnv.isEmpty ? nil : customEnv
+        // cwd 兜底回落同 runCommand（nil/空/无效目录 → /root；前向通道
+        // effectiveWorkingDirectory 同源语义）。
+        let cwd = (workingDirectory?.isEmpty == false) ? workingDirectory! : "/root"
         let scriptContent =
-            "cd /root\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
+            "cd \(cwd) 2>/dev/null || cd /root\n({ exec 0</dev/null; } 2>/dev/null || true; \(command)\n)\n"
         let stdinData = scriptContent.data(using: .utf8)
 
         let lines = DetachedOutputBox()
@@ -805,8 +823,18 @@ actor IshExecutorBridge {
         logger.info("MOUNT-DIAG performMount-entry sid=\(sid) booted=\(booted) snapshotCount=\(extSnap.count) staticInit=\(self.staticMountsInitialized.count)")
 
         // Ensure parent dirs exist in meta.db
-        ensureParentDirsInMetaDB(for: "\(WanWoPaths.linuxBaseDir)/placeholder")
-        ensureFakefsMetadata(for: WanWoPaths.linuxBaseDir, isDirectory: true)
+        Self.ensureParentDirsInMetaDB(for: "\(WanWoPaths.linuxBaseDir)/placeholder")
+        Self.ensureFakefsMetadata(for: WanWoPaths.linuxBaseDir, isDirectory: true)
+
+        // 【工作区模型修正】项目目录根 + 各已注册项目目录的 meta.db 补注册
+        // （adopt 时 kernel 可能尚未 boot——当时注册静默跳过，此处兜底；
+        // 幂等。目录本体由 adopt 侧在 fakefs 持久层创建）。
+        Self.ensureFakefsMetadata(for: WanWoPaths.projectsLinuxDir, isDirectory: true)
+        for projectDir in Self.getProjectDirectories()
+        where projectDir != WanWoPaths.projectsLinuxDir {
+            Self.ensureParentDirsInMetaDB(for: projectDir)
+            Self.ensureFakefsMetadata(for: projectDir, isDirectory: true)
+        }
 
         // Only the global (cross-session) directories are bind-mounted here.
         // The per-session buckets (offloads/attachments/workspace/browser) are
@@ -1041,6 +1069,29 @@ actor IshExecutorBridge {
         return externalMountSnapshotStorage
     }
 
+    // MARK: 项目目录快照（【工作区模型修正】）
+
+    /// 已注册项目目录（guest 路径 /var/wanwo/projects/<名字>）的线程安全
+    /// 快照——WorkspaceAdoption.adopt / AppEnvironment init 推送；performMount
+    /// 在 boot 后统一补注册 meta.db（adopt 时 kernel 可能尚未 boot，meta.db
+    /// 未建，当时的注册只能静默跳过——boot 完成后的首个 performMount 兜底）。
+    nonisolated(unsafe) private static var projectDirectoryStorage: [String] = []
+    private static let projectDirectoryLock = NSLock()
+
+    /// 推送全量项目目录快照（幂等；调用方以 registry.list() 过滤 projects
+    /// 前缀后传入）。
+    nonisolated static func setProjectDirectories(_ dirs: [String]) {
+        projectDirectoryLock.lock()
+        projectDirectoryStorage = dirs
+        projectDirectoryLock.unlock()
+    }
+
+    private static func getProjectDirectories() -> [String] {
+        projectDirectoryLock.lock()
+        defer { projectDirectoryLock.unlock() }
+        return projectDirectoryStorage
+    }
+
     /// Tracks the set of external-folder linux paths currently bind-mounted so
     /// we can unbind stale ones when the user renames or removes a mount.
     private var externalMountLinuxPaths: Set<String> = []
@@ -1092,8 +1143,8 @@ actor IshExecutorBridge {
 
         // Ensure the parent /var/wanwo/mounts dir exists in meta.db so fakefs
         // can list it.
-        ensureParentDirsInMetaDB(for: "\(WanWoPaths.mountsLinuxDir)/placeholder")
-        ensureFakefsMetadata(for: WanWoPaths.mountsLinuxDir, isDirectory: true)
+        Self.ensureParentDirsInMetaDB(for: "\(WanWoPaths.mountsLinuxDir)/placeholder")
+        Self.ensureFakefsMetadata(for: WanWoPaths.mountsLinuxDir, isDirectory: true)
 
         for (idx, entry) in snapshot.enumerated() {
             logger.info("MOUNT external [\(idx)] \(entry.linuxDir) -> \(entry.hostPath) (ro=\(entry.readOnly))")
@@ -1133,7 +1184,7 @@ actor IshExecutorBridge {
             // NOT enumerate + register every file recursively: external vaults
             // can be huge, and fakefs auto-creates inodes on demand via
             // bind_mount_ensure_inode() when the shell actually touches a path.
-            ensureFakefsMetadata(for: entry.linuxDir, isDirectory: true)
+            Self.ensureFakefsMetadata(for: entry.linuxDir, isDirectory: true)
 
             // [MOUNT-DIAG] Post-bind verification: try to list one host-path
             // entry. If this comes back empty/fails after a successful stat
@@ -1162,12 +1213,15 @@ actor IshExecutorBridge {
 
     private static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    private func bindPathBlob(_ stmt: OpaquePointer, index: Int32, path: String) {
+    private nonisolated static func bindPathBlob(_ stmt: OpaquePointer, index: Int32, path: String) {
         let utf8 = Array(path.utf8)
         sqlite3_bind_blob(stmt, index, utf8, Int32(utf8.count), Self.SQLITE_TRANSIENT)
     }
 
-    private func ensureFakefsMetadata(for linuxPath: String, isDirectory: Bool) {
+    /// 在 meta.db 注册一条 fakefs 路径（幂等：已存在即跳过）。
+    /// nonisolated static：不触 actor 状态（纯 SQLite 操作，RootfsInstaller
+    /// 单例寻址）——WorkspaceAdoption 建项目目录时在 actor 外调用。
+    nonisolated static func ensureFakefsMetadata(for linuxPath: String, isDirectory: Bool) {
         let metaDBPath = RootfsInstaller.shared.rootfsPath.appendingPathComponent("meta.db").path
         var db: OpaquePointer?
         guard sqlite3_open_v2(metaDBPath, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
@@ -1209,7 +1263,8 @@ actor IshExecutorBridge {
         sqlite3_step(insertPathStmt)
     }
 
-    private func ensureParentDirsInMetaDB(for linuxPath: String) {
+    /// 逐级注册父目录链（nonisolated static，同 ensureFakefsMetadata）。
+    nonisolated static func ensureParentDirsInMetaDB(for linuxPath: String) {
         var current = (linuxPath as NSString).deletingLastPathComponent
         var dirs: [String] = []
         while current != "/" && !current.isEmpty {

@@ -330,7 +330,8 @@ enum ToolCallScheduler {
     private static func makeContext(_ deps: AgentLoop.Dependencies,
                                     turn: Int, step: Int,
                                     callId: String) -> ToolExecutionContext {
-        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
+        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId,
+                                                  cwd: deps.sessionCwd)
         // M4-D D2：write/edit 失效通道②观测缝——变更工具全部落盘经
         // WorkspaceFileAccess.writeAt 成功点回调，前缀判定在 SkillRegistry
         // .noteHostMutation（dsh skills.md:81）。

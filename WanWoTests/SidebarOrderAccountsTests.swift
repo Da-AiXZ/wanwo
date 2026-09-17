@@ -125,11 +125,9 @@ final class SidebarOrderAccountsTests: XCTestCase {
         var accounts = SidebarOrderAccounts()
         accounts.setOrder(["s1"], for: "ws1")
         accounts.setOrder(["s2"], for: "ws2")
-        accounts.setOrder(["s3"], for: SidebarGroupingModel.ungroupedKey)
         accounts.setOrder(["s4"], for: SidebarGroupingModel.flatKey)
 
-        accounts.retain(keys: ["ws2", SidebarGroupingModel.ungroupedKey,
-                               SidebarGroupingModel.flatKey])
+        accounts.retain(keys: ["ws2", SidebarGroupingModel.flatKey])
         XCTAssertNil(accounts.ordersSnapshot["ws1"], "已删工作区账户回收")
         XCTAssertEqual(accounts.ordersSnapshot["ws2"], ["s2"])
     }

@@ -567,7 +567,7 @@ final class ShellToolBackgroundTests: XCTestCase {
         let spawned = ValueSink<String>()
         var tool = ShellTool(sessionId: "s1", jobs: registry)
         tool.prepareBackground = { _ in }   // 测试跳过真桥挂载
-        tool.spawnDetached = { _, cmd in
+        tool.spawnDetached = { _, _, cmd in
             spawned.set(cmd)
             return DetachedShellHandle(
                 pid: 4242,

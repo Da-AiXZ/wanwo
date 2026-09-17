@@ -305,43 +305,102 @@ final class WorkspaceNavigator: ObservableObject {
     }
 }
 
-// MARK: - 添加工作区共享流（简报 B.4 / C.1——空态页与侧栏共用）
+// MARK: - 添加工作区共享流（【工作区模型修正】——空态页与侧栏共用）
 
-/// 「选择目录就是添加工作区的全部」：挂载 → 注册（幂等）→ 返回新工作区。
-/// 原 SessionsSidebarView.addWorkspace 逻辑上收——两个消费面共用一径。
+/// 「输入名字就是添加工作区的全部」：在 iSH fakefs 持久层建真实项目目录
+/// /var/wanwo/projects/<名字>（建目录 + meta.db 注册，幂等）→ 注册工作区
+/// （registry.create 幂等）→ 返回新工作区。完全脱离 MountedFoldersManager
+/// ——项目目录直接落在 iSH fakefs 内，shell/文件工具原生可见，无需翻译。
 enum WorkspaceAdoption {
 
-    /// 挂载 + 注册一个 picked 目录为工作区（不导航——调用方随后
-    /// startSession(ws.id)，简报 B.4 终点语义）。
-    @MainActor
-    static func adopt(pickedURL: URL, environment: AppEnvironment) throws -> WorkspaceRecord {
-        // 挂载名 = 目录名清洗（isValidMountName 词汇：字母/数字/-/_/.）。
-        let sanitized = pickedURL.lastPathComponent.map { ch -> Character in
-            let ok = ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == "."
-            return ok ? ch : "-"
-        }
-        var name = sanitized.isEmpty ? "workspace" : String(sanitized)
-        do {
-            let entry = try MountedFoldersManager.shared.add(
-                pickedURL: pickedURL, customName: name, userAllowWrite: true)
-            return try register(entry: entry, environment: environment)
-        } catch MountedFoldersManager.AddError.nameTaken {
-            // 重名：追加短随机后缀重试一次（幂等性归 registry.create）。
-            name += "-" + String(UUID().uuidString.prefix(4))
-            let entry = try MountedFoldersManager.shared.add(
-                pickedURL: pickedURL, customName: name, userAllowWrite: true)
-            return try register(entry: entry, environment: environment)
+    enum AddError: Error, LocalizedError, Equatable {
+        /// 名字清洗后为空 / 为 "." / ".."（目录名安全闭集）。
+        case invalidName
+        /// rootfs 尚未安装（fakefs 持久层不存在）——首启安装完成前拒绝
+        /// 建项目（防 installIfNeeded 的整树重建把项目目录连带清除）。
+        case rootfsNotReady
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidName:
+                return "项目名无效：请输入非空名字（中文、字母、数字、-、_、. 之外"
+                    + "的字符会自动替换为 -）。"
+            case .rootfsNotReady:
+                return "系统初始化中，请稍候片刻再创建项目。"
+            }
         }
     }
 
+    /// 目录名字符闭集：中文/字母/数字/-/_/.（挂载名 isValidMountName 的
+    /// 中文扩展版——其余字符一律替换为 -）。
+    private static func isNameCharacter(_ ch: Character) -> Bool {
+        return ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == "."
+    }
+
+    /// 名字清洗：去首尾空白 → 逐字符过滤（闭集外替换 -）。清洗后为空 /
+    /// "." / ".." → nil（调用方抛 AddError.invalidName）。
+    nonisolated static func sanitizeName(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = String(trimmed.map { isNameCharacter($0) ? $0 : "-" })
+        guard !cleaned.isEmpty, cleaned != ".", cleaned != ".." else { return nil }
+        return cleaned
+    }
+
+    /// 清洗后名字 → guest 项目目录路径。
+    nonisolated static func guestPath(for cleanedName: String) -> String {
+        return WanWoPaths.projectsLinuxDir + "/" + cleanedName
+    }
+
+    /// 在 iSH fakefs 持久层建真实项目目录（幂等）：
+    ///   1. 宿主侧 dataPath/var/wanwo/projects/<名字> 建目录（fakefs 数据真身；
+    ///      已存在 → 幂等复用）；
+    ///   2. meta.db 注册 /var/wanwo、/var/wanwo/projects、/var/wanwo/projects/
+    ///      <名字> 三级目录 inode（fakefs 元数据；已注册 → 幂等跳过；kernel
+    ///      未 boot 时静默跳过——boot 后 performMount 按项目快照兜底补齐）。
+    /// 此后 shell（fakefs 原生路径）与 Swift 文件工具（dataPath 宿主直读）
+    /// 看到同一份真实目录。
+    nonisolated static func ensureProjectDirectory(cleanedName: String) throws {
+        // rootfs 未安装（data 根 + .arch 标签缺失）→ 拒绝：installIfNeeded 的
+        // 整树重建会连带清掉此刻建的项目目录（fail closed，报告登记）。
+        guard RootfsInstaller.shared.isInstalled else {
+            throw AddError.rootfsNotReady
+        }
+        let guestPath = Self.guestPath(for: cleanedName)
+        guard let hostRoot = WanWoPaths.projectsHostRoot(forGuestPath: guestPath) else {
+            throw AddError.invalidName
+        }
+        try FileManager.default.createDirectory(
+            at: hostRoot, withIntermediateDirectories: true)
+        // fakefs 元数据逐级注册（先父链后本目录；幂等）。
+        IshExecutorBridge.ensureParentDirsInMetaDB(for: guestPath)
+        IshExecutorBridge.ensureFakefsMetadata(for: guestPath, isDirectory: true)
+    }
+
+    /// 注册一个项目目录为工作区（不导航——调用方随后 startSession(ws.id)，
+    /// 简报 B.4 终点语义）。目录已存在 → 幂等复用（registry.create 幂等）。
     @MainActor
-    private static func register(entry: MountedFolderEntry,
-                                 environment: AppEnvironment) throws -> WorkspaceRecord {
-        let guestPath = WanWoPaths.mountsLinuxDir + "/" + entry.name
+    static func adopt(name: String, environment: AppEnvironment) throws -> WorkspaceRecord {
+        // title = 用户输入原名（trim 后；清洗名只落目录，展示名保真）。
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let cleaned = sanitizeName(name) else {
+            throw AddError.invalidName
+        }
+        try ensureProjectDirectory(cleanedName: cleaned)
         // dsh「选择目录就是添加工作区的全部」：create（幂等，既有路径原样返回）。
         let (workspace, _) = try environment.workspaceController.create(
-            path: guestPath, title: nil)
+            path: guestPath(for: cleaned), title: title)
+        // 项目目录快照推送（boot 后 performMount 兜底补注册 meta.db 用）。
+        pushProjectDirectories(environment: environment)
         environment.selectedWorkspaceID = workspace.id
         return workspace
+    }
+
+    /// 以 registry 快照（projects 前缀过滤）推送项目目录全量快照。
+    @MainActor
+    static func pushProjectDirectories(environment: AppEnvironment) {
+        let dirs = environment.workspaceRegistry.list()
+            .map(\.path)
+            .filter { WanWoPaths.isProjectsGuestPath($0) && $0 != WanWoPaths.projectsLinuxDir }
+        IshExecutorBridge.setProjectDirectories(dirs)
     }
 }

@@ -11,11 +11,13 @@
 
 import Foundation
 
-/// Routes guest paths under /var/wanwo/{offloads,attachments,workspace,browser}
+/// Routes guest paths under /var/wanwo/{offloads,attachments,browser}
 /// to per-session host directories via the iSH fakefs path-translate hook.
 /// 【万我适配】原注释路径为 /var/minis/...，宿主基目录 Library/MinisChat/minis
 /// → Library/WanWo/wanwo。M4-E+ P2：路由目标升为分组维度——
 /// ~/Library/.../wanwo/groups/<gid>/<sid>/<bucket>/<tail>（brief §5.2）。
+/// 【工作区模型修正】workspace 桶已退役（项目目录落 fakefs 持久层原生可见，
+/// 见 perSessionBuckets 注释）。
 final class FsContextRouter: @unchecked Sendable {
     static let shared = FsContextRouter()
 
@@ -24,13 +26,14 @@ final class FsContextRouter: @unchecked Sendable {
     /// (M4-E+ P2 分组维度——与 WanWoPaths.sessionPersistentDir 同形状). Paths under
     /// /var/wanwo/{memory,skills,shared} stay global and are NOT listed here —
     /// they fall through to the legacy g_bind_mounts[] table.
-    /// M4-E+ P3：/var/wanwo/workspace/.agents/skills[/tail]（project 资源）在
-    /// 本表**之前**特判（最长前缀优先）→ groups/<gid>/workspace/.agents/skills
-    /// （无 sid 层，分组级跨会话共享——brief §5.3）。
+    /// 【工作区模型修正】workspace 桶翻译整体退役：项目目录 /var/wanwo/projects/
+    /// <名字> 直接落在 iSH fakefs 持久层（WorkspaceAdoption.adopt 建真实目录），
+    /// shell/文件工具原生可见、无需翻译——回归 dsh「workspace 是 shell 直接
+    /// 可读写的真实目录、同工作区多会话共享同一份目录文件」语义。workspace 桶
+    /// 目录仅存量遗留会话仍在（迁移面归 GroupStoreMigrator 管辖，本表不再路由）。
     private let perSessionBuckets: [(linuxPrefix: String, hostSubdir: String)] = [
         (WanWoPaths.offloadsLinuxDir,    "offloads"),
         (WanWoPaths.attachmentsLinuxDir, "attachments"),
-        (WanWoPaths.workspaceLinuxDir,   "workspace"),
         (WanWoPaths.browserLinuxDir,     "browser"),
     ]
 
@@ -47,19 +50,10 @@ final class FsContextRouter: @unchecked Sendable {
     /// init 一次捕获（persistentBase 每次取 FileManager URLs，不可进 fakefs
     /// 热路径）。P1/P2 恒 default 分组；M9 多分组后按 sid 查组替换派生。
     private let sessionBucketBaseURL: URL
-    /// M4-E+ P3：分组级技能根宿主落点（guest /var/wanwo/workspace/.agents/skills
-    /// 的翻译目标——groups/<gid>/workspace/.agents/skills，无 sid 层跨会话共享）。
-    /// init 捕获（热路径纪律同 sessionBucketBaseURL）。
-    /// M4-E 验收修复：翻译粒度提升为 .agents 整树（groupAgentResourcesBaseURL）
-    /// ——skills 粒度会让父目录 .agents 落会话桶（AI 终端 find 报不存在）且
-    /// mkdir -p 逐级创建跨宿主劈裂；skills 子目录语义不变。
-    private let projectAgentResourcesBaseURL: URL
 
     private init() {
         self.wanwoBaseURL = WanWoPaths.persistentBase
         self.sessionBucketBaseURL = WanWoPaths.groupRoot(
-            base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
-        self.projectAgentResourcesBaseURL = WanWoPaths.groupAgentResourcesRoot(
             base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
     }
 
@@ -120,18 +114,9 @@ final class FsContextRouter: @unchecked Sendable {
     }
 
     private func hostPath(forGuest guestPath: String, sid: String) -> String? {
-        // M4-E+ P3：project 资源特判（最长前缀优先——/var/wanwo/workspace/
-        // .agents 比 perSessionBuckets 的 /var/wanwo/workspace 更具体，
-        // 必须先判）：guest 形状不变，翻译目标=分组 agent 资源根（无 sid 层，
-        // 跨会话共享——brief §5.3；验收修复：粒度从 .agents/skills 提升 .agents）。
-        let agentPrefix = WanWoPaths.workspaceLinuxDir + "/.agents"
-        if guestPath == agentPrefix {
-            return projectAgentResourcesBaseURL.path
-        }
-        if guestPath.hasPrefix(agentPrefix + "/") {
-            return projectAgentResourcesBaseURL.path
-                + String(guestPath.dropFirst(agentPrefix.count))
-        }
+        // 【工作区模型修正】project 资源特判随 workspace 桶一并退役：guest
+        // /var/wanwo/projects/<名字>/.agents/** 现为 fakefs 原生路径（真实目录
+        // ——WorkspaceAdoption 建目录时逐级注册 meta.db），无需翻译。
         for bucket in perSessionBuckets {
             let prefix = bucket.linuxPrefix
             guard guestPath.hasPrefix(prefix) else { continue }
@@ -177,18 +162,8 @@ final class FsContextRouter: @unchecked Sendable {
             guard let groupEnd = rest.firstIndex(of: "/") else { return nil }
             rest = rest[rest.index(after: groupEnd)...]
         }
-        // M4-E+ P3：project 资源形状（workspace/.agents[/tail]——P2 的
-        // groups/<gid>/ 剥离后自然衔接）→ guest /var/wanwo/workspace/.agents
-        // [/tail]。project 资源无 sid 归属，跳过下方 known-sid 守卫直翻。
-        // 验收修复：粒度=整个 .agents 树（正向对称）。
-        let agentTail = "workspace/.agents"
-        if rest == agentTail {
-            return WanWoPaths.workspaceLinuxDir + "/.agents"
-        }
-        if rest.hasPrefix(agentTail + "/") {
-            return WanWoPaths.workspaceLinuxDir + "/.agents"
-                + String(rest.dropFirst(agentTail.count))
-        }
+        // 【工作区模型修正】project 资源（workspace/.agents）形状随 workspace
+        // 桶退役一并移除——fakefs 原生路径无需反向翻译。
         // Split into sid / bucket / tail
         let parts = rest.split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count >= 2 else { return nil }

@@ -66,7 +66,7 @@ final class SidebarGroupingModelTests: XCTestCase {
 
     // MARK: - 分组树（验收面）
 
-    func testDeriveGroupsWithWorkspacesAndUngroupedBucket() {
+    func testDeriveGroupsWithWorkspacesOnly() {
         let wsA = workspace(id: "ws-a", title: "项目A", sessionIds: ["s1", "s2"])
         let sessions = [
             summary(id: "s1", title: "一"),
@@ -76,14 +76,12 @@ final class SidebarGroupingModelTests: XCTestCase {
         let groups = SidebarGroupingModel.deriveGroups(
             sessions: sessions, workspaces: [wsA], grouped: true,
             sort: .updatedDesc)
-        XCTAssertEqual(groups.count, 2)
+        // 【工作区模型修正】Ungrouped 桶删除：组 = 工作区组，账本外会话
+        // （s3，防御面）不渲染。
+        XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups[0].title, "项目A")
         XCTAssertEqual(groups[0].workspaceID, "ws-a")
         XCTAssertEqual(groups[0].sessionIds, ["s1", "s2"])
-        // Ungrouped 桶（UNGROUPED_KEY 语义）。
-        XCTAssertEqual(groups[1].id, SidebarGroupingModel.ungroupedKey)
-        XCTAssertEqual(groups[1].workspaceID, nil)
-        XCTAssertEqual(groups[1].sessionIds, ["s3"])
     }
 
     func testDeriveGroupsFlatModeIgnoresWorkspaces() {
@@ -114,7 +112,8 @@ final class SidebarGroupingModelTests: XCTestCase {
             sessions: sessions, workspaces: [wsA], grouped: true,
             sort: .updatedDesc)
         XCTAssertEqual(groups[0].sessionIds, ["s2", "s1"])
-        XCTAssertEqual(groups[1].sessionIds, ["s3"])
+        // 账本外会话（s3）不再落 Ungrouped 桶——不渲染。
+        XCTAssertEqual(groups.count, 1)
     }
 
     func testLedgerLeftoversAppendByRecency() {
@@ -234,11 +233,13 @@ final class SidebarGroupingModelTests: XCTestCase {
             accountOrders: ["ws-a": ["s2", "s1"]])
         XCTAssertEqual(groups[0].sessionIds, ["s2", "s1"],
                        "账户序优先于账本序展示（账本仍是持久真源）")
-        let ungrouped = SidebarGroupingModel.deriveGroups(
+        // 【工作区模型修正】Ungrouped 账户已删——无工作区会话（防御面）
+        // 不再渲染任何组。
+        let orphan = SidebarGroupingModel.deriveGroups(
             sessions: [summary(id: "s9", title: "散")], workspaces: [],
             grouped: true, sort: .updatedDesc, currentSessionID: nil,
-            accountOrders: [SidebarGroupingModel.ungroupedKey: ["s9"]])
-        XCTAssertEqual(ungrouped[0].sessionIds, ["s9"])
+            accountOrders: nil)
+        XCTAssertTrue(orphan.isEmpty)
     }
 
     func testUpdatedDescSortHasIDTieBreak() {

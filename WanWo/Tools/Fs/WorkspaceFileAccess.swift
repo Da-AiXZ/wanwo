@@ -35,10 +35,16 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     let guestRootURL: URL
     /// 读-改-写临界区（编辑族工具共享；glob/grep 只读遍历不走此锁）。
     private let mutationLock = NSLock()
-    /// M4-E+ P3：分组级技能根（guest /var/wanwo/workspace/.agents/skills 的宿主
-    /// 落点——groups/<gid>/workspace/.agents/skills，无 sid 层跨会话共享；
-    /// 可注入以供测试，注入收窄模式与 guestRoot 同源）。
+    /// 技能/agent 资源根：项目模式 = 项目根内 .agents（真实目录，resolve 无需
+    /// 特判）；legacy 模式 = 分组桶派生（M4-E+ P3 既有语义，可注入以供测试）。
     let projectSkillsRootURL: URL
+    /// 【工作区模型修正】本会话的 guest 工作区前缀：项目 cwd（/var/wanwo/
+    /// projects/<名字>）或 legacy 缺省 /var/wanwo/workspace。resolve 的绝对
+    /// 路径剥离前缀以此为单一事实源。
+    let guestWorkspacePrefix: String
+    /// 项目模式（cwd 落 projects 根）：根 = fakefs 持久层真实项目目录——
+    /// shell 与本直读面看到同一份文件，同工作区多会话天然共享。
+    let isProjectMode: Bool
     /// M4-D D2：宿主写通道观测缝（writeAt 成功落盘后回调）。技能注册表据此实现
     /// write/edit 命中技能根的失效判定（dsh skills.md:81；write/edit/str_replace
     /// editor 三族变更全汇于 writeData/mutate→writeAt 单点）。构造后、首次写前
@@ -48,15 +54,36 @@ final class WorkspaceFileAccess: @unchecked Sendable {
 
     private static let fileManager = FileManager.default
 
-    init(sessionId: String, guestRoot: URL? = nil,
-         projectSkillsRoot: URL? = nil) {
+    /// - Parameters:
+    ///   - sessionId: 会话 id（legacy 会话桶根派生锚）。
+    ///   - workspaceCwd: 会话 header cwd（创建时定格）。落 projects 根 → 项目
+    ///     模式（rootURL = fakefs 持久层真实项目目录）；nil/legacy 路径 → 既有
+    ///     会话桶语义零变化。可注入以供测试（guestRoot/projectSkillsRoot 同）。
+    ///   - guestRoot: guest / 的宿主映射根注入缝（测试）。
+    ///   - projectSkillsRoot: legacy 模式技能根注入缝（测试）。
+    init(sessionId: String, workspaceCwd: String? = nil,
+         guestRoot: URL? = nil, projectSkillsRoot: URL? = nil) {
         self.sessionId = sessionId
-        self.rootURL = WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
-        // M4-E+ P3：project 资源根升分组桶（默认=WanWoPaths 单一事实源派生）。
-        self.projectSkillsRootURL = projectSkillsRoot
-            ?? WanWoPaths.groupAgentResourcesRoot(base: WanWoPaths.persistentBase,
-                                                  groupID: WanWoPaths.defaultGroupID)
         self.guestRootURL = guestRoot ?? RootfsInstaller.shared.dataPath
+        if let cwd = workspaceCwd,
+           let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: cwd) {
+            // 路①：项目目录 = iSH fakefs 持久层真实目录（dataPath/<guest>）。
+            self.isProjectMode = true
+            self.guestWorkspacePrefix = cwd
+            self.rootURL = projectHost
+            // 项目技能/agent 资源根在项目根内（.agents 整树）——resolve 无需特判。
+            self.projectSkillsRootURL = projectHost.appendingPathComponent(
+                ".agents", isDirectory: true)
+        } else {
+            // legacy：会话桶 workspace + 分组 agent 资源根（既有语义零变化；
+            // 工作区模型修正前创建的存量会话仍可读）。
+            self.isProjectMode = false
+            self.guestWorkspacePrefix = WanWoPaths.workspaceLinuxDir
+            self.rootURL = WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "workspace")
+            self.projectSkillsRootURL = projectSkillsRoot
+                ?? WanWoPaths.groupAgentResourcesRoot(base: WanWoPaths.persistentBase,
+                                                      groupID: WanWoPaths.defaultGroupID)
+        }
         try? Self.fileManager.createDirectory(at: rootURL,
                                               withIntermediateDirectories: true)
     }
@@ -64,15 +91,14 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     // MARK: - 路径解析与安全
 
     /// 把 guest/相对路径解析为根内的宿主 URL。
-    /// 接受：`/var/wanwo/workspace/<tail>`、`<tail>`（相对根）、`./<tail>`。
-    /// M4-E+ P3：project 资源特判（最长前缀语义——`.agents/skills` 比裸
-    /// workspace 前缀更具体）：相对/绝对路径归一后 tail 恰为 `.agents/skills`
-    /// 或其子路径 → 映射分组技能根（无 sid 层，跨会话共享——brief §5.3；
-    /// guest 路径形状不变），其余 workspace 路径照旧会话桶。
+    /// 接受：`<guestWorkspacePrefix>/<tail>`、`<tail>`（相对根）、`./<tail>`。
+    /// 【工作区模型修正】前缀 = 会话 guest 工作区前缀（项目 cwd 或 legacy
+    /// /var/wanwo/workspace）。项目模式下 .agents 在根内走通用 tail 解析；
+    /// legacy 模式保留 P3 project 资源特判（最长前缀语义）。
     /// 越界（`..` 逃逸）返回 nil。
     func resolve(_ path: String) -> URL? {
         var tail = path
-        let prefix = WanWoPaths.workspaceLinuxDir
+        let prefix = guestWorkspacePrefix
         if tail == prefix {
             tail = ""
         } else if tail.hasPrefix(prefix + "/") {
@@ -81,7 +107,14 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         // 归一：去首部斜杠与 "./"。
         while tail.hasPrefix("/") { tail.removeFirst() }
         while tail.hasPrefix("./") { tail.removeFirst(2) }
-        // P3：project 资源先于 workspace 桶根判定。
+        // 项目模式：.agents 在根内，通用 tail 解析直达（无特判、无回落分支）。
+        if isProjectMode {
+            if tail.isEmpty {
+                return rootURL
+            }
+            return Self.resolveWithinRoot(tail, root: rootURL)
+        }
+        // legacy：P3 project 资源先于 workspace 桶根判定。
         if let url = Self.resolveProjectSkillsTail(tail, within: projectSkillsRootURL) {
             return url
         }
@@ -92,15 +125,21 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         if tail.isEmpty {
             return rootURL
         }
-        var candidate = rootURL.appendingPathComponent(tail).standardizedFileURL
+        return Self.resolveWithinRoot(tail, root: rootURL)
+    }
+
+    /// tail → 根内 URL（词法 containment 防 `..` 逃逸，含 /private 前缀归一；
+    /// 从 resolve 主干抽出供项目/legacy 两模式共用）。
+    private static func resolveWithinRoot(_ tail: String, root: URL) -> URL? {
+        var candidate = root.appendingPathComponent(tail).standardizedFileURL
         // "/private" 前缀归一（iOS symlink 惯例）后校验仍在根内。
-        let root = rootURL.standardizedFileURL.path
+        let rootPath = root.standardizedFileURL.path
         var candidatePath = candidate.path
-        if candidatePath.hasPrefix("/private" + root) {
+        if candidatePath.hasPrefix("/private" + rootPath) {
             candidatePath = String(candidatePath.dropFirst("/private".count))
             candidate = URL(fileURLWithPath: candidatePath)
         }
-        guard candidatePath == root || candidatePath.hasPrefix(root + "/") else {
+        guard candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/") else {
             return nil
         }
         return candidate
@@ -148,7 +187,7 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     /// 唯一边界——gate 放行的路径，执行通道必须能兑现。出处：
     /// tool-fs/sandbox.ts:87-108 resolvePolicy 返回 {...policy, mode: approvedMode}；
     /// fs-sandbox index.ts:1-27「Reads pass through untouched」）。
-    ///  - 相对路径与 `/var/wanwo/workspace/**`：工作区桶（既有语义，全模式；
+    ///  - 相对路径与 `<guestWorkspacePrefix>/**`：工作区解析（既有语义，全模式；
     ///    ①步按 resolve 输入契约收紧——P13 回归修复，见方法内注释）。
     ///  - 其他 guest 绝对路径：
     ///      · danger-full-access → guest 全域映射（rootfs data 目录 = guest /
@@ -159,16 +198,16 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     ///      · 其余 → nil（fail closed 兜底；写侧此前已被 SandboxGate 拒绝）。
     ///  `..` 逃逸防护与既有 resolve 同级：规范化后必须仍在映射根内。
     func resolve(_ path: String, mode: SandboxMode) -> URL? {
-        // ① 工作区解析命中（workspace 桶 + 相对路径）→ 既有语义直用。
+        // ① 工作区解析命中（guest 工作区前缀 + 相对路径）→ 既有语义直用。
         //    P13 回归修复（2026-09-11 CI 一次性验证跑拦截、lead 亲验复核）：
         //    此前①步对任意输入无条件调 resolve(path)——裸 guest 绝对路径被
-        //    resolve 的前导斜杠剥离（:53）吞成工作区相对路径直接命中并 return，
+        //    resolve 的前导斜杠剥离吞成工作区相对路径直接命中并 return，
         //    mode 分支不可达：danger 写 /etc/hosts 落工作区桶、workspace-write
         //    写 /etc/passwd 不抛（fail closed 失守）。现按 resolve 的输入契约
-        //    （:42 注释：相对路径或 /var/wanwo/workspace/**）收紧——仅这两类
-        //    进①步，其余 guest 绝对路径原样落 mode 分支。
+        //    （相对路径或 guest 工作区前缀）收紧——仅这两类进①步，其余 guest
+        //    绝对路径原样落 mode 分支。
         let p0 = path.trimmingCharacters(in: .whitespaces)
-        let wsPrefix = WanWoPaths.workspaceLinuxDir
+        let wsPrefix = guestWorkspacePrefix
         let isWorkspaceScoped = !p0.hasPrefix("/")
             || p0 == wsPrefix || p0.hasPrefix(wsPrefix + "/")
         if isWorkspaceScoped, let url = resolve(path) { return url }
@@ -261,10 +300,28 @@ final class WorkspaceFileAccess: @unchecked Sendable {
         } else {
             _ = try Self.fileManager.moveItem(at: tmp, to: url)
         }
+        // 【工作区模型修正】项目模式落 fakefs 持久层的宿主直写必须同步注册
+        // meta.db（否则 shell 侧 fakefs 不可见——iSH fakefs 以 meta.db 为存在
+        // 真相源；performMount 的 batchEnsureFakefsMetadata 同语义）。幂等。
+        registerFakefsMetadataIfProjectMode(url)
         // M4-D D2：成功变更后通知观测方（技能根前缀判定在 SkillRegistry.
         // noteHostMutation——write/edit 命中技能目录即失效，dsh:81）。
         if let onMutation { onMutation(url) }
         return url
+    }
+
+    /// 项目模式下把写入的宿主 URL 反推为 guest 路径并注册 fakefs 元数据
+    /// （父目录链 + 本文件；guestRoot 之外的路径静默跳过——fail open，
+    /// 既有 legacy 桶不受影响）。
+    private func registerFakefsMetadataIfProjectMode(_ url: URL) {
+        guard isProjectMode else { return }
+        var p = url.standardizedFileURL.path
+        if p.hasPrefix("/private") { p = String(p.dropFirst("/private".count)) }
+        let guestRootPath = guestRootURL.standardizedFileURL.path
+        guard p.hasPrefix(guestRootPath + "/") else { return }
+        let guestPath = "/" + String(p.dropFirst(guestRootPath.count + 1))
+        IshExecutorBridge.ensureParentDirsInMetaDB(for: guestPath)
+        IshExecutorBridge.ensureFakefsMetadata(for: guestPath, isDirectory: false)
     }
 
     // MARK: - read-match-write 临界区（编辑族共享锁）
@@ -285,22 +342,27 @@ final class WorkspaceFileAccess: @unchecked Sendable {
     }
 
     /// 只读遍历不走 mutationLock；遍历期间 VCS 元数据目录排除（dsh glob 语义）。
-    /// M4-E+ P3：遍历面=会话工作区桶 + 分组技能根——guest 心智里 project 资源
-    /// 在 workspace 内，glob/grep 目录枚举必须覆盖分组桶技能文件（否则 AI 写
-    /// 技能后 glob 验证不可见=行为回归）。两根物理不相交，无需去重。
+    /// 遍历面：项目模式 = 项目根（.agents 在根内，单一遍历即覆盖）；
+    /// legacy = 会话工作区桶 + 分组技能根并集（M4-E+ P3 既有语义——AI 写
+    /// 技能后 glob 验证可见性）。
     func recursiveFiles() -> [URL] {
-        return filesUnder(rootURL) + filesUnder(projectSkillsRootURL)
+        var out = filesUnder(rootURL)
+        if !isProjectMode {
+            out += filesUnder(projectSkillsRootURL)
+        }
+        return out
     }
 
-    /// guest 相对视图（M4-E 验收修复：glob 匹配基统一）：会话桶文件→相对
-    /// rootURL；分组 agent 资源根文件→".agents/… "（与 fakefs guest 路径形状
-    /// 一致，AI 可用同一路径回访）。两根之外的文件返回 nil。
+    /// guest 相对视图（M4-E 验收修复：glob 匹配基统一）。项目模式：一切文件
+    /// 相对项目根（".agents/…" 形状与 fakefs guest 路径天然一致）。legacy：
+    /// 会话桶→相对 rootURL；分组 agent 资源根→".agents/…"。两根之外返回 nil。
     func guestRelativeTail(_ url: URL) -> String? {
         var p = url.standardizedFileURL.path
         if p.hasPrefix("/private") { p = String(p.dropFirst("/private".count)) }
         let rootPath = rootURL.standardizedFileURL.path
         if p == rootPath { return "" }
         if p.hasPrefix(rootPath + "/") { return String(p.dropFirst(rootPath.count + 1)) }
+        if isProjectMode { return nil }
         let skillsPath = projectSkillsRootURL.standardizedFileURL.path
         if p == skillsPath { return ".agents" }
         if p.hasPrefix(skillsPath + "/") {

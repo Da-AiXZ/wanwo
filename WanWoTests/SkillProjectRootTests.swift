@@ -146,34 +146,19 @@ final class SkillProjectRootTests: XCTestCase {
         XCTAssertTrue(names.contains("SKILL.md"), "分组技能根文件必须在遍历面内")
     }
 
-    // MARK: FsContextRouter 正向特判（最长前缀优先）
+    // MARK: FsContextRouter（【工作区模型修正】project 特判已退役）
 
-    func testFsContextRouterProjectSkillsPrefixWinsOverSessionBucket() {
+    func testFsContextRouterNoLongerRoutesProjectAgents() {
         let router = FsContextRouter.shared
-        // 验收修复：翻译粒度=.agents 整树（groupAgentResourcesRoot）。
-        let projectAgentHost = WanWoPaths.groupAgentResourcesRoot(
-            base: WanWoPaths.persistentBase, groupID: WanWoPaths.defaultGroupID)
-        let sessionBucket = WanWoPaths.sessionPersistentDir(for: sid, bucket: "workspace")
-
-        // project 资源 → 分组 agent 资源根（无 sid 层）。
-        XCTAssertEqual(
-            router.hostURL(forGuest: "/var/wanwo/workspace/.agents/skills/a/b.md",
-                           sid: sid)?.path,
-            projectAgentHost.appendingPathComponent("skills/a/b.md").path)
-        // project 根自身（.agents 目录）。
-        XCTAssertEqual(
-            router.hostURL(forGuest: "/var/wanwo/workspace/.agents",
-                           sid: sid)?.path,
-            projectAgentHost.path)
-        // 不含 .agents 前缀的 workspace 路径照旧会话桶（两种都断言）。
-        XCTAssertEqual(
-            router.hostURL(forGuest: "/var/wanwo/workspace/plain.txt", sid: sid)?.path,
-            sessionBucket.appendingPathComponent("plain.txt").path)
-        // 前缀边界（新语义）：.agents 整树归分组桶——skillsX 亦然。
-        XCTAssertEqual(
-            router.hostURL(forGuest: "/var/wanwo/workspace/.agents/skillsX/a",
-                           sid: sid)?.path,
-            projectAgentHost.appendingPathComponent("skillsX/a").path)
+        // workspace 桶与 .agents 特判随工作区模型修正整体退役——项目目录
+        // 落 fakefs 持久层原生可见，guest 路径不再翻译（nil = 原生解析）。
+        XCTAssertNil(router.hostURL(
+            forGuest: "/var/wanwo/workspace/.agents/skills/a/b.md", sid: sid))
+        XCTAssertNil(router.hostURL(
+            forGuest: "/var/wanwo/workspace/plain.txt", sid: sid))
+        XCTAssertNil(router.hostURL(
+            forGuest: "\(WanWoPaths.projectsLinuxDir)/demo/.agents/skills/x.md",
+            sid: sid))
     }
 
     // MARK: 派生形状与 guest 心智保真

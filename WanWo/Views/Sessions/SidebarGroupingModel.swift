@@ -4,8 +4,8 @@
 //
 //  【M6.6 新写（B4）· 语义源 dsh WorkspaceBrowser.tsx（§9 左侧栏欠账对账）】
 //  左侧栏分组纯逻辑（§9 清单 1/2/3/7）：
-//    1. 工作区分组树：工作区行 + 组内会话 + Ungrouped 桶（deriveGroups/
-//       UNGROUPED_KEY :25 语义）；
+//    1. 工作区分组树：工作区行 + 组内会话（deriveGroups；【工作区模型修正】
+//       UNGROUPED_KEY 桶已删——会话创建收口到工作区，无游离会话）；
 //    2. 每组折叠：COLLAPSED_SESSION_LIMIT = 5（:41-56）+ "展开其余 N 个
 //       会话"；blank 占位会话（title nil/空）不计入限额（:43-56）；
 //    3. 存储视图序与工作区账本对账（reconciledSessionOrder :97+）——组内
@@ -18,7 +18,7 @@
 //    · blank 规则翻转（dsh tree.ts:131）：blank 占位会话仅当它是当前选中
 //      会话才可见（原先恒可见做反了）——deriveGroups 增 currentSessionID；
 //    · 账户视图序（dsh :296-336 折算）：deriveGroups 增 accountOrders——
-//      「按更新」模式下组内/未分组/平铺按排序账户（SidebarOrderAccounts）
+//      「按更新」模式下组内/平铺按排序账户（SidebarOrderAccounts）
 //      对账展示，账本序仍是持久真源；
 //    · 搜索升级（dsh :352-427 本地半边）：本地过滤 = 标题 + 所属工作区名
 //      子串，blank 排除（dsh :384——blank 规范标题恒空，可搜即绑语言）；
@@ -35,11 +35,11 @@ enum SidebarSort: String, CaseIterable, Equatable {
     case titleAsc      // 标题升序
 }
 
-/// 一个侧栏分组（工作区 / Ungrouped 桶 / 平铺）。
+/// 一个侧栏分组（工作区 / 平铺）。
 struct SidebarGroup: Identifiable, Equatable {
     let id: String
     let title: String
-    /// 工作区 id（Ungrouped/平铺 = nil——insertSessionBefore 语义仅工作区可用）。
+    /// 工作区 id（平铺 = nil——insertSessionBefore 语义仅工作区可用）。
     let workspaceID: String?
     /// 对账后的组内会话 id 序（账本序优先，账本外 updatedAt 降序补尾）。
     let sessionIds: [String]
@@ -49,8 +49,6 @@ enum SidebarGroupingModel {
 
     /// dsh WorkspaceBrowser.tsx:41 COLLAPSED_SESSION_LIMIT。
     static let collapsedSessionLimit = 5
-    /// dsh UNGROUPED_KEY :25。
-    static let ungroupedKey = "ungrouped"
     /// 平铺模式分组键（M3 既有单层列表的保留形态）。
     static let flatKey = "flat"
 
@@ -105,7 +103,7 @@ enum SidebarGroupingModel {
         }
     }
 
-    /// 排序（平铺/未分组桶用；组内序由账本承担——dsh 视图序对账语义）。
+    /// 排序（平铺模式用；组内序由账本承担——dsh 视图序对账语义）。
     nonisolated static func sorted(_ sessions: [SessionSummary],
                                    by sort: SidebarSort) -> [SessionSummary] {
         switch sort {
@@ -126,8 +124,8 @@ enum SidebarGroupingModel {
 
     /// 存储视图序与工作区账本对账（dsh reconciledSessionOrder :97+ 折算）：
     /// workspaceRecord.sessionIds（账本，已在 hydrate 层过滤成员资格）中仍在
-    /// 会话集合的 id 保持账本序；账本未记的成员（新会话先建后 attach 竞态、
-    /// Ungrouped 会话）按 updatedAt 降序补尾。
+    /// 会话集合的 id 保持账本序；账本未记的成员（新会话先建后 attach 竞态的
+    /// 直接调用场景）按 updatedAt 降序补尾。
     nonisolated static func reconciledSessionOrder(
         ledger: [String], sessions: [SessionSummary]) -> [String] {
         let known = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
@@ -144,13 +142,17 @@ enum SidebarGroupingModel {
     }
 
     /// 分组树（§9 清单 1）：分组开 → 每工作区一组（dsh deriveGroups :25——
-    /// 空工作区也出组行）+ Ungrouped 桶（未归工作区会话）；分组关 → 平铺单组。
+    /// 空工作区也出组行）；分组关 → 平铺单组。
+    /// 【工作区模型修正】Ungrouped 桶删除：会话创建已收口到工作区
+    /// （createSession 仅在选定工作区内创建 + attach 校验，失败即回滚），
+    /// 不存在未归工作区的会话——不在任何工作区账本的会话（防御面）直接
+    /// 不渲染，绝不再出现「未分组」桶。
     /// 输入会话应为「已过滤+已归档排除」后的渲染集合（本模型不做归档过滤）。
     /// 【UI 对齐批 1 增量】
     ///   · currentSessionID：blank 规则翻转（dsh tree.ts:131）——blank 占位
-    ///     会话仅当它是当前选中会话才可见（组内/未分组/平铺全域同规则）；
+    ///     会话仅当它是当前选中会话才可见；
     ///   · accountOrders：排序账户展示序（dsh :296-336 折算）——nil = 既有
-    ///     行为（组内账本序 / 其余按 sort），非 nil = 各桶按账户序对账展示。
+    ///     行为（组内账本序 / 其余按 sort），非 nil = 各组按账户序对账展示。
     nonisolated static func deriveGroups(sessions: [SessionSummary],
                                          workspaces: [WorkspaceRecord],
                                          grouped: Bool,
@@ -158,7 +160,7 @@ enum SidebarGroupingModel {
                                          currentSessionID: String? = nil,
                                          accountOrders: [String: [String]]? = nil) -> [SidebarGroup] {
         // blank 规则翻转（dsh sessionVisible :131-135）：blank 仅当它是当前
-        // 会话才可见——分组/未分组/平铺全域同规则（dsh deriveFlat :332 同源）。
+        // 会话才可见——分组/平铺全域同规则（dsh deriveFlat :332 同源）。
         let visible = sessions.filter { !isBlank($0) || $0.id == currentSessionID }
         let byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
         guard grouped else {
@@ -174,16 +176,12 @@ enum SidebarGroupingModel {
                                  sessionIds: ordered)]
         }
         var groups: [SidebarGroup] = []
-        var assigned = Set<String>()
         for workspace in workspaces {
-            // 【终验修】组成员资格 = 账本（workspace.sessionIds）∩ 会话集合。
-            // 此前直接取 reconciledSessionOrder 的输出当组成员——其"账本外
-            // 按 updatedAt 补尾"会把不属于本工作区的会话（含应落 Ungrouped
-            // 桶的会话）补进组并标记 assigned，Ungrouped 桶恒空。dsh
-            // UNGROUPED_KEY 语义：不在任何工作区账本的会话 = 未分组；
+            // 组成员资格 = 账本（workspace.sessionIds）∩ 会话集合。
             // 账本序对账（reconciledSessionOrder）只作用于账本成员的排序。
+            // 【工作区模型修正】不在任何工作区账本的会话（防御面）不渲染
+            // ——Ungrouped 桶已删，会话创建已收口到工作区（attach 失败即回滚）。
             let ledgerMembers = workspace.sessionIds.filter { byID[$0] != nil }
-            ledgerMembers.forEach { assigned.insert($0) }
             let ordered: [String]
             if let accountOrders {
                 ordered = reconciledOrder(stored: accountOrders[workspace.id] ?? [],
@@ -195,19 +193,6 @@ enum SidebarGroupingModel {
                                        workspaceID: workspace.id,
                                        sessionIds: ordered))
         }
-        // Ungrouped 桶（dsh UNGROUPED_KEY）：未归任何工作区的会话，排序照 sort
-        // （有账户序时按账户对账——dsh ungroupedOrder :344-346）。
-        let ungrouped = visible.filter { !assigned.contains($0.id) }
-        let ungroupedOrdered: [String]
-        if let accountOrders {
-            ungroupedOrdered = reconciledOrder(stored: accountOrders[ungroupedKey] ?? [],
-                                               within: ungrouped.map(\.id))
-        } else {
-            ungroupedOrdered = sorted(ungrouped, by: sort).map(\.id)
-        }
-        groups.append(SidebarGroup(id: ungroupedKey, title: "未分组",
-                                   workspaceID: nil,
-                                   sessionIds: ungroupedOrdered))
         return groups
     }
 

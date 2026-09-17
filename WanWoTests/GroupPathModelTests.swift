@@ -96,8 +96,10 @@ final class GroupPathModelTests: XCTestCase {
 
     func testFsContextRouterForwardRoutesToGroupedBucket() {
         let router = FsContextRouter.shared
-        // 四桶全部路由（嵌套 tail 保真）。
-        for bucket in WanWoPaths.knownSessionBuckets {
+        // 【工作区模型修正】workspace 桶已退役（项目目录落 fakefs 持久层）——
+        // 其余三桶仍路由（嵌套 tail 保真）。
+        let routedBuckets = ["offloads", "attachments", "browser"]
+        for bucket in routedBuckets {
             let url = router.hostURL(forGuest: "/var/wanwo/\(bucket)/a/b/c.txt",
                                      sid: testSID)
             XCTAssertEqual(
@@ -106,12 +108,18 @@ final class GroupPathModelTests: XCTestCase {
                     .appendingPathComponent("a/b/c.txt").path,
                 bucket)
         }
-        // 前缀边界：workspaceX 不是 workspace（锚点 :105 边界判定语义保留）。
+        // workspace 不再路由（fakefs 原生路径——nil = 落静态/原生解析）。
+        XCTAssertNil(router.hostURL(forGuest: "/var/wanwo/workspace/a.txt",
+                                    sid: testSID))
+        // 前缀边界：workspaceX 不是已知桶（锚点 :105 边界判定语义保留）。
         XCTAssertNil(router.hostURL(forGuest: "/var/wanwo/workspaceX/a",
                                     sid: testSID))
         // 全局桶不路由（memory/skills/shared 落静态挂载表）。
         XCTAssertNil(router.hostURL(forGuest: "/var/wanwo/memory/x", sid: testSID))
         XCTAssertNil(router.hostURL(forGuest: "/var/wanwo/skills/x", sid: testSID))
+        // 项目目录（fakefs 原生路径）同样不路由。
+        XCTAssertNil(router.hostURL(
+            forGuest: "\(WanWoPaths.projectsLinuxDir)/demo/a.txt", sid: testSID))
     }
 
     // MARK: 迁移器目标形状与新 sessionPersistentDir 一致（零改动验证口径）

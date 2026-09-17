@@ -610,7 +610,8 @@ actor AgentLoop {
         // API 保留不再被 loop 调用）。
         runtimeProjection.refresh(events: deps.writer.events)
         let snapshot = deps.injector.baselineSnapshot(
-            workspace: workspace, workspacePath: WanWoPaths.workspaceLinuxDir)
+            workspace: workspace,
+            workspacePath: deps.sessionCwd ?? WanWoPaths.workspaceLinuxDir)
         if let pending = runtimeProjection.project(snapshot) {
             let event = try await deps.writer.append(.userMessage(text: pending))
             runtimeProjection.commit(text: pending, seq: event.seq)
@@ -904,7 +905,8 @@ actor AgentLoop {
 
     // MARK: - 工作区访问
 
-    nonisolated static func workspaceAccess(sessionId: String) -> WorkspaceFileAccess {
-        WorkspaceFileAccess(sessionId: sessionId)
+    nonisolated static func workspaceAccess(sessionId: String,
+                                            cwd: String? = nil) -> WorkspaceFileAccess {
+        WorkspaceFileAccess(sessionId: sessionId, workspaceCwd: cwd)
     }
 }
