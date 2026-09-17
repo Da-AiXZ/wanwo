@@ -647,8 +647,8 @@ final class AppEnvironment: ObservableObject {
         // 【工作区模型修正】会话 header cwd（创建时定格）——shell 前台/后台
         // 通道、hooks、技能 project 根与文件工具直读根的单一事实源。
         let sessionCwd = writer.header.cwd
-        registry.register(ShellTool(sessionId: sessionId, jobs: jobRegistry,
-                                    sessionCwd: sessionCwd))
+        registry.register(ShellTool(sessionId: sessionId, sessionCwd: sessionCwd,
+                                    jobs: jobRegistry))
         // M5-A J3：job_output / job_list / job_kill 三工具（dsh tool-jobs
         // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
