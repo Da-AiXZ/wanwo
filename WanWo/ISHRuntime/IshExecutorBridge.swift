@@ -1326,7 +1326,7 @@ actor IshExecutorBridge {
             // Check if already exists
             sqlite3_reset(checkStmt)
             sqlite3_clear_bindings(checkStmt)
-            bindPathBlob(checkStmt, index: 1, path: path)
+            Self.bindPathBlob(checkStmt, index: 1, path: path)
             if sqlite3_step(checkStmt) == SQLITE_ROW { continue }
 
             // Insert stat
@@ -1339,7 +1339,7 @@ actor IshExecutorBridge {
             // Insert path
             sqlite3_reset(insertPathStmt)
             sqlite3_clear_bindings(insertPathStmt)
-            bindPathBlob(insertPathStmt, index: 1, path: path)
+            Self.bindPathBlob(insertPathStmt, index: 1, path: path)
             if sqlite3_step(insertPathStmt) == SQLITE_DONE {
                 inserted += 1
             }
