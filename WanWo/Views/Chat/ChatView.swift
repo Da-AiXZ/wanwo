@@ -181,7 +181,16 @@ struct ChatView: View {
         }
         .navigationTitle("会话")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { viewModel.open() }
+        .onAppear {
+            viewModel.open()
+            // 【UI 修复批 2 · review 接线】hero 空态草稿交接：hero 发送写入的
+            // pendingFirstDraft 消费进本会话草稿框（dsh onPick 终点语义——
+            // 文本不丢，用户在会话内点发送才真正提交），消费即清零防串会话。
+            if let firstDraft = environment.pendingFirstDraft {
+                if viewModel.draft.isEmpty { viewModel.draft = firstDraft }
+                environment.pendingFirstDraft = nil
+            }
+        }
         // 会话切换/离场即释放写柄 + 取消在途回合（dsh SessionLifecycle open/dispose 配对）。
         .onDisappear { viewModel.close() }
         // A4：/permission danger-full-access 前置风险确认（dsh popupSelect
