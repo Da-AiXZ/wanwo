@@ -108,6 +108,11 @@ actor AgentLoop {
         /// logOnly 不进模型上下文）——通知/调度/引擎各面的打点经此入
         /// 事件流导出，用户一个窗口看全貌。缺省静默。
         var diagTrace: @Sendable (String) -> Void = { _ in }
+        /// 【工作区模型修正】会话 header cwd（writer.header.cwd 注入）——
+        /// 文件工具直读根（workspaceAccess cwd 缝）+ shell 执行起跑目录的
+        /// 单一事实源。nil = legacy 缺省语义（/var/wanwo/workspace 兜底）。
+        /// 带默认值纪律同 skillRegistry/hookPoints：既有调用面/测试不受扰。
+        var sessionCwd: String? = nil
     }
 
     // MARK: - 状态
