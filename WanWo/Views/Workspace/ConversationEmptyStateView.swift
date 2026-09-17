@@ -204,7 +204,9 @@ struct ConversationEmptyStateView: View {
                 composerCard {
                     Text(heroPlaceholder)
                         .font(.body)
-                        .foregroundStyle(.placeholder)
+                        // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
+                        // 系统语义占位色 placeholderText 同观感（dsh caption 灰）。
+                        .foregroundStyle(Color(uiColor: .placeholderText))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .contentShape(Rectangle())
