@@ -27,6 +27,24 @@ enum WanWoPaths {
     static let sharedLinuxDir = "/var/wanwo/shared"
     static let mcpServersLinuxDir = "/var/wanwo/mcp-servers"
     static let mountsLinuxDir = "/var/wanwo/mounts"
+    /// 工作区=项目目录根（【工作区模型修正】iSH fakefs 持久层内建真实目录——
+    /// shell/文件工具原生可见，无需 FsContextRouter 翻译；每个项目一个子目录，
+    /// 同工作区多会话共享同一份真实目录文件，dsh 语义）。
+    static let projectsLinuxDir = "/var/wanwo/projects"
+
+    /// guest cwd 是否落在项目目录根下（projects 根自身或其子目录）。
+    nonisolated static func isProjectsGuestPath(_ path: String) -> Bool {
+        return path == projectsLinuxDir || path.hasPrefix(projectsLinuxDir + "/")
+    }
+
+    /// 项目 guest 路径 → fakefs 持久层宿主根（RootfsInstaller.dataPath/<guest>
+    /// ——iSH fakefs 的宿主真身；GuestPathProber/GuestPathCanonicalizer 同一
+    /// 映射面）。非项目路径返回 nil（fail closed）。
+    nonisolated static func projectsHostRoot(forGuestPath guestPath: String) -> URL? {
+        guard isProjectsGuestPath(guestPath) else { return nil }
+        return RootfsInstaller.shared.dataPath
+            .appendingPathComponent(String(guestPath.dropFirst()), isDirectory: true)
+    }
 
     // MARK: - 宿主持久化路径
 

@@ -788,6 +788,13 @@ struct EventStreamView: View {
             // M5-A G2：资源护栏状态段（真机压测观测载体——App 级快照，置顶首段）。
             ResourceGuardSection(snapshot: model.resourceSnapshot)
             sessionSection
+            // 【批4】导出操作实体化（Section「导出」）：SettingsPanelView 容器
+            // 无 NavigationStack，.toolbar 按钮在其中不渲染——三操作（复制日志/
+            // ShareLink 导出 .jsonl/复制取证）在面板内必须以 List 行存在。
+            // 引用点自查：本视图同时被 RootView detail（带 NavigationStack，
+            // toolbar 正常渲染）使用——保留 toolbar（RootView 语境零回归），
+            // 两种容器下操作均可达，一致性方案=「toolbar + 实体行并存」。
+            exportSection
             eventListSection
         }
         .listStyle(.insetGrouped)
@@ -841,6 +848,43 @@ struct EventStreamView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+        }
+    }
+
+    /// 【批4】导出操作显式行（Section「导出」）：与 debugToolbar 三钮同源同
+    /// 语义（复制逻辑/ShareLink 原样），面板无导航容器内可达。刷新仍走
+    /// toolbar（面板内有 .refreshable 下拉刷新兜底）。
+    @ViewBuilder
+    private var exportSection: some View {
+        Section("导出") {
+            // M2.9 剪贴板导出：.jsonl 全文（UTF-8）复制到 UIPasteboard；
+            // 纯读文件不产生事件；> 2MB 截断复制并 toast 提示用导出文件。
+            Button {
+                Task { await model.copyLogToClipboard() }
+            } label: {
+                Label("复制日志到剪贴板", systemImage: "doc.on.doc")
+            }
+            .disabled(model.selectedSessionID == nil || model.isLoading)
+            .accessibilityLabel("复制日志到剪贴板")
+
+            // F070 最小前置：分享当前会话 .jsonl 原文件（iOS 16+ ShareLink；
+            // 源文件只读，副本在 Documents/WanWo-Exports/）。
+            if let exportURL = model.exportFileURL {
+                ShareLink(item: exportURL,
+                          preview: SharePreview(exportURL.lastPathComponent)) {
+                    Label("导出会话日志（.jsonl）", systemImage: "square.and.arrow.up")
+                }
+                .accessibilityLabel("导出会话日志")
+            }
+
+            // ERR-025②「复制取证」：cache-forensics 环形缓冲整段复制（与
+            // 「复制日志」分开——取证数据在内存缓冲，不在 .jsonl 事件流里）。
+            Button {
+                model.copyForensicsToClipboard()
+            } label: {
+                Label("复制缓存取证", systemImage: "doc.text.magnifyingglass")
+            }
+            .accessibilityLabel("复制缓存取证到剪贴板")
         }
     }
 
