@@ -2,25 +2,47 @@
 //  ConversationEmptyStateView.swift
 //  WanWo
 //
-//  【UI 对齐批 2 · hero 空态重做（替换整页项目选择卡）】
-//  语义源（dsh ui-conversation 逐条核实）：
-//    · ConversationRoot.tsx:293-317 —— hero 空态同屏三件：品牌/标题区 +
-//      工作区行（heroWorkspaceRow）+ composer；
+//  【UI 对齐批 1 · 工作项 1B：hero 空态主页（照 dsh 源码语义落地）】
+//  语义源（dsh 逐条核实）：
+//    · EmptyHero.tsx:132-164 HeroShell —— hero 头条行 = 品牌标 leading +
+//      headline 文本 + 预览 badge 同排（figma 34:10412：标 34 宽、gap 10）；
+//      文案 hero.headline/hero.preview =「探索未至之境」/「预览版」
+//      （ui-conversation/locales.ts:66-67 逐字）。
 //    · EmptyHero.tsx:38-62 WorkspaceChip —— 工作区胶囊（folder 图标 +
-//      项目名/引导语 + chevron）；
-//    · ConversationRoot.tsx:318-336（inert 传参）+ InputBar.tsx:125-131
-//      workspaceTrigger + ComposerContentEditable.tsx:44 —— 无工作区：
-//      composer 同一个框 inert（contentEditable=false、框内 placeholder
-//      「选择一个工作区开始」，点击整个框 = 打开工作区选择菜单）；
-//    · dsh 工作区菜单：列表行 = folder + title + 当前项勾选，
-//      尾行「添加工作区…」。
-//  添加流：菜单尾行 → 输入项目名卡（TextField + 确认/取消，过渡动画）→
-//  WorkspaceAdoption.adopt(name:environment:)（接口预锁定，
-//  WorkspaceNavigator 侧实现中）→ startSession(新工作区) → 会话打开即
-//  hero 退场（RootView.detail 按 selection 挂载点不动，形态自换）。
-//  动画纪律：交互变化一律 withAnimation + spring(response≈0.3,
-//  dampingFraction≈0.85)；菜单展开 = scale（锚定胶囊/卡底缘）+ opacity；
-//  hero ↔ 会话切换 = opacity 渐变（transition 挂本视图根层）。
+//      项目名/「选择工作区」+ chevron，恒可交互：首条消息前工作区可换）；
+//      占位文案 hero.chooseWorkspace =「选择工作区」（locales.ts:68 逐字）。
+//    · ConversationRoot.tsx:293-317 heroWorkspaceRow —— hero 空态同屏三件：
+//      品牌/标题区 + 工作区胶囊 + composer（同屏，非整页选择卡）。
+//    · ConversationRoot.tsx:285-291,318-336（chipTitle 解析 + inert 传参：
+//      sessionId===undefined 时恒 inert，须用户显式挑选工作区才激活）+
+//      InputBar.tsx:125-131 workspaceTrigger + input/editor/
+//      ComposerContentEditable.tsx:42 —— 未选工作区时 composer 同一个框
+//      inert（不可输入、占位符 placeholder.workspace =
+//      「选择一个工作区开始」locales.ts:20 逐字、点击整框 = 开工作区菜单）；
+//      有工作区可输入（占位符 placeholder.hero =
+//      「描述你想要构建的内容… / 调用指令 @ 文件或对话」locales.ts:19 逐字）。
+//    · WorkspacePicker.tsx:58-217 菜单流 —— 菜单 = 已有项目列表行
+//      （folder + title，当前项勾选 menuitemradio 语义）+ 尾部
+//      「添加工作区…」（:106,189 底部固定；locales.ts:33 逐字）；
+//      :143-157 addIsTheOnlyEntry —— 无项目时点击 = 直接进添加流
+//      （单行弹层无可选目标，锚点手势即添加动作）。
+//    · WorkspacePicker.tsx:126-134 adoptDirectory —— 添加终点 = 注册工作区
+//      后 onPick；失败弹错（WanWo 折算：WorkspaceAdoption.adopt 失败 alert，
+//      命名卡保持打开可改名重试）。
+//
+//  平台折算（iOS 不可抗力映射，非自创）：
+//    · dsh 自绘 anchored Menu → SwiftUI Menu 系统弹层（派单拍板；scale 锚定
+//      胶囊 + opacity 由系统呈现动画承接，派单动画纪律第 7 条）。
+//    · dsh IconFolderOpen16/IconFolderClose16 → SF Symbols 无 open-folder
+//      对应物：无项目 = folder（闭合），有项目 = folder.fill（见交付清单）。
+//    · 添加工作区唯一路径 = 输入名字 → WorkspaceAdoption.adopt
+//      (name:environment:)（iSH fakefs 建项目目录，用户拍板；文件 App 导入
+//      已彻底删除）。
+//  本批 composer 为简版（inert 语义 + 基本卡形态 + 发送）；全量 composer
+//  （工具行 / 权限 chip / QueueDock 等）在批 3——本文件不超前实现。
+//  动画纪律：交互变化一律 withAnimation + spring(response: 0.3,
+//  dampingFraction: 0.85)；hero ↔ 会话切换 = opacity 渐变（transition 挂
+//  本视图根层，切换侧 withAnimation 在 RootView 挂载点）。
 //
 
 import SwiftUI
@@ -28,37 +50,31 @@ import SwiftUI
 struct ConversationEmptyStateView: View {
     @ObservedObject var environment: AppEnvironment
 
-    /// 交互动画标准（任务 3：spring 丝滑，response≈0.3 / damping≈0.85）。
+    /// 交互动画标准（spring 丝滑，response 0.3 / damping 0.85）。
     private static let spring = Animation.spring(response: 0.3, dampingFraction: 0.85)
-    /// 工作区菜单宽（dsh anchored popup 家族形态；iPad 弹层惯例宽度）。
-    private static let menuWidth: CGFloat = 320
 
-    /// 工作区快照（workspaceController.follow 帧驱动——同侧栏纪律，原样迁移）。
+    /// 工作区快照（workspaceController.follow 帧驱动——同侧栏纪律）。
     @State private var workspaces: [WorkspaceRecord] = []
     @State private var followCancel: (() -> Void)?
 
-    /// 工作区选择菜单开合。
-    @State private var menuOpen = false
-    /// 「添加工作区…」输入项目名卡开合。
+    /// 「添加工作区…」命名卡开合。
     @State private var showingAddFlow = false
     /// 新工作区名草稿。
     @State private var newWorkspaceName = ""
-    /// hero composer 草稿（有工作区时可输入；发送 = startSession——
-    /// 草稿交接缝缺失，见文件尾「接口协调」注）。
+    /// hero composer 草稿（有工作区时可输入；发送 = 草稿交接 + startSession）。
     @State private var heroDraft = ""
-    /// hero composer 卡高度（菜单锚定其上缘向上生长的度量）。
-    @State private var composerHeight: CGFloat = 0
-    /// 添加失败的用户可见反馈（alert 呈现后清零；原整页卡逻辑迁移）。
+    /// 添加失败的用户可见反馈（alert 呈现后清零）。
     @State private var errorText: String?
 
-    /// 焦点工作区（胶囊标题）：selectedWorkspaceID 优先（adopt/侧栏写入），
-    /// 回落快照首项（Host 工作区序）。
+    /// 焦点工作区（胶囊标题）：仅 selectedWorkspaceID 命中时 featured
+    /// （adopt / 侧栏 / 菜单显式挑选写入）；否则为 nil = inert 态。
+    /// 对应 dsh ConversationRoot.tsx:285-291 chipTitle 解析（sessionId
+    /// === undefined 时恒为占位「选择工作区」）+ :324 `inert =
+    /// sessionId === undefined || (hero && chipTitle === undefined)`——
+    /// 未显式挑选工作区时恒 inert，无「回落快照首项」闸门旁路。
     private var featuredWorkspace: WorkspaceRecord? {
-        if let id = environment.selectedWorkspaceID,
-           let hit = workspaces.first(where: { $0.id == id }) {
-            return hit
-        }
-        return workspaces.first
+        guard let id = environment.selectedWorkspaceID else { return nil }
+        return workspaces.first(where: { $0.id == id })
     }
 
     var body: some View {
@@ -66,17 +82,7 @@ struct ConversationEmptyStateView: View {
             Color(.systemBackground)
                 .ignoresSafeArea()
             heroStack
-            // 捕获层（dsh outside click）：菜单开时全屏拦截，点外收起。
-            if menuOpen {
-                Color.black.opacity(0.001)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(Self.spring) { menuOpen = false }
-                    }
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
-            // 添加流（模态层：淡遮罩 + 居中卡；遮罩 opacity、卡片
+            // 添加流（模态层：淡遮罩 + 居中命名卡；遮罩 opacity、卡片
             // scale+opacity——两个条件子节点各自带 transition，进出成对）。
             if showingAddFlow {
                 Color.black.opacity(0.25)
@@ -93,6 +99,7 @@ struct ConversationEmptyStateView: View {
                     .zIndex(4)
             }
         }
+        // hero ↔ 会话切换 opacity 渐变（挂载点 withAnimation 由 RootView 承接）。
         .transition(.opacity)
         .task {
             subscribeWorkspaces()
@@ -111,82 +118,143 @@ struct ConversationEmptyStateView: View {
         }
     }
 
-    // MARK: - hero 同屏三件（品牌 + 胶囊 + composer）
+    // MARK: - hero 同屏三件（品牌头条 + 胶囊 + composer）
 
-    /// hero 主体（居中纵列；菜单弹层锚点挂在**内层 VStack** 上——其底缘 =
-    /// composer 底缘，overlay bottom + composer 高度内边距 = 菜单悬于
-    /// composer 上方；外层 .frame(maxHeight:) 之后挂会把锚点拉到全屏底）。
+    /// hero 主体（居中纵列；ConversationRoot.tsx:346-353 composerStack 顺序：
+    /// HeroShell → heroWorkspaceRow → inputBar）。
     private var heroStack: some View {
         VStack(spacing: 0) {
-            brandHeader
-            workspaceChip
+            heroHeadline
+            workspaceControl
                 .padding(.top, 28)
             heroComposer
                 .padding(.top, 14)
         }
-        // 工作区菜单（scale 锚定底缘 + opacity；捕获层是 ZStack 兄弟位
-        // zIndex 1——菜单开合时本层抬到 zIndex 2，菜单行点击不被捕获层拦截）。
-        .overlay(alignment: .bottom) {
-            if menuOpen {
-                workspaceMenu
-                    .padding(.bottom, composerHeight + 14)
-                    .transition(.scale(scale: 0.95, anchor: .bottom)
-                        .combined(with: .opacity))
-            }
-        }
         .padding(.horizontal, 24)
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .zIndex(menuOpen ? 2 : 0)
     }
 
-    /// 品牌区（原「万/万我」视觉保留；dsh hero 标题位）。
-    private var brandHeader: some View {
-        VStack(spacing: 12) {
+    /// hero 头条行（EmptyHero.tsx:137-156：品牌标 leading + headline 文本 +
+    /// 预览 badge 同排，标 34 宽、gap 10）。文案 locales.ts:66-67 逐字。
+    private var heroHeadline: some View {
+        HStack(alignment: .center, spacing: 10) {
+            // 品牌标（万我；dsh fish 34 宽位）。
             Text("万")
-                .font(.system(size: 22, weight: .bold))
+                .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 48, height: 48)
+                .frame(width: 34, height: 34)
                 .background(Circle().fill(Color.accentColor))
-            Text("万我")
+                .accessibilityHidden(true)
+            Text("探索未至之境")
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(.primary)
+            // 预览 badge（EmptyHero.tsx:155 previewBadge 位；locales.ts:67 逐字）。
+            Text("预览版")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule().strokeBorder(Color.secondary.opacity(0.45), lineWidth: 1)
+                )
+                .accessibilityLabel("预览版")
         }
     }
 
-    /// 工作区胶囊（EmptyHero WorkspaceChip：folder + 项目名/引导语 +
-    /// chevron；点击开工作区菜单——首条消息前可换项目/建项目）。
-    private var workspaceChip: some View {
-        Button {
-            withAnimation(Self.spring) { menuOpen.toggle() }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(featuredWorkspace == nil
-                                     ? Color.secondary : Color.accentColor)
-                Text(featuredWorkspace?.title ?? "选择工作区")
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(.primary)
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+    // MARK: - 工作区胶囊（WorkspaceChip；SwiftUI Menu 弹层 / addIsTheOnlyEntry）
+
+    /// 工作区控件（EmptyHero.tsx:38-62 WorkspaceChip + WorkspacePicker.tsx
+    /// 菜单流）：有项目 = SwiftUI Menu 弹层（列表 + 尾部「添加工作区…」；
+    /// 未显式挑选时胶囊渲染占位「选择工作区」——dsh chipTitle :285-291
+    /// sessionId===undefined 恒占位语义）；无项目 = 占位胶囊按钮，点击直接
+    /// 进添加流（:143-157 addIsTheOnlyEntry 语义——单行弹层无可选目标，
+    /// 锚点手势即添加动作）。
+    @ViewBuilder
+    private var workspaceControl: some View {
+        if workspaces.isEmpty {
+            Button {
+                openAddFlow()
+            } label: {
+                chipLabel(featured: nil)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .background(Color(.secondarySystemFill), in: Capsule())
-            .contentShape(Capsule())
+            .buttonStyle(.plain)
+            .accessibilityLabel("选择工作区")
+        } else {
+            Menu {
+                workspaceMenuContent
+            } label: {
+                chipLabel(featured: featuredWorkspace)
+            }
+            .accessibilityLabel(featuredWorkspace.map { "当前工作区 \($0.title)，切换工作区" }
+                                ?? "选择工作区")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(featuredWorkspace.map { "当前工作区 \($0.title)，切换工作区" }
-                            ?? "选择工作区")
+    }
+
+    /// 工作区菜单内容（胶囊与 inert composer 双触发点共用，同一弹层语义）：
+    /// 已有项目列表（WorkspacePicker.tsx:107-113 items：folder + title，
+    /// 当前项勾选 = menuitemradio selectedId 语义）+ 尾部「添加工作区…」
+    /// （:106,189 pinAdd：列表尾固定行；locales.ts:33 menu.addWorkspace 逐字）。
+    @ViewBuilder
+    private var workspaceMenuContent: some View {
+        ForEach(workspaces) { workspace in
+            Button {
+                pickWorkspace(workspace)
+            } label: {
+                HStack {
+                    Label(workspace.title, systemImage: "folder")
+                    if workspace.id == featuredWorkspace?.id {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+        }
+        Divider()
+        Button {
+            openAddFlow()
+        } label: {
+            Label("添加工作区…", systemImage: "plus")
+        }
+    }
+
+    /// 胶囊外观（EmptyHero.tsx:45-61：folder + label + chevron，恒可交互）。
+    /// 无项目 = 闭合文件夹 +「选择工作区」占位（:55-58；locales.ts:68 逐字）；
+    /// 有项目 = 打开文件夹 + 项目名（iOS 无 open-folder SF Symbol，以
+    /// folder.fill 折算——见交付清单不可抗力条目）。
+    private func chipLabel(featured: WorkspaceRecord?) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: featured == nil ? "folder" : "folder.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(featured == nil
+                                 ? Color.secondary : Color.accentColor)
+            Text(featured?.title ?? "选择工作区")
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+                .foregroundStyle(.primary)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(Color(.secondarySystemFill), in: Capsule())
+        .contentShape(Capsule())
+    }
+
+    /// 选中一个工作区（ConversationRoot.tsx:306-312 onPick 终点语义）：
+    /// 草稿迁移（hero 输入文本 = 新会话 composer draft，不丢）→
+    /// startSession（WorkspaceNavigator 内 connectWorkspace 复用 blank 或
+    /// 新建会话，navigation.ts:114-133 语义）→ 会话打开即 hero 退场。
+    private func pickWorkspace(_ workspace: WorkspaceRecord) {
+        migrateHeroDraft()
+        environment.workspaceNavigator.startSession(workspace.id)
     }
 
     // MARK: - composer（无工作区 inert / 有工作区可输入；同一 dock 卡形态）
 
-    /// 占位文案（dsh 逐字）：inert =「选择一个工作区开始」；active =
-    /// 「描述你想要构建的内容… / 调用指令 @ 文件或对话」。
+    /// 占位文案（dsh 逐字）：inert = placeholder.workspace
+    /// 「选择一个工作区开始」（locales.ts:20）；active = placeholder.hero
+    /// 「描述你想要构建的内容… / 调用指令 @ 文件或对话」（locales.ts:19）。
     private var heroPlaceholder: String {
         featuredWorkspace == nil
             ? "选择一个工作区开始"
@@ -196,33 +264,38 @@ struct ConversationEmptyStateView: View {
     @ViewBuilder
     private var heroComposer: some View {
         if featuredWorkspace == nil {
-            // inert 态（ConversationRoot.tsx:318-336）：不可输入、不可聚焦；
-            // 点击整个框 = 打开工作区选择菜单。
-            Button {
-                withAnimation(Self.spring) { menuOpen = true }
-            } label: {
-                composerCard {
-                    Text(heroPlaceholder)
-                        .font(.body)
-                        // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
-                        // 系统语义占位色 placeholderText 同观感（dsh caption 灰）。
-                        .foregroundStyle(Color(uiColor: .placeholderText))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            // inert 态（ConversationRoot.tsx:324-336 + InputBar.tsx:127-131
+            // workspaceTrigger + input/editor/ComposerContentEditable.tsx:42
+            // contentEditable 门）：不可输入、不可聚焦；点击整框 = 开工作区
+            // 选择流。分两相（WorkspacePicker.tsx:143-157 addIsTheOnlyEntry）：
+            //   · 无任何工作区 → 单行弹层无可选目标，点击直接进添加流；
+            //   · 有工作区未显式挑选 → 点击 = 开工作区菜单（项目列表 + 尾部
+            //     添加；与胶囊共用同一菜单内容，弹层锚定整卡——iOS Menu 锚定
+            //     label 的平台折算，dsh 锚定胶囊按钮）。
+            if workspaces.isEmpty {
+                Button {
+                    openAddFlow()
+                } label: {
+                    inertComposerCard
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("选择一个工作区开始")
+            } else {
+                Menu {
+                    workspaceMenuContent
+                } label: {
+                    inertComposerCard
+                }
+                .accessibilityLabel("选择一个工作区开始")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("选择一个工作区开始")
         } else {
-            // 可输入态：文本区 + 底行（左=默认权限挡位徽章，右=圆形发送；
-            // 发送 = startSession + 草稿交接——hero 随 selection 切换退场）。
+            // 可输入态（本批简版 composer：文本区 + 发送；工具行 / 权限 chip /
+            // QueueDock 等全量 composer 在批 3——不超前实现）。
             composerCard {
                 TextField(heroPlaceholder, text: $heroDraft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
-                    .disabled(featuredWorkspace == nil)
                 HStack(spacing: 8) {
-                    permissionBadge
                     Spacer(minLength: 0)
                     Button {
                         sendHeroDraft()
@@ -243,32 +316,22 @@ struct ConversationEmptyStateView: View {
         }
     }
 
-    /// 默认权限挡位徽章（dsh 图 3 底行左侧"完全权限"位——hero 阶段只读
-    /// 显示新会话默认档；可交互挡位在进入会话后的 ChatView composer）。
-    /// 三挡中文/图标与 PermissionSelectView.options 同表。
-    private var permissionBadge: some View {
-        let preset = environment.permissionDefaults.defaultPreset
-        let (label, glyph): (String, String) = {
-            switch preset {
-            case "danger-full-access": return ("完全权限", "exclamationmark.shield")
-            case "read-only": return ("仅可查看", "checkmark.shield")
-            default: return ("工作区内修改", "square.and.pencil")
-            }
-        }()
-        return HStack(spacing: 5) {
-            Image(systemName: glyph)
-                .font(.system(size: 12))
-            Text(label)
-                .font(.footnote.weight(.medium))
+    /// inert composer 卡（占位文本整卡即触发点；dsh「同一个框 inert」语义——
+    /// InputBar.tsx:382-393 触发点击落在卡上、整卡即选择目标）。
+    private var inertComposerCard: some View {
+        composerCard {
+            Text(heroPlaceholder)
+                .font(.body)
+                // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
+                // 系统语义占位色 placeholderText 同观感（dsh caption 灰）。
+                .foregroundStyle(Color(uiColor: .placeholderText))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(.tertiarySystemFill), in: Capsule())
+        .contentShape(Rectangle())
     }
 
-    /// dock 卡形态（InputBar.module.css .card 语义：大圆角、上 pad 10、
-    /// 文本区与底行间距 12——ChatView inputBar 同一形态，双处一致）。
+    /// dock 卡形态（InputBar.module.css .card 语义：大圆角、上 pad、文本区与
+    /// 底行间距 12——ChatView inputBar 同一形态，双处一致）。
     private func composerCard<Content: View>(
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -278,118 +341,38 @@ struct ConversationEmptyStateView: View {
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .overlay(RoundedRectangle(cornerRadius: 20)
                 .stroke(Color(.separator).opacity(0.4), lineWidth: 0.5))
-            // 菜单锚定度量（composer 卡实际高度）。
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: HeroComposerHeightKey.self,
-                                           value: geo.size.height)
-                }
-            )
-            .onPreferenceChange(HeroComposerHeightKey.self) { composerHeight = $0 }
     }
 
-    private struct HeroComposerHeightKey: PreferenceKey {
-        static var defaultValue: CGFloat = 0
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-            value = max(value, nextValue())
-        }
-    }
-
+    /// 发送（dsh hero onPick 终点语义）：草稿经 pendingFirstDraft 缝交接给
+    /// 新会话（ChatView onAppear 消费进会话草稿框后清零——消费点不动），
+    /// startSession 开会话（connectWorkspace 复用 blank 或新建）→ hero 随
+    /// selection 切换退场。
     private func sendHeroDraft() {
         guard let featured = featuredWorkspace else { return }
-        // 【UI 修复批 2 · review 接线】草稿交接缝（dsh onPick 终点语义——
-        // hero 输入文本 = 新会话 composer draft，不丢）：先写缝再开会话，
-        // ChatView onAppear 消费（viewModel.draft 空时填入）。
-        environment.pendingFirstDraft = heroDraft
+        migrateHeroDraft()
         environment.workspaceNavigator.startSession(featured.id)
+    }
+
+    /// 草稿交接（dsh「hero 输入文本 = 新会话 composer draft」语义）：
+    /// 非空草稿写 AppEnvironment.pendingFirstDraft 缝并清空 hero 草稿；
+    /// 空草稿不动缝（避免把 nil 覆盖成空串触发无谓消费）。
+    private func migrateHeroDraft() {
+        let draft = heroDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.isEmpty else { return }
+        environment.pendingFirstDraft = heroDraft
         heroDraft = ""
     }
 
-    // MARK: - 工作区菜单（列表行 + 「添加工作区…」尾行）
+    // MARK: - 添加流（命名卡 → adopt → startSession；唯一路径）
 
-    private var workspaceMenu: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(workspaces) { workspace in
-                menuRow(workspace)
-            }
-            if !workspaces.isEmpty {
-                Divider()
-                    .padding(.vertical, 4)
-            }
-            addWorkspaceMenuRow
+    /// 打开添加流（命名卡；菜单行 / 占位胶囊 / inert composer 三入口同动作）。
+    private func openAddFlow() {
+        withAnimation(Self.spring) {
+            showingAddFlow = true
         }
-        .padding(8)
-        .frame(width: Self.menuWidth, alignment: .leading)
-        .background(.regularMaterial,
-                    in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14)
-            .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.12), radius: 14, y: 4)
     }
 
-    /// 工作区行（folder + title；当前项勾选——dsh menuitemradio 语义）。
-    private func menuRow(_ workspace: WorkspaceRecord) -> some View {
-        let isCurrent = workspace.id == featuredWorkspace?.id
-        return Button {
-            withAnimation(Self.spring) { menuOpen = false }
-            environment.workspaceNavigator.startSession(workspace.id)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20)
-                Text(workspace.title)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                if isCurrent {
-                    Image(systemName: "checkmark")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(isCurrent ? Color.accentColor.opacity(0.08)
-                                  : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("在「\(workspace.title)」中开始新会话")
-    }
-
-    /// 「添加工作区…」尾行（恒在列表尾；无工作区时即菜单唯一项——
-    /// dsh addIsTheOnlyEntry 语义）。
-    private var addWorkspaceMenuRow: some View {
-        Button {
-            withAnimation(Self.spring) {
-                menuOpen = false
-                showingAddFlow = true
-            }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 20)
-                Text("添加工作区…")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("添加工作区")
-    }
-
-    // MARK: - 添加流（输入项目名卡 → adopt → startSession）
-
+    /// 命名卡（万我现有自绘卡风格沿用）：输入项目名 → 确认即建。
     private var addWorkspaceCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("添加工作区")
@@ -423,9 +406,10 @@ struct ConversationEmptyStateView: View {
         }
     }
 
-    /// 确认：WorkspaceAdoption.adopt(name:environment:)（接口预锁定）→
-    /// startSession(新工作区)（dsh 添加流终点语义）。失败保持卡片打开
-    /// （可改名重试），alert 呈现原因。
+    /// 确认：WorkspaceAdoption.adopt(name:environment:)（iSH fakefs 建项目
+    /// 目录 + 注册工作区，唯一路径）→ 草稿迁移 → startSession(新工作区)
+    /// （dsh adoptDirectory :126-134 终点语义：adopt 成功即 onPick）。失败
+    /// 保持卡片打开（可改名重试），alert 呈现原因（:130-134 错误面对应）。
     private func confirmAddWorkspace() {
         let name = newWorkspaceName.trimmingCharacters(
             in: .whitespacesAndNewlines)
@@ -437,15 +421,18 @@ struct ConversationEmptyStateView: View {
                 showingAddFlow = false
                 newWorkspaceName = ""
             }
+            migrateHeroDraft()
             environment.workspaceNavigator.startSession(workspace.id)
         } catch {
-            errorText = "添加工作区失败：\(String(describing: error))"
+            // AddError 是 LocalizedError（中文 errorDescription）——
+            // String(describing:) 只会打印英文 case 名。
+            errorText = "添加工作区失败：\(error.localizedDescription)"
         }
     }
 
-    // MARK: - 数据订阅（原整页卡逻辑迁移，勿丢）
+    // MARK: - 数据订阅（workspaceController.follow 快照流，同侧栏纪律）
 
-    /// workspaceController.follow 订阅（B3 follow 快照流——同侧栏纪律）。
+    /// workspaceController.follow 订阅（follow 快照流驱动工作区列表）。
     private func subscribeWorkspaces() {
         guard followCancel == nil else { return }
         let (stream, cancel) = environment.workspaceController.follow()
@@ -457,16 +444,3 @@ struct ConversationEmptyStateView: View {
         }
     }
 }
-
-// MARK: - 接口协调（呈报主理人，本域不可自行改动）
-//
-//  1. WorkspaceAdoption.adopt 签名切换：本文件按预锁定新签名
-//     adopt(name: String, environment: AppEnvironment) throws -> WorkspaceRecord
-//     调用；WorkspaceNavigator.swift 旧签名 adopt(pickedURL:environment:)
-//     由负责工程师同步切换（两侧合流前 CI 会有一个不匹配窗口）。
-//  2. hero 草稿交接：hero composer 有工作区时发送只做 startSession，
-//     草稿文本不进新会话输入框——需要 AppEnvironment 暴露
-//     pendingFirstDraft: String?（ChatView init/onAppear 消费后清零）。
-//     未接线前行为 = dsh onPick 同款「开新会话不带稿」。
-//  3. hero ↔ 会话切换 opacity 渐变：transition 已挂本视图根层，生效还需
-//     RootView.detail 的 selection 分支切换包 withAnimation（App/ 域）。
