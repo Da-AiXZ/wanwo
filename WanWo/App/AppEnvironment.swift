@@ -90,6 +90,12 @@ final class AppEnvironment: ObservableObject {
     /// 既有行为）。侧栏工作区选择 UI 随 B4 左侧栏欠账批；本批先落注入链路。
     @Published var selectedWorkspaceID: String?
 
+    /// 【UI 修复批 2 · review 接线】hero 空态草稿交接缝：hero composer 发送时
+    /// 写入（startSession 之前），ChatView onAppear 消费进会话草稿框后清零。
+    /// dsh 语义：hero 的输入文本就是新会话的 composer draft（onPick 开会话
+    /// 文本不丢）——未接线前 hero 发送丢字（用户每次新建对话必撞）。
+    @Published var pendingFirstDraft: String?
+
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
     nonisolated func diagTrace(sessionId: String, _ note: String) {
