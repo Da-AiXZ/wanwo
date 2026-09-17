@@ -214,14 +214,15 @@ struct ConversationEmptyStateView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("选择一个工作区开始")
         } else {
-            // 可输入态：文本区 + 底行（右侧圆形发送；发送 = startSession
-            // 打开该工作区会话——hero 随 selection 切换退场）。
+            // 可输入态：文本区 + 底行（左=默认权限挡位徽章，右=圆形发送；
+            // 发送 = startSession + 草稿交接——hero 随 selection 切换退场）。
             composerCard {
                 TextField(heroPlaceholder, text: $heroDraft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .disabled(featuredWorkspace == nil)
                 HStack(spacing: 8) {
+                    permissionBadge
                     Spacer(minLength: 0)
                     Button {
                         sendHeroDraft()
@@ -240,6 +241,30 @@ struct ConversationEmptyStateView: View {
                 .padding(.top, 12)
             }
         }
+    }
+
+    /// 默认权限挡位徽章（dsh 图 3 底行左侧"完全权限"位——hero 阶段只读
+    /// 显示新会话默认档；可交互挡位在进入会话后的 ChatView composer）。
+    /// 三挡中文/图标与 PermissionSelectView.options 同表。
+    private var permissionBadge: some View {
+        let preset = environment.permissionDefaults.defaultPreset
+        let (label, glyph): (String, String) = {
+            switch preset {
+            case "danger-full-access": return ("完全权限", "exclamationmark.shield")
+            case "read-only": return ("仅可查看", "checkmark.shield")
+            default: return ("工作区内修改", "square.and.pencil")
+            }
+        }()
+        return HStack(spacing: 5) {
+            Image(systemName: glyph)
+                .font(.system(size: 12))
+            Text(label)
+                .font(.footnote.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(.tertiarySystemFill), in: Capsule())
     }
 
     /// dock 卡形态（InputBar.module.css .card 语义：大圆角、上 pad 10、
@@ -272,9 +297,12 @@ struct ConversationEmptyStateView: View {
 
     private func sendHeroDraft() {
         guard let featured = featuredWorkspace else { return }
-        // 草稿文本暂不跨视图交接（AppEnvironment 待挂 pendingFirstDraft 缝，
-        // 见文件尾接口协调注）；导航本身与 dsh onPick 终点一致。
+        // 【UI 修复批 2 · review 接线】草稿交接缝（dsh onPick 终点语义——
+        // hero 输入文本 = 新会话 composer draft，不丢）：先写缝再开会话，
+        // ChatView onAppear 消费（viewModel.draft 空时填入）。
+        environment.pendingFirstDraft = heroDraft
         environment.workspaceNavigator.startSession(featured.id)
+        heroDraft = ""
     }
 
     // MARK: - 工作区菜单（列表行 + 「添加工作区…」尾行）
