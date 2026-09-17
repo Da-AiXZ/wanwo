@@ -14,6 +14,9 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
+    /// 【UI 修复批 2 · review 接线】App 环境引用（hero 草稿交接缝的写入端
+    /// pendingFirstDraft 消费所需；init 已收参，补存）。
+    private let environment: AppEnvironment
     /// 【批2 B⑥】当前会话 id（透传 ToolCardView——wanwo:// 缩略的会话桶
     /// 解析锚 resolveWanwoURL(_:sessionID:)；复用 init 入参，不改 VM 可见性）。
     private let sessionID: String
@@ -67,6 +70,7 @@ struct ChatView: View {
     @State private var expandedProcesses: Set<String> = []
 
     init(environment: AppEnvironment, sessionID: String) {
+        self.environment = environment
         self.sessionID = sessionID
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
                                                              sessionID: sessionID))
