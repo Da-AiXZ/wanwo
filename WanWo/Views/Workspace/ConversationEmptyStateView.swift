@@ -70,6 +70,24 @@
 //      折算为恒透明）、13/20 wt500、max-width 360、label 恒全对比度；
 //      .folder:164-167 label-primary；.chevron:175-178 label-caption。
 //
+//  【批 1 重做 · hero 照用户已验收两图收口（2026-09-18）】
+//  基准：IMG_2328.png（万我现状问题图）+ IMG_2326.jpeg（dsh 实跑目标图，
+//  用户逐图认可）。值源升格 = analysis/dsh-full-source-compendium.md 第 5 章
+//  （ui-conversation 逐文件记录）+ 令牌总表；此前取 HeroShell.module.css
+//  `.body > .workspaceRow` 的行值作废——实际生效类是 ConversationRoot.module.css
+//  `.heroWorkspaceRow`（gap 2 / margin-top 4 / padding-left 20）与
+//  `.composerHero`（gap 8 / padding-bottom 32）。
+//    · badge 文案 =「内测版」（用户实跑 build 裁定；快照 locales.ts:67 为
+//      「预览版」——分歧登记，2026-09-18 用户截图裁定为准）。
+//    · 胶囊行两枚并排（选择工作区 + 权限模式），行 leading 对齐卡缘（居中废）。
+//    · inert 虚线卡补静态底行（左「+」灰 28 位、右 34px 蓝圆发送钮 s0 态
+//      opacity 0.45 示意；整卡仍单触发点）。
+//    · 发送钮逐值修正 = .primary:925 34px（30px 目测值废）、底色
+//      --dsw-alias-button-info-fill = deepseek-500 = rgb(65,118,230)、
+//      禁用态 opacity 0.4；「+」钮 = .add:263-275 28px。
+//    · hero 退场转场 = 上移淡出（图 2 行为链；挂载点动画 =
+//      RootView.swift:177 .animation(spring 0.3/0.85, value: selection==nil)）。
+//
 
 import SwiftUI
 
@@ -104,9 +122,23 @@ private struct DashedTriggerButtonStyle: ButtonStyle {
 
 struct ConversationEmptyStateView: View {
     @ObservedObject var environment: AppEnvironment
+    /// 「权限模式」chip 数据源宿主（App 级新会话默认权限档，与设置页
+    /// 权限行同一 store；ObservedObject 直持——setDefault 的 objectWillChange
+    /// 即时联动 chip（PermissionDefaultsView.swift:24-34 同纪律）。
+    @ObservedObject private var permissionStore: PermissionDefaultStore
+
+    init(environment: AppEnvironment) {
+        _environment = ObservedObject(wrappedValue: environment)
+        _permissionStore = ObservedObject(wrappedValue: environment.permissionDefaults)
+    }
 
     /// 交互动画标准（spring 丝滑，response 0.3 / damping 0.85）。
     private static let spring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+
+    /// 「权限模式」chip 完全权限前置风险确认（PermissionDefaultsView
+    /// :106-114,96-101 同纪律）。
+    @State private var confirmingFullAccess = false
+    @State private var acknowledged = false
 
     /// 工作区快照（workspaceController.follow 帧驱动——同侧栏纪律）。
     @State private var workspaces: [WorkspaceRecord] = []
@@ -156,8 +188,13 @@ struct ConversationEmptyStateView: View {
                     .zIndex(4)
             }
         }
-        // hero ↔ 会话切换 opacity 渐变（挂载点 withAnimation 由 RootView 承接）。
-        .transition(.opacity)
+        // hero ↔ 会话切换（图 2 行为链）：hero 退场 = 上移淡出（offset -12
+        // 渐隐），进场 = 纯 opacity（进场级联由三件 heroEntrance 承接）；
+        // 挂载点动画 = RootView.swift:177 .animation(spring 0.3/0.85,
+        // value: selection == nil)——会话侧淡入由 ChatView 挂载承接。
+        .transition(.asymmetric(
+            insertion: .opacity,
+            removal: .offset(y: -12).combined(with: .opacity)))
         .task {
             subscribeWorkspaces()
         }
@@ -177,30 +214,48 @@ struct ConversationEmptyStateView: View {
 
     // MARK: - hero 同屏三件（品牌头条 + 胶囊 + composer）
 
-    /// hero 主体（居中纵列；HeroShell.module.css .root:5-12 横 pad 24 +
-    /// .stack:15-24 纵 gap 12、max-width = --dsh-composer-card-max-width）。
-    /// 卡宽换算：ConversationRoot.module.css:28-32 content-width =
-    /// clamp(680px, 64% 列宽, 920px)，卡 = content + 32 → 下限 712 / 上限
-    /// 952；iPad hero 静态布局（无宽度拖拽偏好）取下限 712。
-    /// 进场动画：三件依次淡入 + 上移 8pt（每级延迟 0.05s，spring 0.3/0.85，
-    /// onAppear 触发一次——headline → 胶囊 → composer）。
+    /// hero 主体（ConversationRoot.module.css .composerHero:868 逐值：纵
+    /// gap 8、padding-bottom 32、宽 min(卡上限+2×16, 100%) → 卡 712；
+    /// .root:11 横 pad 24。headline 在栈内居中（.headline:34 justify-content
+    /// :center），胶囊行/composer leading 对齐卡缘（居中废）。
+    /// 进场动画：三件依次淡入 + 上移 8pt（级联 0/.05/.1s，spring 0.3/0.85，
+    /// onAppear 触发一次——headline → 胶囊行 → composer）。
     private var heroStack: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) { // .composerHero:868 gap 8
             heroHeadline
+                .frame(maxWidth: .infinity, alignment: .center)
                 .heroEntrance(appeared: heroAppeared, stage: 0)
-            workspaceControl
-                .padding(.leading, 8) // .workspaceRow:126-133 行左内边距 8
+            heroWorkspaceRow
                 .heroEntrance(appeared: heroAppeared, stage: 1)
             heroComposer
                 .heroEntrance(appeared: heroAppeared, stage: 2)
         }
-        .padding(.horizontal, 24) // .root:11 padding 0 24px
-        .frame(maxWidth: 712)     // --dsh-composer-card-max-width 下限（见上换算）
+        .padding(.bottom, 32)     // .composerHero:868 padding-bottom 32px
+        .frame(maxWidth: 712)     // 卡本体 ≤712（--dsh-composer-card-max-width 下限）
+        .padding(.horizontal, 24) // .root:11 padding 0 24px（外层根容器 pad——
+                                  //  挂在 frame 之后，卡本体不被动缩）
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             guard !heroAppeared else { return }
             heroAppeared = true
         }
+    }
+
+    /// 胶囊行（ConversationRoot.module.css .heroWorkspaceRow:868 逐值：
+    /// gap 2、margin-top 4、padding-left 20——dsh 侧卡缘在
+    /// --dsh-composer-side-clearance（16）处，胶囊视觉再内缩 4px；行
+    /// leading 对齐卡缘）。
+    /// 【槽位登记】dsh 原行含 agentPreset 槽（ConversationRoot.tsx:315
+    /// renderSlot('conversation.hero.agentPreset')）；万我按 2026-09-18
+    /// 用户裁定只做两枚 chip（工作区 + 权限模式），agentPreset 槽位省略
+    /// （对照存档：agent-preset 本就未拍板不做）——审计链闭合登记。
+    private var heroWorkspaceRow: some View {
+        HStack(spacing: 2) {      // :868 gap 2px
+            workspaceControl
+            permissionChip
+        }
+        .padding(.top, 4)         // :868 margin-top 4px
+        .padding(.leading, 20)    // :868 padding-left 20px
     }
 
     /// hero 头条行（HeroShell.module.css .headline:29-39：34px 槽位 +
@@ -227,8 +282,9 @@ struct ConversationEmptyStateView: View {
             // + margin-top 2 / margin-left -3（HeroShell.module.css:50-51）
             // → 居中 HStack 内 offset(x:-3, y:-5)（行高 32、badge 高 18+1、
             // margin 2 → 顶部 y=2，相对居中位上移 (32-19)/2-2 ≈ 4.5 取 5）。
-            // locales.ts:67 逐字。
-            Text("预览版")
+            // 文案「内测版」：快照 locales.ts:67 为「预览版」，用户实跑
+            // build 显示「内测版」——2026-09-18 用户截图裁定为准（分歧登记）。
+            Text("内测版")
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(.primary)
                 .padding(EdgeInsets(top: 1, leading: 7, bottom: 0, trailing: 7))
@@ -238,7 +294,7 @@ struct ConversationEmptyStateView: View {
                         .opacity(0.06),
                     lineWidth: 0.5))
                 .offset(x: -3, y: -5)
-                .accessibilityLabel("预览版")
+                .accessibilityLabel("内测版")
         }
     }
 
@@ -324,6 +380,99 @@ struct ConversationEmptyStateView: View {
         .frame(maxWidth: 360, alignment: .leading) // :140 max-width 360
     }
 
+    /// 「权限模式」chip（图 2 基准：盾形图标 +「权限模式」+ chevron；外观
+    /// 逐值同 .workspace:136-151——gap 4、min-height 28、padding 0 8、13px
+    /// wt500、透明底、label 全对比度）。数据源 = App 级新会话默认权限档
+    /// （PermissionDefaultStore.defaultPreset——与设置页权限行、ChatView
+    /// dock 新会话默认同源）；点击弹三挡 Menu（文案与 PermissionSelectView
+    /// .options / PermissionDefaultsView.options 同表逐字，当前档勾选）；
+    /// 完全权限先 RiskConfirmation（PermissionDefaultsView:106-114 同纪律，
+    /// 四段文案 = locales.ts:12-16 zh 新会话变体逐字）。
+    private var permissionChip: some View {
+        Menu {
+            ForEach(permissionOptions, id: \.id) { option in
+                Button {
+                    choosePermission(option.id)
+                } label: {
+                    if option.id == permissionStore.defaultPreset {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                // 盾形图标（dsh PermissionSelect design set 1556 盾形的
+                // SF Symbols 等义映射——PermissionSelectView.swift:69 同款）。
+                Image(systemName: "shield")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.primary)
+                Text("权限模式")
+                    .font(.system(size: 13, weight: .medium)) // 13/20 wt500
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary) // .chevron label-caption
+            }
+            .padding(.horizontal, 8)  // :142 padding 0 8px
+            .frame(minHeight: 28)     // :141 min-height 28px
+            .contentShape(Capsule())
+        }
+        .accessibilityLabel("权限模式，当前：\(currentPermissionLabel)")
+        .fullScreenCover(isPresented: $confirmingFullAccess,
+                         onDismiss: { acknowledged = false }) {
+            ZStack {
+                permissionConfirmSheet
+            }
+            .presentationBackground(.clear) // iOS 16.4+；P2-⑫/P1-6 同款
+        }
+    }
+
+    /// 三挡表（PermissionSelectView.swift:47-51 / PermissionDefaultsView
+    /// .options 同表逐字；custom 档 WanWo 无——恒全列）。
+    private let permissionOptions: [(id: String, label: String)] = [
+        ("read-only", "仅可查看"),
+        ("workspace-write", "工作区内修改"),
+        ("danger-full-access", "完全权限"),
+    ]
+
+    private var currentPermissionLabel: String {
+        permissionOptions.first { $0.id == permissionStore.defaultPreset }?.label
+            ?? permissionStore.defaultPreset
+    }
+
+    /// 选择（PermissionDefaultsView.choose :106-114 同语义：同挡 no-op、
+    /// 完全权限先确认、其余直接 setDefault 持久化）。
+    private func choosePermission(_ id: String) {
+        if id == permissionStore.defaultPreset { return }
+        if id == "danger-full-access" {
+            acknowledged = false
+            confirmingFullAccess = true
+            return
+        }
+        _ = permissionStore.setDefault(named: id)
+    }
+
+    /// RiskConfirmation 四段文案 = locales.ts:12-16 zh 逐字（新会话变体，
+    /// PermissionDefaultsView.confirmSheet :118-131 同文）。
+    private var permissionConfirmSheet: some View {
+        RiskConfirmationView(
+            title: "确认启用完全权限？",
+            description: "启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，"
+                + "包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
+            acknowledgeLabel: "我已了解风险，并愿意继续",
+            cancelLabel: "取消",
+            confirmLabel: "启用完全权限",
+            acknowledged: $acknowledged,
+            onCancel: { confirmingFullAccess = false },
+            onConfirm: {
+                confirmingFullAccess = false
+                _ = permissionStore.setDefault(named: "danger-full-access")
+            })
+    }
+
     /// 选中一个工作区（ConversationRoot.tsx:306-312 onPick 终点语义）：
     /// 草稿迁移（hero 输入文本 = 新会话 composer draft，不丢）→
     /// startSession（WorkspaceNavigator 内 connectWorkspace 复用 blank 或
@@ -394,11 +543,21 @@ struct ConversationEmptyStateView: View {
                         Button {
                             sendHeroDraft()
                         } label: {
+                            // .primary:925 逐值：34px 蓝圆白箭头（底色
+                            // --dsw-alias-button-info-fill = deepseek-500 =
+                            // rgb(65,118,230)，令牌总表 :277）；disabled
+                            // opacity 0.4（:925）；.primary 的
+                            // translateY(-2px) 抵消由 .row 顶垫 2px（:220-223
+                            // 「2px moved from the bottom pad to the top」）
+                            // 整行等移吸收——SwiftUI 侧底行 padding-top 2
+                            // 已含，无需单钮补偿。
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .frame(width: 30, height: 30)
-                                .background(Circle().fill(Color.accentColor))
+                                .frame(width: 34, height: 34)
+                                .background(Circle().fill(dshBusinessBlue))
+                                .opacity(heroDraft.trimmingCharacters(
+                                    in: .whitespaces).isEmpty ? 0.4 : 1)
                         }
                         .buttonStyle(.plain)
                         .disabled(heroDraft.trimmingCharacters(in: .whitespaces)
@@ -415,16 +574,38 @@ struct ConversationEmptyStateView: View {
     /// InputBar.tsx:382-393 触发点击落在卡上、整卡即选择目标）。文本区照
     /// .input:158-164 padding 4/8/0/16 + .hero .input:208-210 最小高 52、
     /// 正文 14；卡皮 = 虚线触发态（补-1，.cardWorkspaceTrigger:72-98）。
+    /// 底行照图 2 补齐（静态示意，整卡仍单触发点）：左「+」（.add:263-275
+    /// 28px 位；图 2 素面灰 rgb(97,102,107)——selector 底色弱不可辨）+
+    /// 右发送钮（.primary:925 34px 蓝圆白箭头；s0 态示意 opacity 0.45）。
     private var inertComposerCard: some View {
         ComposerCard(dashedStroke: true) {
-            Text(heroPlaceholder)
-                .font(.system(size: 14)) // content-font-size 14
-                // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
-                // 系统语义占位色 placeholderText 同观感（dsh .placeholder:189-195
-                // caption 灰 #ADB2B8/#81858C 同族）。
-                .foregroundStyle(Color(uiColor: .placeholderText))
-                .padding(EdgeInsets(top: 4, leading: 16, bottom: 0, trailing: 8))
-                .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
+            VStack(spacing: 12) { // .card:39 gap 12px
+                Text(heroPlaceholder)
+                    .font(.system(size: 14)) // content-font-size 14
+                    // iOS 16 兼容：.placeholder ShapeStyle 是 iOS 17+——
+                    // 系统语义占位色 placeholderText 同观感（dsh
+                    // .placeholder:189-195 caption 灰 #ADB2B8/#81858C 同族）。
+                    .foregroundStyle(Color(uiColor: .placeholderText))
+                    .padding(EdgeInsets(top: 4, leading: 16, bottom: 0, trailing: 8))
+                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color(red: 97 / 255.0,
+                                               green: 102 / 255.0,
+                                               blue: 107 / 255.0))
+                        .frame(width: 28, height: 28) // .add:267-268 28px
+                    Spacer(minLength: 0) // .row:218 space-between
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34) // .primary:925 34px
+                        .background(Circle().fill(dshBusinessBlue))
+                        .opacity(0.45) // s0 态示意（redo 令 #3）
+                }
+                .padding(EdgeInsets(top: 2, leading: 8, bottom: 6, trailing: 8))
+                .accessibilityHidden(true) // 静态示意件——整卡才是触发点
+            }
         }
         .contentShape(Rectangle())
     }
