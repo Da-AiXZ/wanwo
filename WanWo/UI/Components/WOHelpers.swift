@@ -154,23 +154,30 @@ public enum WOAnchoredPlacement {
     public static func place(anchor: CGRect, panelSize: CGSize,
                              side: WOPopupSide, align: WOPopupAlign, gap: CGFloat,
                              viewport: CGRect) -> CGPoint {
-        var x: CGFloat
+        // x/y 均在 switch 每分支完整赋值（确定性初始化；7.1.10 行 3078 语义）
+        let x: CGFloat
         let y: CGFloat
         switch side {
-        case .bottom: y = anchor.maxY + gap
-        case .top: y = anchor.minY - gap - panelSize.height
-        case .right: x = anchor.maxX + 4; y = anchor.minY
-        }
-        if side != .right {
+        case .bottom:
+            y = anchor.maxY + gap
             switch align {
             case .start: x = anchor.minX
             case .end: x = anchor.maxX - panelSize.width
             }
+        case .top:
+            y = anchor.minY - gap - panelSize.height
+            switch align {
+            case .start: x = anchor.minX
+            case .end: x = anchor.maxX - panelSize.width
+            }
+        case .right:
+            x = anchor.maxX + 4
+            y = anchor.minY
         }
         if panelSize.width > 0, panelSize.height > 0 {
-            x = min(max(x, viewport.minX + margin), viewport.maxX - margin - panelSize.width)
-            let clampedY = min(max(y, viewport.minY + margin), viewport.maxY - margin - panelSize.height)
-            return CGPoint(x: x, y: clampedY)
+            let cx = min(max(x, viewport.minX + margin), viewport.maxX - margin - panelSize.width)
+            let cy = min(max(y, viewport.minY + margin), viewport.maxY - margin - panelSize.height)
+            return CGPoint(x: cx, y: cy)
         }
         return CGPoint(x: x, y: y)
     }
