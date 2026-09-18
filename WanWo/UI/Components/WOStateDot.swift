@@ -71,23 +71,22 @@ private struct ChaseRing: View {
     private let step: Double = 0.125 // 125ms；8 步 × 125ms = 1s 周期
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: step)) { timeline in
+        TimelineView(.periodic(from: Date.now, by: step)) { timeline in
             let tick = Int(timeline.date.timeIntervalSinceReferenceDate / step)
-            Canvas { _, ctx in
-                let grid = cell * 3
+            return Canvas { ctx, _ in
                 for (i, xy) in WOStateDot.matrixCells.enumerated() {
                     // 衰减阶梯：追到该格 = 1，随后三格 0.6 / 0.35 / 0.15（keyframes 0/12.5/25/37.5%）
                     let since = (tick - i).mod(8)
-                    let brightness: Double = switch since {
-                    case 0: 1
-                    case 1: 0.6
-                    case 2: 0.35
-                    default: 0.15
+                    let brightness: Double
+                    switch since {
+                    case 0: brightness = 1
+                    case 1: brightness = 0.6
+                    case 2: brightness = 0.35
+                    default: brightness = 0.15
                     }
                     let rect = CGRect(x: xy.0 * cell, y: xy.1 * cell, width: cell, height: cell)
                     ctx.fill(Path(rect), with: .color(WOStateDot.color(for: .ongoing).opacity(brightness)))
                 }
-                _ = grid
             }
             .frame(width: cell * 3, height: cell * 3)
         }

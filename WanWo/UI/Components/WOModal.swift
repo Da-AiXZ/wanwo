@@ -88,7 +88,6 @@ public struct WOModal<Content: View, Footer: View>: View {
                 .overlay(RoundedRectangle(cornerRadius: 24)
                     .strokeBorder(WOAlias.borderL4, lineWidth: 0.5)) // 发丝描边
             }
-            .onExitCommand { onClose() } // Escape（iPad 键盘）
             .transition(.opacity)
             .woMotion(WOMotion.nonInteractive, value: open)
         }

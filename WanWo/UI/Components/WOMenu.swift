@@ -75,8 +75,7 @@ public struct WOMenu: View {
         // 全屏层：外点关闭（useDismissOnOutsidePointer 语义）+ Escape
         Color.clear
             .contentShape(Rectangle())
-            .onTapGesture { onClose() } // 外点
-            .onExitCommand { onClose() } // Escape
+            .onTapGesture { onClose() } // 外点（Escape 见 WOHelpers 键盘桥待办）
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 0) {
                     viewport
@@ -100,7 +99,7 @@ public struct WOMenu: View {
                     }
                 )
                 .frame(minWidth: cardMinWidth, maxWidth: cardMaxWidth, alignment: .leading)
-                .position(origin: WOAnchoredPlacement.place(
+                .position(WOAnchoredPlacement.place(
                     anchor: anchorFrame, panelSize: panelSize,
                     side: side, align: align, gap: 4,
                     viewport: UIScreen.main.bounds))
@@ -165,6 +164,7 @@ public struct WOMenu: View {
         @State private var submenuOpen = false
 
         private var isSelected: Bool { selectedId == id }
+        private var itemMinHeight: CGFloat { compact ? 26 : (dense ? 34 : 40) }
 
         var body: some View {
             // itemWrap：relative；hover/focus 开子菜单（hover 出即收）
