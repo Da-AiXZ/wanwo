@@ -9,7 +9,8 @@
 
 import SwiftUI
 
-// MARK: - Composer（片 1 基础：文本输入/发送/停止；工具行全量=片 2）
+// MARK: - Composer（R2b：composer 全态批——工具行接线权限/模型/ContextMeter；
+// digest-H 原型卡体规格：白底 r22 + soft 阴影 + 0.5px l3 描边；附件 + 钮=R2c）。
 
 struct WOComposer: View {
     @ObservedObject var viewModel: ChatViewModel
@@ -22,49 +23,83 @@ struct WOComposer: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("描述你想要构建的内容…",
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("发消息或做任务…",
                       text: $viewModel.draft,
                       axis: .vertical)
                 .font(.system(size: 14))
-                .lineLimit(1...5)
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
-                .submitLabel(.send)
-                .onSubmit { if canSend { viewModel.send() } }
+                .lineLimit(1...8)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
 
-            if viewModel.phase == .streaming {
-                // 停止（引擎 cancel；片 1 必备——打断是对话环的一半）
-                Button {
-                    viewModel.cancel()
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(WOStatic.neutral00)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(WOAlias.labelPrimary))
+            // 工具行（dsh InputBar 工具行语义：权限/模型/ContextMeter/发送）。
+            HStack(spacing: 8) {
+                // 权限胶囊（盾形三态；RiskConfirmation 确认缝内建——one path）。
+                PermissionSelectView(
+                    currentPreset: viewModel.currentPermissionPreset ?? "",
+                    busy: false,
+                    onCommand: { line, confirmed in
+                        viewModel.runCommandLine(line, confirmed: confirmed)
+                    })
+                    .font(.system(size: 12))
+
+                // 模型两级菜单（provider 分组 + effort 层；会话级选择）。
+                ModelSelectView(store: viewModel.endpointStore,
+                                current: viewModel.currentModelEndpoint,
+                                currentEffort: viewModel.sessionEffort,
+                                onSelect: { viewModel.selectModel($0) },
+                                onEffort: { viewModel.selectEffort($0) })
+                    .font(.system(size: 12))
+
+                Spacer(minLength: 0)
+
+                // ContextMeter 环（pressure 在场才显示；F041 压力呈现）。
+                if let pressure = viewModel.pressure {
+                    ContextMeterView(pressure: pressure)
                 }
-                .buttonStyle(.plain)
-                .woPressable()
-            } else {
-                Button {
-                    viewModel.send()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(canSend ? WOStatic.neutral00 : WOAlias.labelTertiary)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(canSend ? WOAlias.buttonPrimaryFill : WOAlias.bgLayer3))
+
+                if viewModel.phase == .streaming {
+                    // 停止（引擎 cancel；对话环另一半）。
+                    Button {
+                        viewModel.cancel()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(WOStatic.neutral00)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(WOAlias.labelPrimary))
+                    }
+                    .buttonStyle(.plain)
+                    .woPressable()
+                } else {
+                    Button {
+                        viewModel.send()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(canSend ? WOStatic.neutral00 : WOAlias.labelTertiary)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(canSend ? WOAlias.buttonPrimaryFill
+                                                              : WOAlias.bgLayer3))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .woPressable()
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .woPressable()
             }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 24)
-        .background(WOAlias.bgBase)
+        // 原型 composer 卡体：白底 r22 + soft 阴影 + 0.5px l3 发丝描边。
+        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 22)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+        .shadow(color: .black.opacity(0.03), radius: 24)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
     }
 }
 
