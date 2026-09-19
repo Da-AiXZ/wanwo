@@ -70,11 +70,21 @@ struct WOWorkspaceBrowser: View {
     init(viewStore: WOWorkspaceViewStore,
                 snapshot: @escaping () -> WOWorkspaceSnapshot,
                 onOpenSession: @escaping (String) -> Void,
-                onNewSession: @escaping (String?) -> Void) {
+                onNewSession: @escaping (String?) -> Void,
+                onRenameSession: ((String) -> Void)? = nil,
+                onArchiveSession: ((String) -> Void)? = nil,
+                onDeleteSession: ((String) -> Void)? = nil,
+                onRenameWorkspace: ((String) -> Void)? = nil,
+                onDeleteWorkspace: ((String) -> Void)? = nil) {
         self.viewStore = viewStore
         self.snapshot = snapshot
         self.onOpenSession = onOpenSession
         self.onNewSession = onNewSession
+        self.onRenameSession = onRenameSession
+        self.onArchiveSession = onArchiveSession
+        self.onDeleteSession = onDeleteSession
+        self.onRenameWorkspace = onRenameWorkspace
+        self.onDeleteWorkspace = onDeleteWorkspace
     }
 
     var body: some View {
