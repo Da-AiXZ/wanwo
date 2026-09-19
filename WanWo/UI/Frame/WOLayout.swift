@@ -10,8 +10,10 @@ import SwiftUI
 // MARK: - 布局契约常量（columns.ts，行 544）
 
 public enum WOLayoutContract {
-    /// 中心栏地板（仅最终回退可跌破）
-    public static let centerMin: CGFloat = 640
+    /// 中心栏地板（仅最终回退可跌破）。
+    /// iPad 适配：dsh 640 为桌面窗口契约，iPad Pro 12.9 逻辑宽仅 1024——
+    /// 640 使左右栏数学上永不共存（280+640+300=1220>1024）。降 360 让左右共存（用户真机反馈 2026-09-19）。
+    public static let centerMin: CGFloat = 360
     public static let sidebarMin: CGFloat = 264
     public static let sidebarMax: CGFloat = 420
     public static let sidebarDefault: CGFloat = 280

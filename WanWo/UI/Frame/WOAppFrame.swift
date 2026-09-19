@@ -139,7 +139,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                              onDetailsDrag: { dx in store.setDetails(dragBaseDetails - dx) })
             }
         }
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: .leading) {
+            // alignment 必须 leading：手柄自身 offset(x-4) 定位到 details 左缘；
+            // trailing 会双重定位把手柄甩出视口（真机"拖宽无反应"根因）
             if cols.details > 0 {
                 WODragHandle(side: .details, isDragging: dragging == .details,
                              x: viewport - cols.details, viewport: viewport,
