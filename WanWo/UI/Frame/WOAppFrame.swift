@@ -32,9 +32,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     @State private var lastHadSession = false
 
     public init(store: WOLayoutStore, hasDetailsSession: Bool = false,
-                sidebar: @escaping (_ collapsed: Bool, _ width: CGFloat) -> Sidebar,
-                center: @escaping () -> Center,
-                details: @escaping () -> Details,
+                @ViewBuilder sidebar: @escaping (_ collapsed: Bool, _ width: CGFloat) -> Sidebar,
+                @ViewBuilder center: @escaping () -> Center,
+                @ViewBuilder details: @escaping () -> Details,
                 overlayLayer: @escaping () -> Overlay = { EmptyView() }) {
         self.store = store
         self.hasDetailsSession = hasDetailsSession

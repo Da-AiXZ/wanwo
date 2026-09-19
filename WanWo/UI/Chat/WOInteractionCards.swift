@@ -159,7 +159,7 @@ struct WOQuestionCard: View {
                     .foregroundColor(WOAlias.labelPrimary)
             }
 
-            ForEach(pending.questions) { question in
+            ForEach(pending.questions, id: \.id) { question in
                 VStack(alignment: .leading, spacing: 6) {
                     if let header = question.header, !header.isEmpty {
                         Text(header)
