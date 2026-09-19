@@ -165,12 +165,10 @@ private struct WOColumnsAnimation: ViewModifier {
     let motion: Animation?
     let key: WOColumnsKey
 
+    // 恒定单一 modifier：if/else 分支切换会重置子树 identity（进行中拖动手势被销毁=拖动打断+闪跳根因）。
+    // animation(_:value:) 本身接受 Optional——nil 即无动画，参数变化不换身份。
     func body(content: Content) -> some View {
-        if let motion {
-            content.animation(motion, value: key)
-        } else {
-            content
-        }
+        content.animation(motion, value: key)
     }
 }
 

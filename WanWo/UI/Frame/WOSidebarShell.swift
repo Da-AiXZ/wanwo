@@ -25,7 +25,6 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
     @State private var settled = false
     @State private var lastWideWidth: CGFloat = WOLayoutContract.sidebarDefault
     @State private var everWide = false
-    @State private var railAppeared = false
     @State private var pointerInside = false
     @State private var lingerTask: Task<Void, Never>? = nil
     @State private var toggleHovering = false
@@ -54,21 +53,24 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
     public var body: some View {
         ZStack(alignment: .leading) {
             if !wide {
-                // 折叠静止 rail：36×36 控件盒居中 56px 轨（pad 18 10 6；冷刷新直折不播入场=everWide 守卫）
+                // 折叠静止 rail：36×36 控件盒居中 56px 轨；插入过渡=49px 横移+淡入（SwiftUI 保证播放）
                 railContent
-                    .modifier(WORailIn(active: everWide && railAppeared, reduce: reduceMotion))
+                    .transition(.asymmetric(
+                        insertion: .offset(x: 49).combined(with: .opacity),
+                        removal: .opacity.animation(.easeIn(duration: 0.1))))
             }
             if wide {
-                // remount 视图的入场动画须由 appear state 驱动（animation(value:) 对新挂载视图无前值不播）
-                WideFadeIn(collapsed: collapsed, reduce: reduceMotion) {
-                    wideContent
-                        .frame(width: collapsed ? lastWideWidth : width, alignment: .leading)
-                }
+                wideContent
+                    .frame(width: collapsed ? lastWideWidth : width, alignment: .leading)
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(WOMotion.bezier(duration: 0.2)), // wide-in 200ms
+                        removal: .opacity.animation(.easeIn(duration: 0.15))))          // fading 150ms
             }
         }
+        // transition 由 value 驱动（reduced-motion 时无动画=瞬切）
+        .animation(reduceMotion ? nil : WOMotion.standardSpring, value: wide)
         .onAppear {
             if !collapsed { everWide = true; lastWideWidth = width }
-            railAppeared = true
         }
         .onChange(of: collapsed) { isCollapsed in
             if isCollapsed {
@@ -220,55 +222,3 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
     }
 }
 
-// MARK: - railIn 入场（49px 横移 + 淡入，150ms backwards；仅「活的折叠」播）
-
-struct WORailIn: ViewModifier {
-    let active: Bool
-    let reduce: Bool
-
-    func body(content: Content) -> some View {
-        if active, !reduce {
-            RailInWrapper(content: content)
-        } else {
-            content
-        }
-    }
-}
-
-private struct RailInWrapper<Content: View>: View {
-    let content: Content
-    @State private var shown = false
-
-    var body: some View {
-        content
-            .offset(x: shown ? 0 : 49) // from translateX(49px)——自原轨道右缘横移入场
-            .opacity(shown ? 1 : 0)
-            .onAppear {
-                // 延一帧：onAppear 首帧前改 state 会按终值直出、动画被吞
-                DispatchQueue.main.async {
-                    withAnimation(WOMotion.bezier(duration: 0.15)) { shown = true }
-                }
-            }
-    }
-}
-
-
-// MARK: - 宽内容入场/淡出（remount 淡入 200ms wide-in；折叠淡出 150ms）
-
-struct WideFadeIn<Content: View>: View {
-    let collapsed: Bool
-    let reduce: Bool
-    @ViewBuilder let content: () -> Content
-    @State private var appeared = false
-
-    var body: some View {
-        content()
-            .opacity(collapsed ? 0 : (appeared ? 1 : 0))
-            .onAppear {
-                DispatchQueue.main.async {
-                    withAnimation(WOMotion.bezier(duration: 0.2)) { appeared = true }
-                }
-            }
-            .animation(reduce ? nil : WOMotion.bezier(duration: 0.15), value: collapsed)
-    }
-}

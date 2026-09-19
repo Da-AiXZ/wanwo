@@ -80,9 +80,8 @@ public final class WOLayoutStore: ObservableObject {
 
     public init() {}
 
-    /// clamp 进契约区间且不跨开合线（0 ⟷ 开区）
+    /// clamp 进契约区间且**不跨开合线**（手册 stores.ts：拖到地板以下停在 264，关闭只走 toggle）
     public func setSidebar(_ px: CGFloat) {
-        guard px > 0 else { sidebar = 0; return }
         let clamped = WOLayoutContract.clampWidth(px, WOLayoutContract.sidebarMin, WOLayoutContract.sidebarMax)
         guard clamped != sidebar else { return }
         sidebar = clamped
