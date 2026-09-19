@@ -16,7 +16,7 @@ struct WORootFrame: View {
             if let wsId = workspaceId {
                 try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
             }
-            currentSessionId = s.id
+            currentSessionIdRaw = s.id
             sidebarReloadToken += 1
         }
     }
@@ -27,8 +27,10 @@ struct WORootFrame: View {
     /// 环 4 批 1：列表手动刷新（新建/重命名/删除后触发）；自动跟随事件流归环 5
     @State private var sidebarReloadToken = 0
     /// 骨架期当前会话：跟踪本壳新建（dsh 建会话即打开语义，否则 blank 会话被 isVisible 藏掉）；
-    /// AppStorage 持久化=重启/覆盖安装后仍指向最后新建（生命周期与 DB 一致）；环 5 接 sessions.open 真实信号后整体替换
-    @AppStorage("wo.skeleton.currentSessionId") private var currentSessionId: String? = nil
+    /// AppStorage 持久化=重启/覆盖安装后仍指向最后新建（生命周期与 DB 一致）；环 5 接 sessions.open 真实信号后整体替换。
+    /// AppStorage 不收 String?——空串哨兵=nil（v4 片 1 起由真实打开信号接管）
+    @AppStorage("wo.skeleton.currentSessionId") private var currentSessionIdRaw = ""
+    private var currentSessionId: String? { currentSessionIdRaw.isEmpty ? nil : currentSessionIdRaw }
 
     var body: some View {
         WOAppFrame(
