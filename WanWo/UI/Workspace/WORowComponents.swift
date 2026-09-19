@@ -144,11 +144,14 @@ struct WOSessionRow: View {
                     .font(.system(size: 12))
                     .foregroundColor(WOAlias.labelTertiary)
                     .padding(.trailing, 6)
-                WORowMenuButton(menuOpen: $menuOpen, entries: [
-                    WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
-                    WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
-                    WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
-                ])
+                // 死按钮门禁：动作全空时不渲染菜单钮（重命名/分叉无底层 API、归档无取消界面、删除无确认弹窗——片 2 连 Modal 一起上）
+                if onRename != nil || onFork != nil || onArchive != nil {
+                    WORowMenuButton(menuOpen: $menuOpen, entries: [
+                        WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
+                        WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
+                        WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
+                    ])
+                }
             }
         }
         .padding(.horizontal, 8)
