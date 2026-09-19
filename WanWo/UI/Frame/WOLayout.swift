@@ -50,13 +50,13 @@ public enum WOColumnSolver {
             return .init(sidebar: s, center: max(0, v - s), details: 0)
         }
         let center0 = v - s - details
-        if center0 >= centerMin {
+        if center0 >= WOLayoutContract.centerMin {
             return .init(sidebar: s, center: center0, details: details)
         }
         // 步骤 2：收缩但不低于地板
-        let d1 = max(detailsMin, v - s - centerMin)
+        let d1 = max(WOLayoutContract.detailsMin, v - s - WOLayoutContract.centerMin)
         let center2 = v - s - d1
-        if center2 >= centerMin {
+        if center2 >= WOLayoutContract.centerMin {
             return .init(sidebar: s, center: center2, details: d1)
         }
         // 步骤 3：自动关闭（派生 0——偏好不动），中心吸收
