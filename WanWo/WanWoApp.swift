@@ -18,7 +18,9 @@ struct WanWoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            // UI 全量重写环 3：根入口切换到新三栏骨架（WORootFrame）。
+            // 旧 RootView 保留至环 8 统一删除（旧 UI 即删拍板：环 8 收官清死代码）。
+            WORootFrame()
                 .environmentObject(environment)
                 // M4-B 场景2 取证（探针 C）：冻结窗口显式化——前后台切换
                 // 时刻进日志（category AppLifecycle），与进程死亡时刻
