@@ -97,8 +97,8 @@ struct WOSessionRow: View {
     var showStatus: Bool = true
     var onOpen: () -> Void
     var onRename: (() -> Void)? = nil
-    var onFork: (() -> Void)? = nil
     var onArchive: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @State private var hovering = false
     @State private var menuOpen = false
@@ -106,15 +106,16 @@ struct WOSessionRow: View {
 
     init(node: WOSessionNode, selected: Bool, showStatus: Bool = true,
                 onOpen: @escaping () -> Void,
-                onRename: (() -> Void)? = nil, onFork: (() -> Void)? = nil,
-                onArchive: (() -> Void)? = nil) {
+                onRename: (() -> Void)? = nil,
+                onArchive: (() -> Void)? = nil,
+                onDelete: (() -> Void)? = nil) {
         self.node = node
         self.selected = selected
         self.showStatus = showStatus
         self.onOpen = onOpen
         self.onRename = onRename
-        self.onFork = onFork
         self.onArchive = onArchive
+        self.onDelete = onDelete
     }
 
     private var displayTitle: String { node.title ?? "新会话" } // displayTitle：blank→'新会话'
@@ -144,12 +145,13 @@ struct WOSessionRow: View {
                     .font(.system(size: 12))
                     .foregroundColor(WOAlias.labelTertiary)
                     .padding(.trailing, 6)
-                // 死按钮门禁：动作全空时不渲染菜单钮（重命名/分叉无底层 API、归档无取消界面、删除无确认弹窗——片 2 连 Modal 一起上）
-                if onRename != nil || onFork != nil || onArchive != nil {
+                // 死按钮门禁：动作全空时不渲染菜单钮（R3a 真动作接线后恒显）。
+                if onRename != nil || onArchive != nil || onDelete != nil {
                     WORowMenuButton(menuOpen: $menuOpen, entries: [
                         WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
-                        WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
                         WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
+                        // fork 不做（用户裁定，digest-K §6.4⑤；dsh 语义存档 Rows.tsx:385-386）。
+                        WORowMenuEntry(label: "删除会话", icon: "trash", isDanger: true, action: onDelete),
                     ])
                 }
             }
