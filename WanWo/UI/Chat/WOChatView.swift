@@ -2,11 +2,13 @@
 //  WOChatView.swift
 //  WanWo
 //
-//  v4 片 1 核心对话环（中栏）：消息流 + 流式 + composer。
-//  引擎 = 既有 ChatViewModel（M3-M6 真机验证过的会话打开/事件投影/流式/发送全链），
-//  本视图只做新壳渲染——零引擎改动。
-//  渲染纪律（v4 片 1 拍板 A）：全事件类型可见；工具卡用诚实简化卡（片 3 精化全型）。
-//  触屏纪律（9-19 铁律 1.5）：无 hover 依赖；可见交互全部真响应。
+//  v4 片 1 → R2a 对话域保真批 1（11-ui-design §六；D6/D8 部分清偿）：
+//  - 消息流全节点渲染：用户气泡圆角 22/bubble soft（原型规格）；工具卡全型 WOToolCard
+//   （digest-F §41；替代片 1 简化版）；思考披露折叠（ReasoningRow 语义简化版）。
+//  - composer 接管语义（ledger:256 既有裁定）：审批/提问挂起时接管 composer 座位
+//   （不再是消息流下追加的独立卡）——防引擎等待死锁面不变。
+//  引擎 = 既有 ChatViewModel（M3-M6 真机验证过），零引擎改动。
+//  触屏纪律：无 hover 依赖；可见交互全部真响应。
 //
 
 import SwiftUI
@@ -15,7 +17,7 @@ struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
     private let sessionId: String
 
-    /// 简化自动跟随（片 1）：内容变化即滚底；翻历史被拽回的治理=片 3 四机制（登记）。
+    /// 简化自动跟随（批 1）：内容变化即滚底；治理=后续批（autoFollow 闸门按 digest-K 6.3#1）。
     @State private var bottomAnchor = "wo-chat-bottom"
 
     init(environment: AppEnvironment, sessionId: String) {
@@ -27,17 +29,25 @@ struct WOChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             messageList
-            if let approval = viewModel.pendingApprovals.first {
-                WOApprovalCard(viewModel: viewModel, pending: approval)
-            }
-            if let question = viewModel.pendingQuestions.first {
-                WOQuestionCard(viewModel: viewModel, pending: question)
-            }
-            WOComposer(viewModel: viewModel)
+            composerSeat
         }
         .background(WOAlias.bgBase)
         .onAppear { viewModel.open() }
         .onDisappear { viewModel.close() }
+    }
+
+    // MARK: - Composer 座位（接管语义：dsh composer seat——审批 > 提问 > 常规输入；
+    // ComposerSeatRoute 纯函数序在 VM 层已保证 pendingApprovals/pendingQuestions 序）
+
+    @ViewBuilder
+    private var composerSeat: some View {
+        if let approval = viewModel.pendingApprovals.first {
+            WOApprovalCard(viewModel: viewModel, pending: approval)
+        } else if let question = viewModel.pendingQuestions.first {
+            WOQuestionCard(viewModel: viewModel, pending: question)
+        } else {
+            WOComposer(viewModel: viewModel)
+        }
     }
 
     // MARK: - 消息流
@@ -67,7 +77,8 @@ struct WOChatView: View {
                         case .plain(let bubble):
                             bubbleView(bubble)
                         case .process(let group):
-                            // 片 1 简化：过程组平铺渲染（不折叠）——思考与工具全可见
+                            // 批 1：过程组平铺渲染（不折叠）——思考与工具全可见；
+                            // 组折叠行（TurnProcess 摘要）=批 2。
                             ForEach(group.bubbles) { inner in
                                 bubbleView(inner)
                             }
@@ -105,17 +116,21 @@ struct WOChatView: View {
     private var streamingBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !viewModel.streamingReasoning.isEmpty {
+                // 思考披露（ReasoningRow 语义简化版：标题行+最新行跟随；全文在
+                // 投影 reasoning 气泡，回合结束自然呈现）。
                 Text("思考")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(WOAlias.labelTertiary)
-                Text(viewModel.streamingReasoning)
+                Text(viewModel.streamingReasoning.split(separator: "\n").last.map(String.init) ?? "")
                     .font(.system(size: 13))
                     .foregroundColor(WOAlias.labelSecondary)
+                    .lineSpacing(2)
             }
             if !viewModel.streamingText.isEmpty {
                 Text(viewModel.streamingText + " ▍")
                     .font(.system(size: 14))
                     .foregroundColor(WOAlias.labelPrimary)
+                    .lineSpacing(3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -140,10 +155,10 @@ struct WOChatView: View {
                             .foregroundColor(WOStatic.neutral00.opacity(0.75))
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 16)
-                    .fill(WOAlias.buttonPrimaryFill))
+                // 原型规格：圆角 22 + 蓝软底（WOSpecific.bubble = deepseek-50）。
+                .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
             }
 
         case .assistant(let text):
@@ -155,20 +170,12 @@ struct WOChatView: View {
                 .textSelection(.enabled)
 
         case .reasoning(let text):
-            VStack(alignment: .leading, spacing: 4) {
-                Text("思考")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(WOAlias.labelTertiary)
-                Text(text)
-                    .font(.system(size: 13))
-                    .foregroundColor(WOAlias.labelSecondary)
-                    .lineSpacing(2)
-            }
-            .padding(.leading, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 思考披露（ReasoningRow 语义简化版：可折叠；标题「思考」+ 首行预览）。
+            ReasoningDisclosure(text: text)
 
         case .tool(let card):
-            toolCard(card)
+            // R2a：工具卡全型（digest-F §41；D6 清偿——替代片 1 简化版）。
+            WOToolCard(card: card, sessionID: sessionId)
 
         case .command(let kind, let text):
             VStack(alignment: .leading, spacing: 2) {
@@ -190,66 +197,60 @@ struct WOChatView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         default:
-            // 回合统计等次要事件：视觉回合分隔（无假文案）
+            // 回合统计等次要事件：视觉回合分隔（无假文案）。
             VStack(spacing: 0) {
                 Divider().opacity(0.5)
             }
             .padding(.vertical, 2)
         }
     }
-
-    // MARK: - 简化工具卡（片 3 精化全型；拍板 A）
-
-    private func toolCard(_ card: ConversationProjector.ToolCard) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon(for: card))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(card.isError ? WOAlias.stateErrorPrimary
-                                 : card.isRunning ? WOAlias.stateBusinessPrimary
-                                 : WOAlias.stateSuccessPrimary)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(card.title.isEmpty ? card.name : card.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WOAlias.labelPrimary)
-                if let detail = card.detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.system(size: 12))
-                        .foregroundColor(WOAlias.labelSecondary)
-                        .lineLimit(2)
-                }
-                if let note = card.statusNote, !note.isEmpty {
-                    Text(note)
-                        .font(.system(size: 12))
-                        .foregroundColor(WOAlias.stateWarnLabel)
-                }
-                if let result = card.resultText, !result.isEmpty {
-                    Text(result)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(card.isError ? WOAlias.stateErrorPrimary : WOAlias.labelSecondary)
-                        .lineLimit(4)
-                }
-                if card.isRunning, !card.liveOutput.isEmpty {
-                    Text(card.liveOutput)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(WOAlias.labelTertiary)
-                        .lineLimit(3)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(WOAlias.bgLayer3))
-    }
-
-    private func icon(for card: ConversationProjector.ToolCard) -> String {
-        if card.isError { return "xmark.octagon.fill" }
-        if card.isRunning { return "gearshape" }
-        return "checkmark.circle.fill"
-    }
 }
 
+/// 思考披露（ReasoningRowView 语义简化版——旧件 98 行的折叠交互+WO 壳；
+/// running 态扫光/尾行跟随的完整版随流式块呈现，此处为 settled 全文折叠）。
+private struct ReasoningDisclosure: View {
+    let text: String
+
+    @State private var expanded = false
+
+    private var preview: String {
+        text.split(separator: "\n").first.map(String.init) ?? text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Text("思考")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(WOAlias.labelTertiary)
+                    if !expanded {
+                        Text(preview)
+                            .font(.system(size: 12))
+                            .foregroundColor(WOAlias.labelSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .rotationEffect(.degrees(expanded ? 0 : -90))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                Text(text)
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .lineSpacing(2)
+                    .padding(.leading, 14)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
 
 // MARK: - Hero 空态（无当前会话：品牌+新会话引导；按钮真建会话）
 
