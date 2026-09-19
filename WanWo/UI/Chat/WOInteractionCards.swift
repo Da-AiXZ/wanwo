@@ -1,0 +1,294 @@
+//
+//  WOInteractionCards.swift
+//  WanWo
+//
+//  v4 片 1：composer + 审批卡 + 提问卡（防对话死锁的最小真交互——
+//  审批/提问挂起时若不可作答，AgentLoop 会永久等待=看不见的死锁，故本片必带）。
+//  全部动作走既有 ChatViewModel 方法（零引擎改动）。
+//
+
+import SwiftUI
+
+// MARK: - Composer（片 1 基础：文本输入/发送/停止；工具行全量=片 2）
+
+struct WOComposer: View {
+    @ObservedObject var viewModel: ChatViewModel
+
+    private var canSend: Bool {
+        switch viewModel.phase {
+        case .idle, .failed: return !viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        default: return false
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            TextField("描述你想要构建的内容…",
+                      text: $viewModel.draft,
+                      axis: .vertical)
+                .font(.system(size: 14))
+                .lineLimit(1...5)
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
+                .submitLabel(.send)
+                .onSubmit { if canSend { viewModel.send() } }
+
+            if viewModel.phase == .streaming {
+                // 停止（引擎 cancel；片 1 必备——打断是对话环的一半）
+                Button {
+                    viewModel.cancel()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(WOAlias.labelPrimary))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+            } else {
+                Button {
+                    viewModel.send()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(canSend ? WOStatic.neutral00 : WOAlias.labelTertiary)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(canSend ? WOAlias.buttonPrimaryFill : WOAlias.bgLayer3))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .woPressable()
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 24)
+        .background(WOAlias.bgBase)
+    }
+}
+
+// MARK: - 审批卡（工具需要授权时；挂起不可见=对话永久卡死，故片 1 必带）
+
+struct WOApprovalCard: View {
+    @ObservedObject var viewModel: ChatViewModel
+    let pending: PendingApprovalPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.stateWarnLabel)
+                Text("需要你的授权")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+                Text(pending.toolName)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(WOAlias.labelSecondary)
+            }
+            if let reason = pending.reason, !reason.isEmpty {
+                Text(reason)
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.labelSecondary)
+            }
+            if let detail = pending.commandDetail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgBase))
+                    .lineLimit(6)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    viewModel.answerApproval(pending, allow: true)
+                } label: {
+                    Text("允许")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.buttonPrimaryFill))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+
+                Button {
+                    viewModel.answerApproval(pending, allow: false)
+                } label: {
+                    Text("拒绝")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOAlias.labelPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16)
+            .fill(WOAlias.stateWarnSecondary)
+            .overlay(RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(WOAlias.stateWarnPrimary, lineWidth: 1)))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 8)
+    }
+}
+
+// MARK: - 提问卡（ask_user_question；选项点选+自由文本，全部真提交）
+
+struct WOQuestionCard: View {
+    @ObservedObject var viewModel: ChatViewModel
+    let pending: PendingQuestionPresentation
+
+    @State private var selected: [String: [String]] = [:]
+    @State private var custom: [String: String] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.stateBusinessPrimary)
+                Text("AI 有问题要问你")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+            }
+
+            ForEach(pending.questions) { question in
+                VStack(alignment: .leading, spacing: 6) {
+                    if let header = question.header, !header.isEmpty {
+                        Text(header)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(WOAlias.labelTertiary)
+                    }
+                    Text(question.question)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(WOAlias.labelPrimary)
+                    if let detail = question.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 12))
+                            .foregroundColor(WOAlias.labelSecondary)
+                    }
+                    if let options = question.options, !options.isEmpty {
+                        FlowChips(options: options,
+                                  selected: selected[question.id] ?? [],
+                                  onToggle: { label in
+                                      var cur = selected[question.id] ?? []
+                                      if cur.contains(label) {
+                                          cur.removeAll { $0 == label }
+                                      } else {
+                                          cur.append(label)
+                                      }
+                                      selected[question.id] = cur
+                                  })
+                    }
+                    TextField("或者自己说…", text: bindingCustom(question.id))
+                        .font(.system(size: 13))
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgBase))
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(action: submit) {
+                    Text("提交回答")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.buttonPrimaryFill))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+
+                Button {
+                    viewModel.cancelQuestion(pending)
+                } label: {
+                    Text("跳过")
+                        .font(.system(size: 13))
+                        .foregroundColor(WOAlias.labelSecondary)
+                        .padding(.vertical, 9)
+                        .padding(.horizontal, 16)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 8)
+    }
+
+    private func bindingCustom(_ id: String) -> Binding<String> {
+        Binding(get: { custom[id] ?? "" }, set: { custom[id] = $0 })
+    }
+
+    private func submit() {
+        let answers = pending.questions.map { question -> AskUserQuestionAnswerItem in
+            AskUserQuestionAnswerItem(id: question.id,
+                                      selected: selected[question.id] ?? [],
+                                      custom: custom[question.id]?.isEmpty == false ? custom[question.id] : nil)
+        }
+        viewModel.submitQuestionAnswer(pending, answer: AskUserQuestionAnswer(answers: answers))
+    }
+}
+
+/// 简易流式 chips（片 1 够用；片 2 换 Menu 组件）
+private struct FlowChips: View {
+    let options: [AskUserQuestionOption]
+    let selected: [String]
+    let onToggle: (String) -> Void
+
+    var body: some View {
+        FlexibleChips(items: options.map { ($0.label, $0.description) },
+                      isSelected: { selected.contains($0) },
+                      onTap: onToggle)
+    }
+}
+
+/// 简单换行 chips 布局（iOS 16 无 Layout 协议依赖的极简版：纵向排+横向包齐用
+/// HStack 换行近似——选项通常 2-4 个，够用；片 2 用菜单组件替换）
+private struct FlexibleChips: View {
+    let items: [(String, String?)]
+    let isSelected: (String) -> Bool
+    let onTap: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(items, id: \.0) { item in
+                Button {
+                    onTap(item.0)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isSelected(item.0) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.0)
+                                .font(.system(size: 13, weight: .medium))
+                            if let desc = item.1, !desc.isEmpty {
+                                Text(desc)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(WOAlias.labelTertiary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 9)
+                        .fill(isSelected(item.0) ? WOAlias.interactiveBgHoverAccent : WOAlias.bgBase))
+                    .foregroundColor(isSelected(item.0) ? WOAlias.stateBusinessPrimary : WOAlias.labelPrimary)
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+            }
+        }
+    }
+}

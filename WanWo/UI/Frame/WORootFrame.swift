@@ -54,8 +54,8 @@ struct WORootFrame: View {
                                         currentSessionId: currentSessionId) // 骨架期=本壳新建跟踪；环 5 接 sessions.open
                                 },
                                 onOpenSession: { sessionId in
-                                    // 环 5 接会话打开（sessions.open 语义）
-                                    _ = sessionId
+                                    // 片 1 真打开：置当前会话 → 中栏挂 WOChatView
+                                    currentSessionIdRaw = sessionId
                                 },
                                 onNewSession: { workspaceId in
                                     newSession(in: workspaceId)
@@ -71,8 +71,13 @@ struct WORootFrame: View {
                 )
             },
             center: {
-                // 对话区槽：hero/消息流归环 5（跨空态/会话态保持视图身份）
-                WOSlotPlaceholder(text: "对话区 · 环 5", quiet: false)
+                // v4 片 1：无当前会话=Hero 引导；有=真聊天（.id 换会话换 ViewModel）
+                if currentSessionIdRaw.isEmpty {
+                    WOChatHero(onNewSession: { newSession(in: nil) })
+                } else {
+                    WOChatView(environment: environment, sessionId: currentSessionIdRaw)
+                        .id(currentSessionIdRaw)
+                }
             },
             details: {
                 // 详情栏槽：DetailsPanel 归环 5；关闭钮（codex 面板语义，环 3 骨架期唯一关闭入口）
