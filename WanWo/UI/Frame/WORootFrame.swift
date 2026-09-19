@@ -37,8 +37,20 @@ struct WORootFrame: View {
                 WOSlotPlaceholder(text: "对话区 · 环 5", quiet: false)
             },
             details: {
-                // 详情栏槽：DetailsPanel 归环 5
-                WOSlotPlaceholder(text: "详情栏 · 环 5", quiet: false)
+                // 详情栏槽：DetailsPanel 归环 5；关闭钮（codex 面板语义，环 3 骨架期唯一关闭入口）
+                ZStack(alignment: .topTrailing) {
+                    WOSlotPlaceholder(text: "详情栏 · 环 5", quiet: false)
+                    Button { layout.closeDetails() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(WOAlias.interactiveBgHover))
+                            .foregroundColor(WOAlias.labelSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 14)
+                    .padding(.top, 14)
+                }
             },
             overlayLayer: { EmptyView() }
         )
