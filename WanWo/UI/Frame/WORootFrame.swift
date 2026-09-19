@@ -16,6 +16,7 @@ struct WORootFrame: View {
             if let wsId = workspaceId {
                 try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
             }
+            currentSessionId = s.id
             sidebarReloadToken += 1
         }
     }
@@ -25,6 +26,9 @@ struct WORootFrame: View {
     @EnvironmentObject private var environment: AppEnvironment
     /// 环 4 批 1：列表手动刷新（新建/重命名/删除后触发）；自动跟随事件流归环 5
     @State private var sidebarReloadToken = 0
+    /// 骨架期当前会话：跟踪本壳新建（dsh 建会话即打开语义，否则 blank 会话被 isVisible 藏掉）；
+    /// 环 5 接 sessions.open 真实信号后替换
+    @State private var currentSessionId: String? = nil
 
     var body: some View {
         WOAppFrame(
@@ -45,7 +49,7 @@ struct WORootFrame: View {
                                         sessions: environment.sessionStore.listSessions(),
                                         workspaces: environment.workspaceRegistry.list(),
                                         archived: environment.workspaceRegistry.archivedSessionIDs(),
-                                        currentSessionId: nil) // 环 5 接当前会话信号
+                                        currentSessionId: currentSessionId) // 骨架期=本壳新建跟踪；环 5 接 sessions.open
                                 },
                                 onOpenSession: { sessionId in
                                     // 环 5 接会话打开（sessions.open 语义）
