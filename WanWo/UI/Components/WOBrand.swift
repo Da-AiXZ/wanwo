@@ -97,10 +97,11 @@ enum PathGenerator {
                 p.addCurve(to: to, control1: c1, control2: c2)
                 current = to
             case "Z":
+                // 字母消费已由上方 isLetter 分支完成——此处再 after 会越过 endIndex（启动闪退根因）
                 p.closeSubpath()
-                i = d.index(after: i)
             default:
-                i = d.index(after: i)
+                // 未知命令：跳过其参数直到下一个命令字母/endIndex（防死循环）
+                while i < d.endIndex, !d[i].isLetter { i = d.index(after: i) }
             }
         }
         return p
