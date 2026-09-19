@@ -59,11 +59,11 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
                     .modifier(WORailIn(active: everWide && railAppeared, reduce: reduceMotion))
             }
             if wide {
-                wideContent
-                    .frame(width: collapsed ? lastWideWidth : width, alignment: .leading)
-                    .opacity(collapsed ? 0 : 1)
-                    .animation(reduceMotion ? nil : WOMotion.bezier(duration: collapsed ? settleMS : 0.2),
-                               value: collapsed) // 折叠淡出 150ms / 展开 wide-in 200ms
+                // remount 视图的入场动画须由 appear state 驱动（animation(value:) 对新挂载视图无前值不播）
+                WideFadeIn(collapsed: collapsed, reduce: reduceMotion) {
+                    wideContent
+                        .frame(width: collapsed ? lastWideWidth : width, alignment: .leading)
+                }
             }
         }
         .onAppear {
@@ -244,7 +244,31 @@ private struct RailInWrapper<Content: View>: View {
             .offset(x: shown ? 0 : 49) // from translateX(49px)——自原轨道右缘横移入场
             .opacity(shown ? 1 : 0)
             .onAppear {
-                withAnimation(WOMotion.bezier(duration: 0.15)) { shown = true }
+                // 延一帧：onAppear 首帧前改 state 会按终值直出、动画被吞
+                DispatchQueue.main.async {
+                    withAnimation(WOMotion.bezier(duration: 0.15)) { shown = true }
+                }
             }
+    }
+}
+
+
+// MARK: - 宽内容入场/淡出（remount 淡入 200ms wide-in；折叠淡出 150ms）
+
+struct WideFadeIn<Content: View>: View {
+    let collapsed: Bool
+    let reduce: Bool
+    @ViewBuilder let content: () -> Content
+    @State private var appeared = false
+
+    var body: some View {
+        content()
+            .opacity(collapsed ? 0 : (appeared ? 1 : 0))
+            .onAppear {
+                DispatchQueue.main.async {
+                    withAnimation(WOMotion.bezier(duration: 0.2)) { appeared = true }
+                }
+            }
+            .animation(reduce ? nil : WOMotion.bezier(duration: 0.15), value: collapsed)
     }
 }

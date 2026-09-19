@@ -27,8 +27,8 @@ struct WORootFrame: View {
                     region: { wide, quiet in
                         WOSlotPlaceholder(text: wide ? "工作区树 · 环 4" : nil, quiet: quiet)
                     },
-                    footer: { _ in
-                        WOSlotPlaceholder(text: "设置入口 · 环 7", quiet: false)
+                    footer: { wide in
+                        WOSlotPlaceholder(text: wide ? "设置入口 · 环 7" : nil, quiet: false)
                     }
                 )
             },

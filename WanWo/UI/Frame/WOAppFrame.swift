@@ -79,7 +79,7 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
 
     @ViewBuilder
     private func colsContent(_ cols: WOColumns, viewport: CGFloat) -> some View {
-        let motion = dragging == nil ? WOMotion.bezier(duration: 0.3) : nil // ds-transition-duration-slow；拖时关过渡
+        let motion = dragging == nil ? WOMotion.bezier(duration: 0.42) : nil // 原型拍板 0.42s（覆盖 dsh 0.3，2026-09-19 真机反馈）；拖时关过渡
 
         HStack(spacing: 0) {
             // sidebarCol：min-width 0 overflow hidden specific-sidebar-fill 右 0.5px l3（收拢仍保留带边框轨道）
@@ -96,6 +96,22 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
             center()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
+                .overlay(alignment: .topTrailing) {
+                    // 右栏入口（codex 右上开关语义）：details 关闭时显示
+                    if cols.details == 0 {
+                        Button { store.openDetails() } label: {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 14, weight: .medium))
+                                .frame(width: 28, height: 28)
+                                .background(Circle().fill(WOAlias.interactiveBgHover))
+                                .foregroundColor(WOAlias.labelSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .woTooltip("打开侧边栏", side: .bottom, delayMs: 500)
+                        .padding(.trailing, 14)
+                        .padding(.top, 14)
+                    }
+                }
 
             // detailsCol：0 宽不卸载子树；collapsed 去左 1px 缝（手册 581 行）
             details()
