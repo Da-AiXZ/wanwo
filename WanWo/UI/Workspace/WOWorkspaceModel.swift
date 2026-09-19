@@ -125,6 +125,7 @@ enum WOWorkspaceTreeDeriver {
             let members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
             groups.append(makeGroup(key: ws.id, workspaceId: ws.id, label: ws.title,
                                     createdAt: ws.createdAt, members: members,
+                                    currentSessionId: currentSessionId,
                                     activeRunSessionIDs: activeRunSessionIDs,
                                     pendingSessionIDs: pendingSessionIDs))
         }
@@ -134,6 +135,7 @@ enum WOWorkspaceTreeDeriver {
         if !orphans.isEmpty {
             groups.append(makeGroup(key: Self.ungroupedKey, workspaceId: nil, label: "未分组",
                                     createdAt: nil, members: orphans,
+                                    currentSessionId: currentSessionId,
                                     activeRunSessionIDs: activeRunSessionIDs,
                                     pendingSessionIDs: pendingSessionIDs))
         }
@@ -142,6 +144,7 @@ enum WOWorkspaceTreeDeriver {
 
     private static func makeGroup(key: String, workspaceId: String?, label: String,
                                   createdAt: Date?, members: [SessionSummary],
+                                  currentSessionId: String?,
                                   activeRunSessionIDs: Set<String>,
                                   pendingSessionIDs: Set<String>) -> WOGroupNode {
         let nodes = members.map { s in
