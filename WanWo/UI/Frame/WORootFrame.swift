@@ -15,7 +15,7 @@ struct WORootFrame: View {
     var body: some View {
         WOAppFrame(
             store: layout,
-            hasDetailsSession: false, // 环 5 接真实会话信号（blank 会话不算）
+            hasDetailsSession: true, // 环 3 骨架期恒 true（否则右栏永远打不开）；环 5 接真实会话信号（blank 会话不算）
             sidebar: { collapsed, width in
                 WOSidebarShell(
                     collapsed: collapsed,
