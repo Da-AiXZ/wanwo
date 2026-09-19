@@ -61,7 +61,6 @@ struct WORootFrame: View {
                                     newSession(in: workspaceId)
                                 }
                             )
-                            .id(sidebarReloadToken)
                         } else {
                             WOSlotPlaceholder(text: nil, quiet: quiet)
                         }

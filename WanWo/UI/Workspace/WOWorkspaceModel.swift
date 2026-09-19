@@ -91,10 +91,12 @@ enum WOWorkspaceTreeDeriver {
 
     static let ungroupedKey = ""
 
-    /// 会话可见性（手册 718 行）：非 subagent 且未归档且（非 blank 或是当前会话）
+    /// 会话可见性：未归档即可见。
+    /// 触屏适配偏离登记（2026-09-19 用户令）：dsh「blank 只显当前」依赖建即打开流，
+    /// 骨架期无打开信号 → 新建空会话被藏、只显最后一条（用户实测点 N 次只见一条闪现）。
+    /// 片 1 落地 sessions.open 后复核是否恢复该规则。
     static func isVisible(_ s: SessionSummary, archived: Set<String>, currentSessionId: String?) -> Bool {
         if archived.contains(s.id) { return false }
-        if isBlank(s) && s.id != currentSessionId { return false }
         return true
     }
 

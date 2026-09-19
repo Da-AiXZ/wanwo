@@ -39,12 +39,13 @@ struct WOProjectRow: View {
         HStack(spacing: 6) {
             // slot 16×20：expanded ? FolderOpen : FolderClose；hover 互换 chevron（三角形箭头，open 旋转 90°）
             ZStack {
+                // 触屏适配：chevron 展开态恒显（hover 互换在无指针设备不可达）
                 Image(systemName: expanded ? "folder.fill" : "folder")
-                    .opacity(hovering ? 0 : 1)
+                    .opacity(hovering || expanded ? 0 : 1)
                 Image(systemName: "triangle.fill")
                     .font(.system(size: 8))
                     .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .opacity(hovering ? 1 : 0)
+                    .opacity(hovering || expanded ? 1 : 0)
             }
             .animation(.easeInOut(duration: 0.15), value: hovering)
             .foregroundColor(hovering ? WOAlias.labelCaption : (menuOpen ? WOAlias.stateBusinessPrimary : WOAlias.labelTertiary))
@@ -76,8 +77,7 @@ struct WOProjectRow: View {
                 }
             }
             .frame(height: 20)
-            .opacity(hovering || menuOpen ? 1 : 0)
-            .disabled(!(hovering || menuOpen))
+            // 触屏适配：行动作恒显（hover 门控在 iPad 不可达，2026-09-19 登记）
         }
         .padding(.horizontal, 8)
         .frame(height: 34)
@@ -137,21 +137,18 @@ struct WOSessionRow: View {
                 .padding(.trailing, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // 非 blank 行时间：hover 时隐去换行菜单（手册 761 行）
+            // 非 blank 行：时间+菜单恒显并存
+            // （触屏适配：dsh hover 互换在无指针设备不可达，2026-09-19 登记；桌面 hover 高亮逻辑保留无害）
             if !node.blank {
-                if !(hovering || menuOpen) {
-                    Text(WOTimeLabel.rowLabel(updatedAt: node.updatedAt))
-                        .font(.system(size: 12))
-                        .foregroundColor(WOAlias.labelTertiary)
-                } else {
-                    HStack(spacing: 12) {
-                        WORowMenuButton(menuOpen: $menuOpen, entries: [
-                            WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
-                            WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
-                            WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
-                        ])
-                    }
-                }
+                Text(WOTimeLabel.rowLabel(updatedAt: node.updatedAt))
+                    .font(.system(size: 12))
+                    .foregroundColor(WOAlias.labelTertiary)
+                    .padding(.trailing, 6)
+                WORowMenuButton(menuOpen: $menuOpen, entries: [
+                    WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
+                    WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
+                    WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
+                ])
             }
         }
         .padding(.horizontal, 8)
