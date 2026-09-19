@@ -10,20 +10,17 @@ import SwiftUI
 
 // MARK: - 项目行（ProjectRowItem：34px 头行——文件夹图标↔chevron hover 互换 + 行菜单 + 新会话 +）
 
-public struct WOProjectRow: View {
-    public let label: String
-    public let isUngrouped: Bool
-    public let expanded: Bool
-    public let onToggle: () -> Void
-    public var onCreate: (() -> Void)? = nil
-    public var onRename: (() -> Void)? = nil
-    public var onDelete: (() -> Void)? = nil
+struct WOProjectRow: View {
+    let label: String
+    let isUngrouped: Bool
+    let expanded: Bool
+    let onToggle: () -> Void
+    var onCreate: (() -> Void)? = nil
+    var onRename: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @State private var hovering = false
     @State private var menuOpen = false
-
-    var onRename: (() -> Void)? = nil
-    var onDelete: (() -> Void)? = nil
 
     init(label: String, isUngrouped: Bool = false, expanded: Bool,
          onToggle: @escaping () -> Void,
@@ -38,7 +35,7 @@ public struct WOProjectRow: View {
         self.onDelete = onDelete
     }
 
-    public var body: some View {
+    var body: some View {
         HStack(spacing: 6) {
             // slot 16×20：expanded ? FolderOpen : FolderClose；hover 互换 chevron（三角形箭头，open 旋转 90°）
             ZStack {
@@ -94,20 +91,20 @@ public struct WOProjectRow: View {
 
 // MARK: - 会话行（SessionNodeItem：32px——状态槽/标题/时间/hover 菜单；row-in 150ms）
 
-public struct WOSessionRow: View {
-    public let node: WOSessionNode
-    public let selected: Bool
-    public var showStatus: Bool = true
-    public var onOpen: () -> Void
-    public var onRename: (() -> Void)? = nil
-    public var onFork: (() -> Void)? = nil
-    public var onArchive: (() -> Void)? = nil
+struct WOSessionRow: View {
+    let node: WOSessionNode
+    let selected: Bool
+    var showStatus: Bool = true
+    var onOpen: () -> Void
+    var onRename: (() -> Void)? = nil
+    var onFork: (() -> Void)? = nil
+    var onArchive: (() -> Void)? = nil
 
     @State private var hovering = false
     @State private var menuOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(node: WOSessionNode, selected: Bool, showStatus: Bool = true,
+    init(node: WOSessionNode, selected: Bool, showStatus: Bool = true,
                 onOpen: @escaping () -> Void,
                 onRename: (() -> Void)? = nil, onFork: (() -> Void)? = nil,
                 onArchive: (() -> Void)? = nil) {
@@ -123,7 +120,7 @@ public struct WOSessionRow: View {
     private var displayTitle: String { node.title ?? "新会话" } // displayTitle：blank→'新会话'
     private var status: WOSessionStatus { WOSessionStatus.resolve(for: node) }
 
-    public var body: some View {
+    var body: some View {
         HStack(spacing: 0) {
             // 状态槽：!flat||showStatus 时渲染（空闲不显示）
             if showStatus {
@@ -169,18 +166,18 @@ public struct WOSessionRow: View {
 
 // MARK: - 溢出折叠钮（sessionOverflowButton：「展开其余 n 个会话」/「收起」）
 
-public struct WOOverflowButton: View {
-    public let hiddenCount: Int
-    public let expanded: Bool
-    public let onToggle: () -> Void
+struct WOOverflowButton: View {
+    let hiddenCount: Int
+    let expanded: Bool
+    let onToggle: () -> Void
 
-    public init(hiddenCount: Int, expanded: Bool, onToggle: @escaping () -> Void) {
+    init(hiddenCount: Int, expanded: Bool, onToggle: @escaping () -> Void) {
         self.hiddenCount = hiddenCount
         self.expanded = expanded
         self.onToggle = onToggle
     }
 
-    public var body: some View {
+    var body: some View {
         Button(action: onToggle) {
             Text(expanded ? "收起" : "展开其余 \(hiddenCount) 个会话")
                 .font(.system(size: 12))
@@ -232,21 +229,21 @@ struct WORowMenuButton: View {
     }
 }
 
-public struct WORowMenuAnchorKey: PreferenceKey {
-    public static var defaultValue: CGRect = .zero
-    public static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+struct WORowMenuAnchorKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 // MARK: - 行菜单条目与浮层（批量翻译性菜单：重命名/分叉/归档/删除；danger 红字）
 
-public struct WORowMenuEntry: Identifiable {
-    public let id = UUID()
-    public let label: String
-    public let icon: String?
-    public let isDanger: Bool
-    public let action: (() -> Void)?
+struct WORowMenuEntry: Identifiable {
+    let id = UUID()
+    let label: String
+    let icon: String?
+    let isDanger: Bool
+    let action: (() -> Void)?
 
-    public init(label: String, icon: String? = nil, isDanger: Bool = false, action: (() -> Void)? = nil) {
+    init(label: String, icon: String? = nil, isDanger: Bool = false, action: (() -> Void)? = nil) {
         self.label = label
         self.icon = icon
         self.isDanger = isDanger

@@ -40,8 +40,8 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
 
     public init(collapsed: Bool, width: CGFloat,
                 onToggleSidebar: @escaping () -> Void, onNewSession: @escaping () -> Void,
-                region: @escaping (_ wide: Bool, _ quiet: Bool) -> Region,
-                footer: @escaping (_ wide: Bool) -> Footer) {
+                @ViewBuilder region: @escaping (_ wide: Bool, _ quiet: Bool) -> Region,
+                @ViewBuilder footer: @escaping (_ wide: Bool) -> Footer) {
         self.collapsed = collapsed
         self.width = width
         self.onToggleSidebar = onToggleSidebar

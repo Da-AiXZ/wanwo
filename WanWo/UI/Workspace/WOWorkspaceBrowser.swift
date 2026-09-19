@@ -91,7 +91,7 @@ struct WOWorkspaceBrowser: View {
     private func groupTree(_ snap: WOWorkspaceSnapshot) -> some View {
         let groups = WOWorkspaceTreeDeriver.deriveGroups(
             sessions: snap.sessions, workspaces: snap.workspaces,
-            archived: snap.archived, currentSessionId: snap.currentSessionId,
+            archived: snap.archived, currentSessionId: snapshot.currentSessionId,
             view: viewStore)
 
         ScrollView {
@@ -139,11 +139,11 @@ struct WOWorkspaceBrowser: View {
 
             // blank 占位行置顶（提升语义），后接可见普通行
             ForEach(blanks) { node in
-                WOSessionRow(node: node, selected: snap.currentSessionId == node.id,
+                WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
                              showStatus: false, onOpen: { onOpenSession(node.id) })
             }
             ForEach(visibleNormal) { node in
-                WOSessionRow(node: node, selected: snap.currentSessionId == node.id,
+                WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
                              showStatus: statusShows(node),
                              onOpen: { onOpenSession(node.id) })
             }
@@ -169,7 +169,7 @@ struct WOWorkspaceBrowser: View {
     private func flatList(_ snap: WOWorkspaceSnapshot) -> some View {
         let rows = WOWorkspaceTreeDeriver.deriveFlat(
             sessions: snap.sessions, archived: snap.archived,
-            currentSessionId: snap.currentSessionId)
+            currentSessionId: snapshot.currentSessionId)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
@@ -181,7 +181,7 @@ struct WOWorkspaceBrowser: View {
                         .padding(.vertical, 16)
                 }
                 ForEach(rows) { node in
-                    WOSessionRow(node: node, selected: snap.currentSessionId == node.id,
+                    WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
                                  showStatus: statusShows(node),
                                  onOpen: { onOpenSession(node.id) })
                 }
