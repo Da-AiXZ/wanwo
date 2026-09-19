@@ -22,12 +22,20 @@ public struct WOProjectRow: View {
     @State private var hovering = false
     @State private var menuOpen = false
 
-    public init(label: String, isUngrouped: Bool = false, expanded: Bool,
-                onToggle: @escaping () -> Void) {
+    var onRename: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
+
+    init(label: String, isUngrouped: Bool = false, expanded: Bool,
+         onToggle: @escaping () -> Void,
+         onCreate: (() -> Void)? = nil,
+         onRename: (() -> Void)? = nil, onDelete: (() -> Void)? = nil) {
         self.label = label
         self.isUngrouped = isUngrouped
         self.expanded = expanded
         self.onToggle = onToggle
+        self.onCreate = onCreate
+        self.onRename = onRename
+        self.onDelete = onDelete
     }
 
     public var body: some View {
@@ -64,10 +72,10 @@ public struct WOProjectRow: View {
                     .buttonStyle(.plain)
                 }
                 if onRename != nil || onDelete != nil {
-                    WORowMenuButton(menuOpen: $menuOpen) {
-                        WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename)
-                        WORowMenuEntry(label: "删除工作区", icon: "trash", isDanger: true, action: onDelete)
-                    }
+                    WORowMenuButton(menuOpen: $menuOpen, entries: [
+                        WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
+                        WORowMenuEntry(label: "删除工作区", icon: "trash", isDanger: true, action: onDelete),
+                    ])
                 }
             }
             .frame(height: 20)
@@ -140,11 +148,11 @@ public struct WOSessionRow: View {
                         .foregroundColor(WOAlias.labelTertiary)
                 } else {
                     HStack(spacing: 12) {
-                        WORowMenuButton(menuOpen: $menuOpen) {
-                            WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename)
-                            WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork)
-                            WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive)
-                        }
+                        WORowMenuButton(menuOpen: $menuOpen, entries: [
+                            WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
+                            WORowMenuEntry(label: "分叉会话", icon: "branch", action: onFork),
+                            WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
+                        ])
                     }
                 }
             }
@@ -190,18 +198,18 @@ public struct WOOverflowButton: View {
 
 // MARK: - 行菜单锚钮（省略号；menuOpen 时行底色保持——menuOpen 类语义）
 
-public struct WORowMenuButton<MenuContent: View>: View {
+struct WORowMenuButton: View {
     @Binding var menuOpen: Bool
-    @ViewBuilder let menuContent: () -> MenuContent
+    let entries: [WORowMenuEntry]
 
     @State private var anchorFrame: CGRect = .zero
 
-    public init(menuOpen: Binding<Bool>, @ViewBuilder menuContent: @escaping () -> MenuContent) {
+    init(menuOpen: Binding<Bool>, entries: [WORowMenuEntry]) {
         _menuOpen = menuOpen
-        self.menuContent = menuContent
+        self.entries = entries
     }
 
-    public var body: some View {
+    var body: some View {
         Button {
             menuOpen.toggle()
         } label: {
@@ -217,9 +225,8 @@ public struct WORowMenuButton<MenuContent: View>: View {
         .onPreferenceChange(WORowMenuAnchorKey.self) { anchorFrame = $0 }
         .overlay {
             if menuOpen {
-                WORowMenu(anchorFrame: anchorFrame, onClose: { menuOpen = false }) {
-                    menuContent()
-                }
+                WORowMenu(anchorFrame: anchorFrame, entries: entries,
+                          onClose: { menuOpen = false })
             }
         }
     }
@@ -247,27 +254,26 @@ public struct WORowMenuEntry: Identifiable {
     }
 }
 
-public struct WORowMenu: View {
+struct WORowMenu: View {
     let anchorFrame: CGRect
+    let entries: [WORowMenuEntry]
     let onClose: () -> Void
-    @ViewBuilder let entries: () -> [WORowMenuEntry]
 
     @State private var panelSize: CGSize = .zero
 
-    public init(anchorFrame: CGRect, onClose: @escaping () -> Void,
-                @ViewBuilder entries: @escaping () -> [WORowMenuEntry]) {
+    init(anchorFrame: CGRect, entries: [WORowMenuEntry], onClose: @escaping () -> Void) {
         self.anchorFrame = anchorFrame
-        self.onClose = onClose
         self.entries = entries
+        self.onClose = onClose
     }
 
-    public var body: some View {
+    var body: some View {
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture { onClose() }
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(entries()) { entry in
+                    ForEach(entries) { entry in
                         Button {
                             onClose()
                             entry.action?()

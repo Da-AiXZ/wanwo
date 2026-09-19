@@ -11,13 +11,13 @@ import SwiftUI
 
 // MARK: - 数据快照（WorkspaceRegistry + SessionStore → 派生器输入）
 
-public struct WOWorkspaceSnapshot {
-    public let sessions: [SessionSummary]
-    public let workspaces: [WorkspaceRecord]
-    public let archived: Set<String>
-    public let currentSessionId: String?
+struct WOWorkspaceSnapshot {
+    let sessions: [SessionSummary]
+    let workspaces: [WorkspaceRecord]
+    let archived: Set<String>
+    let currentSessionId: String?
 
-    public init(sessions: [SessionSummary], workspaces: [WorkspaceRecord],
+    init(sessions: [SessionSummary], workspaces: [WorkspaceRecord],
                 archived: Set<String>, currentSessionId: String?) {
         self.sessions = sessions
         self.workspaces = workspaces
@@ -28,15 +28,15 @@ public struct WOWorkspaceSnapshot {
 
 // MARK: - 浏览区（region slot 消费者）
 
-public struct WOWorkspaceBrowser: View {
-    @ObservedObject public var viewStore: WOWorkspaceViewStore
+struct WOWorkspaceBrowser: View {
+    @ObservedObject var viewStore: WOWorkspaceViewStore
     /// 真数据源（WorkspaceRegistry/SessionStore 门面）
-    public let snapshot: () -> WOWorkspaceSnapshot
-    public var onOpenSession: (String) -> Void
-    public var onNewSession: (String?) -> Void
+    let snapshot: () -> WOWorkspaceSnapshot
+    var onOpenSession: (String) -> Void
+    var onNewSession: (String?) -> Void
     /// 重命名/删除/分叉/归档动作（环 4 批 2 接 Modal 与 registry 写路径；批 1 菜单项隐藏）
-    public var onRenameSession: ((String) -> Void)? = nil
-    public var onDeleteWorkspace: ((String) -> Void)? = nil
+    var onRenameSession: ((String) -> Void)? = nil
+    var onDeleteWorkspace: ((String) -> Void)? = nil
 
     /// 每组未展开可见普通会话数（COLLAPSED_SESSION_LIMIT=5，手册 768 行）
     static let collapsedSessionLimit = 5
@@ -44,7 +44,7 @@ public struct WOWorkspaceBrowser: View {
     @State private var localExpansion: Set<String> = [] // 5+ 展开态（瞬态，SessionTree 语义）
     @State private var reloadToken = 0
 
-    public init(viewStore: WOWorkspaceViewStore,
+    init(viewStore: WOWorkspaceViewStore,
                 snapshot: @escaping () -> WOWorkspaceSnapshot,
                 onOpenSession: @escaping (String) -> Void,
                 onNewSession: @escaping (String?) -> Void) {
@@ -54,7 +54,7 @@ public struct WOWorkspaceBrowser: View {
         self.onNewSession = onNewSession
     }
 
-    public var body: some View {
+    var body: some View {
         // listArea：flex1 margin 负值贴栏缘；treeBody 相对定位
         VStack(alignment: .leading, spacing: 0) {
             // sectionHeader：批 1 极简（搜索/视图选项/添加工作区 = 批 2）
