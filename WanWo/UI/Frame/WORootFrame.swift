@@ -11,6 +11,10 @@ import SwiftUI
 
 struct WORootFrame: View {
     @StateObject private var layout = WOLayoutStore()
+    @StateObject private var viewStore = WOWorkspaceViewStore()
+    @EnvironmentObject private var environment: AppEnvironment
+    /// 环 4 批 1：列表手动刷新（新建/重命名/删除后触发）；自动跟随事件流归环 5
+    @State private var sidebarReloadToken = 0
 
     var body: some View {
         WOAppFrame(
@@ -25,7 +29,34 @@ struct WORootFrame: View {
                         // 环 4 接 WorkspaceRegistry.startSession（继承当前工作区语义）
                     },
                     region: { wide, quiet in
-                        WOSlotPlaceholder(text: wide ? "工作区树 · 环 4" : nil, quiet: quiet)
+                        if wide {
+                            WOWorkspaceBrowser(
+                                viewStore: viewStore,
+                                snapshot: {
+                                    WOWorkspaceSnapshot(
+                                        sessions: environment.sessionStore.listSessions(),
+                                        workspaces: environment.workspaceRegistry.list(),
+                                        archived: environment.workspaceRegistry.archivedSessionIDs(),
+                                        currentSessionId: nil) // 环 5 接当前会话信号
+                                },
+                                onOpenSession: { sessionId in
+                                    // 环 5 接会话打开（sessions.open 语义）
+                                    _ = sessionId
+                                },
+                                onNewSession: { workspaceId in
+                                    // 新会话：建 blank + attach 到工作区 + 刷新列表
+                                    if let s = try? environment.sessionStore.createSession(cwd: nil) {
+                                        if let wsId = workspaceId {
+                                            try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
+                                        }
+                                        sidebarReloadToken += 1
+                                    }
+                                }
+                            )
+                            .id(sidebarReloadToken)
+                        } else {
+                            WOSlotPlaceholder(text: nil, quiet: quiet)
+                        }
                     },
                     footer: { wide in
                         WOSlotPlaceholder(text: wide ? "设置入口 · 环 7" : nil, quiet: false)
