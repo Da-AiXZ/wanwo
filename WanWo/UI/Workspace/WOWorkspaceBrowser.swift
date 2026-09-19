@@ -67,7 +67,7 @@ struct WOWorkspaceBrowser: View {
             .frame(height: 36)
             .padding(.leading, 4)
             .padding(.bottom, 4)
-            .padding(.trailing, -4)
+            .padding(.trailing, 12)
             .padding(.top, 2)
 
             listBody

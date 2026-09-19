@@ -10,8 +10,15 @@
 import SwiftUI
 
 struct WORootFrame: View {
-    /// 环 4 占位：新会话钮在侧栏壳层尚无动作（真建会话在 region 内的浏览器闭包）
-    static func noopNewSession() {}
+    /// 新会话统一入口：建 blank 会话，带 workspaceId 则挂组，否则落未分组桶；刷新列表
+    private func newSession(in workspaceId: String?) {
+        if let s = try? environment.sessionStore.createSession(cwd: nil) {
+            if let wsId = workspaceId {
+                try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
+            }
+            sidebarReloadToken += 1
+        }
+    }
 
     @StateObject private var layout = WOLayoutStore()
     @StateObject private var viewStore = WOWorkspaceViewStore()
@@ -28,7 +35,7 @@ struct WORootFrame: View {
                     collapsed: collapsed,
                     width: width,
                     onToggleSidebar: { layout.toggleSidebar() },
-                    onNewSession: WORootFrame.noopNewSession,
+                    onNewSession: { newSession(in: nil) },
                     region: { wide, quiet in
                         if wide {
                             WOWorkspaceBrowser(
@@ -45,13 +52,7 @@ struct WORootFrame: View {
                                     _ = sessionId
                                 },
                                 onNewSession: { workspaceId in
-                                    // 新会话：建 blank + attach 到工作区 + 刷新列表
-                                    if let s = try? environment.sessionStore.createSession(cwd: nil) {
-                                        if let wsId = workspaceId {
-                                            try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
-                                        }
-                                        sidebarReloadToken += 1
-                                    }
+                                    newSession(in: workspaceId)
                                 }
                             )
                             .id(sidebarReloadToken)
