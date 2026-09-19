@@ -10,6 +10,9 @@
 import SwiftUI
 
 struct WORootFrame: View {
+    /// 环 4 占位：新会话钮在侧栏壳层尚无动作（真建会话在 region 内的浏览器闭包）
+    static func noopNewSession() {}
+
     @StateObject private var layout = WOLayoutStore()
     @StateObject private var viewStore = WOWorkspaceViewStore()
     @EnvironmentObject private var environment: AppEnvironment
@@ -25,9 +28,7 @@ struct WORootFrame: View {
                     collapsed: collapsed,
                     width: width,
                     onToggleSidebar: { layout.toggleSidebar() },
-                    onNewSession: {
-                        // 环 4 接 WorkspaceRegistry.startSession（继承当前工作区语义）
-                    },
+                    onNewSession: WORootFrame.noopNewSession,
                     region: { wide, quiet in
                         if wide {
                             WOWorkspaceBrowser(
