@@ -22,6 +22,9 @@ struct WanWoApp: App {
             // 旧 RootView 保留至环 8 统一删除（旧 UI 即删拍板：环 8 收官清死代码）。
             WORootFrame()
                 .environmentObject(environment)
+                // R1 诚实化：App 级会话真值源（当前会话/列表纪元）注入——
+                // WORootFrame 消费；持有体=environment.appState（同一实例）。
+                .environmentObject(environment.appState)
                 // M4-B 场景2 取证（探针 C）：冻结窗口显式化——前后台切换
                 // 时刻进日志（category AppLifecycle），与进程死亡时刻
                 // （ISHShellExecutor[reader] stderr EOF/pipe closed）及

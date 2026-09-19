@@ -9,20 +9,34 @@
 
 import SwiftUI
 
-// MARK: - 数据快照（WorkspaceRegistry + SessionStore → 派生器输入）
+// MARK: - 数据快照（WorkspaceRegistry + SessionStore + 运行状态镜像 → 派生器输入）
 
 struct WOWorkspaceSnapshot {
     let sessions: [SessionSummary]
     let workspaces: [WorkspaceRecord]
     let archived: Set<String>
     let currentSessionId: String?
+    /// R1 状态点真值（D3 清偿）：AppEnvironment 既有镜像（M6.6 B4 建，ChatViewModel 上报）。
+    /// pending 粒度=有/无（琥珀点）；种类文案区分（等待审批/等待回答）挂 R3 拆镜像时补。
+    let activeRunSessionIDs: Set<String>
+    let pendingSessionIDs: Set<String>
 
     init(sessions: [SessionSummary], workspaces: [WorkspaceRecord],
-                archived: Set<String>, currentSessionId: String?) {
+                archived: Set<String>, currentSessionId: String?,
+                activeRunSessionIDs: Set<String> = [],
+                pendingSessionIDs: Set<String> = []) {
         self.sessions = sessions
         self.workspaces = workspaces
         self.archived = archived
         self.currentSessionId = currentSessionId
+        self.activeRunSessionIDs = activeRunSessionIDs
+        self.pendingSessionIDs = pendingSessionIDs
+    }
+
+    /// dsh AppFrame detailsSession 语义：当前会话存在且非 blank。
+    var hasDetails: Bool {
+        guard let id = currentSessionId else { return false }
+        return sessions.contains { $0.id == id && $0.title != nil }
     }
 }
 
@@ -42,7 +56,8 @@ struct WOWorkspaceBrowser: View {
     static let collapsedSessionLimit = 5
 
     @State private var localExpansion: Set<String> = [] // 5+ 展开态（瞬态，SessionTree 语义）
-    @State private var reloadToken = 0
+    // R1：reloadToken 手动刷新机制退役（D2 清偿）——写路径失效经 appState.sessionListEpoch
+    // 推 body 重求值，快照闭包重拉自动生效；.id 整树重建是 9-19 闪跳反模式，禁用。
 
     init(viewStore: WOWorkspaceViewStore,
                 snapshot: @escaping () -> WOWorkspaceSnapshot,
@@ -72,7 +87,6 @@ struct WOWorkspaceBrowser: View {
 
             listBody
         }
-        .id(reloadToken)
     }
 
     @ViewBuilder
@@ -92,6 +106,8 @@ struct WOWorkspaceBrowser: View {
         let groups = WOWorkspaceTreeDeriver.deriveGroups(
             sessions: snap.sessions, workspaces: snap.workspaces,
             archived: snap.archived, currentSessionId: snap.currentSessionId,
+            activeRunSessionIDs: snap.activeRunSessionIDs,
+            pendingSessionIDs: snap.pendingSessionIDs,
             view: viewStore)
 
         ScrollView {
@@ -169,7 +185,9 @@ struct WOWorkspaceBrowser: View {
     private func flatList(_ snap: WOWorkspaceSnapshot) -> some View {
         let rows = WOWorkspaceTreeDeriver.deriveFlat(
             sessions: snap.sessions, archived: snap.archived,
-            currentSessionId: snap.currentSessionId)
+            currentSessionId: snap.currentSessionId,
+            activeRunSessionIDs: snap.activeRunSessionIDs,
+            pendingSessionIDs: snap.pendingSessionIDs)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {

@@ -104,12 +104,15 @@ enum WOWorkspaceTreeDeriver {
     static func isBlank(_ s: SessionSummary) -> Bool { s.title == nil }
 
     /// 分组树：workspace 序分组（成员按 sessionIds 账本序），游离会话进「未分组」
-    /// （有 stored 顺序按序 + 新散落者按 recency 追加，否则全 recency）
+    /// （有 stored 顺序按序 + 新散落者按 recency 追加，否则全 recency）。
+    /// R1：运行/待决真值入节点（D3 清偿；pending 粒度=有/无，种类文案挂 R3 拆镜像）。
     static func deriveGroups(
         sessions: [SessionSummary],
         workspaces: [WorkspaceRecord],
         archived: Set<String>,
         currentSessionId: String?,
+        activeRunSessionIDs: Set<String>,
+        pendingSessionIDs: Set<String>,
         view: WOWorkspaceViewStore
     ) -> [WOGroupNode] {
         let visible = sessions.filter { isVisible($0, archived: archived, currentSessionId: currentSessionId) }
@@ -122,7 +125,8 @@ enum WOWorkspaceTreeDeriver {
             let members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
             groups.append(makeGroup(key: ws.id, workspaceId: ws.id, label: ws.title,
                                     createdAt: ws.createdAt, members: members,
-                                    currentSessionId: currentSessionId, view: view))
+                                    activeRunSessionIDs: activeRunSessionIDs,
+                                    pendingSessionIDs: pendingSessionIDs))
         }
 
         // 游离会话 → 未分组桶：registry 账本序优先，散落者按 recency 追加
@@ -130,17 +134,24 @@ enum WOWorkspaceTreeDeriver {
         if !orphans.isEmpty {
             groups.append(makeGroup(key: Self.ungroupedKey, workspaceId: nil, label: "未分组",
                                     createdAt: nil, members: orphans,
-                                    currentSessionId: currentSessionId, view: view))
+                                    activeRunSessionIDs: activeRunSessionIDs,
+                                    pendingSessionIDs: pendingSessionIDs))
         }
         return groups
     }
 
     private static func makeGroup(key: String, workspaceId: String?, label: String,
                                   createdAt: Date?, members: [SessionSummary],
-                                  currentSessionId: String?, view: WOWorkspaceViewStore) -> WOGroupNode {
+                                  activeRunSessionIDs: Set<String>,
+                                  pendingSessionIDs: Set<String>) -> WOGroupNode {
         let nodes = members.map { s in
-            WOSessionNode(id: s.id, title: s.title, blank: isBlank(s),
-                          createdAt: s.createdAt, updatedAt: s.updatedAt)
+            var node = WOSessionNode(id: s.id, title: s.title, blank: isBlank(s),
+                                     createdAt: s.createdAt, updatedAt: s.updatedAt)
+            // R1 真值：运行中（镜像 onPhaseChange/onTurnEnd）+ 待决（琥珀点，
+            // 镜像 presentApproval/Question；种类区分挂 R3 拆镜像）。
+            node.running = activeRunSessionIDs.contains(s.id)
+            node.pendingKind = pendingSessionIDs.contains(s.id) ? .approval : nil
+            return node
         }
         let containsCurrent = currentSessionId.map { current in
             nodes.contains(where: { node in node.id == current })
@@ -151,13 +162,19 @@ enum WOWorkspaceTreeDeriver {
 
     /// 扁平列表：全部可见会话顶层行，严格最新优先（手册 720 行）
     static func deriveFlat(
-        sessions: [SessionSummary], archived: Set<String>, currentSessionId: String?
+        sessions: [SessionSummary], archived: Set<String>, currentSessionId: String?,
+        activeRunSessionIDs: Set<String>, pendingSessionIDs: Set<String>
     ) -> [WOSessionNode] {
         sessions
             .filter { isVisible($0, archived: archived, currentSessionId: currentSessionId) }
             .sorted { $0.updatedAt > $1.updatedAt }
-            .map { WOSessionNode(id: $0.id, title: $0.title, blank: isBlank($0),
-                                 createdAt: $0.createdAt, updatedAt: $0.updatedAt) }
+            .map { s in
+                var node = WOSessionNode(id: s.id, title: s.title, blank: isBlank(s),
+                                         createdAt: s.createdAt, updatedAt: s.updatedAt)
+                node.running = activeRunSessionIDs.contains(s.id)
+                node.pendingKind = pendingSessionIDs.contains(s.id) ? .approval : nil
+                return node
+            }
     }
 }
 

@@ -60,6 +60,35 @@ actor SessionStore {
         }
     }
 
+    /// 外部列表变更信号（R1 诚实化：UI 推刷新的消费口，11-ui-design §十二 R1 产出②）。
+    /// 单订阅者、锁保护、任意线程 fire——与 pendingListInvalidation 同一汇聚点
+    /// （database.onIndexChanged）触发，覆盖 writer 追加/标题落盘/建/删全部写路径。
+    private final class ExternalListSignal: @unchecked Sendable {
+        private let lock = NSLock()
+        private var handler: (() -> Void)?
+
+        func set(_ cb: (() -> Void)?) {
+            lock.lock()
+            handler = cb
+            lock.unlock()
+        }
+
+        func fire() {
+            lock.lock()
+            let cb = handler
+            lock.unlock()
+            cb?()
+        }
+    }
+
+    private let externalListSignal = ExternalListSignal()
+
+    /// 装配期订阅列表变更（装配期赋值一次，运行期只读——与 onIndexChanged 同纪律）。
+    /// 回调在**任意线程**触发，消费方自行跳 MainActor。
+    nonisolated func setExternalListSignal(_ cb: @escaping () -> Void) {
+        externalListSignal.set(cb)
+    }
+
     enum StoreError: Error, Equatable {
         case sessionAlreadyOwned(String)
         case sessionNotFound(String)
@@ -73,8 +102,13 @@ actor SessionStore {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         // 列表失效钩子：数据库写路径在写入线程上同步置旗标（见
         // pendingListInvalidation 注释；装配期赋值一次，运行期只读）。
+        // R1：同一汇聚点同步 fire 外部信号（UI 推刷新；消费方自行跳线程）。
         let invalidation = self.pendingListInvalidation
-        database.onIndexChanged = { invalidation.mark() }
+        let externalSignal = self.externalListSignal
+        database.onIndexChanged = {
+            invalidation.mark()
+            externalSignal.fire()
+        }
     }
 
     private func fileURL(for id: String) throws -> URL {

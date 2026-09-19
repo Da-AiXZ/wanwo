@@ -2,40 +2,49 @@
 //  WORootFrame.swift
 //  WanWo
 //
-//  环 3 —— 新 UI 根组装：AppFrame + SidebarShell 装配（对应 dsh root 注册语义）。
-//  中栏/详情栏为中性占位（内容归环 5 对话区/环 5b 消息流）；工作区树归环 4；
-//  设置入口归环 7。旧 RootView 保留至环 8 统一删除（旧 UI 即删拍板：新屏上线即删对应代码）。
+//  R1 诚实化改造（analysis/11-ui-design.md §十二 R1；11-ui-design §十二 R1）：
+//  哨兵退役 → appState 真信号（①当前会话唯一权威，D1 清偿）；
+//  列表自动刷新（②epoch 驱动，D2 清偿）；hasDetailsSession 真判定（④，D4 清偿）；
+//  状态点真值（③AppEnvironment 既有镜像 → snapshot → 派生器，D3 清偿）。
 //
 
 import SwiftUI
 
 struct WORootFrame: View {
-    /// 新会话统一入口：建 blank 会话，带 workspaceId 则挂组，否则落未分组桶；刷新列表
+    /// 新会话统一入口：建 blank 会话，带 workspaceId 则挂组，否则落未分组桶
     private func newSession(in workspaceId: String?) {
         if let s = try? environment.sessionStore.createSession(cwd: nil) {
             if let wsId = workspaceId {
                 try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
             }
-            currentSessionIdRaw = s.id
-            sidebarReloadToken += 1
+            // R1：当前会话真信号（唯一入口；点行/旧界面/深链同写 appState）。
+            appState.openSession(s.id)
         }
     }
 
     @StateObject private var layout = WOLayoutStore()
     @StateObject private var viewStore = WOWorkspaceViewStore()
     @EnvironmentObject private var environment: AppEnvironment
-    /// 环 4 批 1：列表手动刷新（新建/重命名/删除后触发）；自动跟随事件流归环 5
-    @State private var sidebarReloadToken = 0
-    /// 骨架期当前会话：跟踪本壳新建（dsh 建会话即打开语义，否则 blank 会话被 isVisible 藏掉）；
-    /// AppStorage 持久化=重启/覆盖安装后仍指向最后新建（生命周期与 DB 一致）；环 5 接 sessions.open 真实信号后整体替换。
-    /// AppStorage 不收 String?——空串哨兵=nil（v4 片 1 起由真实打开信号接管）
-    @AppStorage("wo.skeleton.currentSessionId") private var currentSessionIdRaw = ""
-    private var currentSessionId: String? { currentSessionIdRaw.isEmpty ? nil : currentSessionIdRaw }
+    /// R1：App 级会话真值源（当前会话/列表纪元）。
+    @EnvironmentObject private var appState: WOAppState
 
     var body: some View {
+        // 快照一次求值：列表 + 派生输入 + hasDetailsSession 共用（同步 actor 读沿
+        // 环4批1 既有模式；写路径失效经 appState.sessionListEpoch 推重渲）。
+        let sessions = environment.sessionStore.listSessions()
+        let snapshot = WOWorkspaceSnapshot(
+            sessions: sessions,
+            workspaces: environment.workspaceRegistry.list(),
+            archived: environment.workspaceRegistry.archivedSessionIDs(),
+            currentSessionId: appState.currentSessionId,
+            activeRunSessionIDs: environment.activeRunSessionIDs,
+            pendingSessionIDs: environment.pendingInteractionSessionIDs)
+
         WOAppFrame(
             store: layout,
-            hasDetailsSession: true, // 环 3 骨架期恒 true（否则右栏永远打不开）；环 5 接真实会话信号（blank 会话不算）
+            // R1：真判定——当前会话存在且非 blank（dsh AppFrame detailsSession 语义；
+            // 骨架期恒 true 于本环退役，D4 清偿）。
+            hasDetailsSession: snapshot.hasDetails,
             sidebar: { collapsed, width in
                 WOSidebarShell(
                     collapsed: collapsed,
@@ -46,16 +55,10 @@ struct WORootFrame: View {
                         if wide {
                             WOWorkspaceBrowser(
                                 viewStore: viewStore,
-                                snapshot: {
-                                    WOWorkspaceSnapshot(
-                                        sessions: environment.sessionStore.listSessions(),
-                                        workspaces: environment.workspaceRegistry.list(),
-                                        archived: environment.workspaceRegistry.archivedSessionIDs(),
-                                        currentSessionId: currentSessionId) // 骨架期=本壳新建跟踪；环 5 接 sessions.open
-                                },
+                                snapshot: { snapshot },
                                 onOpenSession: { sessionId in
-                                    // 片 1 真打开：置当前会话 → 中栏挂 WOChatView
-                                    currentSessionIdRaw = sessionId
+                                    // 真打开：置当前会话 → 中栏挂 WOChatView
+                                    appState.openSession(sessionId)
                                 },
                                 onNewSession: { workspaceId in
                                     newSession(in: workspaceId)
@@ -66,23 +69,23 @@ struct WORootFrame: View {
                         }
                     },
                     footer: { wide in
-                        WOSlotPlaceholder(text: wide ? "设置入口 · 环 7" : nil, quiet: false)
+                        WOSlotPlaceholder(text: wide ? "设置入口 · R5" : nil, quiet: false)
                     }
                 )
             },
             center: {
-                // v4 片 1：无当前会话=Hero 引导；有=真聊天（.id 换会话换 ViewModel）
-                if currentSessionIdRaw.isEmpty {
-                    WOChatHero(onNewSession: { newSession(in: nil) })
+                // 无当前会话=Hero 引导；有=真聊天（.id 换会话换 ViewModel）
+                if let sessionId = appState.currentSessionId {
+                    WOChatView(environment: environment, sessionId: sessionId)
+                        .id(sessionId)
                 } else {
-                    WOChatView(environment: environment, sessionId: currentSessionIdRaw)
-                        .id(currentSessionIdRaw)
+                    WOChatHero(onNewSession: { newSession(in: nil) })
                 }
             },
             details: {
-                // 详情栏槽：DetailsPanel 归环 5；关闭钮（codex 面板语义，环 3 骨架期唯一关闭入口）
+                // 详情栏槽：右栏四页签归 R4；关闭钮（codex 面板语义）
                 ZStack(alignment: .topTrailing) {
-                    WOSlotPlaceholder(text: "详情栏 · 环 5", quiet: false)
+                    WOSlotPlaceholder(text: "详情栏 · 右栏四页签 R4", quiet: false)
                     Button { layout.closeDetails() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .medium))
@@ -97,10 +100,14 @@ struct WORootFrame: View {
             },
             overlayLayer: { EmptyView() }
         )
+        // R1：列表自动刷新机制——appState.sessionListEpoch（@Published）变化触发本
+        // body 重求值 → 快照重拉 → 浏览区差分刷新（D2 清偿）。
+        // 纪律：禁 .id(epoch) 整树重建——那正是 9-19"列表闪跳"的反模式（identity
+        // 重置杀掉进行中手势；差分刷新靠 Equatable 派生输出，WOGroupNode 已 Equatable）。
     }
 }
 
-/// 脚手架占位（非设计稿——环 3 出包的可见性标注，后续环逐个替换）
+/// 脚手架占位（非设计稿——可见性标注，后续环逐个替换）
 struct WOSlotPlaceholder: View {
     let text: String?
     let quiet: Bool

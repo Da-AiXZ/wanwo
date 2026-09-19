@@ -35,6 +35,10 @@ enum RootSelection: Hashable {
 final class AppEnvironment: ObservableObject {
     let endpointStore: EndpointStore
     let sessionStore: SessionStore
+    /// R1 诚实化：App 级会话真值源（当前会话/列表纪元）。运行状态真值=下方
+    /// pendingInteractionSessionIDs + activeRunSessionIDs 两个既有镜像（M6.6 B4 建）。
+    /// 存储属性赋值在 init 内 sessionStore 之后（两阶段初始化：先于首个 self 捕获闭包）。
+    let appState: WOAppState
     /// GRDB 投影库（对 UI 不透明；仅供会话层更新索引）。
     let database: SessionDatabase
     /// M3 T2.2：新会话默认权限预设（设置·权限行持久宿主面；PermissionRow.tsx
@@ -261,6 +265,15 @@ final class AppEnvironment: ObservableObject {
         try? FileManager.default.createDirectory(at: sessionsRoot,
                                                  withIntermediateDirectories: true)
         self.sessionStore = SessionStore(root: sessionsRoot, database: db)
+        // R1 诚实化（11-ui-design §十二 R1）：App 级会话真值源装配——
+        // ①当前会话 ②列表失效信号→纪元 bump（运行状态③直接消费下方既有镜像）。
+        let appState = WOAppState()
+        self.appState = appState
+        sessionStore.setExternalListSignal { [weak appState] in
+            Task { @MainActor [weak appState] in
+                appState?.bumpSessionList()
+            }
+        }
 
         // M6.5（B3）：workspace registry + controller（F073 锚点 + dsh 语义）。
         // header 缝 = 直读分组维度 sessions/<id>.jsonl 首行（SessionLogScanner
