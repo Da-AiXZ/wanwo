@@ -74,8 +74,9 @@ struct WOSettingsModal: View {
                     cardLayer(size: cardSize)
                 }
             }
-            // 全库唯一动画挂接形态（value 齐备；reduceMotion 自动降级）。
-            .woMotion(WOMotion.standardSpring, value: isPresented)
+            // 出入场动画全部内嵌在各自 transition（.animation 自驱动）——
+            // 容器级 woMotion 与 transition 内嵌动画双驱动会在 removal 上叠加，
+            // 造成关闭残影（2026-09-20 真机反馈）。
         }
         .onAppear { adoptIncomingPane(force: false) }
         .onChange(of: isPresented) { presented in
@@ -106,7 +107,7 @@ struct WOSettingsModal: View {
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { isPresented = false }
-            .transition(.opacity) // 原型：遮罩淡入
+            .transition(.opacity.animation(.easeOut(duration: 0.15)))
             .accessibilityLabel("关闭设置")
             .accessibilityAddTraits(.isButton)
     }
@@ -145,14 +146,15 @@ struct WOSettingsModal: View {
     /// 出场加速淡出（R2 出场 ×0.65）；reduceMotion 降级纯淡入淡出。
     private var cardTransition: AnyTransition {
         if reduceMotion {
-            return .opacity
+            return .opacity.animation(.easeOut(duration: 0.15))
         }
         return .asymmetric(
             insertion: .modifier(
                 active: WOShift(x: 0, y: 10, opacity: 0),
                 identity: WOShift(x: 0, y: 0, opacity: 1))
-                .combined(with: .scale(scale: 0.96)),
-            removal: .opacity.animation(.easeIn(duration: WOMotion.exitDuration(WOMotion.t3))))
+                .combined(with: .scale(scale: 0.96))
+                .animation(WOMotion.standardSpring),
+            removal: .opacity.animation(.easeOut(duration: 0.15)))
     }
 
     // MARK: - 左 nav（188px；cell 40px 高 active #EBEEF2）

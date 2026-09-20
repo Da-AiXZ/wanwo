@@ -66,6 +66,16 @@ struct WORootFrame: View {
         }
         .onAppear { syncSessionSelection() }
         .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
+        // 反向同步：引擎缝开的会话（hero 工作区胶囊 startSession / 深链）写
+        // environment.selection → 新 UI 真值跟上（两向同值幂等，不成环）。
+        .onChange(of: environment.selection) { selection in
+            if case .session(let id) = selection, appState.currentSessionId != id {
+                appState.openSession(id)
+            }
+            if case .none = selection, let current = appState.currentSessionId {
+                appState.sessionRemoved(current)
+            }
+        }
         .onChange(of: workspaceSidebar.isExpanded) { expanded in
             // 右栏收起/展开 ↔ 布局列宽联动（收起=列宽 0 让位给对话区，dsh 让位链）。
             if expanded {
@@ -200,7 +210,9 @@ struct WORootFrame: View {
             WOChatView(environment: environment, sessionId: sessionId)
                 .id(sessionId)
         } else {
-            WOChatHero(onNewSession: { newSession(in: nil) })
+            // 无会话空态 = dsh EmptyHero 语义（工作区胶囊选组即建会话入组，
+            // 草稿交接 pendingFirstDraft；WOChatHero 内部走引擎缝）。
+            WOChatHero()
         }
     }
 

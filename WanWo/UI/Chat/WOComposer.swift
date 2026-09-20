@@ -31,10 +31,15 @@ struct WOComposer: View {
     /// 「描述你想要构建的内容…」由宿主传入）。
     var placeholder: String = "发消息或做任务…"
 
+    /// 模型面降级（VM.isModelReady == false：装配失败无 loop，send 静默
+    /// no-op）——发送钮诚实禁用，原因由宿主的降级横幅呈现。
+    var degraded: Bool = false
+
     @State private var photoSelection: [PhotosPickerItem] = []
     @State private var draftPreview: UIImage?
 
     private var canSend: Bool {
+        guard !degraded else { return false }
         switch viewModel.phase {
         case .idle, .failed:
             return !viewModel.isDraftEmpty || !viewModel.draftImages.isEmpty

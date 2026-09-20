@@ -105,6 +105,10 @@ final class ChatViewModel: ObservableObject {
     private let sessionID: String
     private var writer: SessionWriter?
     private var agentLoop: AgentLoop?
+    /// 模型面就绪判定（UI 诚实呈现用：open 装配失败 = loop nil →
+    /// send() 静默 no-op，UI 必须显式呈现降级横幅并禁用发送钮，
+    /// 不得让用户对死按钮困惑——2026-09-20 真机反馈修复）。
+    var isModelReady: Bool { agentLoop != nil }
     private var registry: ToolRegistry?
     /// replay 投影用的调用参数缓存（callId → name/args，presentResult 复现用）。
     private var callArgs: [String: (name: String, args: JSONValue)] = [:]

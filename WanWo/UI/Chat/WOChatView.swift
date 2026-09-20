@@ -28,6 +28,7 @@ import SwiftUI
 
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
+    @EnvironmentObject private var environment: AppEnvironment
     private let sessionId: String
 
     /// 简化自动跟随（批 1）：内容变化即滚底；治理=后续批（autoFollow 闸门按 digest-K 6.3#1）。
@@ -82,6 +83,12 @@ struct WOChatView: View {
                     heroHeader
                         .transition(.opacity)
                 }
+                // 降级横幅恒可见（hero 也显）——VM 装配失败（无端点/Key 不可读）
+                // 时 loop=nil、send 静默 no-op，横幅是唯一解释（2026-09-20 真机
+                // 反馈"发不了消息"根因：横幅原来在消息列表里，hero 态被整块隐藏）。
+                if let banner = viewModel.resumeBanner {
+                    degradationBanner(banner)
+                }
                 composerSeat
                     .background(composerChromeMeter)
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
@@ -102,6 +109,12 @@ struct WOChatView: View {
         .onAppear {
             viewModel.open()
             seedEntry()
+            // dsh「hero 输入文本 = 新会话 composer draft」交接缝消费（旧
+            // ChatView 同语义）：文本不丢，用户在会话内点发送才真正提交。
+            if let firstDraft = environment.pendingFirstDraft {
+                if viewModel.draft.isEmpty { viewModel.draft = firstDraft }
+                environment.pendingFirstDraft = nil
+            }
         }
         .onDisappear { viewModel.close() }
         .onChange(of: viewModel.phase) { _ in seedEntry() }
@@ -143,6 +156,27 @@ struct WOChatView: View {
         .padding(.bottom, 26) // digest-H hero-composer-slot margin-top 26px
     }
 
+    /// 降级横幅（装配失败=无 loop；琥珀条 + 恢复指引）。
+    private func degradationBanner(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(WOAlias.stateWarnLabel)
+            if !viewModel.isModelReady {
+                Text("配置好 Providers 后，退出本会话再重新进入即可恢复发送。")
+                    .font(.system(size: 11))
+                    .foregroundColor(WOAlias.labelTertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill(WOAlias.stateWarnTertiary))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
     // MARK: - Composer 座位（接管语义：提问 > 审批 > 常规输入；
     // ComposerSeatRoute 纯函数序在 VM 层已保证 pendingApprovals/pendingQuestions 序）
 
@@ -155,7 +189,8 @@ struct WOChatView: View {
         } else {
             // digest-H 文案清单：hero「描述你想要构建的内容…」/ 会话「发消息或做任务…」。
             WOComposer(viewModel: viewModel,
-                       placeholder: heroMode ? "描述你想要构建的内容…" : "发消息或做任务…")
+                       placeholder: heroMode ? "描述你想要构建的内容…" : "发消息或做任务…",
+                       degraded: !viewModel.isModelReady)
         }
     }
 
@@ -214,13 +249,6 @@ struct WOChatView: View {
                             Spacer()
                         }
                         .padding(.top, 48)
-                    }
-                    if let banner = viewModel.resumeBanner {
-                        Text(banner)
-                            .font(.system(size: 12))
-                            .foregroundColor(WOAlias.stateWarnLabel)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
                     }
                     let nodes = ConversationProjector.foldTurnProcess(viewModel.bubbles)
                     ForEach(nodes) { node in
@@ -490,11 +518,82 @@ private struct ReasoningDisclosure: View {
 
 // MARK: - Hero 空态（无当前会话：品牌+新会话引导；按钮真建会话）
 
+//
+//  WOChatHero —— 无会话空态（dsh EmptyHero.tsx 1:1 语义，ConversationEmptyStateView
+//  旧件语义源 + digest-H hero 视觉；2026-09-20 用户指令"第二个做好，按 dsh 源码补"）：
+//    · 工作区胶囊（WorkspaceChip）：folder 图标 + 项目名/「选择工作区」+ chevron，
+//      SwiftUI Menu 弹层（列表勾选当前项 + 尾部「添加工作区…」）；选中即建会话入组
+//      （workspaceNavigator.startSession —— 引擎既有缝，新会话不再落未分组）。
+//    · 权限胶囊：三挡预设（与 dock 新会话默认同源 = permissionDefaults）；完全权限
+//      走 PermissionConfirmationGate 确认缝（choosePermission :448 语义）。
+//    · composer inert 语义（ConversationRoot.tsx:324-336）：未选工作区 = 同框 inert
+//      （占位「选择一个工作区开始」，点击整框 = 开工作区菜单）；选中 = 可输入，
+//      发送 = 草稿交接 pendingFirstDraft + startSession（dsh「hero 输入文本 =
+//      新会话 composer draft」，文本不丢、会话内点发送才真正提交）。
+//
+
+import SwiftUI
+
 struct WOChatHero: View {
-    let onNewSession: () -> Void
+    @EnvironmentObject private var environment: AppEnvironment
+    @State private var workspaces: [WorkspaceRecord] = []
+    @State private var selectedWorkspaceID: String?
+    @State private var heroDraft = ""
+    @State private var showAddFlow = false
+    @State private var newWorkspaceName = ""
+    @State private var addFlowError: String?
+    @State private var confirmingFullAccess = false
+
+    private let permissionOptions: [(id: String, label: String)] = [
+        ("read-only", "仅可查看"),
+        ("workspace-write", "工作区内修改"),
+        ("danger-full-access", "完全权限"),
+    ]
+
+    private var featured: WorkspaceRecord? {
+        workspaces.first { $0.id == selectedWorkspaceID }
+    }
+
+    private var currentPermissionLabel: String {
+        permissionOptions.first { $0.id == environment.permissionDefaults.defaultPreset }?.label
+            ?? environment.permissionDefaults.defaultPreset
+    }
 
     var body: some View {
-        VStack(spacing: 18) {
+        ZStack {
+            WOAlias.bgBase
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                headerBlock
+                chipsRow
+                    .padding(.top, 22)
+                composerCard
+                    .padding(.top, 14)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            if showAddFlow {
+                addFlowCard
+            }
+        }
+        .onAppear { refreshWorkspaces() }
+        .fullScreenCover(isPresented: $confirmingFullAccess) {
+            ZStack {
+                PermissionConfirmationGate(
+                    onConfirm: {
+                        _ = environment.permissionDefaults.setDefault(named: "danger-full-access")
+                        confirmingFullAccess = false
+                    },
+                    onCancel: { confirmingFullAccess = false })
+            }
+            .presentationBackground(.clear)
+        }
+    }
+
+    // MARK: - 品牌头（digest-H hero：logo 40 + 「万我」26）
+
+    private var headerBlock: some View {
+        VStack(spacing: 14) {
             WOFishLogo.logo(size: 40)
             Text("万我")
                 .font(.system(size: 26, weight: .semibold))
@@ -502,22 +601,265 @@ struct WOChatHero: View {
             Text("告诉我要做什么，我来在你的 iPad 上完成")
                 .font(.system(size: 13))
                 .foregroundColor(WOAlias.labelTertiary)
-            Button(action: onNewSession) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 13))
-                    Text("新会话")
-                        .font(.system(size: 14, weight: .medium))
-                }
-                .foregroundColor(WOStatic.neutral00)
-                .padding(.horizontal, 22)
-                .padding(.vertical, 11)
-                .background(Capsule().fill(WOAlias.buttonPrimaryFill))
-            }
-            .buttonStyle(.plain)
-            .woPressable()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WOAlias.bgBase)
+    }
+
+    // MARK: - 胶囊行（workspace chip + 权限 chip；leading 对齐卡缘——EmptyHero :82）
+
+    private var chipsRow: some View {
+        HStack(spacing: 8) {
+            workspaceChip
+            permissionChip
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 620)
+    }
+
+    /// WorkspaceChip：SwiftUI Menu 弹层（旧件 :320 同法）；当前项勾选 + 尾部「添加工作区…」。
+    private var workspaceChip: some View {
+        Menu {
+            ForEach(workspaces) { ws in
+                if ws.id == selectedWorkspaceID {
+                    Button { pickWorkspace(ws) } label: {
+                        Label(ws.title, systemImage: "checkmark")
+                    }
+                } else {
+                    Button(ws.title) { pickWorkspace(ws) }
+                }
+            }
+            Divider()
+            Button {
+                showAddFlow = true
+            } label: {
+                Label("添加工作区…", systemImage: "plus")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12))
+                Text(featured?.title ?? "选择工作区")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(featured == nil ? WOAlias.labelSecondary : WOAlias.labelPrimary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        }
+    }
+
+    /// 权限胶囊（三挡预设；与 dock 新会话默认同源 = permissionDefaults）。
+    private var permissionChip: some View {
+        Menu {
+            ForEach(permissionOptions, id: \.id) { option in
+                if option.id == environment.permissionDefaults.defaultPreset {
+                    Button { choosePermission(option.id) } label: {
+                        Label(option.label, systemImage: "checkmark")
+                    }
+                } else {
+                    Button(option.label) { choosePermission(option.id) }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 12))
+                Text(currentPermissionLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(WOAlias.labelSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        }
+    }
+
+    /// 选择（PermissionDefaultsView.choose 同语义：同挡 no-op、完全权限先确认）。
+    private func choosePermission(_ id: String) {
+        if id == environment.permissionDefaults.defaultPreset { return }
+        if id == "danger-full-access" {
+            confirmingFullAccess = true
+            return
+        }
+        _ = environment.permissionDefaults.setDefault(named: id)
+    }
+
+    // MARK: - composer（无工作区 inert / 有工作区可输入；同一卡形态）
+
+    @ViewBuilder
+    private var composerCard: some View {
+        if featured == nil {
+            // inert 态：整卡 = 工作区菜单的 label（dsh「点击整框 = 开工作区菜单」；
+            // 虚线描边 + 静态底行——ConversationEmptyStateView 简版形态）。
+            Menu {
+                ForEach(workspaces) { ws in
+                    Button(ws.title) { pickWorkspace(ws) }
+                }
+                Divider()
+                Button {
+                    showAddFlow = true
+                } label: {
+                    Label("添加工作区…", systemImage: "plus")
+                }
+            } label: {
+                HStack(alignment: .bottom, spacing: 10) {
+                    Text("选择一个工作区开始")
+                        .font(.system(size: 14))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(WOAlias.bgLayer3))
+                        .opacity(0.5)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgLayer2))
+                .overlay(RoundedRectangle(cornerRadius: 22)
+                    .strokeBorder(WOAlias.borderL2, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+            }
+            .frame(maxWidth: 620)
+        } else {
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("描述你想要构建的内容…",
+                          text: $heroDraft,
+                          axis: .vertical)
+                    .font(.system(size: 14))
+                    .lineLimit(1...6)
+                    .padding(.leading, 8)
+                    .padding(.vertical, 12)
+                Button {
+                    sendHeroDraft()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(WOAlias.buttonPrimaryFill))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+                .accessibilityLabel("开始新会话")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgLayer2))
+            .overlay(RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+            .frame(maxWidth: 620)
+        }
+    }
+
+    // MARK: - 动作（pick = 即建会话入组；send = 草稿交接 + 建会话）
+
+    private func pickWorkspace(_ ws: WorkspaceRecord) {
+        migrateHeroDraft()
+        environment.workspaceNavigator.startSession(ws.id)
+    }
+
+    private func sendHeroDraft() {
+        guard let featured else { return }
+        migrateHeroDraft()
+        environment.workspaceNavigator.startSession(featured.id)
+    }
+
+    /// 草稿交接（dsh「hero 输入文本 = 新会话 composer draft」）：
+    /// 非空草稿写 pendingFirstDraft 缝并清空；空草稿不动缝。
+    private func migrateHeroDraft() {
+        let draft = heroDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.isEmpty else { return }
+        environment.pendingFirstDraft = heroDraft
+        heroDraft = ""
+    }
+
+    // MARK: - 添加流（命名卡 → adopt → startSession；唯一路径，旧件 :505 同语义）
+
+    private var addFlowCard: some View {
+        ZStack {
+            WOAlias.bgMask1
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { showAddFlow = false }
+            VStack(alignment: .leading, spacing: 14) {
+                Text("添加工作区")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+                TextField("输入项目名", text: $newWorkspaceName)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                    .onSubmit { confirmAddWorkspace() }
+                if let error = addFlowError {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(WOAlias.stateErrorPrimary)
+                }
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    Button {
+                        showAddFlow = false
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(WOAlias.labelPrimary)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        confirmAddWorkspace()
+                    } label: {
+                        Text("确认")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(WOStatic.neutral00)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 10)
+                                .fill(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty
+                                      ? WOAlias.buttonPrimaryDimmed
+                                      : WOAlias.buttonPrimaryFill))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(18)
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer2))
+            .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+        }
+    }
+
+    private func confirmAddWorkspace() {
+        let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let workspace = try WorkspaceAdoption.adopt(name: name, environment: environment)
+            showAddFlow = false
+            newWorkspaceName = ""
+            addFlowError = nil
+            refreshWorkspaces()
+            migrateHeroDraft()
+            environment.workspaceNavigator.startSession(workspace.id)
+        } catch {
+            addFlowError = (error as? LocalizedError)?.errorDescription ?? "创建失败，请重试"
+        }
+    }
+
+    private func refreshWorkspaces() {
+        workspaces = environment.workspaceRegistry.list()
     }
 }

@@ -79,7 +79,6 @@ struct WOWorkspaceBrowser: View {
     @State private var searchActive = false
     @State private var searchDebounceTask: Task<Void, Never>? = nil
     /// 视图选项菜单开合。
-    @State private var viewMenuOpen = false
     /// R3b 添加工作区流（原型 wsModal：名称输入 + 创建；重名/空值门控）。
     @State private var addWorkspaceOpen = false
     @State private var addWorkspaceName = ""
@@ -167,16 +166,17 @@ struct WOWorkspaceBrowser: View {
     /// ws-actions：视图选项 / 搜索 / 添加工作区（24×24 命中区、13px 图标、r6 hover 底）。
     private var headerActions: some View {
         HStack(spacing: 2) {
-            Button {
-                viewMenuOpen.toggle()
-            } label: {
-                headerIcon("line.3.horizontal.decrease", active: viewMenuOpen)
-            }
-            .buttonStyle(.plain)
-            .overlay {
-                if viewMenuOpen {
-                    WOWorkspaceViewMenu(open: $viewMenuOpen, viewStore: viewStore)
+            Menu {
+                Section("分组方式") {
+                    groupByButton(.workspace, "按工作区")
+                    groupByButton(.flat, "单列表")
                 }
+                Section("排序方式") {
+                    orderByButton(.manual, "手动排序")
+                    orderByButton(.updated, "最近更新")
+                }
+            } label: {
+                headerIcon("line.3.horizontal.decrease", active: false)
             }
 
             Button {
@@ -332,9 +332,23 @@ struct WOWorkspaceBrowser: View {
         // 每组 5 条折叠：blank 行始终保留不计数（手册 769 行）
         let blanks = group.sessions.filter { $0.blank }
         let normal = group.sessions.filter { !$0.blank }
-        let sessionExpanded = localExpansion.contains(group.key) || expanded
-        let visibleNormal = sessionExpanded ? normal : Array(normal.prefix(Self.collapsedSessionLimit))
-        let hiddenCount = max(0, normal.count - Self.collapsedSessionLimit)
+        // 组收起（chevron）= 子行全藏（dsh treeitem collapsed 语义）；5 行帽 =
+        // 展开态的溢出折叠（「显示更多」）——两机制分立。旧实现把收起误当
+        // 5 行帽（≤5 行的组收起零变化）+ 收起态 chevron 隐形 → 点击无反馈
+        //（2026-09-20 真机反馈"点击没有收起来"根因）。
+        let overflowExpanded = localExpansion.contains(group.key)
+        let visibleNormal: [WOSessionNode]
+        let hiddenCount: Int
+        if !expanded {
+            visibleNormal = []
+            hiddenCount = 0
+        } else if overflowExpanded {
+            visibleNormal = normal
+            hiddenCount = 0
+        } else {
+            visibleNormal = Array(normal.prefix(Self.collapsedSessionLimit))
+            hiddenCount = max(0, normal.count - Self.collapsedSessionLimit)
+        }
 
         VStack(alignment: .leading, spacing: 2) {
             WOProjectRow(
@@ -356,36 +370,64 @@ struct WOWorkspaceBrowser: View {
                     ? Self.workspacePayloadPrefix + group.workspaceId! : nil,
                 onDrop: { commitGroupHeaderDrop($0, group: group) }))
 
-            // blank 占位行置顶（提升语义），后接可见普通行
-            ForEach(blanks) { node in
-                WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
-                             showStatus: false, onOpen: { onOpenSession(node.id) },
-                             onRename: onRenameSession.map { cb in { cb(node.id) } },
-                             onArchive: onArchiveSession.map { cb in { cb(node.id) } },
-                             onDelete: onDeleteSession.map { cb in { cb(node.id) } })
-            }
-            ForEach(visibleNormal) { node in
-                WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
-                             showStatus: true,
-                             onOpen: { onOpenSession(node.id) },
-                             onRename: onRenameSession.map { cb in { cb(node.id) } },
-                             onArchive: onArchiveSession.map { cb in { cb(node.id) } },
-                             onDelete: onDeleteSession.map { cb in { cb(node.id) } })
-                // 手动排序：会话行拖拽（组内账本序——insertSessionBefore；
-                // 未分组桶无账本、blank 占位行不参与拖拽）
-                .modifier(WODragModifiers(
-                    payload: dragSessionPayload(node: node, group: group),
-                    onDrop: { commitSessionDrop($0, target: node, group: group) }))
-            }
+            if expanded {
+                // blank 占位行置顶（提升语义），后接可见普通行
+                ForEach(blanks) { node in
+                    WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
+                                 showStatus: false, onOpen: { onOpenSession(node.id) },
+                                 onRename: onRenameSession.map { cb in { cb(node.id) } },
+                                 onArchive: onArchiveSession.map { cb in { cb(node.id) } },
+                                 onDelete: onDeleteSession.map { cb in { cb(node.id) } })
+                }
+                ForEach(visibleNormal) { node in
+                    WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
+                                 showStatus: true,
+                                 onOpen: { onOpenSession(node.id) },
+                                 onRename: onRenameSession.map { cb in { cb(node.id) } },
+                                 onArchive: onArchiveSession.map { cb in { cb(node.id) } },
+                                 onDelete: onDeleteSession.map { cb in { cb(node.id) } })
+                    // 手动排序：会话行拖拽（组内账本序——insertSessionBefore；
+                    // 未分组桶无账本、blank 占位行不参与拖拽）
+                    .modifier(WODragModifiers(
+                        payload: dragSessionPayload(node: node, group: group),
+                        onDrop: { commitSessionDrop($0, target: node, group: group) }))
+                }
 
-            if hiddenCount > 0 {
-                WOOverflowButton(hiddenCount: hiddenCount, expanded: sessionExpanded) {
-                    if sessionExpanded {
-                        localExpansion.remove(group.key)
-                    } else {
-                        localExpansion.insert(group.key)
+                if hiddenCount > 0 {
+                    WOOverflowButton(hiddenCount: hiddenCount, expanded: overflowExpanded) {
+                        if overflowExpanded {
+                            localExpansion.remove(group.key)
+                        } else {
+                            localExpansion.insert(group.key)
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func groupByButton(_ v: WOGroupBy, _ label: String) -> some View {
+        Button {
+            viewStore.setGroupBy(v)
+        } label: {
+            if viewStore.groupBy == v {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func orderByButton(_ v: WOOrderBy, _ label: String) -> some View {
+        Button {
+            viewStore.setOrderBy(v)
+        } label: {
+            if viewStore.orderBy == v {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
             }
         }
     }
@@ -707,74 +749,3 @@ private struct WODragModifiers: ViewModifier {
     }
 }
 
-// MARK: - 视图选项菜单（R3a：分组方式/排序方式——viewStore 持久化，
-// 原型 viewOptMenu 语义：尾随对勾选中；排序行序=原型（手动排序/最近更新））
-
-struct WOWorkspaceViewMenu: View {
-    @Binding var open: Bool
-    @ObservedObject var viewStore: WOWorkspaceViewStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            menuLabel("分组方式")
-            menuRow("按工作区", selected: viewStore.groupBy == .workspace) {
-                viewStore.setGroupBy(.workspace)
-            }
-            menuRow("单列表", selected: viewStore.groupBy == .flat) {
-                viewStore.setGroupBy(.flat)
-            }
-            Divider().opacity(0.5).padding(.vertical, 4)
-            menuLabel("排序方式")
-            menuRow("手动排序", selected: viewStore.orderBy == .manual) {
-                viewStore.setOrderBy(.manual)
-            }
-            menuRow("最近更新", selected: viewStore.orderBy == .updated) {
-                viewStore.setOrderBy(.updated)
-            }
-        }
-        .padding(4)
-        .frame(width: 200, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 20)
-                .fill(WOSpecific.menu)
-                .shadow(color: .black.opacity(0.04), radius: 8)
-                .shadow(color: .black.opacity(0.05), radius: 20)
-                .overlay(RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(WOAlias.borderL1, lineWidth: 0.5))
-        )
-        .transition(.opacity.animation(WOMotion.bezier(duration: WOMotion.t2)))
-        .zIndex(60)
-    }
-
-    private func menuLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(WOAlias.labelTertiary)
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-    }
-
-    private func menuRow(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-            open = false
-        } label: {
-            HStack {
-                Text(label)
-                    .font(.system(size: 14))
-                    .foregroundColor(WOAlias.labelPrimary)
-                Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(WOAlias.stateBusinessPrimary)
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(minHeight: 40, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}

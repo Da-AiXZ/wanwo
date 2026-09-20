@@ -20,7 +20,6 @@ struct WOProjectRow: View {
     var onDelete: (() -> Void)? = nil
 
     @State private var hovering = false
-    @State private var menuOpen = false
 
     init(label: String, isUngrouped: Bool = false, expanded: Bool,
          onToggle: @escaping () -> Void,
@@ -40,7 +39,7 @@ struct WOProjectRow: View {
         HStack(spacing: 4) {
             Image(systemName: expanded ? "folder.fill" : "folder")
                 .font(.system(size: 15))
-                .foregroundColor(hovering || menuOpen
+                .foregroundColor(hovering
                                  ? WOAlias.stateBusinessPrimary
                                  : WOAlias.labelTertiary)
 
@@ -56,9 +55,7 @@ struct WOProjectRow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .foregroundColor(WOAlias.labelCaption)
-                .opacity(expanded || hovering ? 1 : 0)
                 .frame(width: 12, height: 12)
-                .animation(.easeInOut(duration: 0.15), value: hovering)
 
             // rowActions：触屏恒显（hover 门控在 iPad 不可达，2026-09-19 登记）
             HStack(spacing: 2) {
@@ -74,7 +71,7 @@ struct WOProjectRow: View {
                     .foregroundColor(WOAlias.labelTertiary)
                 }
                 if onRename != nil || onDelete != nil {
-                    WORowMenuButton(menuOpen: $menuOpen, entries: [
+                    WORowMenuButton(entries: [
                         WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
                         WORowMenuEntry(label: "删除工作区", icon: "trash", isDanger: true, action: onDelete),
                     ])
@@ -85,7 +82,7 @@ struct WOProjectRow: View {
         .frame(height: 34)
         .contentShape(Rectangle())
         .background(RoundedRectangle(cornerRadius: 8)
-            .fill((hovering || menuOpen) ? WOAlias.interactiveBgHover : .clear))
+            .fill(hovering ? WOAlias.interactiveBgHover : .clear))
         .onHover { hovering = $0 }
         .onTapGesture { onToggle() } // role=treeitem onClick=onToggle
         .animation(.easeInOut(duration: 0.15), value: hovering)
@@ -104,7 +101,6 @@ struct WOSessionRow: View {
     var onDelete: (() -> Void)? = nil
 
     @State private var hovering = false
-    @State private var menuOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(node: WOSessionNode, selected: Bool, showStatus: Bool = true,
@@ -157,7 +153,7 @@ struct WOSessionRow: View {
             // 死按钮门禁：动作全空时不渲染菜单钮（R3a 真动作接线后非 blank 恒显）。
             if !node.blank,
                onRename != nil || onArchive != nil || onDelete != nil {
-                WORowMenuButton(menuOpen: $menuOpen, entries: [
+                WORowMenuButton(entries: [
                     WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
                     WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
                     // fork 不做（用户裁定，digest-K §6.4⑤；dsh 语义存档 Rows.tsx:385-386）。
@@ -177,7 +173,7 @@ struct WOSessionRow: View {
     /// active（选中）→ bg-active；hover/menu-open → bg-hover（原型两级底色）
     private var rowBackground: Color {
         if selected { return WOAlias.interactiveBgActive }
-        if hovering || menuOpen { return WOAlias.interactiveBgHover }
+        if hovering { return WOAlias.interactiveBgHover }
         return .clear
     }
 }
@@ -223,50 +219,48 @@ struct WOOverflowButton: View {
     }
 }
 
-// MARK: - 行菜单锚钮（省略号；menuOpen 时行底色保持——menuOpen 类语义）
+// MARK: - 行菜单锚钮（省略号；原生 Menu 弹层——系统接管定位/命中/区外关闭，
+// 2026-09-20 真机反馈修复：自绘 overlay 浮层被侧栏 .clipped() 裁切 + 被后续行
+// 盖住 + 无区外关闭 = 错位/点不了/关不掉；dsh 自绘 anchored Menu → SwiftUI
+// Menu 系统弹层为旧件既有拍板先例 ConversationEmptyStateView:34）
 
 struct WORowMenuButton: View {
-    @Binding var menuOpen: Bool
     let entries: [WORowMenuEntry]
 
-    @State private var anchorFrame: CGRect = .zero
-
-    init(menuOpen: Binding<Bool>, entries: [WORowMenuEntry]) {
-        _menuOpen = menuOpen
-        self.entries = entries
-    }
-
     var body: some View {
-        Button {
-            menuOpen.toggle()
+        Menu {
+            ForEach(entries) { entry in
+                if entry.isDanger {
+                    Button(role: .destructive) {
+                        entry.action?()
+                    } label: {
+                        Label(entry.label, systemImage: entry.icon ?? "trash")
+                    }
+                } else {
+                    Button {
+                        entry.action?()
+                    } label: {
+                        if let icon = entry.icon {
+                            Label(entry.label, systemImage: icon)
+                        } else {
+                            Text(entry.label)
+                        }
+                    }
+                }
+            }
         } label: {
             // 原型 .ci-more/.g-more：24×24 命中区 + 14px svg
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .medium))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
+                .foregroundColor(WOAlias.labelTertiary)
         }
         .buttonStyle(.plain)
-        .foregroundColor(menuOpen ? WOAlias.labelSecondary : WOAlias.labelTertiary)
-        .background(GeometryReader { g in
-            Color.clear.preference(key: WORowMenuAnchorKey.self, value: g.frame(in: .global))
-        })
-        .onPreferenceChange(WORowMenuAnchorKey.self) { anchorFrame = $0 }
-        .overlay {
-            if menuOpen {
-                WORowMenu(anchorFrame: anchorFrame, entries: entries,
-                          onClose: { menuOpen = false })
-            }
-        }
     }
 }
 
-struct WORowMenuAnchorKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
-}
-
-// MARK: - 行菜单条目与浮层（批量翻译性菜单：重命名/分叉/归档/删除；danger 红字）
+// MARK: - 行菜单条目（条目形态保留；渲染交给系统弹层）
 
 struct WORowMenuEntry: Identifiable {
     let id = UUID()
@@ -280,75 +274,6 @@ struct WORowMenuEntry: Identifiable {
         self.icon = icon
         self.isDanger = isDanger
         self.action = action
-    }
-}
-
-struct WORowMenu: View {
-    let anchorFrame: CGRect
-    let entries: [WORowMenuEntry]
-    let onClose: () -> Void
-
-    @State private var panelSize: CGSize = .zero
-
-    init(anchorFrame: CGRect, entries: [WORowMenuEntry], onClose: @escaping () -> Void) {
-        self.anchorFrame = anchorFrame
-        self.entries = entries
-        self.onClose = onClose
-    }
-
-    var body: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .onTapGesture { onClose() }
-            .overlay(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(entries) { entry in
-                        Button {
-                            onClose()
-                            entry.action?()
-                        } label: {
-                            HStack(spacing: 8) {
-                                if let icon = entry.icon {
-                                    Image(systemName: icon)
-                                        .font(.system(size: 12))
-                                        .frame(width: 16)
-                                        .foregroundColor(entry.isDanger ? WOAlias.stateErrorPrimary : WOAlias.labelTertiary)
-                                }
-                                Text(entry.label)
-                                    .font(.system(size: 14))
-                                    .foregroundColor(entry.isDanger ? WOAlias.stateErrorPrimary : WOAlias.labelPrimary)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: 40, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 10)
-                                .fill(entry.isDanger ? WOAlias.interactiveBgHoverDanger : WOAlias.interactiveBgHover))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .frame(minWidth: 218, alignment: .leading)
-                .background(
-                    GeometryReader { g in
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(WOSpecific.menu)
-                            .shadow(color: .black.opacity(0.04), radius: 8)
-                            .shadow(color: .black.opacity(0.05), radius: 20)
-                            .overlay(RoundedRectangle(cornerRadius: 20)
-                                .strokeBorder(WOAlias.borderL1, lineWidth: 0.5))
-                            .onAppear { panelSize = g.size }
-                            .onChange(of: g.size) { panelSize = $0 }
-                    }
-                )
-                .position(WOAnchoredPlacement.place(
-                    anchor: anchorFrame, panelSize: panelSize,
-                    side: .bottom, align: .end, gap: 4,
-                    viewport: UIScreen.main.bounds))
-                .transition(.opacity.animation(WOMotion.bezier(duration: WOMotion.t2)))
-                .zIndex(60)
-            }
-            .ignoresSafeArea()
     }
 }
 
