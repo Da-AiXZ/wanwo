@@ -15,8 +15,17 @@ struct WORootFrame: View {
 
     @StateObject private var layout = WOLayoutStore()
     @StateObject private var viewStore = WOWorkspaceViewStore()
+    /// 右栏容器状态机（M6.6 B4 真机验收过的旧件，App 内单实例——页签跨会话保持）。
+    @StateObject private var workspaceSidebar = WorkspaceRightSidebarModel()
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var appState: WOAppState
+
+    /// 删除失败呈现（AppEnvironment.deleteSession 失败置串，alert 呈现后清零——
+    /// 与旧 SessionsSidebarView 同一消费语义）。
+    private var actionErrorPresented: Binding<Bool> {
+        Binding(get: { environment.sessionActionError != nil },
+                set: { if !$0 { environment.sessionActionError = nil } })
+    }
 
     /// R3a 行操作目标（重命名/删除确认；归档无对话框=dsh 语义）。
     private enum R3Target: Equatable {
@@ -36,8 +45,40 @@ struct WORootFrame: View {
     // MARK: - Body（只组装）
 
     var body: some View {
+        Group {
+            if workspaceSidebar.isFullscreen, appState.currentSessionId != nil {
+                // 全屏：右栏独占整窗（M6.6 批3 C⑤ 语义；条件根布局承载——
+                // iOS16 NavigationSplitViewVisibility 不可用，旧 RootView 同款）。
+                WorkspaceRightSidebarView(model: workspaceSidebar,
+                                          environment: environment)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(WOAlias.bgBase)
+            } else {
+                mainFrame
+            }
+        }
+        .overlay { WOSettingsModal(isPresented: settingsPresented) }
+        .overlay(alignment: .topTrailing) { reopenSidebarButton }
+        .alert("操作失败", isPresented: actionErrorPresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(environment.sessionActionError ?? "")
+        }
+        .onAppear { syncSessionSelection() }
+        .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
+        .onChange(of: workspaceSidebar.isExpanded) { expanded in
+            // 右栏收起/展开 ↔ 布局列宽联动（收起=列宽 0 让位给对话区，dsh 让位链）。
+            if expanded {
+                if appState.currentSessionId != nil { layout.openDetails() }
+            } else {
+                layout.closeDetails()
+            }
+        }
+    }
+
+    private var mainFrame: some View {
         let snapshot = makeSnapshot()
-        WOAppFrame(
+        return WOAppFrame(
             store: layout,
             hasDetailsSession: snapshot.hasDetails,
             sidebar: { collapsed, width in
@@ -49,6 +90,24 @@ struct WORootFrame: View {
         )
         .overlay { renameModal }
         .overlay { deleteModal }
+    }
+
+    /// 会话锚点同步：右栏页签（终端/文件/审查/侧聊/轨迹）以旧 selection 为数据锚，
+    /// 新 UI 的当前会话（appState）变化时同步写 environment.selection（同一真值，
+    /// 两个入口）；无会话时右栏强制收起（M6.6 C② 语义）。
+    private func syncSessionSelection() {
+        if let id = appState.currentSessionId {
+            if environment.selection != .session(id: id) {
+                environment.selection = .session(id: id)
+            }
+            layout.openDetails()
+        } else if environment.selection != .none {
+            environment.selection = .none
+        }
+        if appState.currentSessionId == nil {
+            layout.closeDetails()
+        }
+        workspaceSidebar.reconcileForSelection(sessionID: appState.currentSessionId)
     }
 
     // MARK: - 快照（列表+运行状态+派生输入，一次求值共用）
@@ -105,9 +164,32 @@ struct WORootFrame: View {
                 }
             },
             footer: { wide in
-                WOSlotPlaceholder(text: wide ? "设置入口 · R5" : nil, quiet: false)
+                footerBar(wide: wide)
             }
         )
+    }
+
+    /// 侧栏 footer：设置真入口（齿轮 → 全窗设置面板；dsh SettingsRoot 语义）。
+    private func footerBar(wide: Bool) -> some View {
+        Button {
+            environment.openSettings()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                if wide {
+                    Text("设置")
+                        .font(.system(size: 13))
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(WOAlias.labelSecondary)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("打开设置")
     }
 
     // MARK: - 中栏（Hero / 聊天）
@@ -122,22 +204,47 @@ struct WORootFrame: View {
         }
     }
 
-    // MARK: - 详情栏（右栏四页签归 R4）
+    // MARK: - 详情栏（右栏：M6.6 旧件接线——五页签容器真功能）
 
+    @ViewBuilder
     private var detailsRegion: some View {
-        ZStack(alignment: .topTrailing) {
-            WOSlotPlaceholder(text: "详情栏 · 右栏四页签 R4", quiet: false)
-            Button { layout.closeDetails() } label: {
-                Image(systemName: "xmark")
+        if appState.currentSessionId != nil, workspaceSidebar.isExpanded {
+            WorkspaceRightSidebarView(model: workspaceSidebar,
+                                      environment: environment)
+        } else {
+            WOSlotPlaceholder(text: nil, quiet: false)
+        }
+    }
+
+    /// 收起态重开钮（M6.6 批3 C①：右上角；无会话/全屏时隐藏）。
+    @ViewBuilder
+    private var reopenSidebarButton: some View {
+        if !workspaceSidebar.isExpanded,
+           appState.currentSessionId != nil,
+           !workspaceSidebar.isFullscreen,
+           environment.settingsPane == nil {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    workspaceSidebar.isExpanded = true
+                }
+            } label: {
+                Image(systemName: "sidebar.trailing")
                     .font(.system(size: 12, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(WOAlias.interactiveBgHover))
                     .foregroundColor(WOAlias.labelSecondary)
+                    .padding(8)
+                    .background(.regularMaterial, in: Circle())
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 14)
-            .padding(.top, 14)
+            .padding(.top, 8)
+            .padding(.trailing, 12)
+            .accessibilityLabel("展开工作区侧栏")
         }
+    }
+
+    /// 设置面板呈现绑定（settingsPane 非 nil 即呈现；关闭=closeSettings 回 nil）。
+    private var settingsPresented: Binding<Bool> {
+        Binding(get: { environment.settingsPane != nil },
+                set: { if !$0 { environment.closeSettings() } })
     }
 
     // MARK: - 动作
