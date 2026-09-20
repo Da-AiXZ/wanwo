@@ -36,38 +36,42 @@ struct WOProjectRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            // slot 16×20：expanded ? FolderOpen : FolderClose；hover 互换 chevron（三角形箭头，open 旋转 90°）
-            ZStack {
-                // 触屏适配：chevron 展开态恒显（hover 互换在无指针设备不可达）
-                Image(systemName: expanded ? "folder.fill" : "folder")
-                    .opacity(hovering || expanded ? 0 : 1)
-                Image(systemName: "triangle.fill")
-                    .font(.system(size: 8))
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .opacity(hovering || expanded ? 1 : 0)
-            }
-            .animation(.easeInOut(duration: 0.15), value: hovering)
-            .foregroundColor(hovering ? WOAlias.labelCaption : (menuOpen ? WOAlias.stateBusinessPrimary : WOAlias.labelTertiary))
+        // 原型 .conv-group-hd：gap 4 / 34px / r8 / pad 0 8；g-folder 常显（hover 变蓝）
+        HStack(spacing: 4) {
+            Image(systemName: expanded ? "folder.fill" : "folder")
+                .font(.system(size: 15))
+                .foregroundColor(hovering || menuOpen
+                                 ? WOAlias.stateBusinessPrimary
+                                 : WOAlias.labelTertiary)
 
             Text(isUngrouped ? "未分组" : label)
                 .font(.system(size: 14))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundColor(WOAlias.labelPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 0)
+            // g-chev：12px chevron（open rotate 90；展开态恒显=触屏适配——hover 显隐在无指针设备不可达）
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .foregroundColor(WOAlias.labelCaption)
+                .opacity(expanded || hovering ? 1 : 0)
+                .frame(width: 12, height: 12)
+                .animation(.easeInOut(duration: 0.15), value: hovering)
 
-            // rowActions：hover/menuOpen 显现（display none→inline-flex；gap 12）
-            HStack(spacing: 12) {
+            // rowActions：触屏恒显（hover 门控在 iPad 不可达，2026-09-19 登记）
+            HStack(spacing: 2) {
                 if onCreate != nil {
                     Button {
                         onCreate?()
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
+                            .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
+                    .foregroundColor(WOAlias.labelTertiary)
                 }
                 if onRename != nil || onDelete != nil {
                     WORowMenuButton(menuOpen: $menuOpen, entries: [
@@ -76,16 +80,15 @@ struct WOProjectRow: View {
                     ])
                 }
             }
-            .frame(height: 20)
-            // 触屏适配：行动作恒显（hover 门控在 iPad 不可达，2026-09-19 登记）
         }
         .padding(.horizontal, 8)
         .frame(height: 34)
         .contentShape(Rectangle())
-        .background((hovering || menuOpen) ? WOAlias.interactiveBgHover : .clear)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill((hovering || menuOpen) ? WOAlias.interactiveBgHover : .clear))
         .onHover { hovering = $0 }
         .onTapGesture { onToggle() } // role=treeitem onClick=onToggle
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(.easeInOut(duration: 0.15), value: hovering)
     }
 }
 
@@ -122,12 +125,20 @@ struct WOSessionRow: View {
     private var status: WOSessionStatus { WOSessionStatus.resolve(for: node) }
 
     var body: some View {
+        // 原型 .conv-item：32px / r8 / pad 0 8；active=bg-active（≠hover 的 bg-hover）
         HStack(spacing: 0) {
-            // 状态槽：!flat||showStatus 时渲染（空闲不显示）
+            // 状态槽 ci-status：16×20 恒渲染（idle=透明+1.5px caption 描边——原型四态，
+            // 空白占位行除外）；非 idle 走 WOStateDot（ongoing=像素追逐环，环 2 钉死形态）
             if showStatus {
-                WOStateDot(state: status.dotState, size: 8)
-                    .frame(width: 16, height: 20)
-                    .padding(.trailing, 4)
+                Group {
+                    if status == .idle {
+                        WOIdleDot(size: 8)
+                    } else {
+                        WOStateDot(state: status.dotState, size: 8)
+                    }
+                }
+                .frame(width: 16, height: 20)
+                .padding(.trailing, 4)
             }
             Text(displayTitle)
                 .font(.system(size: 14))
@@ -138,31 +149,48 @@ struct WOSessionRow: View {
                 .padding(.trailing, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // 非 blank 行：时间+菜单恒显并存
-            // （触屏适配：dsh hover 互换在无指针设备不可达，2026-09-19 登记；桌面 hover 高亮逻辑保留无害）
-            if !node.blank {
-                Text(WOTimeLabel.rowLabel(updatedAt: node.updatedAt))
-                    .font(.system(size: 12))
-                    .foregroundColor(WOAlias.labelTertiary)
-                    .padding(.trailing, 6)
-                // 死按钮门禁：动作全空时不渲染菜单钮（R3a 真动作接线后恒显）。
-                if onRename != nil || onArchive != nil || onDelete != nil {
-                    WORowMenuButton(menuOpen: $menuOpen, entries: [
-                        WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
-                        WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
-                        // fork 不做（用户裁定，digest-K §6.4⑤；dsh 语义存档 Rows.tsx:385-386）。
-                        WORowMenuEntry(label: "删除会话", icon: "trash", isDanger: true, action: onDelete),
-                    ])
-                }
+            // ci-time：12px caption 色（blank 行原型显「刚刚」，无 ci-more）
+            Text(WOTimeLabel.rowLabel(updatedAt: node.updatedAt))
+                .font(.system(size: 12))
+                .foregroundColor(WOAlias.labelCaption)
+                .padding(.trailing, 6)
+            // 死按钮门禁：动作全空时不渲染菜单钮（R3a 真动作接线后非 blank 恒显）。
+            if !node.blank,
+               onRename != nil || onArchive != nil || onDelete != nil {
+                WORowMenuButton(menuOpen: $menuOpen, entries: [
+                    WORowMenuEntry(label: "重命名", icon: "pencil", action: onRename),
+                    WORowMenuEntry(label: "归档会话", icon: "archivebox", action: onArchive),
+                    // fork 不做（用户裁定，digest-K §6.4⑤；dsh 语义存档 Rows.tsx:385-386）。
+                    WORowMenuEntry(label: "删除会话", icon: "trash", isDanger: true, action: onDelete),
+                ])
             }
         }
         .padding(.horizontal, 8)
         .frame(height: 32)
         .contentShape(Rectangle())
-        .background((selected || hovering || menuOpen) ? WOAlias.interactiveBgHover : .clear)
+        .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
         .onHover { hovering = $0 }
         .onTapGesture { onOpen() }
         .rowIn(reduceMotion: reduceMotion) // @keyframes row-in from{opacity:0}
+    }
+
+    /// active（选中）→ bg-active；hover/menu-open → bg-hover（原型两级底色）
+    private var rowBackground: Color {
+        if selected { return WOAlias.interactiveBgActive }
+        if hovering || menuOpen { return WOAlias.interactiveBgHover }
+        return .clear
+    }
+}
+
+// MARK: - idle 状态点（原型 .ci-dot.idle：透明底 + inset 1.5px caption 描边）
+
+struct WOIdleDot: View {
+    var size: CGFloat = 8
+
+    var body: some View {
+        Circle()
+            .strokeBorder(WOAlias.labelCaption, lineWidth: 1.5)
+            .frame(width: size, height: size)
     }
 }
 
@@ -212,12 +240,14 @@ struct WORowMenuButton: View {
         Button {
             menuOpen.toggle()
         } label: {
+            // 原型 .ci-more/.g-more：24×24 命中区 + 14px svg
             Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 16, height: 16)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundColor(menuOpen ? WOAlias.labelPrimary : WOAlias.labelTertiary)
+        .foregroundColor(menuOpen ? WOAlias.labelSecondary : WOAlias.labelTertiary)
         .background(GeometryReader { g in
             Color.clear.preference(key: WORowMenuAnchorKey.self, value: g.frame(in: .global))
         })

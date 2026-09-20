@@ -2,106 +2,15 @@
 //  WOInteractionCards.swift
 //  WanWo
 //
-//  v4 片 1：composer + 审批卡 + 提问卡（防对话死锁的最小真交互——
-//  审批/提问挂起时若不可作答，AgentLoop 会永久等待=看不见的死锁，故本片必带）。
-//  全部动作走既有 ChatViewModel 方法（零引擎改动）。
+//  v4 片 1：审批卡 + 提问卡（防对话死锁的最小真交互——审批/提问挂起时若不可
+//  作答，AgentLoop 会永久等待=看不见的死锁，故本片必带）。全部动作走既有
+//  ChatViewModel 方法（零引擎改动）。
+//  R2c：接管语义不动（composer 座位路由 WOChatView 层已保证），视觉按原型卡
+//  规格精修——白底 r22 + shadow-soft + 0.5px l3 发丝描边（digest-H composer
+//  卡体规格同源）；composer 本体迁至 WOComposer.swift。
 //
 
 import SwiftUI
-
-// MARK: - Composer（R2b：composer 全态批——工具行接线权限/模型/ContextMeter；
-// digest-H 原型卡体规格：白底 r22 + soft 阴影 + 0.5px l3 描边；附件 + 钮=R2c）。
-
-struct WOComposer: View {
-    @ObservedObject var viewModel: ChatViewModel
-
-    private var canSend: Bool {
-        switch viewModel.phase {
-        case .idle, .failed: return !viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        default: return false
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TextField("发消息或做任务…",
-                      text: $viewModel.draft,
-                      axis: .vertical)
-                .font(.system(size: 14))
-                .lineLimit(1...8)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 6)
-
-            // 工具行（dsh InputBar 工具行语义：权限/模型/ContextMeter/发送）。
-            HStack(spacing: 8) {
-                // 权限胶囊（盾形三态；RiskConfirmation 确认缝内建——one path）。
-                PermissionSelectView(
-                    currentPreset: viewModel.currentPermissionPreset ?? "",
-                    busy: false,
-                    onCommand: { line, confirmed in
-                        viewModel.runCommandLine(line, confirmed: confirmed)
-                    })
-                    .font(.system(size: 12))
-
-                // 模型两级菜单（provider 分组 + effort 层；会话级选择）。
-                ModelSelectView(store: viewModel.endpointStore,
-                                current: viewModel.currentModelEndpoint,
-                                currentEffort: viewModel.sessionEffort,
-                                onSelect: { viewModel.selectModel($0) },
-                                onEffort: { viewModel.selectEffort($0) })
-                    .font(.system(size: 12))
-
-                Spacer(minLength: 0)
-
-                // ContextMeter 环（pressure 在场才显示；F041 压力呈现）。
-                if let pressure = viewModel.pressure {
-                    ContextMeterView(pressure: pressure)
-                }
-
-                if viewModel.phase == .streaming {
-                    // 停止（引擎 cancel；对话环另一半）。
-                    Button {
-                        viewModel.cancel()
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(WOStatic.neutral00)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(WOAlias.labelPrimary))
-                    }
-                    .buttonStyle(.plain)
-                    .woPressable()
-                } else {
-                    Button {
-                        viewModel.send()
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(canSend ? WOStatic.neutral00 : WOAlias.labelTertiary)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(canSend ? WOAlias.buttonPrimaryFill
-                                                              : WOAlias.bgLayer3))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .woPressable()
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
-        }
-        // 原型 composer 卡体：白底 r22 + soft 阴影 + 0.5px l3 发丝描边。
-        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
-        .overlay(RoundedRectangle(cornerRadius: 22)
-            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
-        .shadow(color: .black.opacity(0.03), radius: 24)
-        .padding(.horizontal, 14)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
-    }
-}
 
 // MARK: - 审批卡（工具需要授权时；挂起不可见=对话永久卡死，故片 1 必带）
 
@@ -133,7 +42,7 @@ struct WOApprovalCard: View {
                     .foregroundColor(WOAlias.labelSecondary)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgBase))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgModulePlatform))
                     .lineLimit(6)
             }
             HStack(spacing: 10) {
@@ -165,12 +74,16 @@ struct WOApprovalCard: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16)
-            .fill(WOAlias.stateWarnSecondary)
-            .overlay(RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(WOAlias.stateWarnPrimary, lineWidth: 1)))
-        .padding(.horizontal, 18)
-        .padding(.bottom, 8)
+        // 原型卡规格：白底 r22 + soft 阴影 + 0.5px l3 发丝描边（琥珀语义保留在
+        // 图标与细节底，接管语义不变）。
+        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 22)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+        .shadow(color: .black.opacity(0.03), radius: 24)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
     }
 }
 
@@ -225,7 +138,7 @@ struct WOQuestionCard: View {
                     TextField("或者自己说…", text: bindingCustom(question.id))
                         .font(.system(size: 13))
                         .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgBase))
+                        .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgModulePlatform))
                 }
             }
 
@@ -256,9 +169,15 @@ struct WOQuestionCard: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
-        .padding(.horizontal, 18)
-        .padding(.bottom, 8)
+        // 原型卡规格：白底 r22 + soft 阴影 + 0.5px l3 发丝描边。
+        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 22)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+        .shadow(color: .black.opacity(0.03), radius: 24)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
     }
 
     private func bindingCustom(_ id: String) -> Binding<String> {

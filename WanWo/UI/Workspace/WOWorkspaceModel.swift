@@ -120,9 +120,18 @@ enum WOWorkspaceTreeDeriver {
 
         var groups: [WOGroupNode] = []
 
-        // workspace 序分组：成员 = registry 账本序（过滤掉不存在的会话）
+        // workspace 序分组：成员 = registry 账本序（过滤掉不存在的会话）。
+        // 排序方式：manual = 账本序（手动排序真源）；updated = 组内按 updatedAt
+        // 倒序重排（原型「排序『最近更新』按 parseTime 组内重排」；blank 占位居顶
+        // 不参与重排）。Ungrouped 无账本，两种模式同为 recency。
         for ws in workspaces {
-            let members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
+            var members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
+            if view.orderBy == .updated {
+                let blanks = members.filter { isBlank($0) }
+                let normal = members.filter { !isBlank($0) }
+                    .sorted { $0.updatedAt > $1.updatedAt }
+                members = blanks + normal
+            }
             groups.append(makeGroup(key: ws.id, workspaceId: ws.id, label: ws.title,
                                     createdAt: ws.createdAt, members: members,
                                     currentSessionId: currentSessionId,

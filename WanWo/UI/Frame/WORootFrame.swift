@@ -249,9 +249,14 @@ struct WORootFrame: View {
 
     // MARK: - 动作
 
-    /// 新会话统一入口：建 blank 会话，带 workspaceId 则挂组。
+    /// 新会话统一入口：建会话并打开；带 workspaceId 则挂组。
+    /// 组内新建 cwd 必须传组规范路径——attachSession 以 header.cwd 与组路径
+    /// 做成员资格校验（cwd=nil 的会话会被拒绝落未分组，impl-workspace 核证）。
     private func newSession(in workspaceId: String?) {
-        if let s = try? environment.sessionStore.createSession(cwd: nil) {
+        let cwd: String? = workspaceId.flatMap { id in
+            environment.workspaceRegistry.list().first { $0.id == id }?.path
+        }
+        if let s = try? environment.sessionStore.createSession(cwd: cwd) {
             if let wsId = workspaceId {
                 try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
             }
@@ -299,7 +304,10 @@ struct WORootFrame: View {
                 return "重命名会话"
             } ?? "重命名"
         ) {
-            TextField("名称", text: $renameField)
+            TextField(renameTarget.map { t in
+                if case .workspace = t { return "工作区名称" }
+                return "会话名称"
+            } ?? "名称", text: $renameField)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .padding(10)
