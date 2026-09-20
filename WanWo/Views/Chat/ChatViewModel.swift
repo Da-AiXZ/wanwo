@@ -130,12 +130,15 @@ final class ChatViewModel: ObservableObject {
     private var pendingShellLines: [String: [String]] = [:]
     private var flushTimer: Timer?
 
-    init(environment: AppEnvironment, sessionID: String) {
+    init(environment: AppEnvironment, sessionID: String, initialDraft: String = "") {
         self.environment = environment
         self.sessionID = sessionID
-        // T2.6 件2：会话绑定选择宿主（App 级字典惰性建；切页销毁重建后仍
+        // dsh 会话绑定选择宿主（App 级字典惰性建；切页销毁重建后仍
         // 取到同一 holder——选择跨 ChatView 生命周期保持）。
         self.modelSelection = environment.modelSelection(for: sessionID)
+        // 草稿种子（dsh mount 种子草稿语义：缓存草稿跨切换跟回；
+        // hero 交接文本经宿主以 initialDraft 注入）。
+        if !initialDraft.isEmpty { self.draft = initialDraft }
     }
 
     // MARK: - 打开（resume + AgentLoop 装配）

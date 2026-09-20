@@ -44,40 +44,52 @@ struct WorkspaceRightSidebarView: View {
         return nil
     }
 
-    // MARK: - 顶部条（全屏 + 收起）
+    // MARK: - 顶部条（全屏 + 关闭；2026-09-21 用户令：两钮加大拉开、
+    // 关闭改 ✕ 图标钮——原 chevron 语义不明、28px 命中区小且贴边易误触）
 
     private var topBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 10) {
             Text("工作区")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.easeInOut(duration: 0.25)) {
                     model.isFullscreen.toggle()
                 }
             } label: {
                 Image(systemName: model.isFullscreen
                         ? "arrow.down.right.and.arrow.up.left"
                         : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 8)
+                        .fill(WOAlias.interactiveBgHover))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityLabel(model.isFullscreen ? "退出全屏" : "全屏")
+
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     model.isExpanded = false
                     model.isFullscreen = false
                 }
             } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 8)
+                        .fill(WOAlias.interactiveBgHover))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("收起侧栏")
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭侧栏")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     // MARK: - 页签条（多页签混开 + × + 「+」菜单）

@@ -9,10 +9,6 @@
 
 import SwiftUI
 
-public enum WODragSide: Equatable {
-    case sidebar, details
-}
-
 public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: View>: View {
     @ObservedObject public var store: WOLayoutStore
     /// 会话是否「非 blank」——false/nil 时详情栏不算开（blank 会话不算，手册 571 行）
@@ -23,11 +19,6 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     /// shell.overlay 槽（z20 点击穿透层；条目各自 opt-in pointer events）
     @ViewBuilder public var overlayLayer: () -> Overlay
 
-    @State private var viewportWidth: CGFloat = 0
-    @State private var dragging: WODragSide? = nil
-    /// 拖拽基线 = 拖起时的渲染宽（colsRef 语义，不跳回存储偏好）
-    @State private var dragBaseSidebar: CGFloat = 0
-    @State private var dragBaseDetails: CGFloat = 0
     /// 切会话自动关详情：上一个非空会话消失时触发（手册 572 行）
     @State private var lastHadSession = false
 
@@ -64,9 +55,8 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 details: effectiveDetails)
 
             colsContent(cols, viewport: viewport)
-                .onAppear { viewportWidth = viewport; store.setNarrow(viewport < WOLayoutContract.autoCollapseBreakpoint) }
+                .onAppear { store.setNarrow(viewport < WOLayoutContract.autoCollapseBreakpoint) }
                 .onChange(of: viewport) { w in
-                    viewportWidth = w
                     store.setNarrow(w < WOLayoutContract.autoCollapseBreakpoint)
                 }
                 .onChange(of: hasDetailsSession) { has in
@@ -79,7 +69,8 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
 
     @ViewBuilder
     private func colsContent(_ cols: WOColumns, viewport: CGFloat) -> some View {
-        let motion = dragging == nil ? WOMotion.bezier(duration: 0.42) : nil // 原型拍板 0.42s（覆盖 dsh 0.3，2026-09-19 真机反馈）；拖时关过渡
+        // 0.42s 唯一曲线（原型拍板，覆盖 dsh 0.3；2026-09-19 真机反馈）。
+        let motion = WOMotion.bezier(duration: 0.42)
 
         HStack(spacing: 0) {
             // sidebarCol：min-width 0 overflow hidden specific-sidebar-fill 右 0.5px l3（收拢仍保留带边框轨道）
@@ -97,19 +88,23 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
                 .overlay(alignment: .topTrailing) {
-                    // 右栏入口（codex 右上开关语义）：details 关闭时显示
+                    // 右栏入口 fab（codex 右上开关语义；digest-H fab 规格：
+                    // 32px 圆角 9 玻璃白 .9+blur）：details 关闭时显示
                     if cols.details == 0 {
                         Button { store.openDetails() } label: {
-                            Image(systemName: "sidebar.right")
+                            Image(systemName: "sidebar.trailing")
                                 .font(.system(size: 14, weight: .medium))
-                                .frame(width: 28, height: 28)
-                                .background(Circle().fill(WOAlias.interactiveBgHover))
                                 .foregroundColor(WOAlias.labelSecondary)
+                                .frame(width: 32, height: 32)
+                                .background(RoundedRectangle(cornerRadius: 9)
+                                    .fill(WOStatic.neutral00.opacity(0.9)))
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                                .overlay(RoundedRectangle(cornerRadius: 9)
+                                    .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
                         }
                         .buttonStyle(.plain)
-                        .woTooltip("打开侧边栏", side: .bottom, delayMs: 500)
                         .padding(.trailing, 14)
-                        .padding(.top, 14)
+                        .padding(.top, 12)
                     }
                 }
 
@@ -125,33 +120,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 }
         }
         .frame(width: viewport)
+        // 拖拽手柄移除（2026-09-21 用户令：左右栏拖拽调宽在触屏太难用，禁用；
+        // 宽度=契约默认固定，开合只走 toggle）。栏宽动画保留。
         .modifier(WOColumnsAnimation(motion: motion, key: WOColumnsKey(sidebar: cols.sidebar, details: cols.details)))
-
-        // DragHandle：!sidebarCollapsed 时 sidebar 侧；details>0 时 details 侧（手册 577 行）
-        .overlay(alignment: .leading) {
-            if !sidebarCollapsed {
-                WODragHandle(side: .sidebar, isDragging: dragging == .sidebar,
-                             x: cols.sidebar, viewport: viewport,
-                             baseSidebar: cols.sidebar, baseDetails: cols.details,
-                             onDragStart: { dragBaseSidebar = cols.sidebar; dragBaseDetails = cols.details; dragging = .sidebar },
-                             onDragEnd: { dragging = nil },
-                             onSidebarDrag: { dx in store.setSidebar(dragBaseSidebar + dx) },
-                             onDetailsDrag: { dx in store.setDetails(dragBaseDetails - dx) })
-            }
-        }
-        .overlay(alignment: .leading) {
-            // alignment 必须 leading：手柄自身 offset(x-4) 定位到 details 左缘；
-            // trailing 会双重定位把手柄甩出视口（真机"拖宽无反应"根因）
-            if cols.details > 0 {
-                WODragHandle(side: .details, isDragging: dragging == .details,
-                             x: viewport - cols.details, viewport: viewport,
-                             baseSidebar: cols.sidebar, baseDetails: cols.details,
-                             onDragStart: { dragBaseSidebar = cols.sidebar; dragBaseDetails = cols.details; dragging = .details },
-                             onDragEnd: { dragging = nil },
-                             onSidebarDrag: { dx in store.setSidebar(dragBaseSidebar + dx) },
-                             onDetailsDrag: { dx in store.setDetails(dragBaseDetails - dx) })
-            }
-        }
         // shell.overlay：z20 pointer-events none，子项各自 opt-in
         .overlay {
             overlayLayer()
@@ -175,70 +146,4 @@ private struct WOColumnsAnimation: ViewModifier {
 private struct WOColumnsKey: Equatable {
     let sidebar: CGFloat
     let details: CGFloat
-}
-
-// MARK: - 拖宽手柄（8px 命中带；details 侧 hover 显现 12×32 浮动把手）
-
-struct WODragHandle: View {
-    let side: WODragSide
-    let isDragging: Bool
-    /// 手柄 x（左缘；内含 margin-left −4 命中带）
-    let x: CGFloat
-    let viewport: CGFloat
-    let baseSidebar: CGFloat
-    let baseDetails: CGFloat
-    let onDragStart: () -> Void
-    let onDragEnd: () -> Void
-    let onSidebarDrag: (CGFloat) -> Void
-    let onDetailsDrag: (CGFloat) -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Color.clear
-            .frame(width: 8)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .cursor(.resizeLeftRight)
-            .offset(x: x - 4) // margin-left -4 命中带（垂直由 overlay 居中承接）
-            .onHover { hovering = $0 }
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                    .onChanged { g in
-                        if !isDragging { onDragStart() }
-                        let dx = g.translation.width
-                        switch side {
-                        case .sidebar: onSidebarDrag(dx)
-                        case .details: onDetailsDrag(dx)
-                        }
-                    }
-                    .onEnded { _ in onDragEnd() }
-            )
-            .overlay {
-                if side == .details {
-                    // 12×32 浮动把手：hover/拖拽显现（手册 583 行）
-                    Capsule()
-                        .fill(hovering || isDragging ? WOAlias.buttonFloatingHover : WOAlias.buttonFloatingFill)
-                        .overlay(Capsule().strokeBorder(
-                            hovering || isDragging ? WOAlias.borderL3 : WOAlias.borderL2DarkmodeThin, lineWidth: 0.5))
-                        .frame(width: 12, height: 32)
-                        .opacity(hovering || isDragging ? 1 : 0)
-                        .animation(WOMotion.bezier(duration: 0.3), value: hovering || isDragging)
-                }
-            }
-    }
-}
-
-// MARK: - 指针形状（iPad 指针/触控板；iOS 无原生 col-resize 光标，此处空实现占位）
-
-extension View {
-    @ViewBuilder
-    func cursor(_ kind: ResizeCursorKind) -> some View {
-        // iPadOS 指针光标定制（UIPointerInteraction）在环 8 收官统一挂；此处保命中等效
-        self
-    }
-}
-
-enum ResizeCursorKind {
-    case resizeLeftRight
 }

@@ -45,18 +45,24 @@ struct WORootFrame: View {
     // MARK: - Body（只组装）
 
     var body: some View {
-        Group {
-            if workspaceSidebar.isFullscreen, appState.currentSessionId != nil {
-                // 全屏：右栏独占整窗（M6.6 批3 C⑤ 语义；条件根布局承载——
-                // iOS16 NavigationSplitViewVisibility 不可用，旧 RootView 同款）。
-                WorkspaceRightSidebarView(model: workspaceSidebar,
-                                          environment: environment)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(WOAlias.bgBase)
-            } else {
-                mainFrame
+        mainFrame
+            // 右栏全屏 = overlay 覆盖（不再条件换根布局——旧实现 if/else 换根
+            // ①无过渡动画②全屏期间 mainFrame 卸载，GeometryReader 视口状态
+            // 丢失，关闭后收起态侧栏渲染错乱（2026-09-21 真机反馈两病同源））。
+            // overlay 恒挂载于同一容器：出入场有 transition 动画，mainFrame
+            // 全程在树（侧栏状态零扰动）。
+            .overlay {
+                if workspaceSidebar.isFullscreen, appState.currentSessionId != nil {
+                    WorkspaceRightSidebarView(model: workspaceSidebar,
+                                              environment: environment)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(WOAlias.bgBase)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
             }
-        }
+            .animation(reduceMotion ? .easeOut(duration: 0.15)
+                                    : .easeOut(duration: 0.28),
+                       value: workspaceSidebar.isFullscreen)
         .overlay { WOSettingsModal(isPresented: settingsPresented) }
         .overlay(alignment: .topTrailing) { reopenSidebarButton }
         .alert("操作失败", isPresented: actionErrorPresented) {
@@ -85,6 +91,9 @@ struct WORootFrame: View {
             }
         }
     }
+
+    /// reduce motion 环境（全屏过渡降级用）。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var mainFrame: some View {
         let snapshot = makeSnapshot()
@@ -228,7 +237,7 @@ struct WORootFrame: View {
         }
     }
 
-    /// 收起态重开钮（M6.6 批3 C①：右上角；无会话/全屏时隐藏）。
+    /// 收起态重开钮（digest-H fab 规格：32px 圆角 9 玻璃白 .9+blur；无会话/全屏时隐藏）。
     @ViewBuilder
     private var reopenSidebarButton: some View {
         if !workspaceSidebar.isExpanded,
@@ -241,14 +250,18 @@ struct WORootFrame: View {
                 }
             } label: {
                 Image(systemName: "sidebar.trailing")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(WOAlias.labelSecondary)
-                    .padding(8)
-                    .background(.regularMaterial, in: Circle())
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 9)
+                        .fill(WOStatic.neutral00.opacity(0.9)))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
-            .padding(.top, 8)
-            .padding(.trailing, 12)
+            .padding(.top, 12)
+            .padding(.trailing, 14)
             .accessibilityLabel("展开工作区侧栏")
         }
     }
@@ -377,7 +390,7 @@ struct WORootFrame: View {
                 case .session(_, let title):
                     return "将删除会话「\(title)」及其全部记录。该操作不可撤销。"
                 case .workspace(_, let title):
-                    return "将把「\(title)」从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在「未分组」下。"
+                    return "将把「\(title)」从工作区列表中移除。文件夹与此工作区下会话的记录会保留在数据库中。"
                 }
             }
         ) {

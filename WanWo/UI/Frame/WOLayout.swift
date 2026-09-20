@@ -23,7 +23,8 @@ public enum WOLayoutContract {
     public static let autoCollapseBreakpoint: CGFloat = 1024
     public static let detailsMin: CGFloat = 300
     public static let detailsMax: CGFloat = 520
-    public static let detailsDefault: CGFloat = 360
+    /// 右栏默认宽：原型 codex 右栏 400px（digest-H 右栏节；让位链自动收缩兜底）
+    public static let detailsDefault: CGFloat = 400
 
     public static func clampWidth(_ px: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
         min(hi, max(lo, px.rounded()))

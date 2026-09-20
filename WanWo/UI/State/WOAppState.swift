@@ -66,4 +66,24 @@ final class WOAppState: ObservableObject {
         guard let id = currentSessionId else { return false }
         return sessions.contains { $0.id == id && $0.title != nil }
     }
+
+    // MARK: - composer 草稿缓存（dsh ConversationStoreState.draft 跨切换持久语义）
+
+    /// 会话草稿缓存（App 级内存；会话切换销毁/重建 ChatView 后草稿跟回——
+    /// dsh「blank 会话复用时草稿恢复」的 WanWo 折算。跨杀后台持久=dsh 还有
+    /// storedDraft 落库，本版不落库，登记 §十六）。
+    @Published private(set) var draftCache: [String: String] = [:]
+
+    func updateDraft(_ text: String, for sessionId: String) {
+        if draftCache[sessionId] == text { return }
+        if text.isEmpty {
+            draftCache.removeValue(forKey: sessionId)
+        } else {
+            draftCache[sessionId] = text
+        }
+    }
+
+    func cachedDraft(for sessionId: String) -> String? {
+        draftCache[sessionId]
+    }
 }

@@ -313,6 +313,10 @@ struct WOWorkspaceBrowser: View {
                     groupSection(group, snapshot: snap)
                 }
             }
+            // 组收起/展开动画（dsh tree EXPAND_SLIDE_MS=300；行增减/高度变化
+            // 随账本值差分过渡，2026-09-21 真机反馈"收起展开没动画"）。
+            .animation(WOMotion.bezier(duration: 0.3), value: viewStore.groupExpansion)
+            .animation(WOMotion.bezier(duration: 0.2), value: localExpansion)
             .padding(.horizontal, 8)
             .padding(.top, 2)
             .padding(.bottom, 16)
@@ -449,7 +453,8 @@ struct WOWorkspaceBrowser: View {
     @ViewBuilder
     private func flatList(_ snap: WOWorkspaceSnapshot) -> some View {
         let all = WOWorkspaceTreeDeriver.deriveFlat(
-            sessions: snap.sessions, archived: snap.archived,
+            sessions: snap.sessions, workspaces: snap.workspaces,
+            archived: snap.archived,
             currentSessionId: snap.currentSessionId,
             activeRunSessionIDs: snap.activeRunSessionIDs,
             pendingSessionIDs: snap.pendingSessionIDs)

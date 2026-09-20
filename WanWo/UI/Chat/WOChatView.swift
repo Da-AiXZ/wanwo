@@ -29,6 +29,7 @@ import SwiftUI
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var appState: WOAppState
     private let sessionId: String
 
     /// 简化自动跟随（批 1）：内容变化即滚底；治理=后续批（autoFollow 闸门按 digest-K 6.3#1）。
@@ -47,8 +48,20 @@ struct WOChatView: View {
 
     init(environment: AppEnvironment, sessionId: String) {
         self.sessionId = sessionId
+        // dsh 草稿跨切换种子（ConversationSession mount 规则）：会话缓存草稿
+        // 优先（blank 会话复用时草稿跟回）；否则消费 hero 交接文本
+        //（pendingFirstDraft——无论如何消费掉，防陈旧文本漏进后续会话）。
+        var seed = ""
+        if let cached = environment.appState.cachedDraft(for: sessionId), !cached.isEmpty {
+            seed = cached
+            environment.pendingFirstDraft = nil
+        } else if let pending = environment.pendingFirstDraft {
+            seed = pending
+            environment.pendingFirstDraft = nil
+        }
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
-                                                             sessionID: sessionId))
+                                                             sessionID: sessionId,
+                                                             initialDraft: seed))
     }
 
     /// 直注实例（测试/宿主复用；与 environment 版共一存储）。
@@ -117,6 +130,10 @@ struct WOChatView: View {
         // digest-H composer hero→dock FLIP 的近似：.42s out 曲线驱动布局迁移；
         // reduceMotion 由 woMotion 降级 0.15s easeOut（R6 拍板）。
         .woMotion(WOMotion.bezier(duration: 0.42), value: heroMode)
+        // 草稿缓存（dsh draft 持久跨切换；切走再切回文本跟回）。
+        .onChange(of: viewModel.draft) { text in
+            appState.updateDraft(text, for: sessionId)
+        }
         .background(WOAlias.bgBase)
         .onAppear {
             viewModel.open()
@@ -158,13 +175,16 @@ struct WOChatView: View {
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）
 
     private var heroHeader: some View {
-        VStack(spacing: 16) {
+        // digest-H hero：星形 logo 34 + 「万我」26/500/-0.4 同行左对齐
+        // （2026-09-21 真机对照原型：竖排居中形态与原型不符）。
+        HStack(spacing: 10) {
             WOFishLogo.logo(size: 34)
             Text("万我")
                 .font(.system(size: 26, weight: .medium))
                 .tracking(-0.4)
                 .foregroundColor(WOAlias.labelPrimary)
         }
+        .frame(maxWidth: 620, alignment: .leading)
         .padding(.bottom, 26) // digest-H hero-composer-slot margin-top 26px
     }
 
@@ -366,12 +386,13 @@ struct WOChatView: View {
                         // 纯图片消息不画气泡（dsh MessageItem 语义）。
                         Text(text)
                             .font(.system(size: 14))
-                            .foregroundColor(WOStatic.neutral00)
+                            .foregroundColor(WOAlias.labelPrimary)
                             .multilineTextAlignment(.trailing)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                             // 原型规格：圆角 22 + 蓝软底（WOSpecific.bubble =
-                            // deepseek-50）；82% 帽=用户气泡 max-width 上限近似。
+                            // deepseek-50）深字（2026-09-21 真机反馈：白字是
+                            // 深色按钮的对比色误用——浅蓝软底配主文字色）。
                             .frame(maxWidth: 520, alignment: .trailing)
                             .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
                     }
@@ -557,7 +578,12 @@ struct WOChatHero: View {
     @State private var newWorkspaceName = ""
     @State private var addFlowError: String?
     @State private var confirmingFullAccess = false
+    /// 胶囊即时刷新镜像（PermissionDefaultStore/EndpointStore 非本视图
+    /// Observed 对象——选中后手动同步，防 label 滞后到下一次 body 求值）。
+    @State private var currentPresetID = ""
+    @State private var currentModelName = ""
 
+    /// 权限三挡（与旧 EmptyStateView.choosePermission 同源；选中工作区后才显）。
     private let permissionOptions: [(id: String, label: String)] = [
         ("read-only", "仅可查看"),
         ("workspace-write", "工作区内修改"),
@@ -569,8 +595,7 @@ struct WOChatHero: View {
     }
 
     private var currentPermissionLabel: String {
-        permissionOptions.first { $0.id == environment.permissionDefaults.defaultPreset }?.label
-            ?? environment.permissionDefaults.defaultPreset
+        permissionOptions.first { $0.id == currentPresetID }?.label ?? currentPresetID
     }
 
     var body: some View {
@@ -578,11 +603,14 @@ struct WOChatHero: View {
             WOAlias.bgBase
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                headerBlock
-                chipsRow
-                    .padding(.top, 22)
-                composerCard
-                    .padding(.top, 14)
+                VStack(spacing: 0) {
+                    headerBlock
+                    workspaceChipRow
+                        .padding(.top, 12)
+                    composerCard
+                        .padding(.top, 26) // digest-H hero-composer-slot margin-top 26px
+                }
+                .frame(maxWidth: 620)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 24)
@@ -590,7 +618,18 @@ struct WOChatHero: View {
                 addFlowCard
             }
         }
-        .onAppear { refreshWorkspaces() }
+        .onAppear {
+            refreshWorkspaces()
+            currentPresetID = environment.permissionDefaults.defaultPreset
+            currentModelName = environment.endpointStore.activeEndpoint()?.model ?? "选择模型"
+            // 预选最近活动工作区（dsh startSession recent 语义：「项目自动选好
+            // 上一个打开的对话所在的项目」——组内最新 updatedAt 者为 featured）。
+            if selectedWorkspaceID == nil {
+                selectedWorkspaceID = WorkspaceNavigator.recentWorkspace(
+                    workspaces,
+                    sessions: environment.sessionStore.listSessions())
+            }
+        }
         .fullScreenCover(isPresented: $confirmingFullAccess) {
             ZStack {
                 PermissionConfirmationGate(
@@ -604,32 +643,30 @@ struct WOChatHero: View {
         }
     }
 
-    // MARK: - 品牌头（digest-H hero：logo 40 + 「万我」26）
+    // MARK: - 品牌头（digest-H hero：✦ 34 + 「万我」26/500/-0.4 同行左对齐）
 
     private var headerBlock: some View {
-        // digest-H hero：星形 logo 34px + 「万我」26px/500/tracking -0.4（无副标题——
-        // 原型无此行，自创件撤除）
-        VStack(spacing: 14) {
+        HStack(spacing: 10) {
             WOFishLogo.logo(size: 34)
             Text("万我")
                 .font(.system(size: 26, weight: .medium))
                 .tracking(-0.4)
                 .foregroundColor(WOAlias.labelPrimary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - 胶囊行（workspace chip + 权限 chip；leading 对齐卡缘——EmptyHero :82）
+    // MARK: - 工作区胶囊行（仅 ws-chip；权限挡位在选中后才入 composer 工具组
+    // ——2026-09-21 用户令：未选工作区时无权限模式，与 dsh inert 语义一致）
 
-    private var chipsRow: some View {
+    private var workspaceChipRow: some View {
         HStack(spacing: 8) {
             workspaceChip
-            permissionChip
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: 620)
     }
 
-    /// WorkspaceChip：SwiftUI Menu 弹层（旧件 :320 同法）；当前项勾选 + 尾部「添加工作区…」。
+    /// WorkspaceChip：SwiftUI Menu（旧件 :320 同法）；当前项勾选 + 尾部「添加工作区…」。
     private var workspaceChip: some View {
         Menu {
             ForEach(workspaces) { ws in
@@ -661,12 +698,86 @@ struct WOChatHero: View {
             .padding(.horizontal, 10)
             .frame(height: 28) // ws-chip：28px 高 / r16 / 13px/500（digest-H）
             .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
         }
     }
 
-    /// 权限胶囊（三挡预设；与 dock 新会话默认同源 = permissionDefaults）。
+    // MARK: - composer（dsh EmptyHero inert 语义：未选 = 整卡即工作区 picker，
+    // 只读「选择一个工作区开始」+ 发送灰；选中 = 可输入/可发送/可调权限挡位）
+
+    @ViewBuilder
+    private var composerCard: some View {
+        if featured == nil {
+            Menu {
+                ForEach(workspaces) { ws in
+                    Button(ws.title) { pickWorkspace(ws) }
+                }
+                Divider()
+                Button {
+                    showAddFlow = true
+                } label: {
+                    Label("添加工作区…", systemImage: "plus")
+                }
+            } label: {
+                HStack(alignment: .bottom, spacing: 10) {
+                    Text("选择一个工作区开始")
+                        .font(.system(size: 14))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    heroSendIcon(active: false)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+                .overlay(RoundedRectangle(cornerRadius: 22)
+                    .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+            }
+        } else {
+            HStack(alignment: .bottom, spacing: 0) {
+                TextField("描述你想要构建的内容… / 调用指令 @ 文件或对话",
+                          text: $heroDraft,
+                          axis: .vertical)
+                    .font(.system(size: 14))
+                    .lineSpacing(10)
+                    .tint(WOAlias.stateBusinessPrimary)
+                    .lineLimit(1...7)
+                    .padding(.leading, 14)
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+                HStack(spacing: 8) {
+                    permissionChip
+                    heroModelChip
+                    Button {
+                        sendHeroDraft()
+                    } label: {
+                        heroSendIcon(active: true)
+                    }
+                    .buttonStyle(.plain)
+                    .woPressable()
+                    .accessibilityLabel("开始新会话")
+                }
+                .padding(.trailing, 10)
+                .padding(.bottom, 10)
+            }
+            .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+            .overlay(RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+            .shadow(color: .black.opacity(0.03), radius: 24)
+        }
+    }
+
+    private func heroSendIcon(active: Bool) -> some View {
+        Image(systemName: "arrow.up")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(active ? WOStatic.neutral00 : WOAlias.labelTertiary)
+            .frame(width: 34, height: 34)
+            .background(Circle().fill(active ? WOAlias.buttonPrimaryFill
+                                             : WOAlias.bgModulePlatform))
+            .opacity(active ? 1 : 0.4)
+    }
+
+    /// 权限胶囊（选中工作区后出现；默认挡 = permissionDefaults，完全权限走确认缝）。
     private var permissionChip: some View {
         Menu {
             ForEach(permissionOptions, id: \.id) { option in
@@ -685,100 +796,63 @@ struct WOChatHero: View {
                 Text(currentPermissionLabel)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
+            }
+            .foregroundColor(WOAlias.labelSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+        }
+    }
+
+    /// 模型胶囊（hero 无会话级选择——选择落在端点默认上，新会话按默认解析；
+    /// 真菜单真动作，EndpointStore.setActive 既有缝）。
+    private var heroModelChip: some View {
+        Menu {
+            ForEach(environment.endpointStore.endpoints.filter { $0.isEnabled }) { ep in
+                if ep.model == currentModelName {
+                    Button {
+                        environment.endpointStore.setActive(ep)
+                        currentModelName = ep.model
+                    } label: {
+                        Label(ep.model, systemImage: "checkmark")
+                    }
+                } else {
+                    Button(ep.model) {
+                        environment.endpointStore.setActive(ep)
+                        currentModelName = ep.model
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(currentModelName)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
             }
             .foregroundColor(WOAlias.labelSecondary)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
         }
     }
 
-    /// 选择（PermissionDefaultsView.choose 同语义：同挡 no-op、完全权限先确认）。
+    /// 权限选择（同挡 no-op；完全权限先确认——PermissionDefaultsView.choose 同语义）。
     private func choosePermission(_ id: String) {
-        if id == environment.permissionDefaults.defaultPreset { return }
+        if id == currentPresetID { return }
         if id == "danger-full-access" {
             confirmingFullAccess = true
             return
         }
-        _ = environment.permissionDefaults.setDefault(named: id)
-    }
-
-    // MARK: - composer（无工作区 inert / 有工作区可输入；同一卡形态）
-
-    @ViewBuilder
-    private var composerCard: some View {
-        if featured == nil {
-            // inert 态：整卡 = 工作区菜单的 label（dsh「点击整框 = 开工作区菜单」；
-            // 虚线描边 + 静态底行——ConversationEmptyStateView 简版形态）。
-            Menu {
-                ForEach(workspaces) { ws in
-                    Button(ws.title) { pickWorkspace(ws) }
-                }
-                Divider()
-                Button {
-                    showAddFlow = true
-                } label: {
-                    Label("添加工作区…", systemImage: "plus")
-                }
-            } label: {
-                HStack(alignment: .bottom, spacing: 10) {
-                    Text("选择一个工作区开始")
-                        .font(.system(size: 14))
-                        .foregroundColor(WOAlias.labelTertiary)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(WOAlias.labelTertiary)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(WOAlias.bgLayer3))
-                        .opacity(0.5)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgLayer2))
-                .overlay(RoundedRectangle(cornerRadius: 22)
-                    .strokeBorder(WOAlias.borderL2, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
-            }
-            .frame(maxWidth: 620)
-        } else {
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("描述你想要构建的内容… / 调用指令 @ 文件或对话",
-                          text: $heroDraft,
-                          axis: .vertical)
-                    .font(.system(size: 14))
-                    .lineLimit(1...6)
-                    .padding(.leading, 8)
-                    .padding(.vertical, 12)
-                Button {
-                    sendHeroDraft()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(WOStatic.neutral00)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(WOAlias.buttonPrimaryFill))
-                }
-                .buttonStyle(.plain)
-                .woPressable()
-                .accessibilityLabel("开始新会话")
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgLayer2))
-            .overlay(RoundedRectangle(cornerRadius: 22)
-                .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
-            .frame(maxWidth: 620)
+        if environment.permissionDefaults.setDefault(named: id) {
+            currentPresetID = id
         }
     }
 
-    // MARK: - 动作（pick = 即建会话入组；send = 草稿交接 + 建会话）
+    // MARK: - 动作（pick = 选定即建/复用会话入组；send = 草稿交接 + 建会话）
 
     private func pickWorkspace(_ ws: WorkspaceRecord) {
         migrateHeroDraft()
+        selectedWorkspaceID = ws.id
         environment.workspaceNavigator.startSession(ws.id)
     }
 
@@ -788,8 +862,9 @@ struct WOChatHero: View {
         environment.workspaceNavigator.startSession(featured.id)
     }
 
-    /// 草稿交接（dsh「hero 输入文本 = 新会话 composer draft」）：
-    /// 非空草稿写 pendingFirstDraft 缝并清空；空草稿不动缝。
+    /// 草稿交接（dsh「hero 输入文本 = 新会话 composer draft」）：非空草稿写
+    /// pendingFirstDraft 缝并清空；会话缓存草稿优先于 hero 文本（WOChatView
+    /// init 种子规则——已有输入的 blank 会话不被覆盖）。
     private func migrateHeroDraft() {
         let draft = heroDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.isEmpty else { return }
@@ -867,6 +942,7 @@ struct WOChatHero: View {
             addFlowError = nil
             refreshWorkspaces()
             migrateHeroDraft()
+            selectedWorkspaceID = workspace.id
             environment.workspaceNavigator.startSession(workspace.id)
         } catch {
             addFlowError = (error as? LocalizedError)?.errorDescription ?? "创建失败，请重试"

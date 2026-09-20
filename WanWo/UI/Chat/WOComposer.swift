@@ -102,6 +102,7 @@ struct WOComposer: View {
     private var toolRow: some View {
         HStack(spacing: 8) {
             // + 钮 28px 圆（digest-H：导入图片/文件；PhotosPicker 相册两源）。
+            // 左侧独占（原型 dock：+ 在左，其余全右）。
             PhotosPicker(selection: $photoSelection, matching: .images) {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .medium))
@@ -111,6 +112,11 @@ struct WOComposer: View {
                     .overlay(Circle().strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
             }
             .accessibilityLabel("添加图片")
+
+            Spacer(minLength: 0)
+
+            // 右侧组（2026-09-21 用户令：选模型在右边——原型 dock 布局）：
+            // 权限胶囊 → 模型 pill → ContextMeter 环 → 发送/停止。
 
             // 权限胶囊（盾形三态；RiskConfirmation 确认缝内建——one path）。
             PermissionSelectView(
@@ -128,8 +134,6 @@ struct WOComposer: View {
                             onSelect: { viewModel.selectModel($0) },
                             onEffort: { viewModel.selectEffort($0) })
                 .font(.system(size: 12))
-
-            Spacer(minLength: 0)
 
             // ContextMeter 环（pressure 在场才显示；F041 压力呈现）。
             if let pressure = viewModel.pressure {

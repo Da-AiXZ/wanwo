@@ -93,20 +93,23 @@ enum WOWorkspaceTreeDeriver {
 
     static let ungroupedKey = ""
 
-    /// 会话可见性：未归档即可见。
-    /// 触屏适配偏离登记（2026-09-19 用户令）：dsh「blank 只显当前」依赖建即打开流，
-    /// 骨架期无打开信号 → 新建空会话被藏、只显最后一条（用户实测点 N 次只见一条闪现）。
-    /// 片 1 落地 sessions.open 后复核是否恢复该规则。
-    static func isVisible(_ s: SessionSummary, archived: Set<String>, currentSessionId: String?) -> Bool {
+    /// 会话可见性（dsh tree.ts sessionVisible 1:1）：未归档且（非 blank 或当前）。
+    /// blank（新会话未发消息）只在它是当前会话时可见——切走即从列表消失（用户
+    /// 指令 2026-09-21：按 dsh 源码语义；骨架期"恒显"偏离随打开信号成真而退役）。
+    static func isVisible(_ s: SessionSummary, archived: Set<String>,
+                          currentSessionId: String?) -> Bool {
         if archived.contains(s.id) { return false }
+        if isBlank(s), s.id != currentSessionId { return false }
         return true
     }
 
     /// blank 判定：旧数据语义 = title 为 nil（占位会话）
     static func isBlank(_ s: SessionSummary) -> Bool { s.title == nil }
 
-    /// 分组树：workspace 序分组（成员按 sessionIds 账本序），游离会话进「未分组」
-    /// （有 stored 顺序按序 + 新散落者按 recency 追加，否则全 recency）。
+    /// 分组树：workspace 序分组（成员按 sessionIds 账本序）。
+    /// 「未分组」桶移除（2026-09-21 用户令）：dsh 语义里游离会话不应存在——
+    /// 创建全部收口 workspaceNavigator.startSession（必挂工作区）；历史上由
+    /// 旧缺陷产生的孤儿会话不再列出（数据保留在库，登记于 11-ui-design §十六）。
     /// R1：运行/待决真值入节点（D3 清偿；pending 粒度=有/无，种类文案挂 R3 拆镜像）。
     static func deriveGroups(
         sessions: [SessionSummary],
@@ -125,7 +128,7 @@ enum WOWorkspaceTreeDeriver {
         // workspace 序分组：成员 = registry 账本序（过滤掉不存在的会话）。
         // 排序方式：manual = 账本序（手动排序真源）；updated = 组内按 updatedAt
         // 倒序重排（原型「排序『最近更新』按 parseTime 组内重排」；blank 占位居顶
-        // 不参与重排）。Ungrouped 无账本，两种模式同为 recency。
+        // 不参与重排）。
         for ws in workspaces {
             var members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
             if orderBy == .updated {
@@ -141,15 +144,7 @@ enum WOWorkspaceTreeDeriver {
                                     pendingSessionIDs: pendingSessionIDs))
         }
 
-        // 游离会话 → 未分组桶：registry 账本序优先，散落者按 recency 追加
-        let orphans = Array(byID.values).sorted { $0.updatedAt > $1.updatedAt }
-        if !orphans.isEmpty {
-            groups.append(makeGroup(key: Self.ungroupedKey, workspaceId: nil, label: "未分组",
-                                    createdAt: nil, members: orphans,
-                                    currentSessionId: currentSessionId,
-                                    activeRunSessionIDs: activeRunSessionIDs,
-                                    pendingSessionIDs: pendingSessionIDs))
-        }
+        // 游离会话（不在任何工作区账本内）不进列表——未分组桶已移除（见上）。
         return groups
     }
 
@@ -174,12 +169,16 @@ enum WOWorkspaceTreeDeriver {
                      sessions: nodes, containsCurrent: containsCurrent)
     }
 
-    /// 扁平列表：全部可见会话顶层行，严格最新优先（手册 720 行）
+    /// 扁平列表：工作区账本内可见会话顶层行，严格最新优先（手册 720 行）。
+    /// 未分组桶移除 → 只列工作区账本内成员（孤儿过滤同 deriveGroups）。
     static func deriveFlat(
-        sessions: [SessionSummary], archived: Set<String>, currentSessionId: String?,
+        sessions: [SessionSummary], workspaces: [WorkspaceRecord],
+        archived: Set<String>, currentSessionId: String?,
         activeRunSessionIDs: Set<String>, pendingSessionIDs: Set<String>
     ) -> [WOSessionNode] {
-        sessions
+        let ledgerIDs = Set(workspaces.flatMap { $0.sessionIds })
+        return sessions
+            .filter { ledgerIDs.contains($0.id) }
             .filter { isVisible($0, archived: archived, currentSessionId: currentSessionId) }
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { s in

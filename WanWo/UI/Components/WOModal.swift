@@ -46,8 +46,7 @@ public struct WOModal<Content: View, Footer: View>: View {
                         content()
                     } else {
                         VStack(alignment: .leading, spacing: 0) {
-                            // header：标题居中（用户裁定 2026-09-20：弹窗文字居中于卡）
-                            // + X 恒右上（命中区自带）
+                            // header：标题水平居中 + X 恒右上（用户裁定 2026-09-20）
                             ZStack {
                                 Text(title)
                                     .font(.system(size: 16, weight: .medium))
@@ -66,25 +65,29 @@ public struct WOModal<Content: View, Footer: View>: View {
                                     .buttonStyle(.plain)
                                 }
                             }
-                            .padding(.top, 20).padding(.bottom, 12)
+                            .padding(.top, 20).padding(.bottom, 10)
                             .padding(.leading, 24).padding(.trailing, 14)
 
                             if let description {
-                                // description 居中（332px 内容列，24 侧 pad）
+                                // description 居中（垂直贴标题、与按钮拉开——文字块
+                                // 视觉居中于卡；2026-09-21 用户二次反馈"居下"）
                                 Text(description)
                                     .font(.system(size: 14))
                                     .foregroundColor(WOAlias.labelPrimary)
                                     .multilineTextAlignment(.center)
                                     .frame(maxWidth: .infinity)
                                     .padding(.horizontal, 24)
+                                    .padding(.top, 6)
                             }
                             content()
                                 .padding(.horizontal, 24)
-                                .padding(.top, description == nil ? 12 : 0)
+                                .padding(.top, description == nil ? 10 : 14)
                         }
                         footer()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .frame(maxWidth: .infinity) // 等宽按钮对称构图（非右下角缩一起）
                             .padding(.horizontal, 24)
+                            .padding(.top, 4)
+                            .padding(.bottom, 20)
                     }
                 }
                 .frame(width: min(380, UIScreen.main.bounds.width - 48), alignment: .leading)
