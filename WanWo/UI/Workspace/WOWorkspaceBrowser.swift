@@ -337,18 +337,11 @@ struct WOWorkspaceBrowser: View {
         // 5 行帽（≤5 行的组收起零变化）+ 收起态 chevron 隐形 → 点击无反馈
         //（2026-09-20 真机反馈"点击没有收起来"根因）。
         let overflowExpanded = localExpansion.contains(group.key)
-        let visibleNormal: [WOSessionNode]
-        let hiddenCount: Int
-        if !expanded {
-            visibleNormal = []
-            hiddenCount = 0
-        } else if overflowExpanded {
-            visibleNormal = normal
-            hiddenCount = 0
-        } else {
-            visibleNormal = Array(normal.prefix(Self.collapsedSessionLimit))
-            hiddenCount = max(0, normal.count - Self.collapsedSessionLimit)
-        }
+        // @ViewBuilder 函数体内禁赋值型 if（buildExpression 报错）——三元求值。
+        let visibleNormal: [WOSessionNode] = !expanded ? []
+            : (overflowExpanded ? normal : Array(normal.prefix(Self.collapsedSessionLimit)))
+        let hiddenCount: Int = (expanded && !overflowExpanded)
+            ? max(0, normal.count - Self.collapsedSessionLimit) : 0
 
         VStack(alignment: .leading, spacing: 2) {
             WOProjectRow(
