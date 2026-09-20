@@ -113,12 +113,9 @@ struct WOComposer: View {
             }
             .accessibilityLabel("添加图片")
 
-            Spacer(minLength: 0)
-
-            // 右侧组（2026-09-21 用户令：选模型在右边——原型 dock 布局）：
-            // 权限胶囊 → 模型 pill → ContextMeter 环 → 发送/停止。
-
-            // 权限胶囊（盾形三态；RiskConfirmation 确认缝内建——one path）。
+            // 权限胶囊（盾形三态；**左侧组**——原型 .tools=[+, permission]，
+            // 2026-09-21 用户令"只把模型移右边，权限别动"；RiskConfirmation
+            // 确认缝内建——one path）。
             PermissionSelectView(
                 currentPreset: viewModel.currentPermissionPreset ?? "",
                 busy: false,
@@ -127,6 +124,9 @@ struct WOComposer: View {
                 })
                 .font(.system(size: 12))
 
+            Spacer(minLength: 0)
+
+            // 右侧组（原型 .trailing=[model-pill, ctx-ring, send]）：
             // 模型两级菜单（provider 分组 + effort 层；会话级选择）。
             ModelSelectView(store: viewModel.endpointStore,
                             current: viewModel.currentModelEndpoint,
@@ -246,8 +246,9 @@ struct WOComposer: View {
         viewModel.addDraftImages(candidates)
     }
 
-    /// UTType → 媒体类型白名单映射（dsh mediaTypes 白名单的 iOS 对应物）。
-    nonisolated private static func mediaType(of types: [UTType]) -> ImageMediaType? {
+    /// UTType → 媒体类型白名单映射（dsh mediaTypes 白名单的 iOS 对应物；
+    /// internal——hero 预会话附件 intake 复用）。
+    nonisolated static func mediaType(of types: [UTType]) -> ImageMediaType? {
         for type in types {
             if type.conforms(to: .png) { return .png }
             if type.conforms(to: .jpeg) { return .jpeg }

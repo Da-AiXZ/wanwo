@@ -69,21 +69,35 @@ final class WOAppState: ObservableObject {
 
     // MARK: - composer 草稿缓存（dsh ConversationStoreState.draft 跨切换持久语义）
 
-    /// 会话草稿缓存（App 级内存；会话切换销毁/重建 ChatView 后草稿跟回——
-    /// dsh「blank 会话复用时草稿恢复」的 WanWo 折算。跨杀后台持久=dsh 还有
-    /// storedDraft 落库，本版不落库，登记 §十六）。
-    @Published private(set) var draftCache: [String: String] = [:]
+    /// 会话草稿缓存。**刻意非 @Published**：批3 用 @Published 导致每次击键
+    /// objectWillChange 扇出到全部观察者（WORootFrame 整树+快照+侧栏重算）
+    /// =真机"打字即卡死、光标仍闪"根因（2026-09-21 实证）。纯缓存无人渲染，
+    /// 静默写读即可。持久化：UserDefaults 写通（杀后台保留——用户令"落库"
+    /// 兑现；轻量持久层，非 dsh 的 DB 列，登记 §十六）。
+    private var draftCache: [String: String] = [:]
+
+    private static func draftKey(_ sessionId: String) -> String { "wo.draft.\(sessionId)" }
 
     func updateDraft(_ text: String, for sessionId: String) {
         if draftCache[sessionId] == text { return }
+        let key = Self.draftKey(sessionId)
         if text.isEmpty {
             draftCache.removeValue(forKey: sessionId)
+            defaults.removeObject(forKey: key)
         } else {
             draftCache[sessionId] = text
+            defaults.set(text, forKey: key)
         }
     }
 
     func cachedDraft(for sessionId: String) -> String? {
-        draftCache[sessionId]
+        if let mem = draftCache[sessionId] { return mem }
+        return defaults.string(forKey: Self.draftKey(sessionId))
+    }
+
+    /// 会话删除时清其草稿（防 UserDefaults 残留孤儿键）。
+    func purgeDraft(for sessionId: String) {
+        draftCache.removeValue(forKey: sessionId)
+        defaults.removeObject(forKey: Self.draftKey(sessionId))
     }
 }

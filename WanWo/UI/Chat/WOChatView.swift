@@ -25,6 +25,8 @@
 //
 
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
@@ -46,19 +48,23 @@ struct WOChatView: View {
     /// 场景 present 静默失败，旧 ChatView T2.8 件2 同源教训）。
     @State private var messagePreview: ImageAttachmentRef?
 
+    /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
+    /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
+    /// "Modifying state during view update" 违例）。
+    private let consumesPendingImages: Bool
+
     init(environment: AppEnvironment, sessionId: String) {
         self.sessionId = sessionId
-        // dsh 草稿跨切换种子（ConversationSession mount 规则）：会话缓存草稿
-        // 优先（blank 会话复用时草稿跟回）；否则消费 hero 交接文本
-        //（pendingFirstDraft——无论如何消费掉，防陈旧文本漏进后续会话）。
+        // dsh 草稿跨切换种子（ConversationSession mount 规则，**只读**——
+        // pendingFirstDraft 的消费清理由 onAppear 既有块承担）：会话缓存草稿
+        // 优先（blank 会话复用时草稿跟回）；否则用 hero 交接文本。
         var seed = ""
         if let cached = environment.appState.cachedDraft(for: sessionId), !cached.isEmpty {
             seed = cached
-            environment.pendingFirstDraft = nil
         } else if let pending = environment.pendingFirstDraft {
             seed = pending
-            environment.pendingFirstDraft = nil
         }
+        self.consumesPendingImages = !environment.pendingDraftImages.isEmpty
         _viewModel = StateObject(wrappedValue: ChatViewModel(environment: environment,
                                                              sessionID: sessionId,
                                                              initialDraft: seed))
@@ -144,6 +150,11 @@ struct WOChatView: View {
                 if viewModel.draft.isEmpty { viewModel.draft = firstDraft }
                 environment.pendingFirstDraft = nil
             }
+            // hero 附件交接缝消费（预会话图片 → VM 草稿图）。
+            if consumesPendingImages {
+                viewModel.addDraftImages(environment.pendingDraftImages)
+                environment.pendingDraftImages = []
+            }
         }
         .onDisappear { viewModel.close() }
         .onChange(of: viewModel.phase) { _ in seedEntry() }
@@ -174,15 +185,39 @@ struct WOChatView: View {
 
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）
 
+    /// 当前会话所属工作区标题（registry 账本反查；blank 会话 hero chip 用）。
+    private var sessionWorkspaceTitle: String? {
+        environment.workspaceRegistry.list()
+            .first { $0.sessionIds.contains(sessionId) }?.title
+    }
+
     private var heroHeader: some View {
         // digest-H hero：星形 logo 34 + 「万我」26/500/-0.4 同行左对齐
-        // （2026-09-21 真机对照原型：竖排居中形态与原型不符）。
-        HStack(spacing: 10) {
-            WOFishLogo.logo(size: 34)
-            Text("万我")
-                .font(.system(size: 26, weight: .medium))
-                .tracking(-0.4)
+        //（2026-09-21 真机对照原型：竖排居中形态与原型不符）。
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                WOFishLogo.logo(size: 34)
+                Text("万我")
+                    .font(.system(size: 26, weight: .medium))
+                    .tracking(-0.4)
+                    .foregroundColor(WOAlias.labelPrimary)
+            }
+            // blank 会话 hero 的工作区 chip（dsh EmptyHero 同款形态；只读
+            // 标签非按钮——会话中途换工作区无引擎缝，登记 §十六）。
+            if let wsTitle = sessionWorkspaceTitle {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12))
+                    Text(wsTitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                }
                 .foregroundColor(WOAlias.labelPrimary)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
+                .padding(.top, 14)
+            }
         }
         .frame(maxWidth: 620, alignment: .leading)
         .padding(.bottom, 26) // digest-H hero-composer-slot margin-top 26px
@@ -578,6 +613,10 @@ struct WOChatHero: View {
     @State private var newWorkspaceName = ""
     @State private var addFlowError: String?
     @State private var confirmingFullAccess = false
+    /// hero 附件（预会话草稿图；发送/选定工作区时经 pendingDraftImages 缝
+    /// 交接进新会话 VM——"hero + 钮承接"补缝，2026-09-21 用户令）。
+    @State private var heroPhotoSelection: [PhotosPickerItem] = []
+    @State private var heroImages: [ChatViewModel.DraftImageCandidate] = []
     /// 胶囊即时刷新镜像（PermissionDefaultStore/EndpointStore 非本视图
     /// Observed 对象——选中后手动同步，防 label 滞后到下一次 body 求值）。
     @State private var currentPresetID = ""
@@ -628,6 +667,21 @@ struct WOChatHero: View {
                 selectedWorkspaceID = WorkspaceNavigator.recentWorkspace(
                     workspaces,
                     sessions: environment.sessionStore.listSessions())
+            }
+        }
+        .onChange(of: heroPhotoSelection) { items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            heroPhotoSelection = []
+            Task {
+                var candidates: [ChatViewModel.DraftImageCandidate] = []
+                for item in picked {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                    candidates.append(.init(data: data,
+                                            mediaType: WOComposer.mediaType(of: item.supportedContentTypes),
+                                            name: nil))
+                }
+                heroImages.append(contentsOf: candidates)
             }
         }
         .fullScreenCover(isPresented: $confirmingFullAccess) {
@@ -718,11 +772,21 @@ struct WOChatHero: View {
                     Label("添加工作区…", systemImage: "plus")
                 }
             } label: {
-                HStack(alignment: .bottom, spacing: 10) {
-                    Text("选择一个工作区开始")
-                        .font(.system(size: 14))
-                        .foregroundColor(WOAlias.labelTertiary)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                // dock 对齐原型（.tools=[+] + .trailing=[model-pill, ring, send]；
+                // 权限挡位未选工作区时隐藏=permWrap display:none）。整卡 =
+                // 工作区 picker 触发器（dsh workspaceTrigger 语义，+ 同属触发面）。
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(WOAlias.labelSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(WOAlias.bgModulePlatform))
+                        .overlay(Circle().strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+                    Spacer(minLength: 0)
+                    Text("选择模型")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(WOAlias.labelSecondary)
+                    heroRing
                     heroSendIcon(active: false)
                 }
                 .padding(.horizontal, 10)
@@ -733,7 +797,36 @@ struct WOChatHero: View {
                 .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
             }
         } else {
-            HStack(alignment: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                // 已选图片 chip（最小承接 UI；dsh att-row 缩略图形态的极简版）
+                if !heroImages.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 10))
+                        Text("图片 ×\(heroImages.count)")
+                            .font(.system(size: 12))
+                        Button {
+                            heroImages = []
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundColor(WOAlias.labelSecondary)
+                                .frame(width: 16, height: 16)
+                                .background(Circle().fill(WOStatic.neutral00.opacity(0.72)))
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空已选图片")
+                    }
+                    .foregroundColor(WOAlias.stateBusinessPrimary)
+                    .padding(.leading, 8)
+                    .padding(.trailing, 5)
+                    .frame(height: 26)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(WOStatic.deepseek100))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 TextField("描述你想要构建的内容… / 调用指令 @ 文件或对话",
                           text: $heroDraft,
                           axis: .vertical)
@@ -742,11 +835,26 @@ struct WOChatHero: View {
                     .tint(WOAlias.stateBusinessPrimary)
                     .lineLimit(1...7)
                     .padding(.leading, 14)
-                    .padding(.top, 12)
+                    .padding(.top, heroImages.isEmpty ? 12 : 6)
                     .padding(.bottom, 6)
+                // 底行（原型 .tools=[+, perm] 左；.trailing=[model, send] 右）
                 HStack(spacing: 8) {
+                    PhotosPicker(selection: $heroPhotoSelection, matching: .images) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(WOAlias.labelSecondary)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(WOAlias.bgModulePlatform))
+                            .overlay(Circle().strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+                    }
+                    .accessibilityLabel("添加图片")
+
                     permissionChip
+
+                    Spacer(minLength: 0)
+
                     heroModelChip
+
                     Button {
                         sendHeroDraft()
                     } label: {
@@ -756,7 +864,7 @@ struct WOChatHero: View {
                     .woPressable()
                     .accessibilityLabel("开始新会话")
                 }
-                .padding(.trailing, 10)
+                .padding(.horizontal, 10)
                 .padding(.bottom, 10)
             }
             .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
@@ -765,6 +873,13 @@ struct WOChatHero: View {
             .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
             .shadow(color: .black.opacity(0.03), radius: 24)
         }
+    }
+
+    /// 上下文环装饰（inert dock 形态件；0 占用无数字=不造假）。
+    private var heroRing: some View {
+        Circle()
+            .strokeBorder(WOAlias.borderL2, lineWidth: 1.5)
+            .frame(width: 14, height: 14)
     }
 
     private func heroSendIcon(active: Bool) -> some View {
@@ -866,6 +981,12 @@ struct WOChatHero: View {
     /// pendingFirstDraft 缝并清空；会话缓存草稿优先于 hero 文本（WOChatView
     /// init 种子规则——已有输入的 blank 会话不被覆盖）。
     private func migrateHeroDraft() {
+        // 图片先行（pendingDraftImages 缝；WORootFrame startSession → 新会话
+        // WOChatView.onAppear 消费 → VM.addDraftImages）。
+        if !heroImages.isEmpty {
+            environment.pendingDraftImages = heroImages
+            heroImages = []
+        }
         let draft = heroDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.isEmpty else { return }
         environment.pendingFirstDraft = heroDraft

@@ -99,6 +99,9 @@ final class AppEnvironment: ObservableObject {
     /// dsh 语义：hero 的输入文本就是新会话的 composer draft（onPick 开会话
     /// 文本不丢）——未接线前 hero 发送丢字（用户每次新建对话必撞）。
     @Published var pendingFirstDraft: String?
+    /// hero 附件交接缝（预会话图片 → 新会话 VM.addDraftImages；非发布——
+    /// 交接读一次即清，消费方 WOChatView.onAppear）。
+    var pendingDraftImages: [ChatViewModel.DraftImageCandidate] = []
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
