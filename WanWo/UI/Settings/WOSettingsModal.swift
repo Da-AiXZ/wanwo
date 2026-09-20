@@ -146,7 +146,6 @@ struct WOSettingsModal: View {
         .overlay(RoundedRectangle(cornerRadius: Self.cardRadius, style: .continuous)
             .strokeBorder(WOElevation.prominent.strokeColor,
                           lineWidth: WOElevation.prominent.strokeWidth))
-        .transition(cardTransition)
     }
 
     // MARK: - 左 nav（188px；cell 40px 高 active #EBEEF2）

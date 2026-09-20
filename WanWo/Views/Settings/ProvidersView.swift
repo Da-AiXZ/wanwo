@@ -39,7 +39,7 @@ struct ProvidersView: View {
             switch self {
             case .onboarding: return "onboarding"
             case .add: return "add"
-            case .edit(let e): return e.id
+            case .edit(let e): return e.id.uuidString
             }
         }
     }
