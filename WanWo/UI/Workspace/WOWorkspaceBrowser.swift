@@ -296,7 +296,7 @@ struct WOWorkspaceBrowser: View {
             archived: snap.archived, currentSessionId: snap.currentSessionId,
             activeRunSessionIDs: snap.activeRunSessionIDs,
             pendingSessionIDs: snap.pendingSessionIDs,
-            view: viewStore)
+            orderBy: viewStore.orderBy)
         // R3a 搜索过滤：防抖 query 非空时组内只留匹配行、无命中组整组隐藏。
         let groups = filteredGroups(all)
 

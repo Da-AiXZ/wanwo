@@ -113,7 +113,7 @@ enum WOWorkspaceTreeDeriver {
         currentSessionId: String?,
         activeRunSessionIDs: Set<String>,
         pendingSessionIDs: Set<String>,
-        view: WOWorkspaceViewStore
+        orderBy: WOOrderBy
     ) -> [WOGroupNode] {
         let visible = sessions.filter { isVisible($0, archived: archived, currentSessionId: currentSessionId) }
         var byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
@@ -126,7 +126,7 @@ enum WOWorkspaceTreeDeriver {
         // 不参与重排）。Ungrouped 无账本，两种模式同为 recency。
         for ws in workspaces {
             var members = ws.sessionIds.compactMap { byID.removeValue(forKey: $0) }
-            if view.orderBy == .updated {
+            if orderBy == .updated {
                 let blanks = members.filter { isBlank($0) }
                 let normal = members.filter { !isBlank($0) }
                     .sorted { $0.updatedAt > $1.updatedAt }

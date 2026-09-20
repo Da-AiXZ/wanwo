@@ -484,7 +484,7 @@ private struct ReasoningDisclosure: View {
     }
 
     private func toggle() {
-        withAnimation(WOMotion.bezier(duration: WOMotion.durationSlow)) { expanded.toggle() }
+        withAnimation(WOMotion.bezier(duration: WOMotion.t4)) { expanded.toggle() }
     }
 }
 
