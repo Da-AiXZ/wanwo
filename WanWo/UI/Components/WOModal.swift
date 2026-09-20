@@ -46,30 +46,36 @@ public struct WOModal<Content: View, Footer: View>: View {
                         content()
                     } else {
                         VStack(alignment: .leading, spacing: 0) {
-                            // header pad 22 14 12 24（右 14 小——关闭钮自带命中区）
-                            HStack(spacing: 8) {
+                            // header：标题居中（用户裁定 2026-09-20：弹窗文字居中于卡）
+                            // + X 恒右上（命中区自带）
+                            ZStack {
                                 Text(title)
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundColor(WOAlias.labelPrimary)
-                                Spacer(minLength: 0)
-                                Button { onClose() } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .frame(width: 28, height: 28)
-                                        .background(RoundedRectangle(cornerRadius: 8)
-                                            .fill(WOAlias.interactiveBgHover))
-                                        .foregroundColor(WOAlias.labelSecondary)
+                                    .frame(maxWidth: .infinity)
+                                HStack {
+                                    Spacer(minLength: 0)
+                                    Button { onClose() } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .frame(width: 28, height: 28)
+                                            .background(RoundedRectangle(cornerRadius: 8)
+                                                .fill(WOAlias.interactiveBgHover))
+                                            .foregroundColor(WOAlias.labelSecondary)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
-                            .padding(.top, 22).padding(.bottom, 12)
+                            .padding(.top, 20).padding(.bottom, 12)
                             .padding(.leading, 24).padding(.trailing, 14)
 
                             if let description {
-                                // description/body 共享 332px 内容列（24 侧 pad）
+                                // description 居中（332px 内容列，24 侧 pad）
                                 Text(description)
                                     .font(.system(size: 14))
                                     .foregroundColor(WOAlias.labelPrimary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity)
                                     .padding(.horizontal, 24)
                             }
                             content()

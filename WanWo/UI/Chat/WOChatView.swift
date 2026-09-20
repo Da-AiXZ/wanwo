@@ -86,6 +86,18 @@ struct WOChatView: View {
                 // 降级横幅恒可见（hero 也显）——VM 装配失败（无端点/Key 不可读）
                 // 时 loop=nil、send 静默 no-op，横幅是唯一解释（2026-09-20 真机
                 // 反馈"发不了消息"根因：横幅原来在消息列表里，hero 态被整块隐藏）。
+                if viewModel.phase == .loading {
+                    // 装配期可见态（内核冷启动可达数十秒）——否则发送钮灰着
+                    // 像坏了一样（真机反馈"点了没反应"的等待期形态）。
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在准备模型…")
+                            .font(.system(size: 12))
+                            .foregroundColor(WOAlias.labelTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 6)
+                }
                 if let banner = viewModel.resumeBanner {
                     degradationBanner(banner)
                 }
@@ -189,7 +201,9 @@ struct WOChatView: View {
         } else {
             // digest-H 文案清单：hero「描述你想要构建的内容…」/ 会话「发消息或做任务…」。
             WOComposer(viewModel: viewModel,
-                       placeholder: heroMode ? "描述你想要构建的内容…" : "发消息或做任务…",
+                       placeholder: heroMode
+                            ? "描述你想要构建的内容… / 调用指令 @ 文件或对话"
+                            : "发消息或做任务… / 调用指令 @ 文件或对话",
                        degraded: !viewModel.isModelReady)
         }
     }
@@ -593,14 +607,14 @@ struct WOChatHero: View {
     // MARK: - 品牌头（digest-H hero：logo 40 + 「万我」26）
 
     private var headerBlock: some View {
+        // digest-H hero：星形 logo 34px + 「万我」26px/500/tracking -0.4（无副标题——
+        // 原型无此行，自创件撤除）
         VStack(spacing: 14) {
-            WOFishLogo.logo(size: 40)
+            WOFishLogo.logo(size: 34)
             Text("万我")
-                .font(.system(size: 26, weight: .semibold))
+                .font(.system(size: 26, weight: .medium))
+                .tracking(-0.4)
                 .foregroundColor(WOAlias.labelPrimary)
-            Text("告诉我要做什么，我来在你的 iPad 上完成")
-                .font(.system(size: 13))
-                .foregroundColor(WOAlias.labelTertiary)
         }
     }
 
@@ -638,15 +652,15 @@ struct WOChatHero: View {
                 Image(systemName: "folder")
                     .font(.system(size: 12))
                 Text(featured?.title ?? "选择工作区")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
             }
             .foregroundColor(featured == nil ? WOAlias.labelSecondary : WOAlias.labelPrimary)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+            .frame(height: 28) // ws-chip：28px 高 / r16 / 13px/500（digest-H）
+            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
             .overlay(RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
         }
@@ -669,15 +683,15 @@ struct WOChatHero: View {
                 Image(systemName: "shield.lefthalf.filled")
                     .font(.system(size: 12))
                 Text(currentPermissionLabel)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
             }
             .foregroundColor(WOAlias.labelSecondary)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
             .overlay(RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
         }
@@ -732,7 +746,7 @@ struct WOChatHero: View {
             .frame(maxWidth: 620)
         } else {
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("描述你想要构建的内容…",
+                TextField("描述你想要构建的内容… / 调用指令 @ 文件或对话",
                           text: $heroDraft,
                           axis: .vertical)
                     .font(.system(size: 14))

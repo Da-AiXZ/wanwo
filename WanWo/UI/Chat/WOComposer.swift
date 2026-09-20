@@ -29,7 +29,7 @@ struct WOComposer: View {
     @ObservedObject var viewModel: ChatViewModel
     /// 占位文案（digest-H 文案清单：会话中「发消息或做任务…」；hero 变体
     /// 「描述你想要构建的内容…」由宿主传入）。
-    var placeholder: String = "发消息或做任务…"
+    var placeholder: String = "发消息或做任务… / 调用指令 @ 文件或对话"
 
     /// 模型面降级（VM.isModelReady == false：装配失败无 loop，send 静默
     /// no-op）——发送钮诚实禁用，原因由宿主的降级横幅呈现。
@@ -61,7 +61,9 @@ struct WOComposer: View {
 
             TextField(placeholder, text: $viewModel.draft, axis: .vertical)
                 .font(.system(size: 14))
-                .lineLimit(1...8)
+                .lineSpacing(10) // 14px/24px 行高（digest-H textarea 规格）
+                .tint(WOAlias.stateBusinessPrimary) // caret 蓝
+                .lineLimit(1...7) // max-height 168px ≈ 7×24px
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
                 .padding(.bottom, 6)

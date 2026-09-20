@@ -27,12 +27,23 @@ struct ProvidersView: View {
     @ObservedObject var environment: AppEnvironment
     @ObservedObject private var store: EndpointStore
 
-    @State private var showingAddSheet = false
     /// 【批3 B1】BYOK 首跑引导确认态（UserDefaults 持久；万我无统一设置域
     /// → 键直接落 UserDefaults.standard，迁移至 config 域随报告登记）。
     @AppStorage("wanwo.settings.byokOnboardingConfirmed")
     private var byokOnboardingConfirmed = false
-    @State private var showingOnboarding = false
+    /// 单一 sheet 槽（同节点多 .sheet 在 iOS16 呈现层互踩：编辑页被引导页
+    /// 顶掉/呈现损坏崩溃——2026-09-20 真机 .ips SIGABRT 实证路径）。
+    private enum ActiveSheet: Identifiable {
+        case onboarding, add, edit(EndpointConfig)
+        var id: String {
+            switch self {
+            case .onboarding: return "onboarding"
+            case .add: return "add"
+            case .edit(let e): return e.id
+            }
+        }
+    }
+    @State private var activeSheet: ActiveSheet?
     /// 【批3 B3】删除确认 Modal 状态。
     @State private var pendingDelete: EndpointConfig?
     @State private var showingDeleteDialog = false
@@ -50,7 +61,7 @@ struct ProvidersView: View {
             // （面板 / RootView detail）下均可见可用（与 EventStreamView 同案）。
             Section {
                 Button {
-                    showingAddSheet = true
+                    activeSheet = .add
                 } label: {
                     Label("添加端点", systemImage: "plus.circle.fill")
                 }
@@ -82,7 +93,7 @@ struct ProvidersView: View {
         // EventStreamView 一致性方案。
         .toolbar {
             Button {
-                showingAddSheet = true
+                activeSheet = .add
             } label: {
                 Image(systemName: "plus")
             }
@@ -92,21 +103,28 @@ struct ProvidersView: View {
         // DeepSeek 端点恒存在（EndpointStore init）→「无已配置 provider」口径
         // = 无凭据端点（gate 纯函数 EndpointStore.byokOnboardingNeeded）。
         .onAppear {
-            if EndpointStore.byokOnboardingNeeded(
+            if activeSheet == nil, EndpointStore.byokOnboardingNeeded(
                 confirmed: byokOnboardingConfirmed,
                 endpointsWithCredential: credentialCount) {
-                showingOnboarding = true
+                activeSheet = .onboarding
             }
         }
-        .sheet(isPresented: $showingOnboarding, onDismiss: {
-            // 「稍后配置」与保存同路落确认态（dsh onboardingLater 结束引导
-            // 语义；确认态持久——下次打开不再弹）。
+        .sheet(item: $activeSheet, onDismiss: {
+            // 任何 provider 表单路径收尾都落确认态（引导只在"从未配置过凭据"
+            // 时自动弹；落确认后不再自动弹——dsh onboardingLater 结束引导语义）。
             byokOnboardingConfirmed = true
-        }) {
-            EndpointEditSheet(store: store, endpoint: nil,
-                              credentialOnly: true,
-                              cancelLabel: "稍后配置",
-                              submitLabel: "保存")
+        }) { sheet in
+            switch sheet {
+            case .onboarding:
+                EndpointEditSheet(store: store, endpoint: nil,
+                                  credentialOnly: true,
+                                  cancelLabel: "稍后配置",
+                                  submitLabel: "保存")
+            case .add:
+                EndpointEditSheet(store: store, endpoint: nil)
+            case .edit(let endpoint):
+                EndpointEditSheet(store: store, endpoint: endpoint)
+            }
         }
         // 【批3 B3】删除确认 Modal（两版描述——有凭证/无凭证；原行卡直删
         // 撤除）。
@@ -129,15 +147,7 @@ struct ProvidersView: View {
             Text(ProvidersView.deleteMessage(for: endpoint,
                                              hasCredential: hasCredential(endpoint)))
         }
-        .sheet(isPresented: $showingAddSheet) {
-            EndpointEditSheet(store: store, endpoint: nil)
-        }
-        .sheet(item: $editingEndpoint) { endpoint in
-            EndpointEditSheet(store: store, endpoint: endpoint)
-        }
     }
-
-    @State private var editingEndpoint: EndpointConfig?
 
     // MARK: - 【批3 B1/B2/B3】辅助
 
@@ -177,7 +187,7 @@ struct ProvidersView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("编辑") { editingEndpoint = endpoint }
+                Button("编辑") { activeSheet = .edit(endpoint) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 Button("删除", role: .destructive) {

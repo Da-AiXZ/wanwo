@@ -77,9 +77,11 @@ final class WOWorkspaceViewStore: ObservableObject {
     func setGroupBy(_ v: WOGroupBy) { groupByRaw = v.rawValue }
     func setOrderBy(_ v: WOOrderBy) { orderByRaw = v.rawValue }
 
-    /// dsh actions.setGroupExpanded——显式写展开态（旧侧栏 :972 同语义）
+    /// dsh actions.setGroupExpanded——显式写展开态。账本语义：集合内 = 显式收起
+    /// （isExpanded = !contains，默认展开）。expanded=true → 移出集合，false → 写入。
+    /// （旧实现两语义互反 → 收起点击恒 no-op——2026-09-20 真机反馈"收不起来"根因。）
     func setGroupExpanded(_ key: String, _ expanded: Bool) {
-        if expanded { groupExpansion.insert(key) } else { groupExpansion.remove(key) }
+        if expanded { groupExpansion.remove(key) } else { groupExpansion.insert(key) }
     }
     /// 展开态查询：账本无记录 = 展开（dsh 默认展开；折叠是显式动作）
     func isExpanded(_ key: String) -> Bool { !groupExpansion.contains(key) }

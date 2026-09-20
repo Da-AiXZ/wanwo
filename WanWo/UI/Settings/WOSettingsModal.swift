@@ -68,15 +68,23 @@ struct WOSettingsModal: View {
     var body: some View {
         GeometryReader { geo in
             let cardSize = Self.cardSize(in: geo.size)
+            // 恒挂载 + 单动画驱动（opacity/scale 全部绑同一个 isPresented 值）：
+            // transition 条件挂载的双驱动在 removal 上"页面瞬消+动画残留"不衔接
+            //（2026-09-20 真机反馈残影第二轮实锤后的确定性改法——出入场同一曲线，
+            // 视觉上开关衔接连贯）。
             ZStack {
-                if isPresented {
-                    maskLayer
-                    cardLayer(size: cardSize)
-                }
+                maskLayer
+                    .opacity(isPresented ? 1 : 0)
+                    .allowsHitTesting(isPresented)
+                cardLayer(size: cardSize)
+                    .opacity(isPresented ? 1 : 0)
+                    .scaleEffect(isPresented ? 1 : 0.96)
+                    .offset(y: isPresented ? 0 : 10)
+                    .allowsHitTesting(isPresented)
             }
-            // 出入场动画全部内嵌在各自 transition（.animation 自驱动）——
-            // 容器级 woMotion 与 transition 内嵌动画双驱动会在 removal 上叠加，
-            // 造成关闭残影（2026-09-20 真机反馈）。
+            .animation(reduceMotion
+                ? .easeOut(duration: 0.15)
+                : WOMotion.standardSpring, value: isPresented)
         }
         .onAppear { adoptIncomingPane(force: false) }
         .onChange(of: isPresented) { presented in
@@ -107,7 +115,6 @@ struct WOSettingsModal: View {
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { isPresented = false }
-            .transition(.opacity.animation(.easeOut(duration: 0.15)))
             .accessibilityLabel("关闭设置")
             .accessibilityAddTraits(.isButton)
     }
@@ -140,21 +147,6 @@ struct WOSettingsModal: View {
             .strokeBorder(WOElevation.prominent.strokeColor,
                           lineWidth: WOElevation.prominent.strokeWidth))
         .transition(cardTransition)
-    }
-
-    /// 出入场：遮罩淡入之上，卡片自 translateY(10px) scale(.96) spring 弹入；
-    /// 出场加速淡出（R2 出场 ×0.65）；reduceMotion 降级纯淡入淡出。
-    private var cardTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity.animation(.easeOut(duration: 0.15))
-        }
-        return .asymmetric(
-            insertion: .modifier(
-                active: WOShift(x: 0, y: 10, opacity: 0),
-                identity: WOShift(x: 0, y: 0, opacity: 1))
-                .combined(with: .scale(scale: 0.96))
-                .animation(WOMotion.standardSpring),
-            removal: .opacity.animation(.easeOut(duration: 0.15)))
     }
 
     // MARK: - 左 nav（188px；cell 40px 高 active #EBEEF2）
