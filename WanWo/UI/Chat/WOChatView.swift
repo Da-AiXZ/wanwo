@@ -73,6 +73,7 @@ struct WOChatView: View {
     /// 直注实例（测试/宿主复用；与 environment 版共一存储）。
     init(viewModel: ChatViewModel) {
         self.sessionId = ""
+        self.consumesPendingImages = false
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
