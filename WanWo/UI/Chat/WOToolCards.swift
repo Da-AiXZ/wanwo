@@ -16,6 +16,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// 工具卡全型（对应旧 ChatView.ToolCardView；消费 ConversationProjector.ToolCard）。
 struct WOToolCard: View {
@@ -167,21 +168,45 @@ struct WOToolCard: View {
     /// wanwo:// 资源链接行（旧 ToolCardView.wanwoLinks 消费端 1:1；点击打开
     /// 右栏浏览器页签——WanwoURLRouter R4 接线，本环先显可点行）。
     private func wanwoResourceRow(_ link: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "link")
-                .font(.system(size: 11))
-                .foregroundColor(WOAlias.stateBusinessPrimary)
-            Text(link)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(WOAlias.stateBusinessPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
+        // 旧件 wanwoResourceRow 1:1（ChatView:1013）：点击 → WanwoURLRouter.handle
+        // → WORootFrame 消费 → 右栏对应页签（browser/files）；可解析宿主文件
+        // → 64×48 缩略（WanwoURLSchemeHandler.resolveWanwoURL，会话桶锚=本卡）。
+        Button {
+            if let url = URL(string: link) {
+                WanwoURLRouter.shared.handle(url)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if let url = URL(string: link),
+                   let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url, sessionID: sessionID),
+                   let thumb = UIImage(contentsOfFile: fileURL.path) {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 48)
+                        .clipped()
+                        .cornerRadius(4)
+                } else {
+                    Image(systemName: "link")
+                        .font(.system(size: 11))
+                        .foregroundColor(WOAlias.stateBusinessPrimary)
+                }
+                Text(link)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(WOAlias.stateBusinessPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10))
+                    .foregroundColor(WOAlias.labelTertiary)
+            }
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 6).fill(WOAlias.bgLayer2))
+            .contentShape(Rectangle())
         }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(WOAlias.bgLayer2))
-        .contentShape(Rectangle())
-        // R4 接线点：WanwoURLRouter.open(link) → 右栏浏览器页签。
+        .buttonStyle(.plain)
+        .accessibilityLabel("打开资源 \(link)")
     }
 
     /// wanwo:// 链接提取（旧 ToolCardView.wanwoLinks 纯函数 1:1——首个空白字符止）。

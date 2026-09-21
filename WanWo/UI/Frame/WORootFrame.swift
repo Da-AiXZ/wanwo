@@ -70,6 +70,23 @@ struct WORootFrame: View {
         } message: {
             Text(environment.sessionActionError ?? "")
         }
+        // wanwo:// 深链消费（旧 RootView 1:1）：资源 URL → 右栏对应页签；
+        // 权限路由 → 设置·权限分区；外部 scheme 入口同路。
+        .onOpenURL { url in
+            WanwoURLRouter.shared.handle(url)
+        }
+        .onReceive(WanwoURLRouter.shared.$pendingPermissionsRoute) { pending in
+            if pending {
+                environment.openSettings(at: .permissions)
+                WanwoURLRouter.shared.consumePermissionsRoute()
+            }
+        }
+        .onReceive(WanwoURLRouter.shared.$pendingResourceURL) { url in
+            guard let url else { return }
+            workspaceSidebar.isExpanded = true
+            workspaceSidebar.openResourceURL(url)
+            WanwoURLRouter.shared.consumeResourceURL()
+        }
         .onAppear { syncSessionSelection() }
         .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
         // 反向同步：引擎缝开的会话（hero 工作区胶囊 startSession / 深链）写

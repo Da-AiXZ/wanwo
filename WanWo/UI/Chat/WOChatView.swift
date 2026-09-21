@@ -52,6 +52,8 @@ struct WOChatView: View {
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
     /// "Modifying state during view update" 违例）。
     private let consumesPendingImages: Bool
+    /// hero 一步发送旗（onAppear 摘旗；引擎装配完成（.idle）即自动提交首条）。
+    @State private var autoSubmitArmed = false
 
     init(environment: AppEnvironment, sessionId: String) {
         self.sessionId = sessionId
@@ -156,9 +158,23 @@ struct WOChatView: View {
                 viewModel.addDraftImages(environment.pendingDraftImages)
                 environment.pendingDraftImages = []
             }
+            // 一步发送摘旗（引擎就绪时由 phase onChange 触发提交）。
+            if environment.pendingAutoSubmit {
+                autoSubmitArmed = true
+                environment.pendingAutoSubmit = false
+            }
         }
         .onDisappear { viewModel.close() }
-        .onChange(of: viewModel.phase) { _ in seedEntry() }
+        .onChange(of: viewModel.phase) { _ in
+            seedEntry()
+            // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
+            // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
+            if autoSubmitArmed, viewModel.phase == .idle,
+               !viewModel.isDraftEmpty {
+                autoSubmitArmed = false
+                viewModel.send()
+            }
+        }
         .onChange(of: viewModel.draft) { newValue in
             // 选中写回后不再被 "/" 前缀拉起；清空草稿即复位（可再次唤起）。
             if newValue.isEmpty || !newValue.hasPrefix("/") {
@@ -186,10 +202,26 @@ struct WOChatView: View {
 
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）
 
-    /// 当前会话所属工作区标题（registry 账本反查；blank 会话 hero chip 用）。
+    /// 当前会话所属工作区（registry 账本反查；blank 会话 hero chip 用）。
+    private var sessionWorkspaceID: String? {
+        environment.workspaceRegistry.list()
+            .first { $0.sessionIds.contains(sessionId) }?.id
+    }
+
     private var sessionWorkspaceTitle: String? {
         environment.workspaceRegistry.list()
             .first { $0.sessionIds.contains(sessionId) }?.title
+    }
+
+    /// 全部工作区（chip 菜单数据源）。
+    private var sessionWorkspaces: [WorkspaceRecord] {
+        environment.workspaceRegistry.list()
+    }
+
+    /// chip 选择（dsh navigation：打开所选工作区复用/新建的会话；本会话
+    /// 未发消息则留在原地藏于列表，草稿留在本会话缓存不丢）。
+    private func pickSessionWorkspace(_ ws: WorkspaceRecord) {
+        environment.workspaceNavigator.startSession(ws.id)
     }
 
     private var heroHeader: some View {
@@ -203,22 +235,42 @@ struct WOChatView: View {
                     .tracking(-0.4)
                     .foregroundColor(WOAlias.labelPrimary)
             }
-            // blank 会话 hero 的工作区 chip（dsh EmptyHero 同款形态；只读
-            // 标签非按钮——会话中途换工作区无引擎缝，登记 §十六）。
-            if let wsTitle = sessionWorkspaceTitle {
+            // blank 会话 hero 的工作区 chip = 真·工作区选择器（dsh EmptyHero：
+            // 未发消息前项目可换——选择= startSession(所选) 打开那边复用/新建
+            // 的会话，本项目 dsh navigation.ts 语义；发过消息 cwd 定格后本
+            // header 不再渲染，不存在"锁死"面）。无归属会话（历史孤儿）也走
+            // 此选择器补选。添加工作区入口在侧栏/无项目空态（本菜单不重复）。
+            Menu {
+                if sessionWorkspaces.isEmpty {
+                    Text("暂无工作区")
+                }
+                ForEach(sessionWorkspaces) { ws in
+                    if ws.id == sessionWorkspaceID {
+                        Button { pickSessionWorkspace(ws) } label: {
+                            Label(ws.title, systemImage: "checkmark")
+                        }
+                    } else {
+                        Button(ws.title) { pickSessionWorkspace(ws) }
+                    }
+                }
+            } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "folder")
                         .font(.system(size: 12))
-                    Text(wsTitle)
+                    Text(sessionWorkspaceID != nil
+                         ? (sessionWorkspaceTitle ?? "选择工作区")
+                         : "选择工作区")
                         .font(.system(size: 13, weight: .medium))
                         .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
                 }
                 .foregroundColor(WOAlias.labelPrimary)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
-                .padding(.top, 14)
             }
+            .padding(.top, 14)
         }
         .frame(maxWidth: 620, alignment: .leading)
         .padding(.bottom, 26) // digest-H hero-composer-slot margin-top 26px
@@ -773,22 +825,32 @@ struct WOChatHero: View {
                     Label("添加工作区…", systemImage: "plus")
                 }
             } label: {
-                // dock 对齐原型（.tools=[+] + .trailing=[model-pill, ring, send]；
-                // 权限挡位未选工作区时隐藏=permWrap display:none）。整卡 =
-                // 工作区 picker 触发器（dsh workspaceTrigger 语义，+ 同属触发面）。
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(WOAlias.labelSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(Circle().fill(WOAlias.bgModulePlatform))
-                        .overlay(Circle().strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
-                    Spacer(minLength: 0)
-                    Text("选择模型")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(WOAlias.labelSecondary)
-                    heroRing
-                    heroSendIcon(active: false)
+                // 整卡=工作区 picker 触发面（dsh workspaceTrigger）。结构对齐
+                // 原型：占位输入区（readOnly「选择一个工作区开始」）+ dock 行
+                //（.tools=[+] / .trailing=[model-pill, ring, send]；权限挡位
+                // 未选工作区时隐藏=permWrap display:none）。
+                //（批4 回归修复：曾把占位输入区整块弄丢只剩 dock 行。）
+                VStack(spacing: 0) {
+                    Text("选择一个工作区开始")
+                        .font(.system(size: 14))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.leading, 4)
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(WOAlias.labelSecondary)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(WOAlias.bgModulePlatform))
+                            .overlay(Circle().strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+                        Spacer(minLength: 0)
+                        Text("选择模型")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(WOAlias.labelSecondary)
+                        heroRing
+                        heroSendIcon(active: false)
+                    }
+                    .padding(.top, 6)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -975,6 +1037,9 @@ struct WOChatHero: View {
     private func sendHeroDraft() {
         guard let featured else { return }
         migrateHeroDraft()
+        // 一步发送（原型 hero 发送=建会话并立即提交首条消息）：
+        // 草稿/图片已交接，会话打开后由 WOChatView 在引擎就绪时自动提交。
+        environment.pendingAutoSubmit = true
         environment.workspaceNavigator.startSession(featured.id)
     }
 

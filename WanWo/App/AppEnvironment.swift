@@ -102,6 +102,9 @@ final class AppEnvironment: ObservableObject {
     /// hero 附件交接缝（预会话图片 → 新会话 VM.addDraftImages；非发布——
     /// 交接读一次即清，消费方 WOChatView.onAppear）。
     var pendingDraftImages: [ChatViewModel.DraftImageCandidate] = []
+    /// hero 一步发送旗（原型 hero 发送=建会话并立即提交首条消息——打字→发送
+    /// →用户消息直达；非发布，消费方 WOChatView 读后清）。
+    var pendingAutoSubmit = false
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
