@@ -350,7 +350,6 @@ struct WOWorkspaceBrowser: View {
         VStack(alignment: .leading, spacing: 2) {
             WOProjectRow(
                 label: group.label,
-                isUngrouped: group.key == WOWorkspaceTreeDeriver.ungroupedKey,
                 expanded: expanded,
                 onToggle: { viewStore.setGroupExpanded(group.key, !expanded) },
                 onCreate: group.workspaceId != nil ? { onNewSession(group.workspaceId) } : nil,
@@ -672,7 +671,7 @@ struct WOAddWorkspaceModal: View {
                 .onSubmit { if canCreate { onCreate() } }
 
             if duplicate {
-                Text("已存在同名工作区，换个名字吧。")
+                Text("已存在名为「\(addWorkspaceName)」的工作区。") // dsh conflict.named
                     .font(.system(size: 12))
                     .foregroundColor(WOAlias.stateWarnLabel)
             }

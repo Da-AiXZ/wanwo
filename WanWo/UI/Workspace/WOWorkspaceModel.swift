@@ -91,8 +91,6 @@ final class WOWorkspaceViewStore: ObservableObject {
 
 enum WOWorkspaceTreeDeriver {
 
-    static let ungroupedKey = ""
-
     /// 会话可见性（dsh tree.ts sessionVisible 1:1）：未归档且（非 blank 或当前）。
     /// blank（新会话未发消息）只在它是当前会话时可见——切走即从列表消失（用户
     /// 指令 2026-09-21：按 dsh 源码语义；骨架期"恒显"偏离随打开信号成真而退役）。

@@ -105,6 +105,9 @@ final class AppEnvironment: ObservableObject {
     /// hero 一步发送旗（原型 hero 发送=建会话并立即提交首条消息——打字→发送
     /// →用户消息直达；非发布，消费方 WOChatView 读后清）。
     var pendingAutoSubmit = false
+    /// 新会话挂组 toast（digest-H「已挂到工作区「X」」；消费方 WORootFrame
+    /// 底部 overlay，WOToast onDone 清）。
+    @Published var attachToast: String?
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流
     /// （diag/trace，logOnly 不进模型上下文）——用户一个窗口看全貌。
@@ -532,6 +535,8 @@ final class AppEnvironment: ObservableObject {
             return nil
         }
         sessionsRevision += 1
+        // 新会话挂组 toast（digest-H 文案；仅新建发射——复用既有 blank 不打扰）。
+        attachToast = "已挂到工作区「\(ws.title)」"
         return summary
     }
 

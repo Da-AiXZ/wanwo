@@ -126,6 +126,16 @@ struct WORootFrame: View {
         )
         .overlay { renameModal }
         .overlay { deleteModal }
+        // 新会话挂组 toast（digest-H 文案「已挂到工作区「X」」；发射点=
+        // AppEnvironment.createSession(inWorkspace:) 挂成功处）。
+        .overlay(alignment: .bottom) {
+            if let toast = environment.attachToast {
+                WOToast(text: toast, icon: Image(systemName: "checkmark.circle"),
+                        onDone: { environment.attachToast = nil })
+                    .padding(.bottom, 96)
+                    .zIndex(90)
+            }
+        }
     }
 
     /// 会话锚点同步：右栏页签（终端/文件/审查/侧聊/轨迹）以旧 selection 为数据锚，
@@ -327,6 +337,7 @@ struct WORootFrame: View {
         switch target {
         case .session(let id, _):
             appState.sessionRemoved(id)
+            appState.purgeDraft(for: id) // 草稿持久键随会话清除（防 UserDefaults 孤儿）
             Task { await environment.deleteSession(id: id) }
         case .workspace(let id, _):
             _ = try? environment.workspaceRegistry.delete(id)

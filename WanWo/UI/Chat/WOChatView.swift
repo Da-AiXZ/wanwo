@@ -123,6 +123,15 @@ struct WOChatView: View {
                 if let banner = viewModel.resumeBanner {
                     degradationBanner(banner)
                 }
+                if !heroMode {
+                    // digest-H .composer::before：36px 白色渐隐带（内容滚过
+                    // composer 上缘时淡出；allowsHitTesting 关不挡触控）。
+                    LinearGradient(colors: [.clear, WOAlias.bgBase],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 36)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                }
                 composerSeat
                     .background(composerChromeMeter)
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
@@ -422,6 +431,13 @@ struct WOChatView: View {
 
     @ViewBuilder
     private func entryNode(_ node: ConversationProjector.DisplayNode) -> some View {
+        // 消息=mInL/mInR（.55s 横移+缩放）；工具卡=fadeUp（.4s 自下 8px，
+        // 无缩放——digest-H 工具卡 fadeUp .4s 独立曲线，与消息入场分立）。
+        let isTool: Bool = {
+            if case .plain(let bubble) = node,
+               case .tool = bubble.kind { return true }
+            return false
+        }()
         let fromRight: Bool = {
             if case .plain(let bubble) = node,
                case .user = bubble.kind { return true }
@@ -429,6 +445,14 @@ struct WOChatView: View {
         }()
         if animatedIDs.contains(node.id) {
             nodeBody(node)
+        } else if isTool {
+            nodeBody(node)
+                .modifier(WOEntryModifier(
+                    offset: CGSize(width: 0, height: 8),
+                    scale: 1,
+                    duration: 0.4,
+                    animate: true,
+                    onSeen: { animatedIDs.insert(node.id) }))
         } else {
             nodeBody(node)
                 .modifier(WOEntryModifier(
@@ -476,12 +500,13 @@ struct WOChatView: View {
                             .font(.system(size: 14))
                             .foregroundColor(WOAlias.labelPrimary)
                             .multilineTextAlignment(.trailing)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
+                            .textSelection(.enabled) // 复制途径（原型 act-btn 复制的触屏形）
                             // 原型规格：圆角 22 + 蓝软底（WOSpecific.bubble =
                             // deepseek-50）深字（2026-09-21 真机反馈：白字是
                             // 深色按钮的对比色误用——浅蓝软底配主文字色）。
-                            .frame(maxWidth: 520, alignment: .trailing)
+                            // 原型 max-width=min(70.2%·content-w,82%)——620 列
+                            // 的 82% ≈ 508（固定 520 退役）。
+                            .frame(maxWidth: 508, alignment: .trailing)
                             .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
                     }
                 }
@@ -635,7 +660,8 @@ private struct ReasoningDisclosure: View {
     }
 
     private func toggle() {
-        withAnimation(WOMotion.bezier(duration: WOMotion.t4)) { expanded.toggle() }
+        // 原型思考披露展开 .32s（grid-template-rows 0fr↔1fr .32s；t4 0.5s 退役）。
+        withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
     }
 }
 

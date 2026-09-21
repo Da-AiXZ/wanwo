@@ -207,15 +207,15 @@ private struct FlowChips: View {
     }
 }
 
-/// 简单换行 chips 布局（iOS 16 无 Layout 协议依赖的极简版：纵向排+横向包齐用
-/// HStack 换行近似——选项通常 2-4 个，够用；片 2 用菜单组件替换）
+/// 流式换行 chips（dsh QuestionFlow 选项横向流式布局；iOS16 Layout 协议——
+/// 2026-09-21 纵向堆叠极简版退役）。
 private struct FlexibleChips: View {
     let items: [(String, String?)]
     let isSelected: (String) -> Bool
     let onTap: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HFlowLayout(spacing: 6) {
             ForEach(items, id: \.0) { item in
                 Button {
                     onTap(item.0)
@@ -232,7 +232,6 @@ private struct FlexibleChips: View {
                                     .foregroundColor(WOAlias.labelTertiary)
                             }
                         }
-                        Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
@@ -243,6 +242,45 @@ private struct FlexibleChips: View {
                 .buttonStyle(.plain)
                 .woPressable()
             }
+        }
+    }
+}
+
+/// 单行流式布局（iOS16 Layout 协议：放不下即换行；行内 leading 对齐）。
+private struct HFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: maxWidth == .infinity ? x : maxWidth,
+                      height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y),
+                          anchor: .topLeading,
+                          proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
         }
     }
 }

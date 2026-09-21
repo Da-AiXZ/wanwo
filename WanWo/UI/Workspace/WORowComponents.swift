@@ -12,7 +12,6 @@ import SwiftUI
 
 struct WOProjectRow: View {
     let label: String
-    let isUngrouped: Bool
     let expanded: Bool
     let onToggle: () -> Void
     var onCreate: (() -> Void)? = nil
@@ -21,12 +20,11 @@ struct WOProjectRow: View {
 
     @State private var hovering = false
 
-    init(label: String, isUngrouped: Bool = false, expanded: Bool,
+    init(label: String, expanded: Bool,
          onToggle: @escaping () -> Void,
          onCreate: (() -> Void)? = nil,
          onRename: (() -> Void)? = nil, onDelete: (() -> Void)? = nil) {
         self.label = label
-        self.isUngrouped = isUngrouped
         self.expanded = expanded
         self.onToggle = onToggle
         self.onCreate = onCreate
@@ -43,7 +41,7 @@ struct WOProjectRow: View {
                                  ? WOAlias.stateBusinessPrimary
                                  : WOAlias.labelTertiary)
 
-            Text(isUngrouped ? "未分组" : label)
+            Text(label)
                 .font(.system(size: 14))
                 .lineLimit(1)
                 .truncationMode(.tail)
