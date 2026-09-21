@@ -514,7 +514,12 @@ final class AppEnvironment: ObservableObject {
     func createSession(inWorkspace workspaceID: String) async -> SessionSummary? {
         guard let ws = workspaceRegistry.get(workspaceID) else { return nil }
         selectedWorkspaceID = workspaceID
-        return await createSession(cwd: ws.path, workspaceID: workspaceID)
+        guard let summary = await createSession(cwd: ws.path, workspaceID: workspaceID)
+        else { return nil }
+        // 新会话挂组 toast（digest-H「已挂到工作区「X」」；仅新建发射——
+        // 复用既有 blank 不打扰）。
+        attachToast = "已挂到工作区「\(ws.title)」"
+        return summary
     }
 
     /// 创建核心（cwd + 工作区 attach——无游离会话语义收口）。
@@ -535,8 +540,6 @@ final class AppEnvironment: ObservableObject {
             return nil
         }
         sessionsRevision += 1
-        // 新会话挂组 toast（digest-H 文案；仅新建发射——复用既有 blank 不打扰）。
-        attachToast = "已挂到工作区「\(ws.title)」"
         return summary
     }
 
