@@ -60,12 +60,10 @@ struct ContextMeterView: View {
         return min(100, Int(raw.rounded()))
     }
 
+    /// 环填充色（真 dsh ContextMeter.tsx：单色 currentColor，无琥珀/红分档——
+    /// 原型 .ctx-ring.warn 类未被启用；2026-09-21 旧 accentColor 退役）。
     private var percentColor: Color {
-        if pressure.contextWindow > 0,
-           Double(pressure.usedTokens) / Double(pressure.contextWindow) >= 1 {
-            return .red
-        }
-        return .accentColor
+        WOAlias.stateBusinessPrimary
     }
 
     /// 分解段（dsh :98-104：宽 = percent × tokens/total；零宽段剔除；
@@ -89,7 +87,7 @@ struct ContextMeterView: View {
         } label: {
             ZStack {
                 Circle()
-                    .stroke(Color(.tertiarySystemFill), lineWidth: 2)
+                    .stroke(WOAlias.borderL2, lineWidth: 2)
                 Circle()
                     .trim(from: 0, to: max(0.01, Double(percent) / 100))
                     .stroke(percentColor, lineWidth: 2)
@@ -118,11 +116,11 @@ struct ContextMeterView: View {
                 // 分解条（dsh :142-150 .bar：track 底 + 按 percent×构成比例着色段）。
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color(.tertiarySystemFill))
+                        Capsule().fill(WOAlias.bgLayer2)
                         HStack(spacing: 1) {
                             ForEach(segments, id: \.id) { segment in
                                 Rectangle()
-                                    .fill(segment.color ?? Color(.systemGray4))
+                                    .fill(segment.color ?? WOAlias.bgLayer3)
                                     .frame(width: max(0, geo.size.width
                                             * segment.width / 100))
                             }

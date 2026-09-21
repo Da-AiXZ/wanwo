@@ -77,6 +77,9 @@ struct ModelSelectView: View {
         return order.map { (name: $0, endpoints: buckets[$0] ?? []) }
     }
 
+    /// 悬停底色（指针场景增强；触屏无 hover——触屏纪律）。
+    @State private var hovering = false
+
     var body: some View {
         Menu {
             // 根菜单行 1 =「模型」→ 钻入 provider 分组列表（dsh :250-253；
@@ -135,25 +138,26 @@ struct ModelSelectView: View {
                 }
             }
         } label: {
-            // 触发器（dsh :235-237）：模型名（effort 以说明字号随行）+ chevron。
+            // 触发器（原型 .model-pill：透明平底 28px r8、13px/500、chevron 12、
+            // hover 显灰；effort 只在菜单内呈现——pill 只显模型名；
+            // 2026-09-21 旧 UI 灰底胶囊皮退役）。
             HStack(spacing: 4) {
-                Text(current?.model ?? "未选择模型")
-                    .font(.caption)
+                Text(current?.model ?? "选择模型")
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
-                if currentEffort != nil {
-                    Text(effortLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
                 Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9, weight: .semibold))
             }
+            .foregroundColor(WOAlias.labelSecondary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color(.tertiarySystemFill))
-            .clipShape(Capsule())
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(hovering ? WOAlias.interactiveBgHover : .clear))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .woPressable()
+        .onHover { hovering = $0 }
         .accessibilityLabel("选择模型，当前 \(current?.model ?? "未选择")，推理等级 \(effortLabel)")
     }
 }

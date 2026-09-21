@@ -37,22 +37,23 @@ struct RiskConfirmationView: View {
             // 标题 + 关闭（dsh closeLabel 位）。
             HStack(alignment: .top) {
                 Text(title)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(WOAlias.labelPrimary)
                 Spacer()
                 Button {
                     acknowledged = false
                     onCancel()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(WOAlias.labelSecondary)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .accessibilityLabel("关闭")
             }
             Text(description)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14))
+                .foregroundColor(WOAlias.labelSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             // 风险知悉勾选（dsh acknowledged；未勾选 → 确认恒禁用）。
             Button {
@@ -60,35 +61,58 @@ struct RiskConfirmationView: View {
             } label: {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: acknowledged ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(acknowledged ? Color.accentColor : Color.secondary)
+                        .foregroundColor(acknowledged
+                                         ? WOAlias.stateBusinessPrimary
+                                         : WOAlias.labelTertiary)
                     Text(acknowledgeLabel)
-                        .font(.footnote)
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 14))
+                        .foregroundColor(WOAlias.labelPrimary)
                         .multilineTextAlignment(.leading)
                 }
             }
             .buttonStyle(.plain)
             HStack(spacing: 10) {
                 Spacer()
-                Button(cancelLabel) {
+                Button {
                     acknowledged = false
                     onCancel()
+                } label: {
+                    Text(cancelLabel)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(WOAlias.labelPrimary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10)
+                            .fill(WOAlias.bgLayer3)
+                            .overlay(RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5)))
                 }
-                .buttonStyle(.bordered)
-                Button(confirmLabel) {
+                .buttonStyle(.plain)
+                .woPressable()
+                Button {
                     guard acknowledged, !extraDisabled else { return }
                     onConfirm()
+                } label: {
+                    Text(confirmLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10)
+                            .fill(acknowledged ? WOAlias.stateErrorPrimary
+                                               : WOAlias.buttonPrimaryDimmed))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .buttonStyle(.plain)
+                .woPressable()
                 .disabled(!acknowledged || extraDisabled)
             }
         }
         .padding(18)
         .frame(maxWidth: 420)
-        .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .background(RoundedRectangle(cornerRadius: 24).fill(WOAlias.bgLayer2))
+        .overlay(RoundedRectangle(cornerRadius: 24)
+            .strokeBorder(WOAlias.borderL4, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.05), radius: 20)
         .padding(24)
     }
 }

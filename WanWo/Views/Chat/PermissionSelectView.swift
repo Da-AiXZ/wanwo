@@ -31,6 +31,8 @@ struct PermissionSelectView: View {
     let onCommand: (String, _ confirmed: Bool) -> Void
 
     @State private var open = false
+    /// 悬停底色（指针场景增强；触屏无 hover——触屏纪律）。
+    @State private var hovering = false
     @State private var confirmingFullAccess = false
     @State private var acknowledged = false
 
@@ -64,22 +66,30 @@ struct PermissionSelectView: View {
                 }
             }
         } label: {
-            // 触发器（:158-175）：挡位图标 + 挡位名 + chevron。
-            HStack(spacing: 4) {
+            // 触发器（原型 .perm-pill：透明平底 28px r8、13px、gap6、svg14、
+            // 悬停显灰——touch 无 hover 仅增强；full 挡整颗 danger 红；
+            // 2026-09-21 旧 UI 灰底胶囊皮退役）。
+            HStack(spacing: 6) {
                 Image(systemName: currentOption?.glyph ?? "shield")
-                    .font(.footnote)
+                    .font(.system(size: 14))
                 Text(currentOption?.label ?? currentPreset)
-                    .font(.footnote)
+                    .font(.system(size: 13))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9, weight: .semibold))
             }
+            .foregroundColor(currentPreset == "danger-full-access"
+                             ? WOAlias.stateErrorPrimary
+                             : WOAlias.labelSecondary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color(.tertiarySystemFill))
-            .clipShape(Capsule())
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(hovering ? WOAlias.interactiveBgHover : .clear))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .woPressable()
+        .onHover { hovering = $0 }
         .disabled(busy)
         .accessibilityLabel("访问模式，当前：\(currentOption?.label ?? currentPreset)")
         // Full access 前置风险确认（dsh :129-133 特判 + :177-190 确认面）。
