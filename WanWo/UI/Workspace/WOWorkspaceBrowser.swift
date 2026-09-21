@@ -671,7 +671,7 @@ struct WOAddWorkspaceModal: View {
                 .onSubmit { if canCreate { onCreate() } }
 
             if duplicate {
-                Text("已存在名为「\(addWorkspaceName)」的工作区。") // dsh conflict.named
+                Text("已存在名为「\(name)」的工作区。") // dsh conflict.named
                     .font(.system(size: 12))
                     .foregroundColor(WOAlias.stateWarnLabel)
             }
