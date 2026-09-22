@@ -65,7 +65,7 @@ struct WOChatView: View {
     /// 场景 present 静默失败，旧 ChatView T2.8 件2 同源教训）。
     @State private var messagePreview: ImageAttachmentRef?
     /// 批A2：会话内 hero 芯片菜单的「添加工作区…」流（与 WOChatHero 共用
-    /// WOAddWorkspaceFlowCard——命名卡 → adopt → startSession）。
+    /// 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal）呈现位。
     @State private var showAddFlow = false
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
@@ -152,18 +152,10 @@ struct WOChatView: View {
                 }
                 composerSeat
                     .background(composerChromeMeter)
-                    // 批C3：渐隐罩悬浮 composer 上缘向上凸 36pt（原型
-                    // .composer::before；transparent→bgBase 向下变白，不挡触控）。
-                    .overlay(alignment: .top) {
-                        if !heroMode {
-                            LinearGradient(colors: [.clear, WOAlias.bgBase],
-                                           startPoint: .top, endPoint: .bottom)
-                                .frame(height: 36)
-                                .frame(maxWidth: .infinity)
-                                .offset(y: -36)
-                                .allowsHitTesting(false)
-                        }
-                    }
+                // 批10：composer 上方悬浮渐隐罩退役（2026-09-22 真机反馈"渐变
+                // 太奇怪、就做一小块"——620 宽 36pt 罩在卡上缘呈灰斑；用户令
+                // 删除不再做渐变。内容贴卡上缘自然裁切，滚动跟随由 autoFollow
+                // 闸门+列表底部 padding 保证）。
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
                 WOStatsDock(line: viewModel.statsLine)
                 if heroMode {
@@ -193,12 +185,15 @@ struct WOChatView: View {
             if slashMenuOpen {
                 slashMenu
             }
-            // 批A2：添加工作区流卡（与 WOChatHero 同一组件，蒙层 + 命名卡
-            // 覆盖呈现；zIndex 压过 slash 菜单）。
-            if showAddFlow {
-                WOAddWorkspaceFlowCard(isPresented: $showAddFlow)
-                    .zIndex(3)
+        }
+        // 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal，三入口同一
+        // 形态——透明蒙层+380 卡+重名门控；adopt 后 startSession 打开新工作区
+        // 会话，语义沿原 FlowCard）。
+        .fullScreenCover(isPresented: $showAddFlow) {
+            WOAddWorkspaceModal(isPresented: $showAddFlow) { workspace in
+                environment.workspaceNavigator.startSession(workspace.id)
             }
+            .presentationBackground(.clear) // 批10：透出当前页（白卡轻影浮层）
         }
         // digest-H composer hero→dock FLIP 的近似：.42s out 曲线驱动布局迁移；
         // reduceMotion 由 woMotion 降级 0.15s easeOut（R6 拍板）。
@@ -337,9 +332,11 @@ struct WOChatView: View {
     private var heroHeader: some View {
         // digest-H hero：星形 logo 34 + 「万我」26/500/-0.4 同行左对齐
         //（2026-09-21 真机对照原型：竖排居中形态与原型不符）。
+        // 批10：logo 换原型四芒星（WOBrandMark，用户令）；芯片行对齐原型
+        // .hero-capsules（padding-left 20 / margin-top 4）。
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                WOFishLogo.logo(size: 34)
+                WOBrandMark.mark(size: 34)
                 Text("万我")
                     .font(.system(size: 26, weight: .medium))
                     .tracking(-0.4)
@@ -350,7 +347,7 @@ struct WOChatView: View {
             // 的会话，本项目 dsh navigation.ts 语义；发过消息 cwd 定格后本
             // header 不再渲染，不存在"锁死"面）。无归属会话（历史孤儿）也走
             // 此选择器补选。批A2：菜单尾部补「添加工作区…」，与 WOChatHero
-            // 共用 WOAddWorkspaceFlowCard（adopt → startSession 同一路径）。
+            // 批10：尾部补「添加工作区…」，呈现走统一弹窗 WOAddWorkspaceModal。
             Menu {
                 if sessionWorkspaces.isEmpty {
                     Text("暂无工作区")
@@ -387,7 +384,10 @@ struct WOChatView: View {
                 .frame(height: 28)
                 .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer3))
             }
-            .padding(.top, 14)
+            // 批10：对齐原型 .hero-capsules（padding-left 20 / margin-top 4，
+            // 原值 14 偏大；logo/芯片/卡左缘关系=0/20/0 与原型一致）。
+            .padding(.leading, 20)
+            .padding(.top, 4)
         }
         .frame(maxWidth: 620, alignment: .leading)
         .padding(.bottom, 26) // digest-H hero-composer-slot margin-top 26px
@@ -426,6 +426,8 @@ struct WOChatView: View {
         } else {
             // 批C2：composer hero/dock 统一 620 限宽水平居中（IMG_2386 通栏
             // 扁条根治；发送后同卡随 .woMotion 落底，宽度不变=FLIP 平移）。
+            // 批10：dock 态水平外距 14 由宿主补（原在 WOComposer 组件内，
+            // 迁出后 hero 态卡背景可与品牌行左缘对齐，见 WOComposer 头注）。
             // digest-H 文案清单：hero「描述你想要构建的内容…」/ 会话「发消息或做任务…」。
             WOComposer(viewModel: viewModel,
                        placeholder: heroMode
@@ -433,6 +435,7 @@ struct WOChatView: View {
                             : "发消息或做任务… / 调用指令 @ 文件或对话",
                        degraded: !viewModel.isModelReady)
                 .frame(maxWidth: 620)
+                .padding(.horizontal, heroMode ? 0 : 14)
         }
     }
 
@@ -811,100 +814,6 @@ private struct WOChatViewportKey: PreferenceKey {
     }
 }
 
-// MARK: - 添加工作区流卡（批A2 抽取自 WOChatHero.addFlowCard，唯一路径）
-//
-//  WOAddWorkspaceFlowCard —— 命名卡 → WorkspaceAdoption.adopt →
-//  workspaceNavigator.startSession（WOChatHero :1148-1163 原语义 1:1 迁入）：
-//  WOChatHero（无会话空态）与会话内 hero 芯片菜单（批A2）共用本卡，不复制
-//  第二份逻辑。视觉逐值保持原卡（蒙层点外关 / 320 宽 / 取消+确认钮）。
-
-private struct WOAddWorkspaceFlowCard: View {
-    @EnvironmentObject private var environment: AppEnvironment
-    /// 呈现绑定（宿主持有 showAddFlow 态；本卡只写 false 关闭）。
-    @Binding var isPresented: Bool
-    /// 采纳成功回调（宿主同步自身状态：WOChatHero 刷新列表/交接草稿/置选中；
-    /// startSession 由本卡统一在回调之后发起——草稿交接必须先于新会话打开）。
-    var onAdopted: (WorkspaceRecord) -> Void = { _ in }
-
-    @State private var newWorkspaceName = ""
-    @State private var addFlowError: String?
-
-    var body: some View {
-        ZStack {
-            WOAlias.bgMask1
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { isPresented = false }
-            VStack(alignment: .leading, spacing: 14) {
-                Text("添加工作区")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(WOAlias.labelPrimary)
-                TextField("输入项目名", text: $newWorkspaceName)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
-                    .onSubmit { confirmAddWorkspace() }
-                if let error = addFlowError {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundColor(WOAlias.stateErrorPrimary)
-                }
-                HStack(spacing: 10) {
-                    Spacer(minLength: 0)
-                    Button {
-                        isPresented = false
-                    } label: {
-                        Text("取消")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(WOAlias.labelPrimary)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        confirmAddWorkspace()
-                    } label: {
-                        Text("确认")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(WOStatic.neutral00)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 10)
-                                .fill(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty
-                                      ? WOAlias.buttonPrimaryDimmed
-                                      : WOAlias.buttonPrimaryFill))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            .padding(18)
-            .frame(width: 320)
-            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer2))
-            .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
-        }
-    }
-
-    /// 确认：adopt 成功 → 关卡清态 → 宿主回调 → startSession 打开新工作区
-    /// 会话；失败呈现错误（原 WOChatHero.confirmAddWorkspace 同序）。
-    private func confirmAddWorkspace() {
-        let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        do {
-            let workspace = try WorkspaceAdoption.adopt(name: name, environment: environment)
-            isPresented = false
-            newWorkspaceName = ""
-            addFlowError = nil
-            onAdopted(workspace)
-            environment.workspaceNavigator.startSession(workspace.id)
-        } catch {
-            addFlowError = (error as? LocalizedError)?.errorDescription ?? "创建失败，请重试"
-        }
-    }
-}
-
 /// 思考披露（ReasoningRowView 语义简化版——旧件 98 行的折叠交互+WO 壳；
 /// running 态扫光/尾行跟随的完整版随流式块呈现，此处为 settled 全文折叠）。
 private struct ReasoningDisclosure: View {
@@ -980,8 +889,8 @@ struct WOChatHero: View {
     @State private var selectedWorkspaceID: String?
     @State private var heroDraft = ""
     @State private var showAddFlow = false
-    /// 批A2：命名/错误态随添加流下沉 WOAddWorkspaceFlowCard（本结构只持
-    /// showAddFlow 呈现位——与 WOChatHero 菜单共用同一卡片组件）。
+    /// 批10：呈现位下沉统一弹窗 WOAddWorkspaceModal（与 WOChatHero/侧栏
+    /// 三入口共用同一组件）。
     @State private var confirmingFullAccess = false
     /// hero 附件（预会话草稿图；发送/选定工作区时经 pendingDraftImages 缝
     /// 交接进新会话 VM——"hero + 钮承接"补缝，2026-09-21 用户令）。
@@ -1023,13 +932,15 @@ struct WOChatHero: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 24)
-            if showAddFlow {
-                // 批A2：添加流卡共用件（命名卡 → adopt → startSession）；
-                // 采纳回调=原 confirmAddWorkspace 的宿主侧三步（刷新列表/
-                // 草稿交接/置选中），startSession 由卡内统一发起。
-                WOAddWorkspaceFlowCard(isPresented: $showAddFlow,
-                                       onAdopted: handleAdoptedWorkspace)
+        }
+        // 批10：添加工作区统一弹窗（共用件，三入口同一形态）；采纳回调=
+        // 原宿主侧三步（刷新列表/草稿交接/置选中）+ startSession 打开。
+        .fullScreenCover(isPresented: $showAddFlow) {
+            WOAddWorkspaceModal(isPresented: $showAddFlow) { workspace in
+                handleAdoptedWorkspace(workspace)
+                environment.workspaceNavigator.startSession(workspace.id)
             }
+            .presentationBackground(.clear) // 批10：透出当前页（白卡轻影浮层）
         }
         .onAppear {
             refreshWorkspaces()
@@ -1075,7 +986,7 @@ struct WOChatHero: View {
 
     private var headerBlock: some View {
         HStack(spacing: 10) {
-            WOFishLogo.logo(size: 34)
+            WOBrandMark.mark(size: 34) // 批10：品牌标统一换原型四芒星
             Text("万我")
                 .font(.system(size: 26, weight: .medium))
                 .tracking(-0.4)
@@ -1092,6 +1003,8 @@ struct WOChatHero: View {
             workspaceChip
             Spacer(minLength: 0)
         }
+        // 批10：对齐原型 .hero-capsules padding-left 20（与会话内 heroHeader 同款）
+        .padding(.leading, 20)
     }
 
     /// WorkspaceChip：SwiftUI Menu（旧件 :320 同法）；当前项勾选 + 尾部「添加工作区…」。
@@ -1382,7 +1295,7 @@ struct WOChatHero: View {
 
     // MARK: - 添加流（命名卡 → adopt → startSession；唯一路径，旧件 :505 同语义）
     //
-    //  批A2：卡片与确认逻辑下沉共用件 WOAddWorkspaceFlowCard（本文件，
+    //  批10：卡片与确认逻辑下沉统一弹窗 WOAddWorkspaceModal（本文件，
     //  会话内 hero 芯片菜单同用）。宿主侧仅保留采纳成功后的三步同步——
     //  时序保持原 confirmAddWorkspace：刷新列表 → 草稿交接（先于
     //  startSession，新会话 onAppear 才消费得到）→ 置选中。

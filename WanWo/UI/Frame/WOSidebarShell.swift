@@ -119,7 +119,7 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
                 // 品牌钮兼新会话快捷键（aria=新建会话）
                 Button(action: onNewSession) {
                     HStack(spacing: 8) {
-                        WOFishLogo.logo(size: 24)
+                        WOBrandMark.mark(size: 24) // 批10：品牌标统一换原型四芒星
                         Text("万我")
                             .font(.system(size: 18, weight: .semibold))
                             .kerning(0.72) // letter-spacing 0.04em
@@ -191,7 +191,7 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
             // toggle：折叠 hover 鲸鱼标↔panel 图标互换（figma sidebar-hover flow）
             Button(action: onToggleSidebar) {
                 ZStack {
-                    WOFishLogo.logo(size: 24)
+                    WOBrandMark.mark(size: 24) // 批10：品牌标统一换原型四芒星
                         .opacity(toggleHovering ? 0 : 1)
                     Image(systemName: "sidebar.left")
                         .font(.system(size: 15, weight: .medium))

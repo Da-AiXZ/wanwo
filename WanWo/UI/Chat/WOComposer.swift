@@ -75,12 +75,14 @@ struct WOComposer: View {
             toolRow
         }
         // digest-H composer 卡体：白底 r22 + soft 阴影 + 0.5px l3 发丝描边。
+        // 批10：水平外距(.horizontal 14)迁出组件由宿主承担——hero 态卡背景
+        // 与品牌行左缘对齐（原型卡=content-w 顶格，原 14pt 内缩造成 IMG_2402
+        // 的"logo/芯片/卡不对齐"）；dock 态由宿主补 14（贴边呼吸不变）。
         .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
         .overlay(RoundedRectangle(cornerRadius: 22)
             .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
         .shadow(color: .black.opacity(0.03), radius: 24)
-        .padding(.horizontal, 14)
         .padding(.top, 8)
         .padding(.bottom, 16)
         // 待发送图原图预览（dsh ImageLightbox 形态；根因修复沿旧 ChatView

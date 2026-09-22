@@ -42,6 +42,25 @@ public enum WOFishLogo {
     }
 }
 
+// MARK: - 星形品牌标（批10：原型 wanwo-ui-prototype.html hero h-fish 34px
+// 四芒星 path 1:1——「M12 2L14.6 9.4L22 12L14.6 14.6L12 22L9.4 14.6L2 12L9.4
+// 9.4L12 2Z」，viewBox 24×24；2026-09-22 用户令：鱼标换原型星形）
+
+public enum WOBrandMark {
+    public static let viewBox = CGSize(width: 24, height: 24)
+    public static let path =
+        "M12 2L14.6 9.4L22 12L14.6 14.6L12 22L9.4 14.6L2 12L9.4 9.4L12 2Z"
+
+    /// 星形标（fill=currentColor 染色；正方形 viewBox——width=height=size）。
+    public static func mark(size: CGFloat = 24) -> some View {
+        Path { p in
+            p.addPath(PathGenerator.path(from: path, scaledTo: viewBox))
+        }
+        .fill(Color.primary)
+        .frame(width: size, height: size)
+    }
+}
+
 /// dsh 矢量 path → SwiftUI Path 的最小解析（M/L/H/V/C/Z 子集；Figma 导出值 1:1）
 enum PathGenerator {
     static func path(from d: String, scaledTo viewbox: CGSize) -> Path {

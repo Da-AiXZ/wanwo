@@ -95,8 +95,10 @@ final class WorkspaceRightSidebarModel: ObservableObject {
 
     @Published private(set) var tabs: [WorkspaceTab] = []
     @Published var activeTabID: String?
-    /// 侧栏展开/收起（收起 = 整栏不渲染，主对话区全宽）。
-    @Published var isExpanded = true
+    /// 侧栏展开/收起（收起 = 布局列宽 0 让位主区，右栏本体保持挂载——批9B）。
+    /// 批10：初值 true→false（2026-09-22 用户令：右栏只听手动开关与 AI 资源
+    /// 打开（wanwo:// 深链），启动不再自动开）。
+    @Published var isExpanded = false
     /// 全屏（右侧栏占满整窗；【批3 C⑤】左栏由 RootView 条件根布局隐藏）。
     @Published var isFullscreen = false
     /// 「审查」入口可见性（仅 git 仓库项目——工作区宿主根存在 .git 目录时）。

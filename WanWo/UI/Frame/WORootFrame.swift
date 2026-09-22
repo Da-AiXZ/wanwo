@@ -98,9 +98,7 @@ struct WORootFrame: View {
         // 批B3：全屏真值桥接——单一真值 = workspaceSidebar.isFullscreen（右栏
         // topBar 全屏/关闭钮写它，语义不变）；layout.fullscreen 只是布局投影，
         // 仅由本桥与 syncSessionSelection 的无会话复位写入，不独立记账。
-        .onChange(of: workspaceSidebar.isFullscreen) { full in
-            layout.setFullscreen(full && appState.currentSessionId != nil)
-        }
+        // 批10：桥与投影整体退役——fullscreen 直连入参（见 mainFrame）。
     }
 
     private var mainFrame: some View {
@@ -108,6 +106,10 @@ struct WORootFrame: View {
         return WOAppFrame(
             store: layout,
             hasDetailsSession: snapshot.hasDetails,
+            // 批10：全屏真值直连（layout.fullscreen 投影退役）——折算门同步
+            // 改 hasSession（blank 会话期间全屏不隐身）。
+            hasSession: appState.currentSessionId != nil,
+            fullscreen: workspaceSidebar.isFullscreen,
             sidebar: { collapsed, width in
                 sidebarRegion(snapshot: snapshot, collapsed: collapsed, width: width)
             },
@@ -148,8 +150,8 @@ struct WORootFrame: View {
         }
         if appState.currentSessionId == nil {
             layout.closeDetails()
-            // 批B3：无会话即右栏不挂载，全屏投影必须复位（防主区被 0 宽锁死）。
-            layout.setFullscreen(false)
+            // 批10：layout.fullscreen 投影已退役（真值=model.isFullscreen 直连
+            // WOAppFrame 入参，无投影即无脱钩，无需复位）。
         }
         workspaceSidebar.reconcileForSelection(sessionID: appState.currentSessionId)
     }

@@ -13,6 +13,12 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     @ObservedObject public var store: WOLayoutStore
     /// 会话是否「非 blank」——false/nil 时详情栏不算开（blank 会话不算，手册 571 行）
     public var hasDetailsSession: Bool
+    /// 当前是否选中会话（批10：全屏折算门从 hasDetailsSession 改为本值——
+    /// blank 会话期间全屏不再"隐身/复活挤压"；右栏本体由 detailsRegion 恒挂载）
+    public var hasSession: Bool
+    /// 右栏全屏（批10：真值=WorkspaceRightSidebarModel.isFullscreen 直连，
+    /// layout.fullscreen 投影退役——双记账脱钩是"点开变全屏还关不掉"根因）
+    public var fullscreen: Bool
     @ViewBuilder public var sidebar: (_ collapsed: Bool, _ width: CGFloat) -> Sidebar
     @ViewBuilder public var center: () -> Center
     @ViewBuilder public var details: () -> Details
@@ -23,12 +29,15 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     @State private var lastHadSession = false
 
     public init(store: WOLayoutStore, hasDetailsSession: Bool = false,
+                hasSession: Bool = false, fullscreen: Bool = false,
                 @ViewBuilder sidebar: @escaping (_ collapsed: Bool, _ width: CGFloat) -> Sidebar,
                 @ViewBuilder center: @escaping () -> Center,
                 @ViewBuilder details: @escaping () -> Details,
                 overlayLayer: @escaping () -> Overlay = { EmptyView() }) {
         self.store = store
         self.hasDetailsSession = hasDetailsSession
+        self.hasSession = hasSession
+        self.fullscreen = fullscreen
         self.sidebar = sidebar
         self.center = center
         self.details = details
@@ -63,7 +72,10 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                     viewport: viewport,
                     sidebar: sidebarCollapsed ? WOLayoutContract.sidebarCollapsed : sidebarPreference,
                     details: effectiveDetails)
-                if store.fullscreen, hasDetailsSession {
+                // 批10：折算门从 hasDetailsSession 改为 hasSession（blank 会话
+                // 期间全屏不再"隐身/复活挤压"——真机反馈 2026-09-22）；真值=
+                // 入参 fullscreen（WorkspaceRightSidebarModel.isFullscreen 直连）。
+                if fullscreen, hasSession {
                     c = WOColumns(sidebar: c.sidebar,
                                   center: 0,
                                   details: max(0, viewport - c.sidebar))

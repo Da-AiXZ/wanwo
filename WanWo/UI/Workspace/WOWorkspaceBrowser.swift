@@ -84,10 +84,8 @@ struct WOWorkspaceBrowser: View {
     @State private var searchDebounceTask: Task<Void, Never>? = nil
     /// 视图选项菜单开合。
     /// R3b 添加工作区流（原型 wsModal：名称输入 + 创建；重名/空值门控）。
+    /// 批10：状态机下沉共用件 WOAddWorkspaceModal（三入口统一，见组件头注）。
     @State private var addWorkspaceOpen = false
-    @State private var addWorkspaceName = ""
-    @State private var addWorkspaceBusy = false
-    @State private var addWorkspaceError: String? = nil
     /// 创建成功/拖拽失败 toast（原型「工作区「X」已创建」）。
     @State private var toastText: String? = nil
 
@@ -131,15 +129,14 @@ struct WOWorkspaceBrowser: View {
                     .zIndex(80)
             }
         }
-        .fullScreenCover(isPresented: $addWorkspaceOpen, onDismiss: { resetAddWorkspace() }) {
-            WOAddWorkspaceModal(
-                name: $addWorkspaceName,
-                busy: addWorkspaceBusy,
-                duplicate: addWorkspaceNameDuplicate,
-                error: addWorkspaceError,
-                canCreate: canCommitAddWorkspace,
-                onCancel: { addWorkspaceOpen = false },
-                onCreate: { commitAddWorkspace() })
+        .fullScreenCover(isPresented: $addWorkspaceOpen) {
+            // 批10：共用自包含 Modal（蒙层透明化+状态机内聚）；侧栏语义=
+            // 只建不开（toast 告知；打开由对话域入口的 onAdopted 决定）。
+            WOAddWorkspaceModal(isPresented: $addWorkspaceOpen) { workspace in
+                appState.bumpSessionList()
+                toastText = "工作区「\(workspace.title)」已创建"
+            }
+            .presentationBackground(.clear) // 批10：透出当前页（白卡轻影浮层）
         }
     }
 
@@ -595,170 +592,18 @@ struct WOWorkspaceBrowser: View {
         return error.localizedDescription
     }
 
-    // MARK: - 添加工作区流（原型 wsModal → WorkspaceAdoption → registry.create）
-
-    private var addWorkspaceNameTrimmed: String {
-        addWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// 重名门控：与任一既有工作区同名 → 阻止创建并提示
-    /// （registry 幂等会复用同路径实体——门控让用户显式改名的意图可见）。
-    private var addWorkspaceNameDuplicate: Bool {
-        guard !addWorkspaceNameTrimmed.isEmpty else { return false }
-        return snapshot().workspaces.contains { $0.title == addWorkspaceNameTrimmed }
-    }
-
-    /// 空值/重名/进行中门控 → 创建钮 disabled（原型 wsCreate.disabled 语义）。
-    private var canCommitAddWorkspace: Bool {
-        !addWorkspaceNameTrimmed.isEmpty && !addWorkspaceNameDuplicate && !addWorkspaceBusy
-    }
+    // MARK: - 添加工作区流（批10：状态机下沉共用件 WOAddWorkspaceModal，
+    // 本结构只持呈现位 addWorkspaceOpen + 成功 toast；原 name/busy/error/
+    // duplicate/commit 全部随状态机迁入组件。）
 
     private func openAddWorkspace() {
-        addWorkspaceError = nil
-        addWorkspaceName = ""
         addWorkspaceOpen = true
     }
-
-    private func resetAddWorkspace() {
-        addWorkspaceName = ""
-        addWorkspaceBusy = false
-        addWorkspaceError = nil
-    }
-
-    private func commitAddWorkspace() {
-        let name = addWorkspaceNameTrimmed
-        guard canCommitAddWorkspace else { return }
-        addWorkspaceBusy = true
-        addWorkspaceError = nil
-        do {
-            // 建项目目录（幂等）+ registry.create（幂等）——「输入名字即全部」
-            // （与旧侧栏/空态页共用 WorkspaceAdoption；dsh「选择目录就是添加工作区的全部」）。
-            let workspace = try WorkspaceAdoption.adopt(name: name, environment: environment)
-            addWorkspaceBusy = false
-            addWorkspaceOpen = false
-            resetAddWorkspace()
-            appState.bumpSessionList()
-            toastText = "工作区「\(workspace.title)」已创建"
-        } catch {
-            addWorkspaceBusy = false
-            addWorkspaceError = "添加失败：\(error.localizedDescription)"
-        }
-    }
 }
 
-// MARK: - 添加工作区 Modal（原型 wsModal：380px 卡 r24、44px r22 输入、取消/创建）
-
-struct WOAddWorkspaceModal: View {
-    @Binding var name: String
-    let busy: Bool
-    let duplicate: Bool
-    let error: String?
-    let canCreate: Bool
-    let onCancel: () -> Void
-    let onCreate: () -> Void
-
-    @FocusState private var nameFocused: Bool
-    @State private var shown = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(WOAlias.bgMask1)
-                .background(.ultraThinMaterial)
-                .ignoresSafeArea()
-                .onTapGesture { onCancel() }
-
-            card
-                .scaleEffect(reduceMotion ? 1 : (shown ? 1 : 0.96))
-                .offset(y: reduceMotion ? 0 : (shown ? 0 : 10))
-                .opacity(shown ? 1 : 0)
-        }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { nameFocused = true }
-            DispatchQueue.main.async { // 延帧（onAppear 首帧前动画被吞铁律）
-                withAnimation(reduceMotion ? nil : WOMotion.standardSpring) { shown = true }
-            }
-        }
-    }
-
-    private var card: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("添加工作区")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(WOAlias.labelPrimary)
-            Text("给新工作区起个名字，创建后立即可用。")
-                .font(.system(size: 14))
-                .foregroundColor(WOAlias.labelSecondary)
-
-            TextField("工作区名称", text: $name)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .focused($nameFocused)
-                .padding(.horizontal, 16)
-                .frame(height: 44)
-                .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.tip))
-                .overlay(RoundedRectangle(cornerRadius: 22)
-                    .strokeBorder(duplicate ? WOAlias.stateWarnSecondary
-                                            : WOAlias.borderL4, lineWidth: 0.5))
-                .disabled(busy)
-                .onSubmit { if canCreate { onCreate() } }
-
-            if duplicate {
-                Text("已存在名为「\(name)」的工作区。") // dsh conflict.named
-                    .font(.system(size: 12))
-                    .foregroundColor(WOAlias.stateWarnLabel)
-            }
-            if let error {
-                Text(error)
-                    .font(.system(size: 12))
-                    .foregroundColor(WOAlias.stateErrorPrimary)
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    onCancel()
-                } label: {
-                    Text("取消")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(WOAlias.labelPrimary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .background(RoundedRectangle(cornerRadius: 10)
-                            .fill(WOAlias.bgLayer3)
-                            .overlay(RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(WOAlias.borderL3, lineWidth: 0.5)))
-                }
-                .buttonStyle(.plain)
-                .disabled(busy)
-                .woPressable()
-
-                Button {
-                    onCreate()
-                } label: {
-                    Text(busy ? "创建中…" : "创建")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(WOStatic.neutral00)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .background(RoundedRectangle(cornerRadius: 10)
-                            .fill(canCreate ? WOAlias.buttonPrimaryFill
-                                            : WOAlias.buttonPrimaryDimmed))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canCreate)
-                .woPressable()
-            }
-        }
-        .padding(24)
-        .frame(width: min(380, UIScreen.main.bounds.width - 48), alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 24).fill(WOAlias.bgLayer2))
-        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 3)
-        .shadow(color: .black.opacity(0.05), radius: 20, x: 0, y: 0)
-        .overlay(RoundedRectangle(cornerRadius: 24)
-            .strokeBorder(WOAlias.borderL4, lineWidth: 0.5))
-    }
-}
+// MARK: - 添加工作区弹窗已抽为共用件（批10：WanWo/UI/Components/
+// WOAddWorkspaceModal.swift——侧栏 +、空态 hero、会话内 hero 三入口统一；
+// 原内嵌 Modal 体与状态机随之退役。）
 
 // MARK: - 手动排序拖拽修饰（draggable + dropDestination 条件收敛；
 // payload nil = 不挂——iOS 16 触屏长按拖起，旧 SidebarDragModifiers 同款形态）
