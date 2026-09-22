@@ -26,9 +26,11 @@ struct WorkspaceRightSidebarView: View {
             content
         }
         .background(Color(.systemBackground))
-        .frame(maxWidth: model.isFullscreen ? .infinity : WorkspaceRightSidebarModel.expandedWidth,
-               maxHeight: .infinity)
-        .frame(width: model.isFullscreen ? nil : WorkspaceRightSidebarModel.expandedWidth)
+        // 批B3：去自限宽（原 :29-31 的 expandedWidth/isFullscreen 分支）——
+        // 宽度完全交给父级列：常规态=details 契约列宽（400），全屏态=viewport
+        // −sidebar（WOAppFrame 求列折算），本视图只纵向撑满。RootView 旧根
+        // 的外部 .frame(width: expandedWidth) 仍在，旧宿主渲染不受影响。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // 页签随会话切换刷新「审查」入口（git 仓库项目才显示）。
         .onChange(of: environment.selection) { selection in
             model.updateReviewAvailability(sessionID: Self.sessionID(of: selection))

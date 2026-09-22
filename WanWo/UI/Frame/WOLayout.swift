@@ -78,6 +78,9 @@ public final class WOLayoutStore: ObservableObject {
     @Published public private(set) var narrow = false
     /// narrow 态的展开覆盖（宽度偏好不动）
     @Published public private(set) var narrowExpanded = false
+    /// 右栏全屏投影（批B3：单一真值 = WorkspaceRightSidebarModel.isFullscreen，
+    /// 本属性只是布局投影——由 WORootFrame 桥接写入，供列宽折算用，不独立记账）
+    @Published public private(set) var fullscreen = false
 
     public init() {}
 
@@ -119,5 +122,12 @@ public final class WOLayoutStore: ObservableObject {
 
     public func closeDetails() {
         details = 0
+    }
+
+    /// 全屏投影写入（批B3：幂等；调用方 = WORootFrame 的 isFullscreen 桥
+    /// 与无会话复位。列宽折算在 WOAppFrame 求列处消费本值）。
+    public func setFullscreen(_ on: Bool) {
+        guard fullscreen != on else { return }
+        fullscreen = on
     }
 }

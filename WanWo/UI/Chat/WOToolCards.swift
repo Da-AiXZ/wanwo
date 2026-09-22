@@ -55,7 +55,10 @@ struct WOToolCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 行头（恒显；点击切换展开——dsh ToolRow 语义）。
-            Button { expanded.toggle() } label: {
+            // 批C6：裸 toggle 加 0.32s 标准动画（与思考披露同族，WOMotion 域）。
+            Button {
+                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+            } label: {
                 HStack(spacing: 8) {
                     WOStateDot(state: card.isRunning ? .ongoing
                                         : (card.isError ? .error : .done),
@@ -134,6 +137,9 @@ struct WOToolCard: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
+                // 批C6：展开体过渡 = opacity + 垂直微量位移 8pt（思考披露 .32s 同族；
+                // 收起时随 withAnimation 同步播放）。
+                .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         // 琥珀状态行恒显（审批等待/结算——交互态不随折叠消失；dsh statusNote 语义）。

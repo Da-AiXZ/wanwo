@@ -27,6 +27,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
@@ -34,7 +35,23 @@ struct WOChatView: View {
     @EnvironmentObject private var appState: WOAppState
     private let sessionId: String
 
-    /// 简化自动跟随（批 1）：内容变化即滚底；治理=后续批（autoFollow 闸门按 digest-K 6.3#1）。
+    /// 批C1：顶栏右栏开关回调（workspaceSidebar 真值在 WORootFrame，闭包下发；
+    /// nil = 宿主未接（测试/直注实例）→ 顶栏不出开关钮）。
+    var onToggleRightSidebar: (() -> Void)? = nil
+
+    /// 批C4：autoFollow 闸门（digest-K 6.3#1 清偿）——尾部探针可见（用户在
+    /// 底部附近）时内容变化才滚底；探针出上缘（用户在历史区）暂停；探针回
+    /// 视口（滚回底部）自动恢复。批C5-QA 修正：出下缘保持现态（内容增长推挤
+    /// 的瞬间出下缘不构成暂停，跟随中 scrollTo 会拉回）；暂停不再要求拖拽
+    /// 活性（惯性段出界也正确暂停）。
+    @State private var autoFollow = true
+    /// 曾到达底部（批C4-QA 修正：防打开历史会话首帧探针在视口上方被误判暂停
+    /// ——未到过底部前不允许"出上缘暂停"分支生效，打开即滚底）。
+    @State private var hasReachedTail = false
+    @State private var viewportGlobalFrame: CGRect = .zero
+    /// 批C4：顶栏丝线判定（原型 .main-head.scrolled：scrollTop>4）。
+    @State private var headScrolled = false
+    /// 简化自动跟随（批 1）：内容变化即滚底；治理=批C4 autoFollow 闸门。
     @State private var bottomAnchor = "wo-chat-bottom"
     /// 已播过入场动画的节点 id（一次性门；防 LazyVStack 滚动重建重播）。
     @State private var animatedIDs: Set<String> = []
@@ -47,6 +64,9 @@ struct WOChatView: View {
     /// 消息气泡图片原图预览（lightbox 状态上提本层——组件内 cover 在流式重建
     /// 场景 present 静默失败，旧 ChatView T2.8 件2 同源教训）。
     @State private var messagePreview: ImageAttachmentRef?
+    /// 批A2：会话内 hero 芯片菜单的「添加工作区…」流（与 WOChatHero 共用
+    /// WOAddWorkspaceFlowCard——命名卡 → adopt → startSession）。
+    @State private var showAddFlow = false
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
@@ -55,8 +75,10 @@ struct WOChatView: View {
     /// hero 一步发送旗（onAppear 摘旗；引擎装配完成（.idle）即自动提交首条）。
     @State private var autoSubmitArmed = false
 
-    init(environment: AppEnvironment, sessionId: String) {
+    init(environment: AppEnvironment, sessionId: String,
+         onToggleRightSidebar: (() -> Void)? = nil) {
         self.sessionId = sessionId
+        self.onToggleRightSidebar = onToggleRightSidebar
         // dsh 草稿跨切换种子（ConversationSession mount 规则，**只读**——
         // pendingFirstDraft 的消费清理由 onAppear 既有块承担）：会话缓存草稿
         // 优先（blank 会话复用时草稿跟回）；否则用 hero 交接文本。
@@ -75,6 +97,7 @@ struct WOChatView: View {
     /// 直注实例（测试/宿主复用；与 environment 版共一存储）。
     init(viewModel: ChatViewModel) {
         self.sessionId = ""
+        self.onToggleRightSidebar = nil
         self.consumesPendingImages = false
         _viewModel = StateObject(wrappedValue: viewModel)
     }
@@ -94,14 +117,18 @@ struct WOChatView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            // 批C3：对话态消息列表全高（ZStack 底层），composerSeat+StatsDock
+            // 悬浮底部——旧 VStack 渐隐带占位条退役（跟随滞后切边病灶根治）。
+            if !heroMode {
+                messageList
+                    .transition(.opacity)
+            }
+            // 底部座位组（hero 与 dock 共用同一 composerSeat 实例——C2 FLIP
+            // 保持：条件块都位于座位之前的独立槽位，座位跨 heroMode 换相不换
+            // 身份，.woMotion(0.42) 驱动布局迁移）。
             VStack(spacing: 0) {
                 if heroMode {
                     Spacer(minLength: 0)
-                } else {
-                    messageList
-                        .transition(.opacity)
-                }
-                if heroMode {
                     heroHeader
                         .transition(.opacity)
                 }
@@ -123,26 +150,54 @@ struct WOChatView: View {
                 if let banner = viewModel.resumeBanner {
                     degradationBanner(banner)
                 }
-                if !heroMode {
-                    // digest-H .composer::before：36px 白色渐隐带（内容滚过
-                    // composer 上缘时淡出；allowsHitTesting 关不挡触控）。
-                    LinearGradient(colors: [.clear, WOAlias.bgBase],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 36)
-                        .frame(maxWidth: .infinity)
-                        .allowsHitTesting(false)
-                }
                 composerSeat
                     .background(composerChromeMeter)
+                    // 批C3：渐隐罩悬浮 composer 上缘向上凸 36pt（原型
+                    // .composer::before；transparent→bgBase 向下变白，不挡触控）。
+                    .overlay(alignment: .top) {
+                        if !heroMode {
+                            LinearGradient(colors: [.clear, WOAlias.bgBase],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: 36)
+                                .frame(maxWidth: .infinity)
+                                .offset(y: -36)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
                 WOStatsDock(line: viewModel.statsLine)
                 if heroMode {
                     Spacer(minLength: 0)
                 }
             }
+            // 批C1：顶部对话标题栏（悬浮 ZStack top + 44pt 顶部渐隐罩；
+            // heroMode 不渲染——hero 自带品牌头）。
+            if !heroMode {
+                ZStack(alignment: .top) {
+                    LinearGradient(colors: [.clear, WOAlias.bgBase],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 44)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                    conversationHead
+                        // 批C4：顶栏滚动丝线（原型 .main-head.scrolled，scrollTop>4）。
+                        .overlay(alignment: .bottom) {
+                            if headScrolled {
+                                Rectangle().fill(WOAlias.borderL1).frame(height: 0.5)
+                            }
+                        }
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
             // slash 命令菜单（锚定 composer 卡上缘向上生长；zIndex 压过 chrome）。
             if slashMenuOpen {
                 slashMenu
+            }
+            // 批A2：添加工作区流卡（与 WOChatHero 同一组件，蒙层 + 命名卡
+            // 覆盖呈现；zIndex 压过 slash 菜单）。
+            if showAddFlow {
+                WOAddWorkspaceFlowCard(isPresented: $showAddFlow)
+                    .zIndex(3)
             }
         }
         // digest-H composer hero→dock FLIP 的近似：.42s out 曲线驱动布局迁移；
@@ -209,6 +264,52 @@ struct WOChatView: View {
         }
     }
 
+    // MARK: - 顶部对话标题栏（批C1；digest-H .main-head 形态）
+
+    /// 当前会话标题（sessionStore 既有路径；blank/空标题 → digest-H 词汇
+    /// 「新会话」——原型 convTitle 默认值同文）。
+    private var sessionTitle: String {
+        let title = environment.sessionStore.listSessions()
+            .first { $0.id == sessionId }?.title
+        return (title?.isEmpty == false) ? (title ?? "新会话") : "新会话"
+    }
+
+    /// 高 44pt：左=状态点 6pt（原型 .head-title .dot：流式 ongoing 蓝 / 其余
+    /// done 绿）+ 会话标题 14pt/500；右=右栏开关钮（规格=退役的
+    /// reopenSidebarButton：32pt r9 玻璃白 .9+blur；本批两处悬浮双钮已删，
+    /// 本钮是唯一入口）。
+    private var conversationHead: some View {
+        HStack(spacing: 8) {
+            WOStateDot(state: viewModel.phase == .streaming ? .ongoing : .done,
+                       size: 6)
+                .frame(width: 10, height: 10) // ongoing 像素环按 10 网格绘制
+            Text(sessionTitle)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(WOAlias.labelPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if let onToggle = onToggleRightSidebar {
+                Button {
+                    onToggle()
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(WOAlias.labelSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(RoundedRectangle(cornerRadius: 9)
+                            .fill(WOStatic.neutral00.opacity(0.9)))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("展开或收起工作区侧栏")
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）
 
     /// 当前会话所属工作区（registry 账本反查；blank 会话 hero chip 用）。
@@ -248,7 +349,8 @@ struct WOChatView: View {
             // 未发消息前项目可换——选择= startSession(所选) 打开那边复用/新建
             // 的会话，本项目 dsh navigation.ts 语义；发过消息 cwd 定格后本
             // header 不再渲染，不存在"锁死"面）。无归属会话（历史孤儿）也走
-            // 此选择器补选。添加工作区入口在侧栏/无项目空态（本菜单不重复）。
+            // 此选择器补选。批A2：菜单尾部补「添加工作区…」，与 WOChatHero
+            // 共用 WOAddWorkspaceFlowCard（adopt → startSession 同一路径）。
             Menu {
                 if sessionWorkspaces.isEmpty {
                     Text("暂无工作区")
@@ -261,6 +363,12 @@ struct WOChatView: View {
                     } else {
                         Button(ws.title) { pickSessionWorkspace(ws) }
                     }
+                }
+                Divider()
+                Button {
+                    showAddFlow = true
+                } label: {
+                    Label("添加工作区…", systemImage: "plus")
                 }
             } label: {
                 HStack(spacing: 4) {
@@ -316,12 +424,15 @@ struct WOChatView: View {
         } else if let question = viewModel.pendingQuestions.first {
             WOQuestionCard(viewModel: viewModel, pending: question)
         } else {
+            // 批C2：composer hero/dock 统一 620 限宽水平居中（IMG_2386 通栏
+            // 扁条根治；发送后同卡随 .woMotion 落底，宽度不变=FLIP 平移）。
             // digest-H 文案清单：hero「描述你想要构建的内容…」/ 会话「发消息或做任务…」。
             WOComposer(viewModel: viewModel,
                        placeholder: heroMode
                             ? "描述你想要构建的内容… / 调用指令 @ 文件或对话"
                             : "发消息或做任务… / 调用指令 @ 文件或对话",
                        degraded: !viewModel.isModelReady)
+                .frame(maxWidth: 620)
         }
     }
 
@@ -373,6 +484,13 @@ struct WOChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) { // digest-H .msgs gap 16
+                    // 批C4：顶部探针（1pt；global minY 与视口差 >4pt → 顶栏丝线）。
+                    Color.clear
+                        .frame(height: 1)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: WOChatTopProbeKey.self,
+                                                   value: geo.frame(in: .global).minY)
+                        })
                     if viewModel.phase == .loading {
                         HStack {
                             Spacer()
@@ -407,18 +525,65 @@ struct WOChatView: View {
                                 .fill(WOAlias.stateErrorSecondary))
                     }
                     Color.clear.frame(height: 8).id(bottomAnchor)
+                    // 批C4：尾部探针（1pt；视口内可见性 → autoFollow 闸门）。
+                    Color.clear
+                        .frame(height: 1)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: WOChatTailProbeKey.self,
+                                                   value: geo.frame(in: .global).maxY)
+                        })
                 }
+                // 批C3（原型 .msgs padding:14px 16px 140px 折算）：顶部 14+44
+                // （首条消息初始落在顶栏下），底部 140（composer 悬浮区让位）。
                 .padding(.horizontal, 16)
-                .padding(.top, 14)
+                .padding(.top, 58)
+                .padding(.bottom, 140)
             }
+            // 批C4：视口 global 框（探针可见性判定的同一坐标系基准）。
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: WOChatViewportKey.self,
+                                           value: geo.frame(in: .global))
+                }
+            )
+            .onPreferenceChange(WOChatViewportKey.self) { viewportGlobalFrame = $0 }
+            .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
+            .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
             .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
             .onChange(of: viewModel.streamingText) { _ in follow(proxy) }
             .onChange(of: viewModel.streamingReasoning) { _ in follow(proxy) }
         }
     }
 
+    /// 批C4：跟随判定——探针可见（用户在底部附近）才随内容变化滚底。
     private func follow(_ proxy: ScrollViewProxy) {
+        guard autoFollow else { return }
         proxy.scrollTo(bottomAnchor, anchor: .bottom)
+    }
+
+    /// 批C4：探针可见性 → autoFollow（批C4-QA 修正三分支）。
+    private func updateAutoFollow(_ tailY: CGFloat?) {
+        guard let tailY else { return } // LazyVStack 回收探针：保持上次判定
+        if tailY <= viewportGlobalFrame.maxY, tailY >= viewportGlobalFrame.minY {
+            // 探针在视口内（底部附近）：恢复跟随，并登记"曾到达底部"。
+            if !autoFollow { autoFollow = true }
+            if !hasReachedTail { hasReachedTail = true }
+        } else if tailY < viewportGlobalFrame.minY, hasReachedTail, autoFollow {
+            // 探针出上缘（用户在历史区）→ 暂停。不再要求 dragActive——
+            // 极小拖距+长惯性（手指抬起后探针才出界）也正确暂停。
+            autoFollow = false
+        }
+        // 探针出下缘：保持现态——跟随中 scrollTo 会拉回（内容增长推挤的
+        // 瞬间出下缘不构成暂停）；暂停中随内容增长远去，回视口才恢复。
+    }
+
+    /// 批C4：顶部探针 → 顶栏丝线（scrollTop>4；探针初位=视口顶+58 顶部
+    /// padding，滚过 4pt 即丝线现形；探针被 LazyVStack 回收后保持现态——
+    /// 深滚时丝线恒显=正确语义）。
+    private func updateHeadScrolled(_ topY: CGFloat?) {
+        guard let topY else { return }
+        let scrolled = topY < viewportGlobalFrame.minY + 58 - 4
+        if headScrolled != scrolled { headScrolled = scrolled }
     }
 
     // MARK: - 入场门（mInL/mInR；历史种子不播、滚动重建不重播）
@@ -496,18 +661,27 @@ struct WOChatView: View {
                     }
                     if !text.isEmpty {
                         // 纯图片消息不画气泡（dsh MessageItem 语义）。
+                        // 批C5（原型 :180 .user-bubble）：去 textSelection 改
+                        // contextMenu 拷贝；padding 10/16（宽度随字数，蓝底
+                        // 贴字细条根治）；lineSpacing 4（22px 行高目标）；
+                        // 圆角 22 + 蓝软底（WOSpecific.bubble）+ max-width 508
+                        // （620 列的 82%）保持。
                         Text(text)
                             .font(.system(size: 14))
                             .foregroundColor(WOAlias.labelPrimary)
                             .multilineTextAlignment(.trailing)
-                            .textSelection(.enabled) // 复制途径（原型 act-btn 复制的触屏形）
-                            // 原型规格：圆角 22 + 蓝软底（WOSpecific.bubble =
-                            // deepseek-50）深字（2026-09-21 真机反馈：白字是
-                            // 深色按钮的对比色误用——浅蓝软底配主文字色）。
-                            // 原型 max-width=min(70.2%·content-w,82%)——620 列
-                            // 的 82% ≈ 508（固定 520 退役）。
-                            .frame(maxWidth: 508, alignment: .trailing)
+                            .lineSpacing(4)
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
                             .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
+                            .frame(maxWidth: 508, alignment: .trailing)
+                            .contextMenu {
+                                Button {
+                                    UIPasteboard.general.string = text
+                                } label: {
+                                    Label("拷贝", systemImage: "doc.on.doc")
+                                }
+                            }
                     }
                 }
                 .frame(maxWidth: 620, alignment: .trailing)
@@ -614,6 +788,123 @@ private struct WOComposerChromeHeightKey: PreferenceKey {
     }
 }
 
+/// 批C4 滚动探针 PreferenceKeys（Optional 单值——探针被 LazyVStack 回收时
+/// 不再产出，宿主保持上次判定）。
+private struct WOChatTailProbeKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = value ?? nextValue()
+    }
+}
+
+private struct WOChatTopProbeKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = value ?? nextValue()
+    }
+}
+
+private struct WOChatViewportKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
+// MARK: - 添加工作区流卡（批A2 抽取自 WOChatHero.addFlowCard，唯一路径）
+//
+//  WOAddWorkspaceFlowCard —— 命名卡 → WorkspaceAdoption.adopt →
+//  workspaceNavigator.startSession（WOChatHero :1148-1163 原语义 1:1 迁入）：
+//  WOChatHero（无会话空态）与会话内 hero 芯片菜单（批A2）共用本卡，不复制
+//  第二份逻辑。视觉逐值保持原卡（蒙层点外关 / 320 宽 / 取消+确认钮）。
+
+private struct WOAddWorkspaceFlowCard: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    /// 呈现绑定（宿主持有 showAddFlow 态；本卡只写 false 关闭）。
+    @Binding var isPresented: Bool
+    /// 采纳成功回调（宿主同步自身状态：WOChatHero 刷新列表/交接草稿/置选中；
+    /// startSession 由本卡统一在回调之后发起——草稿交接必须先于新会话打开）。
+    var onAdopted: (WorkspaceRecord) -> Void = { _ in }
+
+    @State private var newWorkspaceName = ""
+    @State private var addFlowError: String?
+
+    var body: some View {
+        ZStack {
+            WOAlias.bgMask1
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { isPresented = false }
+            VStack(alignment: .leading, spacing: 14) {
+                Text("添加工作区")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+                TextField("输入项目名", text: $newWorkspaceName)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                    .onSubmit { confirmAddWorkspace() }
+                if let error = addFlowError {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(WOAlias.stateErrorPrimary)
+                }
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    Button {
+                        isPresented = false
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(WOAlias.labelPrimary)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        confirmAddWorkspace()
+                    } label: {
+                        Text("确认")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(WOStatic.neutral00)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 10)
+                                .fill(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty
+                                      ? WOAlias.buttonPrimaryDimmed
+                                      : WOAlias.buttonPrimaryFill))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(18)
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer2))
+            .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+        }
+    }
+
+    /// 确认：adopt 成功 → 关卡清态 → 宿主回调 → startSession 打开新工作区
+    /// 会话；失败呈现错误（原 WOChatHero.confirmAddWorkspace 同序）。
+    private func confirmAddWorkspace() {
+        let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let workspace = try WorkspaceAdoption.adopt(name: name, environment: environment)
+            isPresented = false
+            newWorkspaceName = ""
+            addFlowError = nil
+            onAdopted(workspace)
+            environment.workspaceNavigator.startSession(workspace.id)
+        } catch {
+            addFlowError = (error as? LocalizedError)?.errorDescription ?? "创建失败，请重试"
+        }
+    }
+}
+
 /// 思考披露（ReasoningRowView 语义简化版——旧件 98 行的折叠交互+WO 壳；
 /// running 态扫光/尾行跟随的完整版随流式块呈现，此处为 settled 全文折叠）。
 private struct ReasoningDisclosure: View {
@@ -689,8 +980,8 @@ struct WOChatHero: View {
     @State private var selectedWorkspaceID: String?
     @State private var heroDraft = ""
     @State private var showAddFlow = false
-    @State private var newWorkspaceName = ""
-    @State private var addFlowError: String?
+    /// 批A2：命名/错误态随添加流下沉 WOAddWorkspaceFlowCard（本结构只持
+    /// showAddFlow 呈现位——与 WOChatHero 菜单共用同一卡片组件）。
     @State private var confirmingFullAccess = false
     /// hero 附件（预会话草稿图；发送/选定工作区时经 pendingDraftImages 缝
     /// 交接进新会话 VM——"hero + 钮承接"补缝，2026-09-21 用户令）。
@@ -733,7 +1024,11 @@ struct WOChatHero: View {
             }
             .padding(.horizontal, 24)
             if showAddFlow {
-                addFlowCard
+                // 批A2：添加流卡共用件（命名卡 → adopt → startSession）；
+                // 采纳回调=原 confirmAddWorkspace 的宿主侧三步（刷新列表/
+                // 草稿交接/置选中），startSession 由卡内统一发起。
+                WOAddWorkspaceFlowCard(isPresented: $showAddFlow,
+                                       onAdopted: handleAdoptedWorkspace)
             }
         }
         .onAppear {
@@ -1086,80 +1381,16 @@ struct WOChatHero: View {
     }
 
     // MARK: - 添加流（命名卡 → adopt → startSession；唯一路径，旧件 :505 同语义）
+    //
+    //  批A2：卡片与确认逻辑下沉共用件 WOAddWorkspaceFlowCard（本文件，
+    //  会话内 hero 芯片菜单同用）。宿主侧仅保留采纳成功后的三步同步——
+    //  时序保持原 confirmAddWorkspace：刷新列表 → 草稿交接（先于
+    //  startSession，新会话 onAppear 才消费得到）→ 置选中。
 
-    private var addFlowCard: some View {
-        ZStack {
-            WOAlias.bgMask1
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { showAddFlow = false }
-            VStack(alignment: .leading, spacing: 14) {
-                Text("添加工作区")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(WOAlias.labelPrimary)
-                TextField("输入项目名", text: $newWorkspaceName)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
-                    .onSubmit { confirmAddWorkspace() }
-                if let error = addFlowError {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundColor(WOAlias.stateErrorPrimary)
-                }
-                HStack(spacing: 10) {
-                    Spacer(minLength: 0)
-                    Button {
-                        showAddFlow = false
-                    } label: {
-                        Text("取消")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(WOAlias.labelPrimary)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        confirmAddWorkspace()
-                    } label: {
-                        Text("确认")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(WOStatic.neutral00)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 10)
-                                .fill(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty
-                                      ? WOAlias.buttonPrimaryDimmed
-                                      : WOAlias.buttonPrimaryFill))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            .padding(18)
-            .frame(width: 320)
-            .background(RoundedRectangle(cornerRadius: 16).fill(WOAlias.bgLayer2))
-            .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
-        }
-    }
-
-    private func confirmAddWorkspace() {
-        let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        do {
-            let workspace = try WorkspaceAdoption.adopt(name: name, environment: environment)
-            showAddFlow = false
-            newWorkspaceName = ""
-            addFlowError = nil
-            refreshWorkspaces()
-            migrateHeroDraft()
-            selectedWorkspaceID = workspace.id
-            environment.workspaceNavigator.startSession(workspace.id)
-        } catch {
-            addFlowError = (error as? LocalizedError)?.errorDescription ?? "创建失败，请重试"
-        }
+    private func handleAdoptedWorkspace(_ workspace: WorkspaceRecord) {
+        refreshWorkspaces()
+        migrateHeroDraft()
+        selectedWorkspaceID = workspace.id
     }
 
     private func refreshWorkspaces() {

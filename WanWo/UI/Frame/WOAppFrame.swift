@@ -49,10 +49,27 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     public var body: some View {
         GeometryReader { geo in
             let viewport = geo.size.width
-            let cols = WOColumnSolver.compute(
-                viewport: viewport,
-                sidebar: sidebarCollapsed ? WOLayoutContract.sidebarCollapsed : sidebarPreference,
-                details: effectiveDetails)
+            // 批B3（返工：IIFE 包裹——ViewBuilder 闭包内 var+条件重赋值会被
+            // result builder transform 按 View 约束处理，Void 不满足 View，
+            // 有编译风险；IIFE 让 builder 只看到一个 let 声明）：
+            // 全屏 = 同一面板向左延伸占满（原型 303 行 .app.right-full
+            // .sidebar-right{flex:1} + .right-full .main{flex:0 0 0}）——求列后
+            // 覆写折算，WOColumnSolver.compute 纯函数语义不动（无测试改动）。
+            // 左栏保留（56 轨或偏好宽），主区收 0；hasDetailsSession 门控保留
+            // （blank 会话不算开）。列宽变化仍走 WOColumnsAnimation 0.42s 单
+            // modifier（不换根，GeometryReader 全程在树）。
+            let cols: WOColumns = {
+                var c = WOColumnSolver.compute(
+                    viewport: viewport,
+                    sidebar: sidebarCollapsed ? WOLayoutContract.sidebarCollapsed : sidebarPreference,
+                    details: effectiveDetails)
+                if store.fullscreen, hasDetailsSession {
+                    c = WOColumns(sidebar: c.sidebar,
+                                  center: 0,
+                                  details: max(0, viewport - c.sidebar))
+                }
+                return c
+            }()
 
             colsContent(cols, viewport: viewport)
                 .onAppear { store.setNarrow(viewport < WOLayoutContract.autoCollapseBreakpoint) }
@@ -84,29 +101,10 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 }
 
             // centerCol：min-width 0 column overflow hidden
+            // 批C1：右栏 fab 退役——右栏开关唯一入口=顶栏钮（WOConversationHead）。
             center()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-                .overlay(alignment: .topTrailing) {
-                    // 右栏入口 fab（codex 右上开关语义；digest-H fab 规格：
-                    // 32px 圆角 9 玻璃白 .9+blur）：details 关闭时显示
-                    if cols.details == 0 {
-                        Button { store.openDetails() } label: {
-                            Image(systemName: "sidebar.trailing")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(WOAlias.labelSecondary)
-                                .frame(width: 32, height: 32)
-                                .background(RoundedRectangle(cornerRadius: 9)
-                                    .fill(WOStatic.neutral00.opacity(0.9)))
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-                                .overlay(RoundedRectangle(cornerRadius: 9)
-                                    .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 14)
-                        .padding(.top, 12)
-                    }
-                }
 
             // detailsCol：0 宽不卸载子树；collapsed 去左 1px 缝（手册 581 行）
             details()

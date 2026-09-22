@@ -797,6 +797,12 @@ actor AgentLoop {
             var blocks: [ContentBlock] = []
             var usage: TokenUsage?
             var finish: FinishReason = .stop
+            // 批C7：在途前缀账（dsh assembler.interruptedBlocks 语义）——blockEnd
+            // 仅在 [DONE] 收尾批发射，中断落在流中段时 blocks 恒空，屏面已渲染
+            // 的思考/文字前缀必须由 delta 增量合成落盘。tool-call 在途不合成
+            // （不完整调用进派生历史会破坏请求语义）；重试新 attempt 开新账。
+            var inFlightText: [Int: String] = [:]
+            var inFlightReasoning: [Int: String] = [:]
             do {
                 let stream = adapter.stream(request)
                 for try await chunk in stream {
@@ -805,7 +811,15 @@ actor AgentLoop {
                     try await writer.append(.assistantChunk(turn: turn, step: step, chunk: chunk))
                     deps.callbacks.onLiveChunk(chunk)
                     switch chunk {
-                    case .blockEnd(_, let block): blocks.append(block)
+                    case .blockEnd(let index, let block):
+                        blocks.append(block)
+                        // 批C7：块闭合 → 移出在途账（防 [DONE] 后合并重复计）。
+                        inFlightText.removeValue(forKey: index)
+                        inFlightReasoning.removeValue(forKey: index)
+                    case .textDelta(let index, let text):
+                        inFlightText[index, default: ""] += text
+                    case .reasoningDelta(let index, let text):
+                        inFlightReasoning[index, default: ""] += text
                     case .usage(let reported): usage = reported
                     case .finish(let reason): finish = reason
                     default: break
@@ -816,7 +830,10 @@ actor AgentLoop {
                 if Task.isCancelled || cancelCause != nil {
                     await finalizeInterruptedPrefix(writer: writer, adapter: adapter,
                                                     turn: turn, step: step,
-                                                    blocks: blocks, usage: usage)
+                                                    blocks: blocks,
+                                                    inFlightText: inFlightText,
+                                                    inFlightReasoning: inFlightReasoning,
+                                                    usage: usage)
                     throw CancellationError()
                 }
                 let llmError = (error as? LLMError)
@@ -851,22 +868,36 @@ actor AgentLoop {
             if Task.isCancelled || cancelCause != nil {
                 await finalizeInterruptedPrefix(writer: writer, adapter: adapter,
                                                 turn: turn, step: step,
-                                                blocks: blocks, usage: usage)
+                                                blocks: blocks,
+                                                inFlightText: inFlightText,
+                                                inFlightReasoning: inFlightReasoning,
+                                                usage: usage)
                 throw CancellationError()
             }
             return (blocks, usage, finish)
         }
     }
 
-    /// 已交付前缀的 interrupted finalize（dsh step() catch aborted 分支）：
-    /// 有可交付内容才落 interrupted assistant/message（空消息不落盘，ERR-023）。
-    /// append 失败静默（取消路径不掩盖 CancellationError 本身）。
+    /// 已交付前缀的 interrupted finalize（dsh step() catch aborted 分支）。
+    /// 批C7：落盘内容 = 已闭合块 + 在途前缀（text/reasoning delta 合成，index
+    /// 序）——「屏面已有的所有内容块」不蒸发（思考期中断病根：blockEnd 只在
+    /// [DONE] 批发射，旧实现流中段中断恒空 blocks=零落盘）。persistableBlocks
+    /// 既有判定承担全空过滤（ERR-023：空消息不落盘）。append 失败静默（取消
+    /// 路径不掩盖 CancellationError 本身）。
     private func finalizeInterruptedPrefix(writer: SessionWriter,
                                            adapter: OpenAICompatAdapter,
                                            turn: Int, step: Int,
                                            blocks: [ContentBlock],
+                                           inFlightText: [Int: String],
+                                           inFlightReasoning: [Int: String],
                                            usage: TokenUsage?) async {
-        let persistable = blocks.persistableBlocks
+        let inFlight: [ContentBlock] = (
+            inFlightReasoning.map { ($0.key, ContentBlock.reasoning($0.value)) }
+            + inFlightText.map { ($0.key, ContentBlock.text($0.value)) }
+        )
+        .sorted { $0.0 < $1.0 }
+        .map { $0.1 }
+        let persistable = (blocks + inFlight).persistableBlocks
         guard !persistable.isEmpty else { return }
         let message = AssistantMessage(id: UUID().uuidString,
                                        provider: adapter.providerName,

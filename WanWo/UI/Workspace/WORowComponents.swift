@@ -56,14 +56,15 @@ struct WOProjectRow: View {
                 .frame(width: 12, height: 12)
 
             // rowActions：触屏恒显（hover 门控在 iPad 不可达，2026-09-19 登记）
-            HStack(spacing: 2) {
+            // 批D3：钮 24→32、图标 13→15、间距 2→6（触屏命中 ≥32pt）
+            HStack(spacing: 6) {
                 if onCreate != nil {
                     Button {
                         onCreate?()
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .medium))
-                            .frame(width: 24, height: 24)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(WOAlias.labelTertiary)
@@ -77,7 +78,7 @@ struct WOProjectRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .frame(height: 34)
+        .frame(height: 44) // 批D3：34→44（触屏 HIG 行整行 ≥44pt）
         .contentShape(Rectangle())
         .background(RoundedRectangle(cornerRadius: 8)
             .fill(hovering ? WOAlias.interactiveBgHover : .clear))
@@ -132,7 +133,7 @@ struct WOSessionRow: View {
                     }
                 }
                 .frame(width: 16, height: 20)
-                .padding(.trailing, 4)
+                .padding(.trailing, 6) // 批D3：4→6
             }
             Text(displayTitle)
                 .font(.system(size: 14))
@@ -160,7 +161,7 @@ struct WOSessionRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .frame(height: 32)
+        .frame(height: 44) // 批D3：32→44（触屏 HIG 行整行 ≥44pt）
         .contentShape(Rectangle())
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
         .onHover { hovering = $0 }
@@ -210,7 +211,7 @@ struct WOOverflowButton: View {
                 .padding(.leading, 28)
                 .padding(.trailing, 12)
         }
-        .frame(height: 28)
+        .frame(height: 40) // 批D3：28→40（触屏命中区放大）
         .buttonStyle(.plain)
         .background(RoundedRectangle(cornerRadius: 8).fill(.clear))
         .accessibilityLabel(Text(expanded ? "收起" : "展开其余 \(hiddenCount) 个会话"))
@@ -247,10 +248,11 @@ struct WORowMenuButton: View {
                 }
             }
         } label: {
-            // 原型 .ci-more/.g-more：24×24 命中区 + 14px svg
+            // 原型 .ci-more/.g-more：批D3 命中区 24×24→32×32 + 15px svg
+            //（contentShape 随框同步扩——触屏 ≥32pt 行内钮门禁）
             Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 24, height: 24)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
                 .foregroundColor(WOAlias.labelTertiary)
         }

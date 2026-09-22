@@ -46,25 +46,13 @@ struct WORootFrame: View {
 
     var body: some View {
         mainFrame
-            // 右栏全屏 = overlay 覆盖（不再条件换根布局——旧实现 if/else 换根
-            // ①无过渡动画②全屏期间 mainFrame 卸载，GeometryReader 视口状态
-            // 丢失，关闭后收起态侧栏渲染错乱（2026-09-21 真机反馈两病同源））。
-            // overlay 恒挂载于同一容器：出入场有 transition 动画，mainFrame
-            // 全程在树（侧栏状态零扰动）。
-            .overlay {
-                if workspaceSidebar.isFullscreen, appState.currentSessionId != nil {
-                    WorkspaceRightSidebarView(model: workspaceSidebar,
-                                              environment: environment)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(WOAlias.bgBase)
-                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                }
-            }
-            .animation(reduceMotion ? .easeOut(duration: 0.15)
-                                    : .easeOut(duration: 0.28),
-                       value: workspaceSidebar.isFullscreen)
+            // 批B3：旧全屏 overlay 块（第二实例 + opacity/scale transition）拆除——
+            // 全屏改为同一实例列宽向左延伸（WOAppFrame 求列折算 + 0.42s 列宽
+            // 动画），真值链 = topBar 钮写 model.isFullscreen → 本视图 onChange
+            // 桥写 layout.fullscreen；右栏 @State 只此一套（放大后浏览器不再空白）。
         .overlay { WOSettingsModal(isPresented: settingsPresented) }
-        .overlay(alignment: .topTrailing) { reopenSidebarButton }
+        // 批C1：reopenSidebarButton 退役——右栏开关唯一入口=顶栏钮
+        //（WOConversationHead，规格沿用本钮的 32pt r9 玻璃白 fab）。
         .alert("操作失败", isPresented: actionErrorPresented) {
             Button("好", role: .cancel) {}
         } message: {
@@ -107,10 +95,13 @@ struct WORootFrame: View {
                 layout.closeDetails()
             }
         }
+        // 批B3：全屏真值桥接——单一真值 = workspaceSidebar.isFullscreen（右栏
+        // topBar 全屏/关闭钮写它，语义不变）；layout.fullscreen 只是布局投影，
+        // 仅由本桥与 syncSessionSelection 的无会话复位写入，不独立记账。
+        .onChange(of: workspaceSidebar.isFullscreen) { full in
+            layout.setFullscreen(full && appState.currentSessionId != nil)
+        }
     }
-
-    /// reduce motion 环境（全屏过渡降级用）。
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var mainFrame: some View {
         let snapshot = makeSnapshot()
@@ -146,12 +137,19 @@ struct WORootFrame: View {
             if environment.selection != .session(id: id) {
                 environment.selection = .session(id: id)
             }
-            layout.openDetails()
+            // 批B1：白列根治——只有 isExpanded 时才随会话锚点同步开列；
+            // 收起态切会话不再强制开列（列开/关唯一真值=workspaceSidebar
+            // .isExpanded，右栏本体由 B2 恒挂载保证不再出现纯白 placeholder）。
+            if workspaceSidebar.isExpanded {
+                layout.openDetails()
+            }
         } else if environment.selection != .none {
             environment.selection = .none
         }
         if appState.currentSessionId == nil {
             layout.closeDetails()
+            // 批B3：无会话即右栏不挂载，全屏投影必须复位（防主区被 0 宽锁死）。
+            layout.setFullscreen(false)
         }
         workspaceSidebar.reconcileForSelection(sessionID: appState.currentSessionId)
     }
@@ -177,14 +175,20 @@ struct WORootFrame: View {
             collapsed: collapsed,
             width: width,
             onToggleSidebar: { layout.toggleSidebar() },
-            onNewSession: { newSession(in: nil) },
+            // 批A1：侧栏总钮改走引擎缝 startSession（dsh navigation 语义）——
+            // target=当前会话工作区 ?? 最近活动工作区；无任何工作区 →
+            // clearSelection 留空态，绝不产生 cwd=nil 孤儿会话（旧 newSession
+            // (in: nil) 直建未挂组会话的路径退役）。
+            onNewSession: { environment.workspaceNavigator.startSession(nil) },
             region: { wide, quiet in
                 if wide {
                     WOWorkspaceBrowser(
                         viewStore: viewStore,
                         snapshot: { snapshot },
                         onOpenSession: { appState.openSession($0) },
-                        onNewSession: { newSession(in: $0) },
+                        // 批A1：组行 + 显式带 workspaceId，同缝收口（复用组内
+                        // blank 或新建并挂组）。
+                        onNewSession: { environment.workspaceNavigator.startSession($0) },
                         onRenameSession: { id in
                             let t = snapshot.sessions.first { $0.id == id }
                             renameTarget = .session(id: id, title: t?.title ?? "")
@@ -231,7 +235,7 @@ struct WORootFrame: View {
             }
             .foregroundColor(WOAlias.labelSecondary)
             .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) // 批D3：38→44
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -243,7 +247,10 @@ struct WORootFrame: View {
     @ViewBuilder
     private var centerRegion: some View {
         if let sessionId = appState.currentSessionId {
-            WOChatView(environment: environment, sessionId: sessionId)
+            // 批C1：右栏开关钮在顶栏（WOConversationHead）——workspaceSidebar
+            // 真值在根帧，闭包下发切换（isExpanded onChange 既有链驱动列宽）。
+            WOChatView(environment: environment, sessionId: sessionId,
+                       onToggleRightSidebar: { workspaceSidebar.isExpanded.toggle() })
                 .id(sessionId)
         } else {
             // 无会话空态 = dsh EmptyHero 语义（工作区胶囊选组即建会话入组，
@@ -256,40 +263,16 @@ struct WORootFrame: View {
 
     @ViewBuilder
     private var detailsRegion: some View {
-        if appState.currentSessionId != nil, workspaceSidebar.isExpanded {
+        if appState.currentSessionId != nil {
+            // 批B2：有会话恒挂载（dsh AppFrame.tsx:35-38「右栏宽 0 时保持挂载
+            // 不卸载」；WOAppFrame detailsCol「0 宽不卸载子树」注释同证）——
+            // 收起=布局列宽 0（既有 onChange(isExpanded)→closeDetails 链），
+            // 浏览器网页/文件树/终端页签的 @State 在 0 宽列里保活，再展开原样
+            // 回来。无会话仍走 placeholder（reconcileForSelection 语义不动）。
             WorkspaceRightSidebarView(model: workspaceSidebar,
                                       environment: environment)
         } else {
             WOSlotPlaceholder(text: nil, quiet: false)
-        }
-    }
-
-    /// 收起态重开钮（digest-H fab 规格：32px 圆角 9 玻璃白 .9+blur；无会话/全屏时隐藏）。
-    @ViewBuilder
-    private var reopenSidebarButton: some View {
-        if !workspaceSidebar.isExpanded,
-           appState.currentSessionId != nil,
-           !workspaceSidebar.isFullscreen,
-           environment.settingsPane == nil {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    workspaceSidebar.isExpanded = true
-                }
-            } label: {
-                Image(systemName: "sidebar.trailing")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(WOAlias.labelSecondary)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 9)
-                        .fill(WOStatic.neutral00.opacity(0.9)))
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 12)
-            .padding(.trailing, 14)
-            .accessibilityLabel("展开工作区侧栏")
         }
     }
 
@@ -301,20 +284,11 @@ struct WORootFrame: View {
 
     // MARK: - 动作
 
-    /// 新会话统一入口：建会话并打开；带 workspaceId 则挂组。
-    /// 组内新建 cwd 必须传组规范路径——attachSession 以 header.cwd 与组路径
-    /// 做成员资格校验（cwd=nil 的会话会被拒绝落未分组，impl-workspace 核证）。
-    private func newSession(in workspaceId: String?) {
-        let cwd: String? = workspaceId.flatMap { id in
-            environment.workspaceRegistry.list().first { $0.id == id }?.path
-        }
-        if let s = try? environment.sessionStore.createSession(cwd: cwd) {
-            if let wsId = workspaceId {
-                try? environment.workspaceRegistry.attachSession(sessionId: s.id, to: wsId)
-            }
-            appState.openSession(s.id)
-        }
-    }
+    // 批A1：旧 newSession(in:) 退役——侧栏新会话统一走
+    // environment.workspaceNavigator.startSession（WorkspaceNavigator.swift
+    // :188-212 既有缝：显式 wsId ?? 当前会话工作区 ?? 最近活动工作区；无工作区
+    // → clearSelection 留空态）。attach + toast 已在 createSession(inWorkspace:)
+    // 缝内（AppEnvironment），改道后自动继承，此处不再补。
 
     private func commitRename() {
         let name = renameField.trimmingCharacters(in: .whitespaces)

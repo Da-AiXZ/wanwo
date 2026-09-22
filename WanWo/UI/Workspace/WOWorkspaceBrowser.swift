@@ -61,6 +61,10 @@ struct WOWorkspaceBrowser: View {
     /// 每组未展开可见普通会话数（COLLAPSED_SESSION_LIMIT=5，手册 768 行）
     static let collapsedSessionLimit = 5
 
+    /// 批D1：组 children 自然高度账（key=组 key；恒挂载测高，pref 驱动，
+    /// 行增减/重命名自动校正）。
+    @State private var groupChildrenHeights: [String: CGFloat] = [:]
+
     /// 拖拽 payload 前缀（旧 SessionsSidebarView 同款格式，跨视图一致）
     static let sessionPayloadPrefix = "wanwo:session:"
     static let workspacePayloadPrefix = "wanwo:workspace:"
@@ -340,12 +344,20 @@ struct WOWorkspaceBrowser: View {
         // 展开态的溢出折叠（「显示更多」）——两机制分立。旧实现把收起误当
         // 5 行帽（≤5 行的组收起零变化）+ 收起态 chevron 隐形 → 点击无反馈
         //（2026-09-20 真机反馈"点击没有收起来"根因）。
+        // 批D1：children 恒挂载——内容恒为展开态全集（不再随 expanded 卸载），
+        // 收起仅由高度 0 + clipped 表达（原型 102-104 行 .conv-children
+        // grid-template-rows 1fr⇄0fr .32s ease 折算），高度动画有真值可依。
         let overflowExpanded = localExpansion.contains(group.key)
-        // @ViewBuilder 函数体内禁赋值型 if（buildExpression 报错）——三元求值。
-        let visibleNormal: [WOSessionNode] = !expanded ? []
-            : (overflowExpanded ? normal : Array(normal.prefix(Self.collapsedSessionLimit)))
-        let hiddenCount: Int = (expanded && !overflowExpanded)
-            ? max(0, normal.count - Self.collapsedSessionLimit) : 0
+        let visibleNormal = overflowExpanded ? normal
+            : Array(normal.prefix(Self.collapsedSessionLimit))
+        let hiddenCount = overflowExpanded ? 0
+            : max(0, normal.count - Self.collapsedSessionLimit)
+        // 批D1：测高初值 fallback（行数×行高 + 间距；onAppear 首帧前动画被吞
+        // 铁律——首帧用估算防 0 高跳变，pref 首报即校正；行高 44=批D3 后值）
+        let childRowCount = blanks.count + visibleNormal.count + (hiddenCount > 0 ? 1 : 0)
+        let fallbackHeight = CGFloat(blanks.count + visibleNormal.count) * 44
+            + (hiddenCount > 0 ? CGFloat(40) : 0)
+            + CGFloat(max(0, childRowCount - 1)) * 2
 
         VStack(alignment: .leading, spacing: 2) {
             WOProjectRow(
@@ -366,7 +378,11 @@ struct WOWorkspaceBrowser: View {
                     ? Self.workspacePayloadPrefix + group.workspaceId! : nil,
                 onDrop: { commitGroupHeaderDrop($0, group: group) }))
 
-            if expanded {
+            // children（恒挂载）：背景 GeometryReader 测自然高度（行高刚性，
+            // 0 高 frame 提案不影响 VStack 实际排布 → 收起态仍测得全高）。
+            // 注意用真 VStack 包（Group 会把 .background 摊到每个子行——
+            // 测量键被逐行拆散，max 归约出错误值）。
+            VStack(alignment: .leading, spacing: 2) {
                 // blank 占位行置顶（提升语义），后接可见普通行
                 ForEach(blanks) { node in
                     WOSessionRow(node: node, selected: snapshot.currentSessionId == node.id,
@@ -399,6 +415,24 @@ struct WOWorkspaceBrowser: View {
                     }
                 }
             }
+            .background(alignment: .topLeading) {
+                GeometryReader { geo in
+                    Color.clear.preference(key: WOGroupChildrenHeightKey.self,
+                                           value: geo.size.height)
+                }
+            }
+            .onPreferenceChange(WOGroupChildrenHeightKey.self) { h in
+                if h > 0 { groupChildrenHeights[group.key] = h }
+            }
+            // 收起/展开：0⇄测高（fallback 初值），0.32s ease；0 高 + clipped
+            // = 绘制与触控一并裁掉（收起态行不可点）。
+            .frame(height: expanded ? (groupChildrenHeights[group.key] ?? fallbackHeight) : 0,
+                   alignment: .top)
+            .clipped()
+            // 恒挂载的隐藏面（项目既定形态：右栏页签 ZStack 同款）——收起组
+            // 对辅助功能隐藏（clipped 不挡 VoiceOver，须显式声明）。
+            .accessibilityHidden(!expanded)
+            .animation(WOMotion.bezier(duration: 0.32), value: expanded)
         }
     }
 
@@ -743,6 +777,15 @@ private struct WODragModifiers: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+// MARK: - 组 children 自然高度 PreferenceKey（批D1 恒挂载测高）
+
+private struct WOGroupChildrenHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

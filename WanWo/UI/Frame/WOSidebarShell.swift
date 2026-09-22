@@ -3,7 +3,8 @@
 //  WanWo
 //
 //  环 3 —— 侧栏列壳（细读文档第 3 章 SidebarRoot.tsx 222 行 + SidebarRoot.module.css 359 行）。
-//  折叠态机：collapsed → 150ms settled → 卸载宽内容上轨道；展开立即 remount（wide-in 200ms）；
+//  折叠态机：collapsed → 320ms settled（批D2：内容同步轻渐隐后卸载）→ 卸载宽内容上轨道；
+//  展开立即 remount（wide-in 200ms）；
 //  lastWideWidth 冻结淡出宽度；everWide = railIn（49px 横移入场，冷刷新直折不播）；
 //  滚动条跟随：指针离开 2s linger 后隐藏（quietBars 透明重绑，保 gutter 不 reflow）。
 //
@@ -32,7 +33,9 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let inlinePad: CGFloat = 12
-    private let settleMS: Double = 0.15     // COLLAPSE_SETTLE_MS：宽内容卸载延迟
+    /// 批D2：COLLAPSE_SETTLE_MS 0.15→0.32（手册 622-629 行语义引用同步）——
+    /// 内容渐隐（.3s ease 同步）完成后再卸载宽内容上轨道。
+    private let settleMS: Double = 0.32
     private let lingerMS: Double = 2.0      // SCROLLBAR_LINGER_MS：滚动条保留时长
 
     /// wide = !collapsed || !settled（折叠动画期间宽内容仍挂载原地淡出）
@@ -62,9 +65,14 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
             if wide {
                 wideContent
                     .frame(width: collapsed ? lastWideWidth : width, alignment: .leading)
+                    // 批D2（原型 32/35 行 .sidebar-left{transition:width .42s, opacity .3s}）：
+                    // 收起 = 宽度收缩（列宽 0.42s 由 WOColumnsAnimation 承担）+ 内容
+                    // 同步轻渐隐 .3s ease（不再"先快速淡出后消失"）。
+                    .opacity(collapsed ? 0 : 1)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: collapsed)
                     .transition(.asymmetric(
                         insertion: .opacity.animation(WOMotion.bezier(duration: 0.2)), // wide-in 200ms
-                        removal: .opacity.animation(.easeIn(duration: 0.15))))          // fading 150ms
+                        removal: .opacity.animation(.easeIn(duration: 0.15))))          // settled 后卸载（内容已渐隐至 0，无可见跳变）
             }
         }
         // transition 由 value 驱动（reduced-motion 时无动画=瞬切）
@@ -74,7 +82,7 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
         }
         .onChange(of: collapsed) { isCollapsed in
             if isCollapsed {
-                // 150ms 计时置 settled；settle 时卸载宽内容、轨道图标入场（手册 626 行）
+                // 320ms 计时置 settled（批D2：内容 .3s 渐隐完成再卸载，手册 626 行）
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: UInt64(settleMS * 1_000_000_000))
                     settled = true
@@ -135,7 +143,7 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
             .padding(.leading, 4)
             .padding(.bottom, 8)
 
-            // 新会话钮：h38 r12 0.5px l3 边 elevated-fill；hover floating-hover
+            // 新会话钮：批D3 h38→44（触屏 HIG）；r12 0.5px l3 边 elevated-fill
             Button(action: onNewSession) {
                 HStack(spacing: 6) {
                     Image(systemName: "plus.message")
@@ -145,7 +153,7 @@ public struct WOSidebarShell<Region: View, Footer: View>: View {
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: 38)
+                .frame(height: 44)
                 .background(RoundedRectangle(cornerRadius: 12).fill(WOAlias.buttonElevatedFill))
                 .overlay(RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
