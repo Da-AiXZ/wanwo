@@ -334,9 +334,10 @@ struct WOChatView: View {
         //（2026-09-21 真机对照原型：竖排居中形态与原型不符）。
         // 批10：logo 换原型四芒星（WOBrandMark，用户令）；芯片行对齐原型
         // .hero-capsules（padding-left 20 / margin-top 4）。
+        // 批10 再修：星标 34→40（真机对照原型 2403/2407 观感偏小）。
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                WOBrandMark.mark(size: 34)
+                WOBrandMark.mark(size: 40)
                 Text("万我")
                     .font(.system(size: 26, weight: .medium))
                     .tracking(-0.4)
@@ -986,7 +987,7 @@ struct WOChatHero: View {
 
     private var headerBlock: some View {
         HStack(spacing: 10) {
-            WOBrandMark.mark(size: 34) // 批10：品牌标统一换原型四芒星
+            WOBrandMark.mark(size: 40) // 批10：品牌标统一换原型四芒星（40=真机对照放大）
             Text("万我")
                 .font(.system(size: 26, weight: .medium))
                 .tracking(-0.4)

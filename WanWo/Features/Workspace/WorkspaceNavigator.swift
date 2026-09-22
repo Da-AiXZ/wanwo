@@ -49,8 +49,12 @@ enum SessionNavProbe {
             return nil
         }
         guard let headerEnd = chunk.firstIndex(of: 0x0A) else { return nil }
-        guard let header = try? SessionLogScanner.parseHeader(
-            data: chunk.subdata(in: chunk.startIndex..<headerEnd)) else {
+        // 批10 修复：parseHeader(data:) 语义=「整段数据，内部自切头行」（无换行
+        // 即抛 emptyOrHeaderless）——原实现传入已切好的头行（无换行）必然抛，
+        // try? 吞掉后 probe 恒 nil → 复用扫描全部 continue → 每次点新会话都
+        // 真实新建（真机实证：同项目连点两次=两条、重启再点=第三条）。改传
+        // 完整 chunk 由 parseHeader 自切。
+        guard let header = try? SessionLogScanner.parseHeader(data: chunk) else {
             return nil
         }
         var hasTurnStart = false

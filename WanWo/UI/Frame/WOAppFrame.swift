@@ -114,8 +114,14 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
 
             // centerCol：min-width 0 column overflow hidden
             // 批C1：右栏 fab 退役——右栏开关唯一入口=顶栏钮（WOConversationHead）。
+            // 批10 修复：中栏改固定轨道宽（dsh grid 三列轨道语义）——原 maxWidth∞
+            // 无锁宽，列内宽内容（长统计行/长标题等）把中栏顶大 → HStack 总宽
+            // 超 viewport 被居中裁切 → 左栏出屏+右栏 topBar 钮出屏（真机
+            // IMG_2404/2406："右栏向左展开挤开一切"）。width=cols.center 由
+            // 让位链契约给出（全屏折算 center=0 时 width 0，clipped 收口）。
             center()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: cols.center)
+                .frame(maxHeight: .infinity)
                 .clipped()
 
             // detailsCol：0 宽不卸载子树；collapsed 去左 1px 缝（手册 581 行）
