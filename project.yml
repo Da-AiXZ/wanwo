@@ -31,10 +31,13 @@ packages:
     url: https://github.com/modelcontextprotocol/swift-sdk
     exactVersion: "0.12.1"
   # 批12 T7：流式 Markdown 渲染（microsoft/SwiftStreamingMarkdown，MIT；
-  # iOS 16+ ✓；助手正文 MarkdownView + 流式正文 StreamedMarkdownView）
+  # iOS 16+ ✓；助手正文 MarkdownView + 流式正文 StreamedMarkdownView）。
+  # revision pin（=v0.7.0 tag commit 5f7c04e）：其子依赖 HighlightSwift 为
+  # revision pin（无 tag），SPM 禁止根项目对这种包用 stable-version 依赖
+  #（CI run 35821566038 实证"stable-version vs unstable-version"解析失败）。
   SwiftStreamingMarkdown:
     url: https://github.com/microsoft/SwiftStreamingMarkdown
-    exactVersion: "0.7.0"
+    revision: 5f7c04e0558df6146f90d482edb62cb456986bda
 
 targets:
   WanWo:
