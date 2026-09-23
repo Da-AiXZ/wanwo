@@ -11,10 +11,11 @@ import SwiftUI
 
 public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: View>: View {
     @ObservedObject public var store: WOLayoutStore
-    /// 会话是否「非 blank」——false/nil 时详情栏不算开（blank 会话不算，手册 571 行）
-    public var hasDetailsSession: Bool
     /// 当前是否选中会话（批10：全屏折算门从 hasDetailsSession 改为本值——
-    /// blank 会话期间全屏不再"隐身/复活挤压"；右栏本体由 detailsRegion 恒挂载）
+    /// blank 会话期间全屏不再"隐身/复活挤压"；右栏本体由 detailsRegion 恒挂载。
+    /// 批12：详情列宽门与自动关卡也统一改绑本值——blank 会话开右栏=400 正常
+    /// 列、点"缩小"回 400 不再整个消失（hasDetails 门下 effectiveDetails=0
+    /// 是"点缩小=直接关闭"的真根因）；无会话仍自动关+列宽 0）。
     public var hasSession: Bool
     /// 右栏全屏（批10：真值=WorkspaceRightSidebarModel.isFullscreen 直连，
     /// layout.fullscreen 投影退役——双记账脱钩是"点开变全屏还关不掉"根因）
@@ -25,17 +26,16 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     /// shell.overlay 槽（z20 点击穿透层；条目各自 opt-in pointer events）
     @ViewBuilder public var overlayLayer: () -> Overlay
 
-    /// 切会话自动关详情：上一个非空会话消失时触发（手册 572 行）
+    /// 切会话自动关详情：上一个会话消失时触发（手册 572 行；批12 绑 hasSession）
     @State private var lastHadSession = false
 
-    public init(store: WOLayoutStore, hasDetailsSession: Bool = false,
+    public init(store: WOLayoutStore,
                 hasSession: Bool = false, fullscreen: Bool = false,
                 @ViewBuilder sidebar: @escaping (_ collapsed: Bool, _ width: CGFloat) -> Sidebar,
                 @ViewBuilder center: @escaping () -> Center,
                 @ViewBuilder details: @escaping () -> Details,
                 overlayLayer: @escaping () -> Overlay = { EmptyView() }) {
         self.store = store
-        self.hasDetailsSession = hasDetailsSession
         self.hasSession = hasSession
         self.fullscreen = fullscreen
         self.sidebar = sidebar
@@ -52,7 +52,7 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
         sidebarCollapsed ? 0 : (store.sidebar == 0 ? WOLayoutContract.sidebarDefault : store.sidebar)
     }
     private var effectiveDetails: CGFloat {
-        hasDetailsSession ? store.details : 0
+        hasSession ? store.details : 0
     }
 
     public var body: some View {
@@ -64,9 +64,8 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
             // 全屏 = 同一面板向左延伸占满（原型 303 行 .app.right-full
             // .sidebar-right{flex:1} + .right-full .main{flex:0 0 0}）——求列后
             // 覆写折算，WOColumnSolver.compute 纯函数语义不动（无测试改动）。
-            // 左栏保留（56 轨或偏好宽），主区收 0；hasDetailsSession 门控保留
-            // （blank 会话不算开）。列宽变化仍走 WOColumnsAnimation 0.42s 单
-            // modifier（不换根，GeometryReader 全程在树）。
+            // 左栏保留（56 轨或偏好宽），主区收 0。列宽变化仍走
+            // WOColumnsAnimation 0.42s 单 modifier（不换根，GeometryReader 全程在树）。
             let cols: WOColumns = {
                 var c = WOColumnSolver.compute(
                     viewport: viewport,
@@ -88,8 +87,10 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 .onChange(of: viewport) { w in
                     store.setNarrow(w < WOLayoutContract.autoCollapseBreakpoint)
                 }
-                .onChange(of: hasDetailsSession) { has in
-                    // detailsSession 变化且上一个非空 → 自动关详情（手册 572 行）
+                .onChange(of: hasSession) { has in
+                    // 会话消失且上一个有会话 → 自动关详情（手册 572 行；批12
+                    // 从 hasDetailsSession 改绑 hasSession——blank 会话不再
+                    // 半路把已开的右栏列宽打 0 造成"隐形/点缩小=关闭"）。
                     if lastHadSession && !has { store.closeDetails() }
                     lastHadSession = has
                 }

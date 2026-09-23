@@ -28,6 +28,9 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+// 批12 T7：流式 Markdown 渲染（SwiftStreamingMarkdown v0.7.0）——仅本文件
+// import（用户气泡/思考正文/工具卡输出不接库，保持 Text）。
+import SwiftStreamingMarkdown
 
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
@@ -67,6 +70,9 @@ struct WOChatView: View {
     /// 批A2：会话内 hero 芯片菜单的「添加工作区…」流（与 WOChatHero 共用
     /// 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal）呈现位。
     @State private var showAddFlow = false
+    /// 批12 T7：流式正文 Markdown 桥接（StreamedMarkdownSource；离开
+    /// .streaming 即 finish 并重建，供下一回合——见 phase onChange 链）。
+    @State private var streamSource = WOChatStreamSource()
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
@@ -104,7 +110,20 @@ struct WOChatView: View {
 
     // MARK: - Hero 相位（digest-H：无消息会话 = hero；首条消息发送即落底）
 
+    /// 会话是否已有内容（SessionIndexProbe 口径：header 不计入 eventCount，
+    /// >0 = 至少一条事件）。同步既有路径（sessionTitle 同款 listSessions）。
+    private var hasHistory: Bool {
+        guard let summary = environment.sessionStore.listSessions()
+            .first(where: { $0.id == sessionId }) else { return false }
+        return summary.eventCount > 0
+    }
+
     private var heroMode: Bool {
+        // 批12：有历史的会话不进 hero——切对话时 composer 恒在底部、消息
+        // 静默呈现（用户令 2026-09-23：切会话不再走"空态 hero→dock 落底"
+        // 动画流程；旧记录淡出/新记录直接呈现，dock 原地不动）。
+        // 加载期(.loading)的历史会话也锁 dock——hero 闪现病根在此。
+        if hasHistory { return false }
         switch viewModel.phase {
         case .idle, .loading: break
         default: return false
@@ -166,7 +185,9 @@ struct WOChatView: View {
             // heroMode 不渲染——hero 自带品牌头）。
             if !heroMode {
                 ZStack(alignment: .top) {
-                    LinearGradient(colors: [.clear, WOAlias.bgBase],
+                    // 批12：方向反转（用户令 2026-09-23：上缘 0% 透明→下缘 100%
+                    // 透明，越靠上越不透明——内容从栏下滚过时被上缘实色遮住）。
+                    LinearGradient(colors: [WOAlias.bgBase, .clear],
                                    startPoint: .top, endPoint: .bottom)
                         .frame(height: 44)
                         .frame(maxWidth: .infinity)
@@ -224,8 +245,20 @@ struct WOChatView: View {
             }
         }
         .onDisappear { viewModel.close() }
-        .onChange(of: viewModel.phase) { _ in
+        .onChange(of: viewModel.phase) { phase in
             seedEntry()
+            // 批12 T7：流式 Markdown 桥接生命周期——离开 .streaming 即终结流并
+            // 重建（供下一回合；finish 后 StreamedMarkdownView 以终态收尾）；
+            // 进入 .streaming 时正文若已先行到达则补发一次全文快照（AsyncStream
+            // unbounded 缓冲，挂载前的 yield 不丢）。
+            if phase == .streaming {
+                if !viewModel.streamingText.isEmpty {
+                    streamSource.emit(viewModel.streamingText)
+                }
+            } else {
+                streamSource.finish()
+                streamSource = WOChatStreamSource()
+            }
             // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
             // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
             if autoSubmitArmed, viewModel.phase == .idle,
@@ -554,15 +587,28 @@ struct WOChatView: View {
             .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
             .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
             .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
-            .onChange(of: viewModel.streamingText) { _ in follow(proxy) }
+            .onChange(of: viewModel.streamingText) { newValue in
+                // 批12 T7：流式正文全文快照喂给 StreamedMarkdownView（每次
+                // yield 全文累积快照语义）；空值不 emit——emit 空串会清空渲染。
+                if !newValue.isEmpty {
+                    streamSource.emit(newValue)
+                }
+                follow(proxy)
+            }
             .onChange(of: viewModel.streamingReasoning) { _ in follow(proxy) }
         }
     }
 
     /// 批C4：跟随判定——探针可见（用户在底部附近）才随内容变化滚底。
+    /// 批12：scrollTo 禁动画（Transaction(animation: nil)）——滚动跟随=dsh
+    /// follow-end 即时贴底语义；默认隐式动画在高频流式刷新下呈"滑动感"、
+    /// 回合收尾时呈"动一下"（用户 2026-09-23 反馈），全部根治。
     private func follow(_ proxy: ScrollViewProxy) {
         guard autoFollow else { return }
-        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        let transaction = Transaction(animation: nil)
+        withTransaction(transaction) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
     }
 
     /// 批C4：探针可见性 → autoFollow（批C4-QA 修正三分支）。
@@ -694,14 +740,14 @@ struct WOChatView: View {
         case .assistant(let text):
             // 助手行：渐变头像 + 正文（digest-H Bot 行形态；13px 时间戳因
             // 引擎气泡无墙钟字段缺席，登记报告）。
+            // 批12 T7：正文换 MarkdownView（SwiftStreamingMarkdown——标题/
+            // 列表/代码块/表格可渲染；字色库默认跟随系统 primary，字号一期
+            // default 不折腾）。库自带 textSelection 配置——外层 .textSelection
+            // 去掉避免双选区行为。
             HStack(alignment: .top, spacing: 8) {
                 WOAssistantAvatar()
-                Text(text)
-                    .font(.system(size: 14))
-                    .foregroundColor(WOAlias.labelPrimary)
-                    .lineSpacing(3)
+                MarkdownView(text: text)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
             }
             .padding(.top, 1)
 
@@ -749,35 +795,20 @@ struct WOChatView: View {
         }
     }
 
-    // MARK: - 流式块（sweep 头 + 尾行跟随；ReasoningRow running 语义）
+    // MARK: - 流式块（批12 T5/T7：思考段并入 ReasoningDisclosure running 形态
+    // ——图标+扫光+尾行右对齐跟随；正文段=StreamedMarkdownView）
 
     private var streamingBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !viewModel.streamingReasoning.isEmpty {
-                // 运行中思考头：module 底 + 白色扫光（digest-H .think running 2.6s）。
-                HStack(spacing: 6) {
-                    Text("思考")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(WOAlias.labelTertiary)
-                }
-                .padding(.horizontal, 8)
-                .frame(minWidth: 48, minHeight: 24, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgModulePlatform))
-                .modifier(WOSweepModifier(active: true))
-                // 尾行跟随流式（ReasoningRow latestLine 语义）。
-                Text(viewModel.streamingReasoning
-                    .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r"))
-                    .split(separator: "\n").last.map(String.init) ?? "")
-                    .font(.system(size: 13))
-                    .foregroundColor(WOAlias.labelSecondary)
-                    .lineSpacing(2)
-                    .lineLimit(2)
+                // 批12 T5：running 态思考行（与 settled 同一行件——summary=尾行
+                // 右对齐跟随 + 行上扫光；expanded 初值恒 false 不自动展开）。
+                ReasoningDisclosure(text: viewModel.streamingReasoning, running: true)
             }
             if !viewModel.streamingText.isEmpty {
-                Text(viewModel.streamingText + " ▍")
-                    .font(.system(size: 14))
-                    .foregroundColor(WOAlias.labelPrimary)
-                    .lineSpacing(3)
+                // 批12 T7：流式正文换 StreamedMarkdownView（库自带流式动画语义；
+                // 光标 ▍ 不再手画，保持干净）。
+                StreamedMarkdownView(source: streamSource)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -815,54 +846,240 @@ private struct WOChatViewportKey: PreferenceKey {
     }
 }
 
-/// 思考披露（ReasoningRowView 语义简化版——旧件 98 行的折叠交互+WO 壳；
-/// running 态扫光/尾行跟随的完整版随流式块呈现，此处为 settled 全文折叠）。
-private struct ReasoningDisclosure: View {
-    let text: String
+/// 批12 T7：流式 Markdown 桥接源（SwiftStreamingMarkdown StreamedMarkdownSource
+/// 语义——每次 yield 全文累积快照；ObservableObject 供 StreamedMarkdownView
+/// 订阅并在内部 .task 消费）。AsyncStream 默认 unbounded 缓冲：视图挂载前的
+/// yield 不丢。WOChatView 持 @State 实例；离开 .streaming 即 finish 并重建。
+private final class WOChatStreamSource: ObservableObject, StreamedMarkdownSource {
+    /// AsyncStream<String>（StreamedMarkdownSource 协议要求——每次产出全文快照）。
+    let text: AsyncStream<String>
+    private let continuation: AsyncStream<String>.Continuation
 
-    @State private var expanded = false
+    init() {
+        var c: AsyncStream<String>.Continuation!
+        self.text = AsyncStream { c = $0 }
+        self.continuation = c!
+    }
 
-    private var preview: String {
-        text.split(separator: "\n").first.map(String.init) ?? text
+    /// 追加一次全文累积快照（调用方保证非空——emit 空串会清空渲染）。
+    func emit(_ snapshot: String) { continuation.yield(snapshot) }
+
+    /// 本回合结束（StreamedMarkdownView 收尾；之后由宿主重建实例供下回合）。
+    func finish() { continuation.finish() }
+}
+
+// MARK: - 批12 T5：dsh DisclosureRow 共用行件 + IconThinkOutline14
+//
+//  规格=ui-chat/ReasoningRow.tsx + module.css + ui-primitives/DisclosureRow
+//  （主理人逐文件核证真值）：收起/展开是同一个 24px 行组件——
+//    [16×16 leading 盒（内 14px 图标）] gap6 [title 13/24/400] [2×2 分隔点
+//    margin 0 8] [summary 13 单行省略]；展开时 leading 换 chevron.down；
+//    summary 空时分隔点一起消失；sweepActive 时整行叠 WOSweepModifier（2.6s）。
+//  注：为供 WOToolCards.swift（T6 工具行）复用，本件为文件级 internal——
+//  简报所写「private」跨文件不可见，按复用语义放宽（登记报告）。
+
+/// dsh DisclosureRow 行件（思考行 settled/running 与工具行共用；展开体由
+/// 调用方以 content 闭包给出，展开时渲染于行下）。
+/// 扩展（简报 init 签名之外的必有缝，均带默认值不改调用形）：
+///   titleColor——T6 工具行 title=labelPrimary（默认 labelSecondary=思考行）；
+///   summaryColor——T6 错误摘要=stateErrorPrimary（默认 labelTertiary）。
+struct WODisclosureRow<Icon: View, Content: View>: View {
+    private let icon: Icon
+    private let title: String
+    @Binding private var expanded: Bool
+    private let summary: String
+    private let summaryFollowEnd: Bool
+    private let sweepActive: Bool
+    private let titleColor: Color
+    private let summaryColor: Color
+    private let content: Content
+
+    init(icon: Icon,
+         title: String,
+         expanded: Binding<Bool>,
+         summary: String,
+         summaryFollowEnd: Bool = false,
+         sweepActive: Bool = false,
+         titleColor: Color = WOAlias.labelSecondary,
+         summaryColor: Color = WOAlias.labelTertiary,
+         @ViewBuilder content: () -> Content) {
+        self.icon = icon
+        self.title = title
+        self._expanded = expanded
+        self.summary = summary
+        self.summaryFollowEnd = summaryFollowEnd
+        self.sweepActive = sweepActive
+        self.titleColor = titleColor
+        self.summaryColor = summaryColor
+        self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button { toggle() } label: {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                // 批12：披露展开 .32s（dsh grid-template-rows 0fr↔1fr .32s；
+                // WOMotion bezier 域，思考披露同族曲线）。
+                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+            } label: {
                 HStack(spacing: 6) {
-                    Text("思考")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(WOAlias.labelTertiary)
-                    if !expanded {
-                        Text(preview)
-                            .font(.system(size: 12))
-                            .foregroundColor(WOAlias.labelSecondary)
+                    // 16×16 leading 盒：收起=调用方图标（14px），展开=chevron.down。
+                    Group {
+                        if expanded {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(WOAlias.labelSecondary)
+                        } else {
+                            icon
+                        }
+                    }
+                    .frame(width: 16, height: 16)
+                    Text(title)
+                        .font(.system(size: 13)) // weight 400
+                        .foregroundColor(titleColor)
+                        .lineLimit(1)
+                    if !summary.isEmpty {
+                        if summaryFollowEnd {
+                            // dsh running 态：summary 右对齐 flex-end 跟随。
+                            Spacer(minLength: 0)
+                        }
+                        // 2×2 分隔点（labelCaption；dsh margin: 0 8px——外加
+                        // HStack gap6 两侧各 6，间距=14 与 CSS gap+margin 一致）。
+                        Circle()
+                            .fill(WOAlias.labelCaption)
+                            .frame(width: 2, height: 2)
+                            .padding(.horizontal, 8)
+                        Text(summary)
+                            .font(.system(size: 13))
+                            .foregroundColor(summaryColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                        if !summaryFollowEnd {
+                            Spacer(minLength: 0)
+                        }
                     }
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(WOAlias.labelTertiary)
-                        .rotationEffect(.degrees(expanded ? 0 : -90))
-                    Spacer(minLength: 0)
                 }
+                .frame(minHeight: 24) // dsh 行高 24px
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             if expanded {
-                Text(text)
-                    .font(.system(size: 13))
-                    .foregroundColor(WOAlias.labelSecondary)
-                    .lineSpacing(2)
-                    .padding(.leading, 22) // digest-H .think 正文左缩进 22px
+                content
+                    // 批12：展开体过渡 = opacity + 垂直微量位移 8pt（.32s 同族）。
+                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(WOSweepModifier(active: sweepActive))
+    }
+}
+
+/// 批12 T5：IconThinkOutline14（dsh 原值 1:1 移植——两段 path，viewBox 14×14；
+/// path1 中心点单 fill，path2 四瓣花形自交叠 evenodd fill；渲染走 WOBrand.swift
+/// 既有 PathGenerator M/L/C/Z 解析器，坐标已是 viewBox 单位 1:1 不缩放）。
+private struct WOThinkIcon: View {
+    static let viewBox = CGSize(width: 14, height: 14)
+    /// dsh IconThinkOutline14 path1（中心点，单 fill）原值照录。
+    static let path1 =
+        "M7.06431 5.93342C7.68763 5.93342 8.19307 6.43904 8.19322 7.06233" +
+        "C8.19322 7.68573 7.68772 8.19123 7.06431 8.19123C6.44099 8.19113 " +
+        "5.9354 7.68567 5.9354 7.06233C5.93555 6.43911 6.44108 5.93353 " +
+        "7.06431 5.93342Z"
+    /// dsh IconThinkOutline14 path2（四瓣花形，evenodd）原值照录。
+    static let path2 =
+        "M8.6815 0.963693C10.1169 0.447019 11.6266 0.374829 12.5633 1.31135" +
+        "C13.5 2.24805 13.4277 3.75776 12.911 5.19319C12.7126 5.74431 " +
+        "12.4386 6.31796 12.0965 6.89729C12.4969 7.54638 12.8141 8.19018 " +
+        "13.036 8.80647C13.5527 10.2419 13.6251 11.7516 12.6883 12.6883" +
+        "C11.7516 13.625 10.242 13.5527 8.8065 13.036C8.19022 12.8141 " +
+        "7.54641 12.4969 6.89732 12.0965C6.31797 12.4386 5.74435 12.7125 " +
+        "5.19322 12.911C3.75777 13.4276 2.2481 13.5 1.31138 12.5633" +
+        "C0.374859 11.6266 0.447049 10.1168 0.963724 8.68147C1.17185 8.10338 " +
+        "1.46321 7.50063 1.82896 6.8924C1.52182 6.35711 1.27235 5.82825 " +
+        "1.08872 5.31819C0.572068 3.88278 0.499714 2.37306 1.43638 1.43635" +
+        "C2.37308 0.499655 3.8828 0.572044 5.31822 1.08869C5.82828 1.27232 " +
+        "6.35715 1.5218 6.89243 1.82893C7.50066 1.46318 8.10341 1.17181 " +
+        "8.6815 0.963693ZM11.3573 8.01154C10.9083 8.62253 10.3901 9.22873 " +
+        "9.80943 9.8094C9.22877 10.3901 8.62255 10.9083 8.01158 11.3572" +
+        "C8.4257 11.5841 8.8287 11.7688 9.21275 11.9071C10.5456 12.3868 " +
+        "11.4246 12.2547 11.8397 11.8397C12.2548 11.4246 12.3869 10.5456 " +
+        "11.9071 9.21272C11.7688 8.82866 11.5841 8.42568 11.3573 8.01154Z" +
+        "M2.56529 8.02912C2.37344 8.39322 2.21495 8.74796 2.09263 9.08772" +
+        "C1.61291 10.4204 1.74512 11.2995 2.16001 11.7147C2.57505 12.1297 " +
+        "3.45415 12.2618 4.78697 11.7821C5.11057 11.6656 5.44786 11.5164 " +
+        "5.7938 11.3367C5.249 10.9223 4.70922 10.4533 4.19029 9.9344" +
+        "C3.57578 9.31987 3.03169 8.67633 2.56529 8.02912ZM6.90708 3.2469" +
+        "C6.24065 3.70479 5.5646 4.26321 4.91392 4.91389C4.26325 5.56456 " +
+        "3.70482 6.24063 3.24693 6.90705C3.72674 7.63325 4.32777 8.37459 " +
+        "5.03892 9.08576C5.64943 9.69627 6.28183 10.2265 6.90806 10.6678" +
+        "C7.59368 10.2025 8.2908 9.63076 8.96079 8.96076C9.6308 8.29075 " +
+        "10.2025 7.59366 10.6678 6.90803C10.2265 6.2818 9.69631 5.6494 " +
+        "9.08579 5.03889C8.37462 4.32773 7.63328 3.72672 6.90708 3.2469Z" +
+        "M11.7147 2.15998C11.2996 1.74509 10.4204 1.61288 9.08775 2.0926" +
+        "C8.74835 2.21479 8.39382 2.37271 8.03013 2.56428C8.67728 3.03065 " +
+        "9.31995 3.5758 9.93443 4.19026C10.4534 4.7092 10.9223 5.24896 " +
+        "11.3368 5.79377C11.5164 5.44785 11.6656 5.11052 11.7821 4.78694" +
+        "C12.2618 3.45416 12.1297 2.57502 11.7147 2.15998ZM4.91197 2.2176" +
+        "C3.57922 1.73788 2.70004 1.86995 2.28501 2.28498C1.87001 2.70003 " +
+        "1.73791 3.5792 2.21763 4.91194C2.31709 5.18822 2.44112 5.47427 " +
+        "2.58677 5.7674C3.01931 5.1887 3.51474 4.6158 4.06529 4.06526" +
+        "C4.61584 3.5147 5.18872 3.01928 5.76743 2.58674C5.47431 2.4411 " +
+        "5.18824 2.31706 4.91197 2.2176Z"
+
+    var body: some View {
+        ZStack {
+            Path { p in
+                p.addPath(PathGenerator.path(from: Self.path1, scaledTo: Self.viewBox))
+            }
+            .fill(WOAlias.labelTertiary)
+            Path { p in
+                p.addPath(PathGenerator.path(from: Self.path2, scaledTo: Self.viewBox))
+            }
+            // path2 自交叠：奇偶填充（dsh fill-rule 原语义——FillStyle(eoFill: true)）。
+            .fill(WOAlias.labelTertiary, style: FillStyle(eoFill: true))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+/// 思考披露（批12 T5 dsh ReasoningRow 化——收起/展开同一行件 WODisclosureRow；
+/// running 态仅 summary 来源不同 + 行上扫光；expanded 初值恒 false，running
+/// 也不自动展开）。settled：summary=首行（firstLine）；running：尾行（latestLine，
+/// 右对齐 flex-end 跟随）+ 扫光。展开体=全文（thinkBody 13px labelTertiary）。
+private struct ReasoningDisclosure: View {
+    let text: String
+    /// running：流式在途（summary=尾行跟随 + 扫光）；默认 settled。
+    var running: Bool = false
+
+    @State private var expanded = false
+
+    /// settled summary：首行（dsh firstLine 语义）。
+    private var firstLine: String {
+        text.split(separator: "\n").first.map(String.init) ?? text
     }
 
-    private func toggle() {
-        // 原型思考披露展开 .32s（grid-template-rows 0fr↔1fr .32s；t4 0.5s 退役）。
-        withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+    /// running summary：尾行（dsh latestLine 语义——去首尾空白后取最后一段）。
+    private var latestLine: String {
+        text.trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r"))
+            .split(separator: "\n").last.map(String.init) ?? ""
+    }
+
+    var body: some View {
+        WODisclosureRow(icon: WOThinkIcon(), title: "思考",
+                        expanded: $expanded,
+                        summary: expanded ? "" : (running ? latestLine : firstLine),
+                        summaryFollowEnd: running,
+                        sweepActive: running) {
+            // thinkBody：padding 4/0/4/22，13px/20px 行高（lineSpacing 2），
+            // labelTertiary，pre-wrap 语义（digest-H .think 正文左缩进 22px）。
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundColor(WOAlias.labelTertiary)
+                .lineSpacing(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+                .padding(.bottom, 4)
+                .padding(.leading, 22)
+        }
     }
 }
 

@@ -105,9 +105,9 @@ struct WORootFrame: View {
         let snapshot = makeSnapshot()
         return WOAppFrame(
             store: layout,
-            hasDetailsSession: snapshot.hasDetails,
-            // 批10：全屏真值直连（layout.fullscreen 投影退役）——折算门同步
-            // 改 hasSession（blank 会话期间全屏不隐身）。
+            // 批12：hasDetailsSession 入参退役（详情列宽门/自动关卡统一绑
+            // hasSession——blank 会话开右栏=400 正常列，点"缩小"回 400 不再
+            // 整个消失；snapshot.hasDetails 语义保留在快照侧供别处消费）。
             hasSession: appState.currentSessionId != nil,
             fullscreen: workspaceSidebar.isFullscreen,
             sidebar: { collapsed, width in
@@ -251,8 +251,18 @@ struct WORootFrame: View {
         if let sessionId = appState.currentSessionId {
             // 批C1：右栏开关钮在顶栏（WOConversationHead）——workspaceSidebar
             // 真值在根帧，闭包下发切换（isExpanded onChange 既有链驱动列宽）。
+            // 批12：展开时强制清全屏——无论 isFullscreen 残留何值，点开永远
+            // 是 400pt 正常列（全屏只能由右栏 topBar 放大钮显式触发；"点开=
+            // 半全屏"用户反馈 2026-09-23 的语义级根治）。
             WOChatView(environment: environment, sessionId: sessionId,
-                       onToggleRightSidebar: { workspaceSidebar.isExpanded.toggle() })
+                       onToggleRightSidebar: {
+                           if workspaceSidebar.isExpanded {
+                               workspaceSidebar.isExpanded = false
+                           } else {
+                               workspaceSidebar.isExpanded = true
+                               workspaceSidebar.isFullscreen = false
+                           }
+                       })
                 .id(sessionId)
         } else {
             // 无会话空态 = dsh EmptyHero 语义（工作区胶囊选组即建会话入组，

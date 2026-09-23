@@ -52,11 +52,17 @@ public enum WOBrandMark {
         "M12 2L14.6 9.4L22 12L14.6 14.6L12 22L9.4 14.6L2 12L9.4 9.4L12 2Z"
 
     /// 星形标（fill=currentColor 染色；正方形 viewBox——width=height=size）。
+    /// 批12 修复：SwiftUI 的 Path 作为 Shape 其 path(in:) 返回自身坐标、
+    /// 不随提案矩形缩放——直接 frame(size) 时星形恒为原生 ~20pt 视觉
+    ///（34→40"看不出变化"的真根因）——内层按原生 24 格布局后
+    /// scaleEffect(size/24) 等比放大，星形真身=标称尺寸且中心对齐。
     public static func mark(size: CGFloat = 24) -> some View {
         Path { p in
             p.addPath(PathGenerator.path(from: path, scaledTo: viewBox))
         }
         .fill(Color.primary)
+        .frame(width: viewBox.width, height: viewBox.height)
+        .scaleEffect(size / viewBox.width)
         .frame(width: size, height: size)
     }
 }

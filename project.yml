@@ -30,6 +30,11 @@ packages:
   mcp-swift-sdk:
     url: https://github.com/modelcontextprotocol/swift-sdk
     exactVersion: "0.12.1"
+  # 批12 T7：流式 Markdown 渲染（microsoft/SwiftStreamingMarkdown，MIT；
+  # iOS 16+ ✓；助手正文 MarkdownView + 流式正文 StreamedMarkdownView）
+  SwiftStreamingMarkdown:
+    url: https://github.com/microsoft/SwiftStreamingMarkdown
+    exactVersion: "0.7.0"
 
 targets:
   WanWo:
@@ -97,6 +102,8 @@ targets:
       # M4-A：MCP 官方 Swift SDK 底座（F029/F032；版本锁 0.12.1，红线 R2）
       - package: mcp-swift-sdk
         product: MCP
+      # 批12 T7：流式 Markdown 渲染（助手正文 + 流式正文；exact 0.7.0）
+      - package: SwiftStreamingMarkdown
     info:
       path: WanWo/Info.plist
       properties:
