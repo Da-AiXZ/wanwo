@@ -263,6 +263,9 @@ struct WORootFrame: View {
             WOChatView(environment: environment, sessionId: sessionId,
                        onToggleRightSidebar: {
                            let visible = workspaceSidebar.isExpanded && layout.details > 0
+                           // 批15c：点击反馈直显（toast 复用挂组通道）——点击若到
+                           // 达此处必有可见弹条；不弹=点击未命中按钮（命中层问题）。
+                           environment.attachToast = "开关点击 isExpanded=\(workspaceSidebar.isExpanded) details=\(layout.details) fullscreen=\(workspaceSidebar.isFullscreen) → \(visible ? "关闭" : "打开")"
                            RightRailDiag.event("顶栏钮点击 前: isExpanded=\(workspaceSidebar.isExpanded) details=\(layout.details) isFullscreen=\(workspaceSidebar.isFullscreen) session=\(sessionId) → 目标=\(visible ? "关闭" : "打开")")
                            if visible {
                                workspaceSidebar.isExpanded = false
