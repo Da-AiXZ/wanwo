@@ -322,6 +322,9 @@ struct WOChatView: View {
     /// done 绿）+ 会话标题 14pt/500；右=右栏开关钮（规格=退役的
     /// reopenSidebarButton：32pt r9 玻璃白 .9+blur；本批两处悬浮双钮已删，
     /// 本钮是唯一入口）。
+    /// 批15c：命中强化——真机证据（批15b 日志：4 条锚点、0 条钮点击）证明
+    /// 点击从未到达 Button 的 action；改 gesture 实现绕开 Button 机制，命中
+    /// 区扩大到钮外扩 44×44+整行右半段 contentShape，点击必有 toast 直显。
     private var conversationHead: some View {
         HStack(spacing: 8) {
             WOStateDot(state: viewModel.phase == .streaming ? .ongoing : .done,
@@ -333,28 +336,39 @@ struct WOChatView: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
             if let onToggle = onToggleRightSidebar {
-                Button {
-                    onToggle()
-                } label: {
-                    // 批15：可见性修复（四轮"开关没反应"的最后一环）——原样式
-                    // 白底 .9 + regularMaterial + 白描边，在白色顶栏上几乎隐形，
-                    // 用户从未发现这个钮的存在（一直在点右上角别的东西）。
-                    // 改深色图标 + 浅灰实底 + 清晰描边，与左栏收起钮同级可见度。
-                    Image(systemName: "sidebar.trailing")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(WOAlias.labelPrimary)
-                        .frame(width: 32, height: 32)
-                        .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(WOAlias.bgLayer3))
-                        .overlay(RoundedRectangle(cornerRadius: 9)
-                            .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("展开或收起工作区侧栏")
+                Image(systemName: "sidebar.trailing")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(WOAlias.labelPrimary)
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 9)
+                        .fill(WOAlias.bgLayer3))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+                    .frame(width: 44, height: 44) // 批15c：命中区外扩
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // 批15c：gesture 实现绕开 Button 机制（Button action
+                        // 在真机上从未触达——批15b 日志 0 条钮点击实证）。
+                        onToggle()
+                    }
+                    .accessibilityLabel("展开或收起工作区侧栏")
             }
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, minHeight: 44)
+        // 批15c：整行右半段也可点（标题之后的所有区域）——命中区最大化。
+        .contentShape(Rectangle())
+        .onTapGesture { location in
+            // 点在标题文字左侧（状态点/空区）不触发；右半段任意位置触发。
+            // location.x > 120 粗判：避开标题区误触，右半段全为开关命中区。
+            if location.x > 120, let onToggle = onToggleRightSidebar {
+                onToggle()
+            }
+        }
+        .onAppear {
+            // 批15c：顶栏渲染留痕（配合钮点击日志，分辨"没渲染"vs"没命中"）。
+            RightRailDiag.event("顶栏渲染 sessionId=\(sessionId) hasToggle=\(onToggleRightSidebar != nil)")
+        }
     }
 
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）
