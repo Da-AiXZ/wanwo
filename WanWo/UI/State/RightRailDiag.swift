@@ -39,7 +39,7 @@ enum RightRailDiag {
                 let size = (try? handle.seekToEnd()) ?? 0
                 if size > maxBytes {
                     // 大小守护：截留后半（seek 到中点，残行容忍）
-                    handle.truncate(atOffset: size / 2)
+                    try? handle.truncate(atOffset: size / 2)
                     _ = try? handle.seek(toOffset: size / 2)
                 }
                 _ = try? handle.seekToEnd()
