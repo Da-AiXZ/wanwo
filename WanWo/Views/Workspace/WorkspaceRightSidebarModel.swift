@@ -98,9 +98,21 @@ final class WorkspaceRightSidebarModel: ObservableObject {
     /// 侧栏展开/收起（收起 = 布局列宽 0 让位主区，右栏本体保持挂载——批9B）。
     /// 批10：初值 true→false（2026-09-22 用户令：右栏只听手动开关与 AI 资源
     /// 打开（wanwo:// 深链），启动不再自动开）。
-    @Published var isExpanded = false
-    /// 全屏（右侧栏占满整窗；【批3 C⑤】左栏由 RootView 条件根布局隐藏）。
-    @Published var isFullscreen = false
+    /// 批14：didSet 诊断（每次变化留痕——定位"开关没反应/铺满"的状态轨迹）。
+    @Published var isExpanded = false {
+        didSet {
+            guard oldValue != isExpanded else { return }
+            RightRailDiag.event("model.isExpanded \(oldValue)→\(isExpanded)")
+        }
+    }
+    /// 全屏（右侧栏占满整窗；批13 放大钮退役——恒 false，RootView 死代码
+    /// 引用保留至环8）。
+    @Published var isFullscreen = false {
+        didSet {
+            guard oldValue != isFullscreen else { return }
+            RightRailDiag.event("model.isFullscreen \(oldValue)→\(isFullscreen)")
+        }
+    }
     /// 「审查」入口可见性（仅 git 仓库项目——工作区宿主根存在 .git 目录时）。
     @Published var reviewAvailable = false
 
@@ -211,6 +223,7 @@ final class WorkspaceRightSidebarModel: ObservableObject {
     func reconcileForSelection(sessionID: String?) {
         guard sessionID == nil else { return }
         if isExpanded || isFullscreen {
+            RightRailDiag.event("reconcileForSelection 无会话 → 收起+退全屏 (前: isExpanded=\(isExpanded) isFullscreen=\(isFullscreen))")
             isExpanded = false
             isFullscreen = false
         }

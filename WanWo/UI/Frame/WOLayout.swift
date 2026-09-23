@@ -117,11 +117,17 @@ public final class WOLayoutStore: ObservableObject {
 
     /// 已开则 no-op
     public func openDetails() {
-        guard details == 0 else { return }
+        guard details == 0 else {
+            RightRailDiag.event("openDetails no-op（已开 details=\(details)）")
+            return
+        }
         details = WOLayoutContract.detailsDefault
+        RightRailDiag.event("openDetails → details=\(details)")
     }
 
     public func closeDetails() {
+        guard details != 0 else { return }
         details = 0
+        RightRailDiag.event("closeDetails → details=0")
     }
 }

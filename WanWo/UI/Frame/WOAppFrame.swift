@@ -74,7 +74,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 // 批10：折算门从 hasDetailsSession 改为 hasSession（blank 会话
                 // 期间全屏不再"隐身/复活挤压"——真机反馈 2026-09-22）；真值=
                 // 入参 fullscreen（WorkspaceRightSidebarModel.isFullscreen 直连）。
+                // 批14：折算触发诊断（"铺满"形态出现的每次都留痕）。
                 if fullscreen, hasSession {
+                    RightRailDiag.event("折算触发 fullscreen=true → center=0 details=\(max(0, viewport - (sidebarCollapsed ? WOLayoutContract.sidebarCollapsed : sidebarPreference))) viewport=\(viewport)")
                     c = WOColumns(sidebar: c.sidebar,
                                   center: 0,
                                   details: max(0, viewport - c.sidebar))
