@@ -145,6 +145,16 @@ struct WOChatView: View {
             // 底部座位组（hero 与 dock 共用同一 composerSeat 实例——C2 FLIP
             // 保持：条件块都位于座位之前的独立槽位，座位跨 heroMode 换相不换
             // 身份，.woMotion(0.42) 驱动布局迁移）。
+            // 批13：底部渐变衬罩（用户令 2026-09-23：与顶栏对称、方向相反——
+            // 上 100% 透明→下 0% 透明，内容从统计行后面滚过时在底部淡出；
+            // 范围=统计行+底部安全区一带全宽，不挡触控）。
+            if !heroMode {
+                LinearGradient(colors: [.clear, WOAlias.bgBase],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 88)
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+            }
             VStack(spacing: 0) {
                 if heroMode {
                     Spacer(minLength: 0)
@@ -176,7 +186,10 @@ struct WOChatView: View {
                 // 删除不再做渐变。内容贴卡上缘自然裁切，滚动跟随由 autoFollow
                 // 闸门+列表底部 padding 保证）。
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
+                // 批13：620 限宽与 composer 卡同轴（原全宽拉通，用户令对齐
+                // dock 对称轴——行左缘对齐卡左缘）。
                 WOStatsDock(line: viewModel.statsLine)
+                    .frame(maxWidth: 620)
                 if heroMode {
                     Spacer(minLength: 0)
                 }
