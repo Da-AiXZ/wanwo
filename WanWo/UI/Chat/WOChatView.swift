@@ -238,6 +238,9 @@ struct WOChatView: View {
         }
         .background(WOAlias.bgBase)
         .onAppear {
+            // 批15：锚点埋点（App 一进会话必写一条——日志文件必然出现，
+            // 用于分辨"日志通道坏了"还是"按钮事件没触发"）。
+            RightRailDiag.event("会话视图出现 sessionId=\(sessionId)")
             viewModel.open()
             seedEntry()
             // dsh「hero 输入文本 = 新会话 composer draft」交接缝消费（旧

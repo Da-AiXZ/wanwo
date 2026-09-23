@@ -25,14 +25,23 @@ enum RightRailDiag {
     }
 
     /// 一条诊断事件（调用方把当时的 @MainActor 状态值拼进 message）。
+    /// 批15：双通道留痕——文件写入若静默失败（try? 吞错），UserDefaults
+    /// 最近 8 条兜底仍可佐证"埋点是否执行过"；写入失败同步 NSLog 报警。
     static func event(_ message: String) {
         logger.info(message) // os.log 同步一份（Debug 控制台可见）
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "\(ts) | \(message)\n"
+        // UserDefaults 兜底通道（主线程安全：event 可能从 MainActor 调）。
+        let defaults = UserDefaults.standard
+        var trail = defaults.stringArray(forKey: "rightrail-diag-trail") ?? []
+        trail.append("\(ts) | \(message)")
+        if trail.count > 8 { trail = Array(trail.suffix(8)) }
+        defaults.set(trail, forKey: "rightrail-diag-trail")
         queue.async {
             let url = fileURL
             let fm = FileManager.default
             guard let data = line.data(using: .utf8) else { return }
+            var wrote = false
             if fm.fileExists(atPath: url.path),
                let handle = try? FileHandle(forWritingTo: url) {
                 defer { try? handle.close() }
@@ -43,9 +52,12 @@ enum RightRailDiag {
                     _ = try? handle.seek(toOffset: size / 2)
                 }
                 _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
+                wrote = ((try? handle.write(contentsOf: data)) != nil)
             } else {
-                try? data.write(to: url, options: .atomic)
+                wrote = ((try? data.write(to: url, options: .atomic)) != nil)
+            }
+            if !wrote {
+                NSLog("[RightRail] 文件写入失败（Documents/rightRail-diag.log）——事件仅存 UserDefaults 兜底")
             }
         }
     }
