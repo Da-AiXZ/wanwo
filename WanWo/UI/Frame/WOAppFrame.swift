@@ -74,9 +74,13 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 // 批10：折算门从 hasDetailsSession 改为 hasSession（blank 会话
                 // 期间全屏不再"隐身/复活挤压"——真机反馈 2026-09-22）；真值=
                 // 入参 fullscreen（WorkspaceRightSidebarModel.isFullscreen 直连）。
-                // 批14：折算触发诊断（"铺满"形态出现的每次都留痕）。
+                // 批15f：此处的 RightRailDiag.event 删除——折算分支位于
+                // GeometryReader body 求值热路径（动画期间每帧多次求值），
+                // 每次求值写日志（文件+NSLog+UserDefaults）引发重算/IO 风暴，
+                // 主线程被淹没 → scene-update watchdog 10s 击杀（.ips 实证
+                // "exhausted real (wall clock) time allowance of 10.00 seconds"，
+                // 日志 4043 条中同一秒数百条"折算触发"）。诊断一律不得挂热路径。
                 if fullscreen, hasSession {
-                    RightRailDiag.event("折算触发 fullscreen=true → center=0 details=\(max(0, viewport - (sidebarCollapsed ? WOLayoutContract.sidebarCollapsed : sidebarPreference))) viewport=\(viewport)")
                     c = WOColumns(sidebar: c.sidebar,
                                   center: 0,
                                   details: max(0, viewport - c.sidebar))

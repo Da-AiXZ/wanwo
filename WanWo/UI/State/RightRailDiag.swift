@@ -17,6 +17,10 @@ enum RightRailDiag {
 
     private static let queue = DispatchQueue(label: "com.wanwo.rightrail-diag")
     private static let maxBytes = 512 * 1024
+    /// 批15f：节流——同内容 1 秒内只写一次（防热路径误挂引发 IO/重算风暴，
+    /// 批15c 折算分支实证：body 求值路径挂日志 → 同秒数百条 → watchdog 击杀）。
+    private static var lastMessage: String = ""
+    private static var lastTime: Date = .distantPast
 
     private static var fileURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory,
@@ -25,9 +29,15 @@ enum RightRailDiag {
     }
 
     /// 一条诊断事件（调用方把当时的 @MainActor 状态值拼进 message）。
-    /// 批15：双通道留痕——文件写入若静默失败（try? 吞错），UserDefaults
+    /// 批15f：双通道留痕——文件写入若静默失败（try? 吞错），UserDefaults
     /// 最近 8 条兜底仍可佐证"埋点是否执行过"；写入失败同步 NSLog 报警。
     static func event(_ message: String) {
+        // 节流（主线程判断；event 约定从 MainActor 调用）。
+        let now = Date()
+        if message == lastMessage, now.timeIntervalSince(lastTime) < 1.0 { return }
+        lastMessage = message
+        lastTime = now
+
         logger.info(message) // os.log 同步一份（Debug 控制台可见）
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "\(ts) | \(message)\n"
