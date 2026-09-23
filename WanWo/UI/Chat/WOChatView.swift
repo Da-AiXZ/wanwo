@@ -336,6 +336,10 @@ struct WOChatView: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
             if let onToggle = onToggleRightSidebar {
+                // 批15e：图标本身不再挂独立手势（批15d 实测：嵌套手势下点图标
+                // 从未触发——用户日志数十次点击 0 条内层记录；外层整行手势已
+                // 被证明可触发）。图标区域自然落在外层 x>120 命中区里，
+                // 点图标=点开关，同一条路径。
                 Image(systemName: "sidebar.trailing")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(WOAlias.labelPrimary)
@@ -344,13 +348,6 @@ struct WOChatView: View {
                         .fill(WOAlias.bgLayer3))
                     .overlay(RoundedRectangle(cornerRadius: 9)
                         .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
-                    .frame(width: 44, height: 44) // 批15c：命中区外扩
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        // 批15c：gesture 实现绕开 Button 机制（Button action
-                        // 在真机上从未触达——批15b 日志 0 条钮点击实证）。
-                        onToggle()
-                    }
                     .accessibilityLabel("展开或收起工作区侧栏")
             }
         }

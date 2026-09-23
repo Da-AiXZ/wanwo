@@ -46,11 +46,10 @@ struct WorkspaceRightSidebarView: View {
         return nil
     }
 
-    // MARK: - 顶部条（关闭；2026-09-21 用户令：两钮加大拉开、关闭改 ✕ 图标钮）
-    // 批13：原「放大/全屏」钮整体退役（用户令 2026-09-23）——它是全仓唯一
-    // 能把右栏折算成"铺满"形态的入口（isFullscreen 唯一写 true 点），iPad 上
-    // 右栏 400pt 已够用且该形态两次真机误触抱怨；退役后右栏只有「400 列/
-    // 关闭」两态（model.isFullscreen 恒 false，RootView 死代码引用不动）。
+    // MARK: - 顶部条（全屏 + 关闭）
+    // 批15e：用户令加回「放大/全屏」钮（批13 误删——用户实测全屏功能是需要的，
+    // "铺满" complaints 的病根是列宽门/双记账而非功能本身，均已修复）。
+    // isFullscreen 折算链（WOAppFrame 入参+列宽覆写）批10 起健在，钮恢复即恢复。
 
     private var topBar: some View {
         HStack(spacing: 10) {
@@ -58,6 +57,24 @@ struct WorkspaceRightSidebarView: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    model.isFullscreen.toggle()
+                }
+            } label: {
+                Image(systemName: model.isFullscreen
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 8)
+                        .fill(WOAlias.interactiveBgHover))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.isFullscreen ? "退出全屏" : "全屏")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
