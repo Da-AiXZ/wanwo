@@ -333,15 +333,18 @@ struct WOChatView: View {
                 Button {
                     onToggle()
                 } label: {
+                    // 批15：可见性修复（四轮"开关没反应"的最后一环）——原样式
+                    // 白底 .9 + regularMaterial + 白描边，在白色顶栏上几乎隐形，
+                    // 用户从未发现这个钮的存在（一直在点右上角别的东西）。
+                    // 改深色图标 + 浅灰实底 + 清晰描边，与左栏收起钮同级可见度。
                     Image(systemName: "sidebar.trailing")
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(WOAlias.labelSecondary)
+                        .foregroundColor(WOAlias.labelPrimary)
                         .frame(width: 32, height: 32)
                         .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(WOStatic.neutral00.opacity(0.9)))
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                            .fill(WOAlias.bgLayer3))
                         .overlay(RoundedRectangle(cornerRadius: 9)
-                            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+                            .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("展开或收起工作区侧栏")
