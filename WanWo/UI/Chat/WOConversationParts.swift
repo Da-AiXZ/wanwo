@@ -31,6 +31,9 @@ struct WOEntryModifier: ViewModifier {
     var offset: CGSize
     var scale: CGFloat = 0.95
     var duration: Double
+    /// 批12+回归八校（点4 手术）：入场级联延迟——同批落盘的思考（0）与
+    /// 工具（0.3s）错峰入场，视觉上"思考先上屏、工具随后各自入场"。
+    var delay: Double = 0
     /// 一次性入场门（animate=false 直达终态——历史/已播节点不重播）。
     var animate: Bool
     /// 批12+回归七校：入场决策诊断行（非 nil 时 onAppear 落
@@ -43,10 +46,12 @@ struct WOEntryModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(offset: CGSize, scale: CGFloat = 0.95, duration: Double,
-         animate: Bool, diag: String? = nil, onSeen: (() -> Void)? = nil) {
+         delay: Double = 0, animate: Bool, diag: String? = nil,
+         onSeen: (() -> Void)? = nil) {
         self.offset = offset
         self.scale = scale
         self.duration = duration
+        self.delay = delay
         self.animate = animate
         self.diag = diag
         self.onSeen = onSeen
@@ -71,10 +76,10 @@ struct WOEntryModifier: ViewModifier {
                     shown = true
                     onSeen?()
                 } else {
-                    withAnimation(woEntryCurve(duration)) { shown = true }
+                    withAnimation(woEntryCurve(duration).delay(delay)) { shown = true }
                     if let onSeen {
                         // 动画完成后登记 seen（结构体值捕获，无引用循环面）。
-                        let interval = UInt64((duration + 0.1) * 1_000_000_000)
+                        let interval = UInt64((duration + delay + 0.1) * 1_000_000_000)
                         Task {
                             try? await Task.sleep(nanoseconds: interval)
                             onSeen()

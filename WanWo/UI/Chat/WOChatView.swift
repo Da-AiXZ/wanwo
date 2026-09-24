@@ -77,6 +77,9 @@ struct WOChatView: View {
     /// 被 "u(seq)"（落盘投影）替换时，后者即时呈现不重播（日志 L1/L2 双身份
     /// 实证）；onSeen 后归位，下一轮乐观气泡照常入场。
     @State private var pendingUserSeen = false
+    /// 批12+回归八校（点1 手术）：收尾 hold——回合结束但打字机尚有积压时，
+    /// 直播块滞留把剩余字打完（落盘正文暂隐），打完自动换手。
+    @State private var settleHold = false
     /// 批12+回归五/七校：打字机节奏器状态——typeTarget=数据侧全文（VM 快照），
     /// typeCursor=显示侧已打出的字数（33Hz 步进，积压越大步进越大）。
     @State private var typeTarget = ""
@@ -576,11 +579,14 @@ struct WOChatView: View {
                                 if slashMenuOpen { slashDismissed = true }
                             }
                     }
-                    if viewModel.phase == .streaming {
+                    if viewModel.phase == .streaming || settleHold {
                         streamingBlock
+                    }
+                    if viewModel.phase == .streaming {
                         // 流光换字状态行（批12+回归五校：用户参考件"流光换字·
                         // 多文案循环"机制 1:1——光束扫过字符槽点亮并换字，hold
-                        // 后下一条；文案池每次出现洗牌轮换不重样）。
+                        // 后下一条；文案池每次出现洗牌轮换不重样）。仅真实流式
+                        // 期显示；收尾 hold（打字机补打）不显示。
                         WOBeamSwapper()
                             .padding(.top, 2)
                     }
@@ -639,9 +645,23 @@ struct WOChatView: View {
             }
             .onChange(of: viewModel.streamingText) { newValue in
                 // 批12+回归五校：打字机数据侧——只记目标全文（显示节奏由
-                // typewriterLoop 驱动）；文本缩水（新块/清面）游标归零。
-                typeTarget = newValue
-                if newValue.count < typeCursor { typeCursor = 0 }
+                // typewriterLoop 驱动）。
+                // 批12+回归八校（点1 手术）：清空（回合收尾 reproject）且
+                // 打字机尚有积压 → 收尾 hold：保留目标与游标，直播块把剩余
+                // 字打完再换手（落盘正文在 hold 期间隐藏，见 bubbleView）——
+                // "总结一整块补拍"根治。
+                if newValue.isEmpty, typeCursor < typeTarget.count {
+                    settleHold = true
+                } else {
+                    typeTarget = newValue
+                    if newValue.count < typeCursor { typeCursor = 0 }
+                    settleHold = false
+                }
+                follow(proxy)
+            }
+            .onChange(of: typeCursor) { _ in
+                // 批12+回归八校：显示侧步进也驱动跟随（hold 期间数据侧不再
+                // 变化，靠游标步进把新打的字滚进视口）。
                 follow(proxy)
             }
             .onChange(of: viewModel.streamingReasoning) { _ in follow(proxy) }
@@ -738,11 +758,15 @@ struct WOChatView: View {
             : CGSize(width: fromRight ? 16 : -16, height: 0)
         let scale: CGFloat = fadeUp ? 1 : 0.95
         let duration: Double = fadeUp ? 0.4 : 0.55
+        // 批12+回归八校（点4 手术）：同批落盘的思考（delay 0）与工具
+        // （delay 0.3s）错峰——视觉上"思考先上屏，工具随后各自入场"。
+        let entryDelay: Double = fadeUp && kindTag == "tool" ? 0.3 : 0
         return bubbleView(bubble)
             .modifier(WOEntryModifier(
                 offset: offset,
                 scale: scale,
                 duration: duration,
+                delay: entryDelay,
                 animate: animate,
                 diag: seen ? nil : "entry id=\(bubble.id) kind=\(kindTag) branch=\(branch) phase=\(String(describing: viewModel.phase))",
                 onSeen: {
@@ -802,12 +826,20 @@ struct WOChatView: View {
             // 列表/代码块/表格可渲染；字色库默认跟随系统 primary，字号一期
             // default 不折腾）。库自带 textSelection 配置——外层 .textSelection
             // 去掉避免双选区行为。
-            HStack(alignment: .top, spacing: 8) {
-                WOAssistantAvatar()
-                MarkdownView(text: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // 批12+回归八校（点1 手术）：收尾 hold 期间，最后一条落盘正文
+            // 暂隐（零高度）——直播块把剩余字打完再显现，避免双份+整块补拍。
+            Group {
+                if settleHold, isSettlingAssistant(bubble) {
+                    Color.clear.frame(height: 0)
+                } else {
+                    HStack(alignment: .top, spacing: 8) {
+                        WOAssistantAvatar()
+                        MarkdownView(text: text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.top, 1)
+                }
             }
-            .padding(.top, 1)
 
         case .reasoning(let text):
             // 思考披露：标题 + 首行预览 + chevron；展开体左缩进 22（digest-H .think）。
@@ -863,7 +895,7 @@ struct WOChatView: View {
                 // 右对齐跟随 + 行上扫光；expanded 初值恒 false 不自动展开）。
                 ReasoningDisclosure(text: viewModel.streamingReasoning, running: true)
             }
-            if !viewModel.streamingText.isEmpty {
+            if !viewModel.streamingText.isEmpty || settleHold {
                 // 批12 T7：流式正文换 StreamedMarkdownView（库自带流式动画语义；
                 // 光标 ▍ 不再手画，保持干净）。
                 // 批12+回归三校：shouldAnimateText 显式 true（逐字淡入，官方
@@ -890,7 +922,12 @@ struct WOChatView: View {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 30_000_000)
             let target = typeTarget
-            guard typeCursor < target.count else { continue }
+            guard typeCursor < target.count else {
+                // 批12+回归八校（点1）：收尾 hold 打完——释放换手（落盘正文
+                // 显现，直播块随视图条件卸载）。
+                if settleHold { settleHold = false }
+                continue
+            }
             let backlog = target.count - typeCursor
             let step = max(1, backlog / 3)
             typeCursor = min(target.count, typeCursor + step)
@@ -899,6 +936,16 @@ struct WOChatView: View {
                 streamSource.emit(prefix)
             }
         }
+    }
+
+    /// 批12+回归八校（点1）：该落盘正文是否为收尾 hold 的暂隐目标（本轮
+    /// 最后一条 .assistant 气泡——打字机正在直播块里补打的那条）。
+    private func isSettlingAssistant(_ bubble: ConversationProjector.Bubble) -> Bool {
+        guard case .assistant = bubble.kind else { return false }
+        return viewModel.bubbles.last(where: { bubble in
+            if case .assistant = bubble.kind { return true }
+            return false
+        })?.id == bubble.id
     }
 }
 
