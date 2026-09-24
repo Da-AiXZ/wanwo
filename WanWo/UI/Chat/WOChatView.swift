@@ -579,7 +579,13 @@ struct WOChatView: View {
                             .background(RoundedRectangle(cornerRadius: 12)
                                 .fill(WOAlias.stateErrorSecondary))
                     }
-                    Color.clear.frame(height: 8).id(bottomAnchor)
+                    // 批12+回归三校（2026-09-24 用户令）：跟随锚点自带让位——
+                    // scrollTo(anchor, .bottom) 把锚点底边对齐视口底边，锚点
+                    // 高度=dock 悬浮区（卡+统计行）实测 137pt+余量 → 最新内容
+                    // 恰好落在 dock 卡上缘可见，不再停在物理屏幕边缘被
+                    // dock/底部渐变遮挡（首版锚点 8pt 贴底=输出位置被挡，
+                    // 用户令改）。往上划时内容照常从 dock/渐变底下穿过淡出。
+                    Color.clear.frame(height: 148).id(bottomAnchor)
                     // 批C4：尾部探针（1pt；视口内可见性 → autoFollow 闸门）。
                     Color.clear
                         .frame(height: 1)
@@ -589,10 +595,12 @@ struct WOChatView: View {
                         })
                 }
                 // 批C3（原型 .msgs padding:14px 16px 140px 折算）：顶部 14+44
-                // （首条消息初始落在顶栏下），底部 140（composer 悬浮区让位）。
+                // （首条消息初始落在顶栏下）。批12+回归三校：底部 140 让位职责
+                // 移入跟随锚点（148pt，见上）——padding 退役改 8pt 收尾，否则
+                // 让位区排在锚点视口之外、跟随落点贴物理屏幕边缘（三校病根）。
                 .padding(.horizontal, 16)
                 .padding(.top, 58)
-                .padding(.bottom, 140)
+                .padding(.bottom, 8)
             }
             // 批C4：视口 global 框（探针可见性判定的同一坐标系基准）。
             .background(
@@ -826,7 +834,13 @@ struct WOChatView: View {
             if !viewModel.streamingText.isEmpty {
                 // 批12 T7：流式正文换 StreamedMarkdownView（库自带流式动画语义；
                 // 光标 ▍ 不再手画，保持干净）。
-                StreamedMarkdownView(source: streamSource)
+                // 批12+回归三校（2026-09-24 用户反馈"一块一块出现"破案）：
+                // shouldAnimateText 必须显式 true——.default 为 false（新增文字
+                // 瞬间整块拍上=每 0.2s 批次一块一块）；true=库设计的逐词淡入
+                // （UIKit CADisplayLink 实现，iOS16 可用，官方 Demo 同款配置）。
+                StreamedMarkdownView(
+                    source: streamSource,
+                    config: MarkdownRenderConfig.default.withShouldAnimateText(value: true))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
