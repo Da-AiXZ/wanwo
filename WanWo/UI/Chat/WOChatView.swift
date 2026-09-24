@@ -73,6 +73,10 @@ struct WOChatView: View {
     /// 批12 T7：流式正文 Markdown 桥接（StreamedMarkdownSource；离开
     /// .streaming 即 finish 并重建，供下一回合——见 phase onChange 链）。
     @State private var streamSource = WOChatStreamSource()
+    /// 批12+回归五校：打字机节奏器状态——typeTarget=数据侧全文（VM 快照），
+    /// typeCursor=显示侧已打出的字数（33Hz 步进，积压越大步进越大）。
+    @State private var typeTarget = ""
+    @State private var typeCursor = 0
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
@@ -565,9 +569,10 @@ struct WOChatView: View {
                     }
                     if viewModel.phase == .streaming {
                         streamingBlock
-                        // 深度求索中（digest-H turn-status；phase 锚点）。
-                        WOShimmerText(text: "深度求索中...",
-                                      font: .system(size: 14, weight: .medium))
+                        // 流光换字状态行（批12+回归五校：用户参考件"流光换字·
+                        // 多文案循环"机制 1:1——光束扫过字符槽点亮并换字，hold
+                        // 后下一条；文案池每次出现洗牌轮换不重样）。
+                        WOBeamSwapper()
                             .padding(.top, 2)
                     }
                     if case .failed(let message) = viewModel.phase {
@@ -614,11 +619,10 @@ struct WOChatView: View {
             .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
             .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
             .onChange(of: viewModel.streamingText) { newValue in
-                // 批12 T7：流式正文全文快照喂给 StreamedMarkdownView（每次
-                // yield 全文累积快照语义）；空值不 emit——emit 空串会清空渲染。
-                if !newValue.isEmpty {
-                    streamSource.emit(newValue)
-                }
+                // 批12+回归五校：打字机数据侧——只记目标全文（显示节奏由
+                // typewriterLoop 驱动）；文本缩水（新块/清面）游标归零。
+                typeTarget = newValue
+                if newValue.count < typeCursor { typeCursor = 0 }
                 follow(proxy)
             }
             .onChange(of: viewModel.streamingReasoning) { _ in follow(proxy) }
@@ -672,50 +676,51 @@ struct WOChatView: View {
 
     @ViewBuilder
     private func entryNode(_ node: ConversationProjector.DisplayNode) -> some View {
-        // 消息=mInL/mInR（.55s 横移+缩放）；工具卡=fadeUp（.4s 自下 8px，
-        // 无缩放——digest-H 工具卡 fadeUp .4s 独立曲线，与消息入场分立）。
-        let isTool: Bool = {
-            if case .plain(let bubble) = node,
-               case .tool = bubble.kind { return true }
-            return false
+        // 批12+回归五校（用户令）：思考/工具节点=fadeUp（.4s 自下 8px+淡入）；
+        // 过程组不再整块动画——组内节点逐个走入场门（组平铺内层原为直渲染
+        // 无动画=用户实测"思考/工具出现都没有动画"）；消息保持 mInL/mInR。
+        switch node {
+        case .plain(let bubble):
+            entryBubble(bubble)
+        case .process(let group):
+            ForEach(group.bubbles) { inner in
+                entryBubble(inner)
+            }
+        }
+    }
+
+    /// 单气泡入场（按 kind 选曲线；animatedIDs 一次性门同现状——历史/已播
+    /// 不重播）。reasoning 平铺节点与组内 reasoning 共用同一稳定 id
+    /// （"a(seq)-b(块序)"），组换身不致重播。
+    @ViewBuilder
+    private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
+        let fadeUp: Bool = {
+            switch bubble.kind {
+            case .tool, .reasoning: return true
+            default: return false
+            }
         }()
         let fromRight: Bool = {
-            if case .plain(let bubble) = node,
-               case .user = bubble.kind { return true }
+            if case .user = bubble.kind { return true }
             return false
         }()
-        if animatedIDs.contains(node.id) {
-            nodeBody(node)
-        } else if isTool {
-            nodeBody(node)
+        if animatedIDs.contains(bubble.id) {
+            bubbleView(bubble)
+        } else if fadeUp {
+            bubbleView(bubble)
                 .modifier(WOEntryModifier(
                     offset: CGSize(width: 0, height: 8),
                     scale: 1,
                     duration: 0.4,
                     animate: true,
-                    onSeen: { animatedIDs.insert(node.id) }))
+                    onSeen: { animatedIDs.insert(bubble.id) }))
         } else {
-            nodeBody(node)
+            bubbleView(bubble)
                 .modifier(WOEntryModifier(
                     offset: CGSize(width: fromRight ? 16 : -16, height: 0),
                     duration: 0.55,
                     animate: true,
-                    onSeen: { animatedIDs.insert(node.id) }))
-        }
-    }
-
-    // MARK: - 展示节点渲染
-
-    @ViewBuilder
-    private func nodeBody(_ node: ConversationProjector.DisplayNode) -> some View {
-        switch node {
-        case .plain(let bubble):
-            bubbleView(bubble)
-        case .process(let group):
-            // 过程组平铺渲染（不折叠）——思考与工具全可见；组折叠行=后续批。
-            ForEach(group.bubbles) { inner in
-                bubbleView(inner)
-            }
+                    onSeen: { animatedIDs.insert(bubble.id) }))
         }
     }
 
@@ -838,12 +843,38 @@ struct WOChatView: View {
                 // shouldAnimateText 必须显式 true——.default 为 false（新增文字
                 // 瞬间整块拍上=每 0.2s 批次一块一块）；true=库设计的逐词淡入
                 // （UIKit CADisplayLink 实现，iOS16 可用，官方 Demo 同款配置）。
+                // 批12+回归五校：打字机节奏器——数据（VM 全量快照）与显示（逐字）
+                // 解耦，typeCursor 按定时步进喂前缀快照，每个新字经库单字淡入
+                // 上屏（用户令"一个字一个字的出现+淡入"）。
                 StreamedMarkdownView(
                     source: streamSource,
                     config: MarkdownRenderConfig.default.withShouldAnimateText(value: true))
+                    .task { await typewriterLoop() }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task { await typewriterLoop() }
+    }
+
+    /// 打字机节奏器（批12+回归五校）：33Hz 步进，每步至少 1 字、积压越大
+    /// 步进越大（/6 自适应追赶，网络突发不致掉队）；游标前缀喂
+    /// StreamedMarkdownSource，新字经库单字淡入上屏。会话恢复若已有长积压
+    /// （>140 字）快进只打尾部，避免重开会话整篇重打。
+    private func typewriterLoop() async {
+        if typeCursor == 0, typeTarget.count > 140 {
+            typeCursor = typeTarget.count - 140
+        }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            let target = typeTarget
+            guard typeCursor < target.count else { continue }
+            let step = max(1, (target.count - typeCursor) / 6)
+            typeCursor = min(target.count, typeCursor + step)
+            let prefix = String(target.prefix(typeCursor))
+            if !prefix.isEmpty {
+                streamSource.emit(prefix)
+            }
+        }
     }
 }
 
@@ -980,17 +1011,18 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                             .fill(WOAlias.labelCaption)
                             .frame(width: 2, height: 2)
                             .padding(.horizontal, 8)
-                        Text(summary)
-                            .font(.system(size: 13))
-                            .foregroundColor(summaryColor)
-                            .lineLimit(1)
-                            // 批12+回归三校③（用户令：思考行 dsh 流式跟随）：
-                            // followEnd（running）截头显尾——dsh 实证（ReasoningRow
-                            // .module.css :77-89 data-follow-end=容器右对齐+内容
-                            // max-content 左缘裁切，永远露出流式末端）；settled
-                            // 保持截尾显首（firstLine 语义）。
-                            .truncationMode(summaryFollowEnd ? .head : .tail)
-                        if !summaryFollowEnd {
+                        if summaryFollowEnd {
+                            // 批12+回归五校（用户令：LED 走字式跟随，四校的
+                            // 截头显尾判废=窗口跳变不丝滑）：思考流式末端在行内
+                            // 右缘进字、左缘滑出，滑动速度=模型思考出字速度。
+                            WOLedTail(text: summary, color: summaryColor)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            Text(summary)
+                                .font(.system(size: 13))
+                                .foregroundColor(summaryColor)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                             Spacer(minLength: 0)
                         }
                     }

@@ -271,3 +271,148 @@ struct WOStatsDock: View {
             .accessibilityLabel("会话统计")
     }
 }
+
+// MARK: - LED 走字尾随窗（批12+回归五校；思考行 running 专用）
+//
+//  dsh ReasoningRow.module.css :77-89 data-follow-end 的 SwiftUI 等价：
+//  单行窗口右缘钉住内容末端，内容增长时整体向左丝滑滑动（滑动速度=
+//  模型思考出字速度，实时）；内容短于窗口时左对齐（min-width:100% 同语义）。
+
+private struct WOLedWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct WOLedTail: View {
+    let text: String
+    var color: Color
+    var font: Font = .system(size: 13)
+
+    @State private var textWidth: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            Text(text)
+                .font(font)
+                .foregroundColor(color)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .background(
+                    GeometryReader { inner in
+                        Color.clear.preference(key: WOLedWidthKey.self,
+                                               value: inner.size.width)
+                    }
+                )
+                // 右缘钉住：窗口装得下→左对齐；装不下→整体左移露末端。
+                .offset(x: min(0, geo.size.width - textWidth))
+                .animation(.linear(duration: 0.12), value: textWidth)
+                .frame(width: geo.size.width, height: geo.size.height,
+                       alignment: .leading)
+        }
+        .onPreferenceChange(WOLedWidthKey.self) { textWidth = $0 }
+        .clipped()
+    }
+}
+
+// MARK: - 流光换字状态行（批12+回归五校；用户参考件"流光换字·多文案循环"机制 1:1）
+//
+//  机制=参考 HTML：光束以 easeInOutQuad 扫过字符槽，字符距光束越近越亮
+//  （高斯晕影），光束越过字符中心即刻替换为下一条文案对应字符；扫完 hold
+//  再下一条。文案池每次出现洗牌轮换（用户令"每轮随机轮换，不重样"）。
+
+struct WOBeamSwapper: View {
+    var font: Font = .system(size: 14, weight: .medium)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 文案池（全中文=等宽槽；可随时扩充）。
+    static let pool: [String] = [
+        "深度求索中", "思维链铺设中", "检索脑缓存中", "正在编译直觉",
+        "灵感组装中", "脑内风暴中", "翻记忆页中", "大脑风扇加速",
+        "想法排队入场", "思路收敛中", "神经元点名中", "直觉对齐中",
+        "脑洞装配中", "灵感蒸馏中", "答案呼之欲出", "脑回路通电中",
+        "智慧点火中", "思绪高速运转"
+    ]
+
+    private static let hold: Double = 0.9
+    private static let sweep: Double = 0.55
+    private static let spread: CGFloat = 42
+    private static let slot: CGFloat = 14
+
+    @State private var order: [String] = []
+    @State private var appearAt: Date = .distantPast
+
+    var body: some View {
+        Group {
+            if reduceMotion || order.isEmpty {
+                Text(order.first ?? Self.pool[0])
+                    .font(font)
+                    .foregroundColor(WOAlias.stateBusinessPrimary)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+                    slots(at: timeline.date)
+                }
+            }
+        }
+        .onAppear {
+            order = Self.pool.shuffled()
+            appearAt = Date()
+        }
+    }
+
+    /// 确定性时间线：k=第几轮换字，local=本轮进度；hold 段显当前文案，
+    /// sweep 段光束扫过逐字替换为下一条。
+    private func slots(at now: Date) -> some View {
+        let elapsed = max(0, now.timeIntervalSince(appearAt))
+        let cycle = Self.hold + Self.sweep
+        let k = Int(elapsed / cycle)
+        let local = elapsed - Double(k) * cycle
+        let n = order.count
+        let from = order.isEmpty ? "" : order[k % n]
+        let to = order.isEmpty ? "" : order[(k + 1) % n]
+        let slotCount = max(from.count, to.count)
+        let contentWidth = CGFloat(slotCount) * Self.slot
+
+        return HStack(spacing: 0) {
+            ForEach(0..<slotCount, id: \.self) { i in
+                let cx = CGFloat(i) * Self.slot + Self.slot / 2
+                let state = slotState(index: i, cx: cx, local: local,
+                                      from: from, to: to, contentWidth: contentWidth)
+                Text(state.char)
+                    .font(font)
+                    .foregroundColor(state.color)
+                    .shadow(color: state.shadowColor, radius: state.shadowRadius)
+                    .frame(width: Self.slot)
+            }
+        }
+    }
+
+    private func slotState(index i: Int, cx: CGFloat, local: Double,
+                           from: String, to: String, contentWidth: CGFloat)
+        -> (char: String, color: Color, shadowColor: Color, shadowRadius: CGFloat) {
+        let charAt: (String) -> String = { s in
+            guard i < s.count else { return "" }
+            let idx = s.index(s.startIndex, offsetBy: i)
+            return String(s[idx])
+        }
+        // hold 段：当前文案静默（暗灰）。
+        guard local >= Self.hold else {
+            return (charAt(from), WOAlias.labelTertiary, .clear, 0)
+        }
+        // sweep 段：光束扫过——亮度随距离衰减，过束即换字。
+        let t = min(1, (local - Self.hold) / Self.sweep)
+        let et = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        let beamX = -Self.spread + (contentWidth + 2 * Self.spread) * CGFloat(et)
+        var glow = max(0, 1 - abs(beamX - cx) / Self.spread)
+        glow *= glow
+        let char = beamX >= cx ? charAt(to) : charAt(from)
+        if glow > 0.01 {
+            return (char,
+                    WOAlias.stateBusinessPrimary.opacity(0.35 + 0.65 * glow),
+                    WOAlias.stateBusinessPrimary.opacity(Double(glow) * 0.6),
+                    CGFloat(glow) * 5)
+        }
+        return (char, WOAlias.labelTertiary, .clear, 0)
+    }
+}
