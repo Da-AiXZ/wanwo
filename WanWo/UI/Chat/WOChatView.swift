@@ -1063,24 +1063,30 @@ private struct WOChatViewportKey: PreferenceKey {
 
 /// 批12 T7：流式 Markdown 桥接源（SwiftStreamingMarkdown StreamedMarkdownSource
 /// 语义——每次 yield 全文累积快照；ObservableObject 供 StreamedMarkdownView
-/// 订阅并在内部 .task 消费）。AsyncStream 默认 unbounded 缓冲：视图挂载前的
-/// yield 不丢。WOChatView 持 @State 实例；离开 .streaming 即 finish 并重建。
+/// 订阅并在内部 .task 消费）。
+/// 批12+回归九校-C：可重启流——原实现 init 建死一条管道（let continuation）；
+/// 官方 StreamedMarkdownController 的取消语义=消费任务被取消即流终结
+/// （AsyncStream storage.done，后续 yield 静默丢弃），而 liveTail 卸载/
+/// 重挂（换手/回合边界）必经一次取消——死管道+终身单例=重挂后 emit 全部
+/// 无人消费="卡住不显示、等落盘全文才显示"且随换手路径时序呈规律交替
+/// （用户实测）。改为每次 controller.start 访问 text 时新建管道、emit 永远
+/// 对接最新一条——控制器想取消就取消，新控制器永远拿到活管道。
 private final class WOChatStreamSource: ObservableObject, StreamedMarkdownSource {
-    /// AsyncStream<String>（StreamedMarkdownSource 协议要求——每次产出全文快照）。
-    let text: AsyncStream<String>
-    private let continuation: AsyncStream<String>.Continuation
+    /// 当前管道（每次 text 访问被最新 controller 接管；MainActor 串行无锁）。
+    private var continuation: AsyncStream<String>.Continuation?
 
-    init() {
-        var c: AsyncStream<String>.Continuation!
-        self.text = AsyncStream { c = $0 }
-        self.continuation = c!
+    /// StreamedMarkdownSource 协议要求。计算属性：每个消费方 start 时
+    /// 访问一次 = 开一条新管道（旧管道随旧 controller 的 end 终结，互不影响）。
+    var text: AsyncStream<String> {
+        AsyncStream { self.continuation = $0 }
     }
 
     /// 追加一次全文累积快照（调用方保证非空——emit 空串会清空渲染）。
-    func emit(_ snapshot: String) { continuation.yield(snapshot) }
+    /// 无消费者时（liveTail 卸载窗口）可选链静默丢弃，重挂后恢复投递。
+    func emit(_ snapshot: String) { continuation?.yield(snapshot) }
 
-    /// 本回合结束（StreamedMarkdownView 收尾；之后由宿主重建实例供下回合）。
-    func finish() { continuation.finish() }
+    /// 保留兼容（当前无调用方；终结当前管道）。
+    func finish() { continuation?.finish() }
 }
 
 /// 批12+回归七校：入场决策诊断（首次工具调用双重动画/消息连带动画定位）。
