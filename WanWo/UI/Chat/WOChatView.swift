@@ -142,6 +142,19 @@ struct WOChatView: View {
                 messageList
                     .transition(.opacity)
             }
+            // 批12+回归二校（2026-09-24 用户令）：dock 下方底部渐变衬罩——
+            // 范围 = dock 卡底缘 → 屏幕物理底边；上缘透明度 100%（全透）→
+            // 下缘 0%（实色 bgBase），与标题栏镜像同款（内容滚到屏幕底缘处
+            // 被淡出遮住）。首版方向做反（上实下透）已按用户截图判废。
+            // ignoresSafeArea 保证贴到物理底边；命中关闭；hero 态不渲染。
+            if !heroMode {
+                LinearGradient(colors: [.clear, WOAlias.bgBase],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 48)
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+                    .ignoresSafeArea(edges: .bottom)
+            }
             // 底部座位组（hero 与 dock 共用同一 composerSeat 实例——C2 FLIP
             // 保持：条件块都位于座位之前的独立槽位，座位跨 heroMode 换相不换
             // 身份，.woMotion(0.42) 驱动布局迁移）。
@@ -177,22 +190,11 @@ struct WOChatView: View {
                 // 闸门+列表底部 padding 保证）。
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
                 // 批12+回归（2026-09-24 用户令，批13 T3② 同款复刻）：统计行限宽
-                // 620 与 composer 卡同轴——对称轴同一条竖线。
+                // 620 与 composer 卡同轴——对称轴同一条竖线（文字居中见
+                // WOStatsDock 二校；渐变衬罩已迁至 ZStack 底层，见 messageList 后）。
                 WOStatsDock(line: viewModel.statsLine)
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
-                    // 批12+回归（2026-09-24 用户令）：dock 下方底部渐变衬罩——
-                    // 上缘 100% 实色（bgBase，紧贴卡底）→ 下缘 0%（屏幕底边），
-                    // 标题栏同款方向。hitTest off；hero 态不渲染。
-                    .background(alignment: .top) {
-                        if !heroMode {
-                            LinearGradient(colors: [WOAlias.bgBase, .clear],
-                                           startPoint: .top, endPoint: .bottom)
-                                .frame(height: 64)
-                                .frame(maxWidth: .infinity)
-                                .allowsHitTesting(false)
-                        }
-                    }
                 if heroMode {
                     Spacer(minLength: 0)
                 }

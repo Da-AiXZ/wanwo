@@ -257,11 +257,14 @@ struct WOStatsDock: View {
 
     var body: some View {
         // 恒渲染：无数据时以单空格行盒撑住等高（首条统计出现只填充内容，无高度跳变）。
+        // 批12+回归二校（2026-09-24 用户令）：文字在 620 同轴盒内居中——文字
+        // 自身对称轴与 dock 卡中心同一条竖线（首版 .leading 被用户截图
+        // IMG_2421 判定未对齐：文字短、左对齐时文字中心偏离轴线）。
         Text(line ?? " ")
             .font(.system(size: 11, design: .monospaced))
             .foregroundColor(WOAlias.labelTertiary)
             .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 18)
             .padding(.top, 2)
             .padding(.bottom, 4)
