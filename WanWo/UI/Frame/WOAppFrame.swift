@@ -75,9 +75,15 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 // 期间全屏不再"隐身/复活挤压"——真机反馈 2026-09-22）；真值=
                 // 入参 fullscreen（WorkspaceRightSidebarModel.isFullscreen 直连）。
                 if fullscreen, hasSession {
-                    c = WOColumns(sidebar: c.sidebar,
+                    // 原型对齐（2026-09-24 用户裁决+原型源码实证）：原型
+                    // wanwo-ui-prototype.html :139/:140/:303 —— right-full =
+                    // .sidebar-left{width:0;opacity:0} + .main{flex:0 0 0} +
+                    // .sidebar-right{flex:1} = 右栏 100% 占满整窗、左栏隐藏。
+                    // 此前实现"左栏保留"系偏离原型（全屏只占 viewport−sidebar
+                    // ≈76%，用户实测截图 IMG_2420）。列宽动画仍走唯一 0.42s。
+                    c = WOColumns(sidebar: 0,
                                   center: 0,
-                                  details: max(0, viewport - c.sidebar))
+                                  details: max(0, viewport))
                 }
                 return c
             }()
@@ -108,6 +114,11 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 .frame(width: cols.sidebar)
                 .frame(maxHeight: .infinity)
                 .clipped()
+                // 零宽禁触（2026-09-24 病根治）：clipped 只裁显示不挡触摸——
+                // 0 宽列内固定尺寸按钮会溢出仍可点中（收起态右栏隐形全屏钮
+                // 悬浮顶栏展开钮正下方劫持点击 = IMG_2420"打开即全屏态"真凶）。
+                // 56 收拢轨/正常宽栏不受影响。
+                .allowsHitTesting(cols.sidebar > 0)
                 .background(WOSpecific.sidebarFill)
                 .overlay(alignment: .trailing) {
                     Rectangle().fill(WOAlias.borderL3).frame(width: 0.5)
@@ -124,12 +135,16 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
                 .frame(width: cols.center)
                 .frame(maxHeight: .infinity)
                 .clipped()
+                .allowsHitTesting(cols.center > 0) // 零宽禁触（全屏态对话列归 0，防同族隐形内容截胡）
 
             // detailsCol：0 宽不卸载子树；collapsed 去左 1px 缝（手册 581 行）
             details()
                 .frame(width: cols.details)
                 .frame(maxHeight: .infinity)
                 .clipped()
+                // 零宽禁触（2026-09-24 根治门）：收起态右栏整列不可点=隐形按钮
+                // 劫持顶栏展开钮的根治；展开态/全屏态照常交互。恒挂载保活语义不动。
+                .allowsHitTesting(cols.details > 0)
                 .overlay(alignment: .leading) {
                     if cols.details > 0 {
                         Rectangle().fill(WOAlias.borderL3).frame(width: 0.5)

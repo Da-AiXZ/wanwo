@@ -176,7 +176,23 @@ struct WOChatView: View {
                 // 删除不再做渐变。内容贴卡上缘自然裁切，滚动跟随由 autoFollow
                 // 闸门+列表底部 padding 保证）。
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
+                // 批12+回归（2026-09-24 用户令，批13 T3② 同款复刻）：统计行限宽
+                // 620 与 composer 卡同轴——对称轴同一条竖线。
                 WOStatsDock(line: viewModel.statsLine)
+                    .frame(maxWidth: 620)
+                    .frame(maxWidth: .infinity)
+                    // 批12+回归（2026-09-24 用户令）：dock 下方底部渐变衬罩——
+                    // 上缘 100% 实色（bgBase，紧贴卡底）→ 下缘 0%（屏幕底边），
+                    // 标题栏同款方向。hitTest off；hero 态不渲染。
+                    .background(alignment: .top) {
+                        if !heroMode {
+                            LinearGradient(colors: [WOAlias.bgBase, .clear],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: 64)
+                                .frame(maxWidth: .infinity)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 if heroMode {
                     Spacer(minLength: 0)
                 }
