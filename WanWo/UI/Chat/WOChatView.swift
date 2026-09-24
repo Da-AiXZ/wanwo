@@ -270,16 +270,26 @@ struct WOChatView: View {
         .onChange(of: viewModel.phase) { phase in
             seedEntry()
             // 批12 T7：流式 Markdown 桥接生命周期——离开 .streaming 即终结流并
-            // 重建（供下一回合；finish 后 StreamedMarkdownView 以终态收尾）；
-            // 进入 .streaming 时正文若已先行到达则补发一次全文快照（AsyncStream
-            // unbounded 缓冲，挂载前的 yield 不丢）。
+            // 重建（供下一回合；finish 后 StreamedMarkdownView 以终态收尾）。
+            // 批12+回归六校（闪跳手术 RC1/RC4）：换血帧身份补种——reproject
+            // 把本轮直播过的内容以全新节点 id 插回列表，不补种则整轮重播入场
+            // 动画（淡入+微放大）+直播总结瞬消失（用户录屏实证）。补种后
+            // 直播块撤下与落盘节点插入同帧同高=视觉无缝；打字机游标同步归零。
             if phase == .streaming {
-                if !viewModel.streamingText.isEmpty {
-                    streamSource.emit(viewModel.streamingText)
-                }
+                typeTarget = viewModel.streamingText
+                typeCursor = 0
             } else {
+                animatedIDs.formUnion(
+                    ConversationProjector.foldTurnProcess(viewModel.bubbles)
+                        .flatMap { node -> [String] in
+                            switch node {
+                            case .plain(let b): return [b.id]
+                            case .process(let g): return g.bubbles.map(\.id)
+                            }
+                        })
                 streamSource.finish()
                 streamSource = WOChatStreamSource()
+                typeCursor = 0
             }
             // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
             // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
@@ -618,6 +628,16 @@ struct WOChatView: View {
             .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
             .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
             .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
+            .onChange(of: viewModel.phase) { _ in
+                // 批12+回归六校（RC3 手术）：换血帧惰性高度未就绪，即时跟随
+                // 会误落点（上一轮内容闪到 dock 上缘/物理屏幕边缘）——延迟
+                // 两拍补一次跟随纠偏（内容同高时无可视影响；autoFollow 照常
+                // 把关，历史区不会被拽回）。
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    follow(proxy)
+                }
+            }
             .onChange(of: viewModel.streamingText) { newValue in
                 // 批12+回归五校：打字机数据侧——只记目标全文（显示节奏由
                 // typewriterLoop 驱动）；文本缩水（新块/清面）游标归零。
@@ -692,11 +712,20 @@ struct WOChatView: View {
     /// 单气泡入场（按 kind 选曲线；animatedIDs 一次性门同现状——历史/已播
     /// 不重播）。reasoning 平铺节点与组内 reasoning 共用同一稳定 id
     /// （"a(seq)-b(块序)"），组换身不致重播。
+    /// 批12+回归六校（RC4 手术）：流式中落盘的思考/回复=用户刚在直播里看过
+    /// 的内容（reproject 清直播块同帧插回），即时呈现不重播动画=换手无缝
+    /// （半透明起步即用户看到的"突然消失"）；工具卡=全新内容照常 fadeUp。
     @ViewBuilder
     private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
+        let instantLive: Bool = viewModel.phase == .streaming && {
+            switch bubble.kind {
+            case .assistant, .reasoning: return true
+            default: return false
+            }
+        }()
         let fadeUp: Bool = {
             switch bubble.kind {
-            case .tool, .reasoning: return true
+            case .tool: return true
             default: return false
             }
         }()
@@ -704,7 +733,7 @@ struct WOChatView: View {
             if case .user = bubble.kind { return true }
             return false
         }()
-        if animatedIDs.contains(bubble.id) {
+        if animatedIDs.contains(bubble.id) || instantLive {
             bubbleView(bubble)
         } else if fadeUp {
             bubbleView(bubble)
