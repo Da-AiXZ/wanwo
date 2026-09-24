@@ -315,38 +315,15 @@ enum ConversationProjector {
     /// 游程 ≥2 才折叠（单工具卡保持平铺——万我工具卡自带完成收敛态，单卡
     /// 再折叠徒增一次点按；偏差登记报告）。摘要文案在视图层组表
     /// （TurnProcessRowView），本函数只产计数。
+    /// 气泡流 → 展示节点流。批12+回归八校（2026-09-25 用户日志 entry-diag.log
+    /// 实证）：**扁平化——不再产出 .process 折叠组节点**。原"连续 tool/reasoning
+    /// ≥2 折叠成组"会把刚落盘的平铺节点（id=A）整包换成组节点（id=tp-A），
+    /// modifier 状态重置=入场动画重播（用户实测"首次工具调用动画来两次/
+    /// 思考和工具一起闪"）。组折叠行（dsh TurnProcessNodeView）未来批次恢复
+    /// 时，须以"节点标记位"实现而非"换节点身份"（身份稳定铁律）。
+    /// TurnProcessGroup/.process 保留：旧 UI（ChatView/RootView 死代码）编译面。
     static func foldTurnProcess(_ bubbles: [Bubble]) -> [DisplayNode] {
-        var out: [DisplayNode] = []
-        var run: [Bubble] = []
-        func flush() {
-            guard run.count >= 2 else {
-                out.append(contentsOf: run.map(DisplayNode.plain))
-                run.removeAll()
-                return
-            }
-            var group = TurnProcessGroup(id: "tp-\(run.first!.id)")
-            for bubble in run {
-                switch bubble.kind {
-                case .tool: group.toolCallCount += 1
-                case .reasoning: group.messageCount += 1
-                default: break
-                }
-            }
-            group.bubbles = run
-            out.append(.process(group))
-            run.removeAll()
-        }
-        for bubble in bubbles {
-            switch bubble.kind {
-            case .tool, .reasoning:
-                run.append(bubble)
-            default:
-                flush()
-                out.append(.plain(bubble))
-            }
-        }
-        flush()
-        return out
+        return bubbles.map { DisplayNode.plain($0) }
     }
 
     // MARK: 批2 2B 件5：DetailsPanel 对齐（pretty JSON 纯函数）

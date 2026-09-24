@@ -624,8 +624,13 @@ final class ChatViewModel: ObservableObject {
                     // 随行图片引用（E1 attachment/images 已落盘后发射），重投影
                     // 前图片即时可见。
                     guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    // 批12+回归八校（用户日志 entry-diag.log L1/L2 实证）：乐观
+                    // 气泡 id 改固定哨兵"u-pending"——原 live-user-UUID 与落盘
+                    // 投影 id "u(seq)" 双身份，落盘替换=删掉重插=入场动画重播
+                    // （"我发的消息被跟着一起动画"）。哨兵 + 视图侧 pendingUserSeen
+                    // 交接（WOChatView）=单次动画无缝换 id。
                     self.bubbles.append(ChatViewModel.Bubble(
-                        id: "live-user-\(UUID().uuidString)",
+                        id: "u-pending",
                         kind: .user(text, images)))
                 }
             })

@@ -73,7 +73,11 @@ struct WOChatView: View {
     /// 批12 T7：流式正文 Markdown 桥接（StreamedMarkdownSource；离开
     /// .streaming 即 finish 并重建，供下一回合——见 phase onChange 链）。
     @State private var streamSource = WOChatStreamSource()
-    /// 批12+回归五校：打字机节奏器状态——typeTarget=数据侧全文（VM 快照），
+    /// 批12+回归八校：用户消息哨兵交接旗——"u-pending"（乐观，mInR 入场）
+    /// 被 "u(seq)"（落盘投影）替换时，后者即时呈现不重播（日志 L1/L2 双身份
+    /// 实证）；onSeen 后归位，下一轮乐观气泡照常入场。
+    @State private var pendingUserSeen = false
+    /// 批12+回归五/七校：打字机节奏器状态——typeTarget=数据侧全文（VM 快照），
     /// typeCursor=显示侧已打出的字数（33Hz 步进，积压越大步进越大）。
     @State private var typeTarget = ""
     @State private var typeCursor = 0
@@ -279,14 +283,9 @@ struct WOChatView: View {
                 typeTarget = viewModel.streamingText
                 typeCursor = 0
             } else {
-                animatedIDs.formUnion(
-                    ConversationProjector.foldTurnProcess(viewModel.bubbles)
-                        .flatMap { node -> [String] in
-                            switch node {
-                            case .plain(let b): return [b.id]
-                            case .process(let g): return g.bubbles.map(\.id)
-                            }
-                        })
+                // 批12+回归八校：展示列表已扁平化（foldTurnProcess 恒 .plain），
+                // 补种=全量气泡 id。
+                animatedIDs.formUnion(viewModel.bubbles.map(\.id))
                 streamSource.finish()
                 streamSource = WOChatStreamSource()
                 typeCursor = 0
@@ -730,7 +729,10 @@ struct WOChatView: View {
         let instantLive = viewModel.phase == .streaming && kindTag == "assistant"
         let fadeUp = kindTag == "tool" || kindTag == "reasoning"
         let fromRight = kindTag == "user"
+        // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
+        // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
         let animate = !seen && !instantLive
+            && !(kindTag == "user" && pendingUserSeen && bubble.id != "u-pending")
         let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
         let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
             : CGSize(width: fromRight ? 16 : -16, height: 0)
@@ -743,7 +745,10 @@ struct WOChatView: View {
                 duration: duration,
                 animate: animate,
                 diag: seen ? nil : "entry id=\(bubble.id) kind=\(kindTag) branch=\(branch) phase=\(String(describing: viewModel.phase))",
-                onSeen: { animatedIDs.insert(bubble.id) }))
+                onSeen: {
+                    animatedIDs.insert(bubble.id)
+                    if kindTag == "user" { pendingUserSeen = (bubble.id == "u-pending") }
+                }))
     }
 
     // MARK: - 单气泡渲染（全事件类型可见）
@@ -887,7 +892,7 @@ struct WOChatView: View {
             let target = typeTarget
             guard typeCursor < target.count else { continue }
             let backlog = target.count - typeCursor
-            let step = max(1, backlog / 5)
+            let step = max(1, backlog / 3)
             typeCursor = min(target.count, typeCursor + step)
             let prefix = String(target.prefix(typeCursor))
             if !prefix.isEmpty {
