@@ -662,9 +662,20 @@ struct WOChatView: View {
                 // 会误落点（上一轮内容闪到 dock 上缘/物理屏幕边缘）——延迟
                 // 两拍补一次跟随纠偏（内容同高时无可视影响；autoFollow 照常
                 // 把关，历史区不会被拽回）。
+                // 批12+回归九校-C：回合收尾（justEndedStreaming=VM onTurnEnd
+                // 置位）时**豁免闸门**——与 settling 换手同理，收尾帧高度
+                // 瞬变可能误杀闸门致"跳到聊天记录下方回不来"（用户实测）；
+                // 进入 streaming 不豁免（贴底语义不受影响）。
+                let endedTurn = viewModel.justEndedStreaming
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 100_000_000)
-                    follow(proxy)
+                    if endedTurn {
+                        withTransaction(Transaction(animation: nil)) {
+                            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                        }
+                    } else {
+                        follow(proxy)
+                    }
                 }
             }
             .onChange(of: viewModel.streamingText) { newValue in
@@ -703,11 +714,16 @@ struct WOChatView: View {
                 follow(proxy)
             }
             .onChange(of: isSettling) { _ in
-                // 批12+回归九校：换手帧（liveTail↔落盘节点交换）布局重建，
-                // 延迟一拍补跟随（对齐 phase onChange 的 RC3 手术语义）。
+                // 批12+回归九校-C：换手帧补跟**豁免 autoFollow 闸门**——
+                // liveTail 卸载/落盘节点插入的 LazyVStack 高度瞬变会把视口
+                // 甩到内容下方，尾部探针出上缘误杀闸门（"用户在历史区"分支
+                // ），原 follow() 被 guard 挡掉=流式完后跳到空白回不来
+                // （用户实测）。补打的内容=刚流式播过的段落，此处强制贴底。
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 120_000_000)
-                    follow(proxy)
+                    withTransaction(Transaction(animation: nil)) {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: typeCursor) { _ in
@@ -1616,6 +1632,10 @@ struct WOChatHero: View {
                     .lineSpacing(10)
                     .tint(WOAlias.stateBusinessPrimary)
                     .lineLimit(1...7)
+                    // 批12+回归九校-C：单行行高规格 24（同 WOComposer——空态
+                    // placeholder 与单行输入等高，iOS16 lineSpacing 只作用
+                    // placeholder 的实测差根治）。
+                    .frame(minHeight: 24, alignment: .topLeading)
                     .padding(.leading, 14)
                     .padding(.top, heroImages.isEmpty ? 12 : 6)
                     .padding(.bottom, 6)

@@ -64,6 +64,11 @@ struct WOComposer: View {
                 .lineSpacing(10) // 14px/24px 行高（digest-H textarea 规格）
                 .tint(WOAlias.stateBusinessPrimary) // caret 蓝
                 .lineLimit(1...7) // max-height 168px ≈ 7×24px
+                // 批12+回归九校-C：单行行高规格 24（14 字体+10 行距）——iOS16
+                // vertical TextField 的 lineSpacing 只作用于空态 placeholder、
+                // 不作用于实际文本（实测差≈10pt=用户两图 dock 高度差），固定
+                // minHeight 让"空态/单行输入"等高；多行自然增长不受限。
+                .frame(minHeight: 24, alignment: .topLeading)
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
                 .padding(.bottom, 6)
