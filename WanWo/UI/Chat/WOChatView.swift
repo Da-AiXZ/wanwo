@@ -659,20 +659,13 @@ struct WOChatView: View {
             .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
             .onChange(of: viewModel.phase) { _ in
                 // 批12+回归六校（RC3 手术）：换血帧惰性高度未就绪，即时跟随
-                // 会误落点（上一轮内容闪到 dock 上缘/物理屏幕边缘）——延迟
-                // 两拍补一次跟随纠偏（内容同高时无可视影响；autoFollow 照常
-                // 把关，历史区不会被拽回）。
-                // 批12+回归九校-C：回合收尾（justEndedStreaming=VM onTurnEnd
-                // 置位）时**豁免闸门**——与 settling 换手同理，收尾帧高度
-                // 瞬变可能误杀闸门致"跳到聊天记录下方回不来"（用户实测）；
-                // 进入 streaming 不豁免（贴底语义不受影响）。
+                // 会误落点——延迟补跟随纠偏。
+                // 批12+回归九校-E：回合收尾（justEndedStreaming）走三连补跟
+                // （与 settling 换手同款）；非收尾保持闸门内跟随（历史区不拽）。
                 let endedTurn = viewModel.justEndedStreaming
                 Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 100_000_000)
                     if endedTurn {
-                        withTransaction(Transaction(animation: nil)) {
-                            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                        }
+                        staggeredSettleFollow(proxy)
                     } else {
                         follow(proxy)
                     }
@@ -714,17 +707,8 @@ struct WOChatView: View {
                 follow(proxy)
             }
             .onChange(of: isSettling) { _ in
-                // 批12+回归九校-C：换手帧补跟**豁免 autoFollow 闸门**——
-                // liveTail 卸载/落盘节点插入的 LazyVStack 高度瞬变会把视口
-                // 甩到内容下方，尾部探针出上缘误杀闸门（"用户在历史区"分支
-                // ），原 follow() 被 guard 挡掉=流式完后跳到空白回不来
-                // （用户实测）。补打的内容=刚流式播过的段落，此处强制贴底。
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                    withTransaction(Transaction(animation: nil)) {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                    }
-                }
+                // 批12+回归九校-E（方案A）：换手纠偏三连补跟。
+                staggeredSettleFollow(proxy)
             }
             .onChange(of: typeCursor) { _ in
                 // 批12+回归八校：显示侧步进也驱动跟随（hold 期间数据侧不再
@@ -744,6 +728,31 @@ struct WOChatView: View {
         let transaction = Transaction(animation: nil)
         withTransaction(transaction) {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    /// 批12+回归九校-E（方案A，用户拍板）：换手纠偏**三连补跟**（时点
+    /// 150/450/900ms 各强制贴底一次，豁免 autoFollow 闸门）。
+    /// 机制：换手帧（liveTail 卸载+落盘节点插入）的 LazyVStack 高度惰性
+    /// 计算，单次 scrollTo 落点在布局未稳时随机错——用户实测一轮跳列表顶
+    /// （列表刚挂载+内容最短，滚底定位失败）、一轮跳内容下方（塌缩窗口）。
+    /// 三连保证最后一次必然落在稳定布局；中间至多两次快速校正。补打/
+    /// 收尾内容=刚流式播过的段落，强制贴底语义成立。
+    private func staggeredSettleFollow(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            let transaction = Transaction(animation: nil)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
         }
     }
 
