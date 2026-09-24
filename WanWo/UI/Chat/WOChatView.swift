@@ -145,16 +145,6 @@ struct WOChatView: View {
             // 底部座位组（hero 与 dock 共用同一 composerSeat 实例——C2 FLIP
             // 保持：条件块都位于座位之前的独立槽位，座位跨 heroMode 换相不换
             // 身份，.woMotion(0.42) 驱动布局迁移）。
-            // 批13：底部渐变衬罩（用户令 2026-09-23：与顶栏对称、方向相反——
-            // 上 100% 透明→下 0% 透明，内容从统计行后面滚过时在底部淡出；
-            // 范围=统计行+底部安全区一带全宽，不挡触控）。
-            if !heroMode {
-                LinearGradient(colors: [.clear, WOAlias.bgBase],
-                               startPoint: .top, endPoint: .bottom)
-                    .frame(height: 88)
-                    .frame(maxWidth: .infinity)
-                    .allowsHitTesting(false)
-            }
             VStack(spacing: 0) {
                 if heroMode {
                     Spacer(minLength: 0)
@@ -186,10 +176,7 @@ struct WOChatView: View {
                 // 删除不再做渐变。内容贴卡上缘自然裁切，滚动跟随由 autoFollow
                 // 闸门+列表底部 padding 保证）。
                 // StatsLine dock 恒渲染（用户既定裁定；hero 相同样在位）。
-                // 批13：620 限宽与 composer 卡同轴（原全宽拉通，用户令对齐
-                // dock 对称轴——行左缘对齐卡左缘）。
                 WOStatsDock(line: viewModel.statsLine)
-                    .frame(maxWidth: 620)
                 if heroMode {
                     Spacer(minLength: 0)
                 }
@@ -238,9 +225,6 @@ struct WOChatView: View {
         }
         .background(WOAlias.bgBase)
         .onAppear {
-            // 批15：锚点埋点（App 一进会话必写一条——日志文件必然出现，
-            // 用于分辨"日志通道坏了"还是"按钮事件没触发"）。
-            RightRailDiag.event("会话视图出现 sessionId=\(sessionId)")
             viewModel.open()
             seedEntry()
             // dsh「hero 输入文本 = 新会话 composer draft」交接缝消费（旧
@@ -322,9 +306,6 @@ struct WOChatView: View {
     /// done 绿）+ 会话标题 14pt/500；右=右栏开关钮（规格=退役的
     /// reopenSidebarButton：32pt r9 玻璃白 .9+blur；本批两处悬浮双钮已删，
     /// 本钮是唯一入口）。
-    /// 批15c：命中强化——真机证据（批15b 日志：4 条锚点、0 条钮点击）证明
-    /// 点击从未到达 Button 的 action；改 gesture 实现绕开 Button 机制，命中
-    /// 区扩大到钮外扩 44×44+整行右半段 contentShape，点击必有 toast 直显。
     private var conversationHead: some View {
         HStack(spacing: 8) {
             WOStateDot(state: viewModel.phase == .streaming ? .ongoing : .done,
@@ -336,36 +317,25 @@ struct WOChatView: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
             if let onToggle = onToggleRightSidebar {
-                // 批15e：图标本身不再挂独立手势（批15d 实测：嵌套手势下点图标
-                // 从未触发——用户日志数十次点击 0 条内层记录；外层整行手势已
-                // 被证明可触发）。图标区域自然落在外层 x>120 命中区里，
-                // 点图标=点开关，同一条路径。
-                Image(systemName: "sidebar.trailing")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(WOAlias.labelPrimary)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 9)
-                        .fill(WOAlias.bgLayer3))
-                    .overlay(RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
-                    .accessibilityLabel("展开或收起工作区侧栏")
+                Button {
+                    onToggle()
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(WOAlias.labelSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(RoundedRectangle(cornerRadius: 9)
+                            .fill(WOStatic.neutral00.opacity(0.9)))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("展开或收起工作区侧栏")
             }
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, minHeight: 44)
-        // 批15c：整行右半段也可点（标题之后的所有区域）——命中区最大化。
-        .contentShape(Rectangle())
-        .onTapGesture { location in
-            // 点在标题文字左侧（状态点/空区）不触发；右半段任意位置触发。
-            // location.x > 120 粗判：避开标题区误触，右半段全为开关命中区。
-            if location.x > 120, let onToggle = onToggleRightSidebar {
-                onToggle()
-            }
-        }
-        .onAppear {
-            // 批15c：顶栏渲染留痕（配合钮点击日志，分辨"没渲染"vs"没命中"）。
-            RightRailDiag.event("顶栏渲染 sessionId=\(sessionId) hasToggle=\(onToggleRightSidebar != nil)")
-        }
     }
 
     // MARK: - Hero 头（digest-H：logo 34px + 「万我」26px/500/-.4px）

@@ -71,8 +71,6 @@ struct WORootFrame: View {
         }
         .onReceive(WanwoURLRouter.shared.$pendingResourceURL) { url in
             guard let url else { return }
-            // 批14：深链打开诊断（AI 打开资源路径的状态留痕）。
-            RightRailDiag.event("wanwo:// 深链打开 前: isExpanded=\(workspaceSidebar.isExpanded) isFullscreen=\(workspaceSidebar.isFullscreen) url=\(url.absoluteString)")
             workspaceSidebar.isExpanded = true
             workspaceSidebar.openResourceURL(url)
             WanwoURLRouter.shared.consumeResourceURL()
@@ -91,8 +89,6 @@ struct WORootFrame: View {
         }
         .onChange(of: workspaceSidebar.isExpanded) { expanded in
             // 右栏收起/展开 ↔ 布局列宽联动（收起=列宽 0 让位给对话区，dsh 让位链）。
-            // 批14：桥执行诊断（钮点击→isExpanded→列宽 的链路留痕）。
-            RightRailDiag.event("onChange(isExpanded)=\(expanded) session=\(appState.currentSessionId ?? "nil") → \(expanded ? "openDetails" : "closeDetails")")
             if expanded {
                 if appState.currentSessionId != nil { layout.openDetails() }
             } else {
@@ -255,26 +251,16 @@ struct WORootFrame: View {
         if let sessionId = appState.currentSessionId {
             // 批C1：右栏开关钮在顶栏（WOConversationHead）——workspaceSidebar
             // 真值在根帧，闭包下发切换（isExpanded onChange 既有链驱动列宽）。
-            // 批12：展开时强制清全屏。
-            // 批14：语义化开关+幽灵态自愈——裸 toggle 的坑：isExpanded=true
-            // 而 details=0 的"逻辑开着但看不见"态下，第一下点=切到 false=
-            // 用户看来的"没反应"。现在目标态由「可见性」判定（isExpanded 且
-            // 列宽>0 才算开），点一下必达可见结果。
+            // 批12：展开时强制清全屏——无论 isFullscreen 残留何值，点开永远
+            // 是 400pt 正常列（全屏只能由右栏 topBar 放大钮显式触发；"点开=
+            // 半全屏"用户反馈 2026-09-23 的语义级根治）。
             WOChatView(environment: environment, sessionId: sessionId,
                        onToggleRightSidebar: {
-                           let visible = workspaceSidebar.isExpanded && layout.details > 0
-                           // 批15c：点击反馈直显（toast 复用挂组通道）——点击若到
-                           // 达此处必有可见弹条；不弹=点击未命中按钮（命中层问题）。
-                           environment.attachToast = "开关点击 isExpanded=\(workspaceSidebar.isExpanded) details=\(layout.details) fullscreen=\(workspaceSidebar.isFullscreen) → \(visible ? "关闭" : "打开")"
-                           RightRailDiag.event("顶栏钮点击 前: isExpanded=\(workspaceSidebar.isExpanded) details=\(layout.details) isFullscreen=\(workspaceSidebar.isFullscreen) session=\(sessionId) → 目标=\(visible ? "关闭" : "打开")")
-                           if visible {
+                           if workspaceSidebar.isExpanded {
                                workspaceSidebar.isExpanded = false
                            } else {
                                workspaceSidebar.isExpanded = true
                                workspaceSidebar.isFullscreen = false
-                               if appState.currentSessionId != nil {
-                                   layout.openDetails() // 幂等；幽灵态列宽 0 时重开
-                               }
                            }
                        })
                 .id(sessionId)

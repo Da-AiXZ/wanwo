@@ -46,10 +46,8 @@ struct WorkspaceRightSidebarView: View {
         return nil
     }
 
-    // MARK: - 顶部条（全屏 + 关闭）
-    // 批15e：用户令加回「放大/全屏」钮（批13 误删——用户实测全屏功能是需要的，
-    // "铺满" complaints 的病根是列宽门/双记账而非功能本身，均已修复）。
-    // isFullscreen 折算链（WOAppFrame 入参+列宽覆写）批10 起健在，钮恢复即恢复。
+    // MARK: - 顶部条（全屏 + 关闭；2026-09-21 用户令：两钮加大拉开、
+    // 关闭改 ✕ 图标钮——原 chevron 语义不明、28px 命中区小且贴边易误触）
 
     private var topBar: some View {
         HStack(spacing: 10) {
@@ -57,7 +55,6 @@ struct WorkspaceRightSidebarView: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
-
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) {
                     model.isFullscreen.toggle()
