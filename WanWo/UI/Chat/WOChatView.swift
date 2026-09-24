@@ -715,9 +715,7 @@ struct WOChatView: View {
     /// instantLive 名单移出——用户要思考出现有动画）；消息=mInL/mInR（.55s
     /// 横移+缩放）；流式中落盘的回复正文=instant（用户刚在直播看过，打字机
     /// 已接管其呈现节奏）。
-    /// 批12+回归七校：入场决策诊断（首次工具调用双重动画定位）——仅未 seen
-    /// 节点落一行（转拆级频率，非热路径），日志 Documents/entry-diag.log。
-    @ViewBuilder
+    /// 诊断：diag 参数经 WOEntryModifier.onAppear 落行（仅未 seen 时非 nil）。
     private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
         let seen = animatedIDs.contains(bubble.id)
         let kindTag: String = {
@@ -733,19 +731,18 @@ struct WOChatView: View {
         let fadeUp = kindTag == "tool" || kindTag == "reasoning"
         let fromRight = kindTag == "user"
         let animate = !seen && !instantLive
-        if !seen {
-            WOEntryDiag.event("entry id=\(bubble.id) kind=\(kindTag) branch=\(animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant") phase=\(String(describing: viewModel.phase))")
-        }
+        let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
         let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
             : CGSize(width: fromRight ? 16 : -16, height: 0)
         let scale: CGFloat = fadeUp ? 1 : 0.95
         let duration: Double = fadeUp ? 0.4 : 0.55
-        bubbleView(bubble)
+        return bubbleView(bubble)
             .modifier(WOEntryModifier(
                 offset: offset,
                 scale: scale,
                 duration: duration,
                 animate: animate,
+                diag: seen ? nil : "entry id=\(bubble.id) kind=\(kindTag) branch=\(branch) phase=\(String(describing: viewModel.phase))",
                 onSeen: { animatedIDs.insert(bubble.id) }))
     }
 
@@ -956,8 +953,8 @@ private final class WOChatStreamSource: ObservableObject, StreamedMarkdownSource
 /// 批12+回归七校：入场决策诊断（首次工具调用双重动画/消息连带动画定位）。
 /// 仅未 seen 节点落一行（转拆级频率，非 body 热路径——已 seen 节点静默）；
 /// 1s 同文节流 + 512KB 截半守护；文件 Documents/entry-diag.log（文件 App
-/// 直接可见可分享），AppLogger 同步一份。
-private enum WOEntryDiag {
+/// 直接可见可分享），AppLogger 同步一份。internal=WOEntryModifier 亦调用。
+enum WOEntryDiag {
     static let logger = AppLogger(category: "EntryDiag")
     private static let queue = DispatchQueue(label: "com.wanwo.entry-diag")
     private static var lastMessage = ""

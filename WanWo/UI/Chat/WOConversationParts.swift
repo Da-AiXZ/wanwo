@@ -33,6 +33,9 @@ struct WOEntryModifier: ViewModifier {
     var duration: Double
     /// 一次性入场门（animate=false 直达终态——历史/已播节点不重播）。
     var animate: Bool
+    /// 批12+回归七校：入场决策诊断行（非 nil 时 onAppear 落
+    /// Documents/entry-diag.log 一行；宿主仅对未 seen 节点传值）。
+    var diag: String? = nil
     /// 动画结束后回调（宿主记 id 防滚动重建时重播；nil = 不需要）。
     var onSeen: (() -> Void)?
 
@@ -40,11 +43,12 @@ struct WOEntryModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(offset: CGSize, scale: CGFloat = 0.95, duration: Double,
-         animate: Bool, onSeen: (() -> Void)? = nil) {
+         animate: Bool, diag: String? = nil, onSeen: (() -> Void)? = nil) {
         self.offset = offset
         self.scale = scale
         self.duration = duration
         self.animate = animate
+        self.diag = diag
         self.onSeen = onSeen
         _shown = State(initialValue: !animate)
     }
@@ -59,6 +63,7 @@ struct WOEntryModifier: ViewModifier {
                 // 批12+回归七校：shown 终态（animate=false）也登记 seen——
                 // 配合宿主"单一身份入场门"（常驻 modifier，animate 随 seen
                 // 翻转），消灭 onSeen 换枝时的视图重建（二次动画嫌疑源）。
+                if let diag { WOEntryDiag.event(diag) }
                 if shown {
                     onSeen?()
                 } else if reduceMotion {
