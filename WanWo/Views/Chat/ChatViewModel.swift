@@ -47,6 +47,11 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var streamingText = ""
     @Published private(set) var streamingReasoning = ""
     @Published private(set) var phase: Phase = .loading
+    /// 批12+回归九校-B：回合刚从流式态结束（onTurnEnd 置位 1.5s 后自清）——
+    /// onTurnEnd 里 reproject 与 phase=.idle 同帧，视图渲染时 phase 已非
+    /// .streaming，"刚在直播看过不重播动画"（instantLive）判定失效=收尾帧
+    /// 落盘思考节点多播一次 fadeUp（用户实测）；此旗让视图跨帧拿到该语义。
+    @Published private(set) var justEndedStreaming = false
     @Published private(set) var resumeBanner: String?
     @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
@@ -544,6 +549,14 @@ final class ChatViewModel: ObservableObject {
             onTurnEnd: { [weak self] reason in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    // 批12+回归九校-B：换手帧"刚结束直播"旗先于 reproject
+                    // 置位（视图渲染帧即可见；1.5s 后自清）——instantLive
+                    // 跨 phase 翻转保持语义，收尾帧落盘节点不多播动画。
+                    self.justEndedStreaming = true
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        self?.justEndedStreaming = false
+                    }
                     self.flushNow()
                     self.reproject()
                     // M6.6（B4）：运行态镜像清退（侧聊父会话状态行数据源）。

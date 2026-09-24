@@ -293,15 +293,11 @@ struct WOChatView: View {
                 // 批12+回归八校：展示列表已扁平化（foldTurnProcess 恒 .plain），
                 // 补种=全量气泡 id。
                 animatedIDs.formUnion(viewModel.bubbles.map(\.id))
-                // 批12+回归九校：换手补打期（isSettling）不打断——流桥与游标
-                // 由补打路径自管（打完换手时 finish+重建）；仅无补打时按原
-                // 语义终结重建。cursor=0 旧赋值删除：会打断补打游标（从零
-                // 重打整段=总结"等一下再整块"的机制之一）。
-                if !isSettling {
-                    streamSource.finish()
-                    streamSource = WOChatStreamSource()
-                    liveTailSeen = false
-                }
+                // 批12+回归九校-B：流桥终身单例（不再 finish/重建——StateObject
+                // 不随 source 参数重建，见 onChange(streamingText) 注）；liveTail
+                // 卸载/重挂自然换控制器。liveTailSeen 保留显式重置（回合边界
+                // 双保险，onDisappear 为主路径）。
+                liveTailSeen = false
             }
             // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
             // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
@@ -686,17 +682,19 @@ struct WOChatView: View {
                     }
                 } else {
                     // 新段落 delta：若上段还在补打 → 立即完成换手（剩余量
-                    // ≤稳态滞后 0.1s 的字数，瞬现可忽略）；段落完成 → 重建流
-                    // 桥（库按流 diff 逐词淡入新段）。
+                    // ≤稳态滞后 0.1s 的字数，瞬现可忽略）。
+                    // 批12+回归九校-B：不再 finish/重建流桥——官方
+                    // StreamedMarkdownView 的 controller 是 @StateObject
+                    // （仅首次挂载创建、抱住当时的 source 实例），换 source
+                    // 实例它根本不接=新 emit 无人消费="总结整块"真凶（官方
+                    // StreamedMarkdownController 源码实证）。同一 stream 终身
+                    // 单例持续 yield，liveTail 卸载/重挂时由官方 onDisappear
+                    // 的 controller.end() + 新 StateObject 自然接力消费。
                     if isSettling {
                         if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
                         isSettling = false
-                        streamSource.finish()
-                        streamSource = WOChatStreamSource()
                         liveTailSeen = false
                     } else if typeCursor >= typeTarget.count, !typeTarget.isEmpty {
-                        streamSource.finish()
-                        streamSource = WOChatStreamSource()
                         liveTailSeen = false
                     }
                     typeTarget = newValue
@@ -802,7 +800,10 @@ struct WOChatView: View {
         // 批12+回归九校：思考落盘改 instant——动画已前移到 liveTail LED 行
         // 出现时刻（段落开始时播），落盘换手不再重播（旧"思考完才补动画"=
         // 动画挂在落盘节点所致）；正文保持 instant（同理由）。
-        let instantLive = viewModel.phase == .streaming
+        // 批12+回归九校-B：justEndedStreaming——onTurnEnd 里 reproject 与
+        // phase=.idle 同帧，渲染时 phase 已非 .streaming，单看 phase 会漏判
+        // （收尾帧落盘思考节点多播一次 fadeUp=用户实测），旗标补上跨帧语义。
+        let instantLive = (viewModel.phase == .streaming || viewModel.justEndedStreaming)
             && (kindTag == "assistant" || kindTag == "reasoning")
         let fadeUp = kindTag == "tool" || kindTag == "reasoning"
         let fromRight = kindTag == "user"
@@ -970,6 +971,11 @@ struct WOChatView: View {
             duration: 0.4,
             animate: !liveTailSeen,
             onSeen: { liveTailSeen = true }))
+        // 批12+回归九校-B：动画名额"消失即重置"——纯思考段落落盘时
+        // streamingText 空→空不触发 onChange（旧重置路径漏掉=蓝圆后连续
+        // 思考全部无动画的机制，用户规律实证），onDisappear 覆盖所有
+        // 消失路径（用户规律：每个小段输出后的第一个思考有动画）。
+        .onDisappear { liveTailSeen = false }
         .task { await typewriterLoop() }
     }
 
@@ -985,19 +991,22 @@ struct WOChatView: View {
             let target = typeTarget
             guard typeCursor < target.count else {
                 // 批12+回归九校：补打完成换手——落盘节点显现（预登记 seen
-                // 不播动画：内容用户刚看过），liveTail 卸载，流桥终结重建
-                // （下一段从空流开始）。同帧同内容交换=视觉无缝。
+                // 不播动画：内容用户刚看过），liveTail 卸载（官方 onDisappear
+                // 自动 end 控制器）。九校-B：不再 finish/重建流（终身单例，
+                // StateObject 不随 source 参数重建——"总结整块"真凶）。
+                // 同帧同内容交换=视觉无缝。
                 if isSettling {
                     isSettling = false
                     if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
-                    streamSource.finish()
-                    streamSource = WOChatStreamSource()
                     liveTailSeen = false
                 }
                 continue
             }
             let backlog = target.count - typeCursor
-            let step = max(1, backlog / 3)
+            // 批12+回归九校-B：步长封顶 4 字（官方 demo=3 字/30ms 恒速
+            // 100 字/s）——/3 指数收敛在大积压时 0.3s 唰完全文="整块"观感
+            // 的第二机制；恒速小步让长总结也有持续流式感。
+            let step = max(1, min(4, backlog / 3))
             typeCursor = min(target.count, typeCursor + step)
             let prefix = String(target.prefix(typeCursor))
             if !prefix.isEmpty {
