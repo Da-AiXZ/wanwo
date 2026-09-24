@@ -129,6 +129,11 @@ final class ChatViewModel: ObservableObject {
     /// 高频 bash 输出每行一次全表差分；现与文本 chunk 同一 flush 时钟）。
     private var pendingShellLines: [String: [String]] = [:]
     private var flushTimer: Timer?
+    /// 批12+回归三校②（2026-09-24 用户实测"直接一张块"）：流式文本/思考
+    /// 快车道时钟（0.04s=25Hz，对齐官方 Demo 30ms 微批次节奏）——0.2s 大批次
+    /// 下段落视图逐词淡入的重启瞬间会整段瞬现（批12 库 setParagraphContents
+    /// 先整段置串再起动画，批次越大"拍上"感越强）。shell 行保持 0.2s E2 不动。
+    private var textFlushTimer: Timer?
 
     init(environment: AppEnvironment, sessionID: String, initialDraft: String = "") {
         self.environment = environment
@@ -736,7 +741,7 @@ final class ChatViewModel: ObservableObject {
         return cards
     }
 
-    // MARK: - 流式直通车（0.2s 节流 flush）
+    // MARK: - 流式直通车（批12+回归三校：文本/思考 0.04s 快车道 + shell 行 0.2s E2 节流）
 
     private func handleLiveChunk(_ chunk: StreamChunk) {
         switch chunk {
@@ -747,7 +752,32 @@ final class ChatViewModel: ObservableObject {
         default:
             break
         }
-        flushIfIdle()
+        flushTextIfIdle()
+    }
+
+    /// 流式文本/思考快车道（0.04s 单发定时，与 flushIfIdle 同模式）。
+    private func flushTextIfIdle() {
+        guard textFlushTimer == nil else { return }
+        textFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.textFlushTimer = nil
+                self?.flushTextNow()
+            }
+        }
+    }
+
+    /// 只冲文本/思考两路（shell 行归 0.2s 慢车道；turn 收尾的 flushNow 仍全量）。
+    private func flushTextNow() {
+        if !pendingTextChunks.isEmpty {
+            while let chunk = pendingTextChunks.popFirst() {
+                streamingText += chunk
+            }
+        }
+        if !pendingReasoningChunks.isEmpty {
+            while let chunk = pendingReasoningChunks.popFirst() {
+                streamingReasoning += chunk
+            }
+        }
     }
 
     private func flushIfIdle() {

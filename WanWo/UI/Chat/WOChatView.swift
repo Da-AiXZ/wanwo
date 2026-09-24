@@ -984,7 +984,12 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                             .font(.system(size: 13))
                             .foregroundColor(summaryColor)
                             .lineLimit(1)
-                            .truncationMode(.tail)
+                            // 批12+回归三校③（用户令：思考行 dsh 流式跟随）：
+                            // followEnd（running）截头显尾——dsh 实证（ReasoningRow
+                            // .module.css :77-89 data-follow-end=容器右对齐+内容
+                            // max-content 左缘裁切，永远露出流式末端）；settled
+                            // 保持截尾显首（firstLine 语义）。
+                            .truncationMode(summaryFollowEnd ? .head : .tail)
                         if !summaryFollowEnd {
                             Spacer(minLength: 0)
                         }
