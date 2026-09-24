@@ -709,48 +709,44 @@ struct WOChatView: View {
         }
     }
 
-    /// 单气泡入场（按 kind 选曲线；animatedIDs 一次性门同现状——历史/已播
-    /// 不重播）。reasoning 平铺节点与组内 reasoning 共用同一稳定 id
-    /// （"a(seq)-b(块序)"），组换身不致重播。
-    /// 批12+回归六校（RC4 手术）：流式中落盘的思考/回复=用户刚在直播里看过
-    /// 的内容（reproject 清直播块同帧插回），即时呈现不重播动画=换手无缝
-    /// （半透明起步即用户看到的"突然消失"）；工具卡=全新内容照常 fadeUp。
+    /// 单气泡入场（批12+回归七校重构：单一身份门——modifier 常驻、animate
+    /// 随 seen 翻转，消灭 onSeen 换枝的视图重建=二次动画嫌疑源）。
+    /// 曲线：思考/工具=fadeUp（自下 8px+淡入 0.4s，用户令；思考已从六校的
+    /// instantLive 名单移出——用户要思考出现有动画）；消息=mInL/mInR（.55s
+    /// 横移+缩放）；流式中落盘的回复正文=instant（用户刚在直播看过，打字机
+    /// 已接管其呈现节奏）。
+    /// 批12+回归七校：入场决策诊断（首次工具调用双重动画定位）——仅未 seen
+    /// 节点落一行（转拆级频率，非热路径），日志 Documents/entry-diag.log。
     @ViewBuilder
     private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
-        let instantLive: Bool = viewModel.phase == .streaming && {
+        let seen = animatedIDs.contains(bubble.id)
+        let kindTag: String = {
             switch bubble.kind {
-            case .assistant, .reasoning: return true
-            default: return false
+            case .user: return "user"
+            case .assistant: return "assistant"
+            case .reasoning: return "reasoning"
+            case .tool: return "tool"
+            default: return "other"
             }
         }()
-        let fadeUp: Bool = {
-            switch bubble.kind {
-            case .tool: return true
-            default: return false
-            }
-        }()
-        let fromRight: Bool = {
-            if case .user = bubble.kind { return true }
-            return false
-        }()
-        if animatedIDs.contains(bubble.id) || instantLive {
-            bubbleView(bubble)
-        } else if fadeUp {
-            bubbleView(bubble)
-                .modifier(WOEntryModifier(
-                    offset: CGSize(width: 0, height: 8),
-                    scale: 1,
-                    duration: 0.4,
-                    animate: true,
-                    onSeen: { animatedIDs.insert(bubble.id) }))
-        } else {
-            bubbleView(bubble)
-                .modifier(WOEntryModifier(
-                    offset: CGSize(width: fromRight ? 16 : -16, height: 0),
-                    duration: 0.55,
-                    animate: true,
-                    onSeen: { animatedIDs.insert(bubble.id) }))
+        let instantLive = viewModel.phase == .streaming && kindTag == "assistant"
+        let fadeUp = kindTag == "tool" || kindTag == "reasoning"
+        let fromRight = kindTag == "user"
+        let animate = !seen && !instantLive
+        if !seen {
+            WOEntryDiag.event("entry id=\(bubble.id) kind=\(kindTag) branch=\(animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant") phase=\(String(describing: viewModel.phase))")
         }
+        let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
+            : CGSize(width: fromRight ? 16 : -16, height: 0)
+        let scale: CGFloat = fadeUp ? 1 : 0.95
+        let duration: Double = fadeUp ? 0.4 : 0.55
+        bubbleView(bubble)
+            .modifier(WOEntryModifier(
+                offset: offset,
+                scale: scale,
+                duration: duration,
+                animate: animate,
+                onSeen: { animatedIDs.insert(bubble.id) }))
     }
 
     // MARK: - 单气泡渲染（全事件类型可见）
@@ -868,27 +864,23 @@ struct WOChatView: View {
             if !viewModel.streamingText.isEmpty {
                 // 批12 T7：流式正文换 StreamedMarkdownView（库自带流式动画语义；
                 // 光标 ▍ 不再手画，保持干净）。
-                // 批12+回归三校（2026-09-24 用户反馈"一块一块出现"破案）：
-                // shouldAnimateText 必须显式 true——.default 为 false（新增文字
-                // 瞬间整块拍上=每 0.2s 批次一块一块）；true=库设计的逐词淡入
-                // （UIKit CADisplayLink 实现，iOS16 可用，官方 Demo 同款配置）。
-                // 批12+回归五校：打字机节奏器——数据（VM 全量快照）与显示（逐字）
-                // 解耦，typeCursor 按定时步进喂前缀快照，每个新字经库单字淡入
-                // 上屏（用户令"一个字一个字的出现+淡入"）。
+                // 批12+回归三校：shouldAnimateText 显式 true（逐字淡入，官方
+                // Demo 同款）。批12+回归五/七校：打字机节奏器驱动显示（数据/
+                // 显示解耦）；节奏器唯一挂载点=流式块常驻层（下方 VStack）——
+                // 七校曾双挂载（此处+常驻层各一）=双循环双倍速快进+追赶振荡，
+                // "总结一整块闪出"的真因之一，已归一。
                 StreamedMarkdownView(
                     source: streamSource,
                     config: MarkdownRenderConfig.default.withShouldAnimateText(value: true))
-                    .task { await typewriterLoop() }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task { await typewriterLoop() }
     }
 
-    /// 打字机节奏器（批12+回归五校）：33Hz 步进，每步至少 1 字、积压越大
-    /// 步进越大（/6 自适应追赶，网络突发不致掉队）；游标前缀喂
-    /// StreamedMarkdownSource，新字经库单字淡入上屏。会话恢复若已有长积压
-    /// （>140 字）快进只打尾部，避免重开会话整篇重打。
+    /// 打字机节奏器（批12+回归五/七校）：33Hz 步进，步长=积压的 1/5（指数
+    /// 收敛——稳态显示滞后 ≤0.2s，收尾只补最后几个字不致整块补拍；网络突发
+    /// 不致掉队）。会话恢复若已有长积压（>140 字）快进只打尾部。
     private func typewriterLoop() async {
         if typeCursor == 0, typeTarget.count > 140 {
             typeCursor = typeTarget.count - 140
@@ -897,7 +889,8 @@ struct WOChatView: View {
             try? await Task.sleep(nanoseconds: 30_000_000)
             let target = typeTarget
             guard typeCursor < target.count else { continue }
-            let step = max(1, (target.count - typeCursor) / 6)
+            let backlog = target.count - typeCursor
+            let step = max(1, backlog / 5)
             typeCursor = min(target.count, typeCursor + step)
             let prefix = String(target.prefix(typeCursor))
             if !prefix.isEmpty {
@@ -958,6 +951,46 @@ private final class WOChatStreamSource: ObservableObject, StreamedMarkdownSource
 
     /// 本回合结束（StreamedMarkdownView 收尾；之后由宿主重建实例供下回合）。
     func finish() { continuation.finish() }
+}
+
+/// 批12+回归七校：入场决策诊断（首次工具调用双重动画/消息连带动画定位）。
+/// 仅未 seen 节点落一行（转拆级频率，非 body 热路径——已 seen 节点静默）；
+/// 1s 同文节流 + 512KB 截半守护；文件 Documents/entry-diag.log（文件 App
+/// 直接可见可分享），AppLogger 同步一份。
+private enum WOEntryDiag {
+    static let logger = AppLogger(category: "EntryDiag")
+    private static let queue = DispatchQueue(label: "com.wanwo.entry-diag")
+    private static var lastMessage = ""
+    private static var lastTime = Date.distantPast
+
+    static func event(_ message: String) {
+        let now = Date()
+        if message == lastMessage, now.timeIntervalSince(lastTime) < 1.0 { return }
+        lastMessage = message
+        lastTime = now
+        logger.info(message)
+        let line = "\(ISO8601DateFormatter().string(from: now)) | \(message)\n"
+        queue.async {
+            let url = FileManager.default.urls(for: .documentDirectory,
+                                               in: .userDomainMask)[0]
+                .appendingPathComponent("entry-diag.log")
+            let fm = FileManager.default
+            guard let data = line.data(using: .utf8) else { return }
+            if fm.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                let size = (try? handle.seekToEnd()) ?? 0
+                if size > 256 * 1024 {
+                    try? handle.truncate(atOffset: size / 2)
+                    _ = try? handle.seek(toOffset: size / 2)
+                }
+                _ = try? handle.seekToEnd()
+                _ = try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
 }
 
 // MARK: - 批12 T5：dsh DisclosureRow 共用行件 + IconThinkOutline14

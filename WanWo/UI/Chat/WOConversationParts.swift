@@ -56,8 +56,12 @@ struct WOEntryModifier: ViewModifier {
             .offset(x: shown ? 0 : offset.width,
                     y: shown ? 0 : offset.height)
             .onAppear {
-                guard !shown else { return }
-                if reduceMotion {
+                // 批12+回归七校：shown 终态（animate=false）也登记 seen——
+                // 配合宿主"单一身份入场门"（常驻 modifier，animate 随 seen
+                // 翻转），消灭 onSeen 换枝时的视图重建（二次动画嫌疑源）。
+                if shown {
+                    onSeen?()
+                } else if reduceMotion {
                     // R6：减弱动态直达终态（无过渡），seen 即刻登记。
                     shown = true
                     onSeen?()
