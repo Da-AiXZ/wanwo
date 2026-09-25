@@ -838,7 +838,7 @@ final class BrowserUseManager: NSObject, ObservableObject {
         // WORootFrame onReceive 消费 → workspaceSidebar.openAgentBrowser(url)。
         // 页签池与 AI 会话池共用按 sessionId 的持久化文件（BrowserTabPool
         // loadPersistedURLs :1496），用户之后手动点开页签也能恢复出本 URL。
-        if let current = currentURL, let navURL = URL(string: current),
+        if let navURL = URL(string: currentURL),
            let scheme = navURL.scheme, scheme.hasPrefix("http") {
             Task { @MainActor in
                 NotificationCenter.default.post(
