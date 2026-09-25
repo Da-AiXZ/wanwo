@@ -56,7 +56,7 @@ import CoreTransferable   // 2026-09-25 FileRepresentation 文件本体分享
 private struct ExportedLogFile: Transferable {
     let url: URL
 
-    static var transferRepresentation: some TransferableRepresentation {
+    static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .plainText) { log in
             SentTransferredFile(log.url)
         }
