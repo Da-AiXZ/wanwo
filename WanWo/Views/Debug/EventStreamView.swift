@@ -43,6 +43,25 @@
 
 import SwiftUI
 import UIKit   // UIPasteboard（M2.9 剪贴板导出）
+import CoreTransferable   // 2026-09-25 FileRepresentation 文件本体分享
+
+// MARK: - 导出文件 Transferable（2026-09-25 bookmark 化根治）
+
+/// ShareLink 分享沙箱内文件的正规姿势：`ShareLink(item: URL)` 直接传 URL 时
+/// 系统对 App 容器内文件走 bookmark 引用传递（用户实测拿到 193 字节 bplist
+/// 只含一条 file:// 路径、无文件本体——EventStreamView 头注释 tmp 前科同族，
+/// .txt 扩展名修复无效证明根因在分享形态而非类型推断）。FileRepresentation
+/// 显式声明"导出 plain text 文件本体"，系统按文件内容传递（存到文件/隔空
+/// 投送/微信文件均拿实体）。
+private struct ExportedLogFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferableRepresentation {
+        FileRepresentation(exportedContentType: .plainText) { log in
+            SentTransferredFile(log.url)
+        }
+    }
+}
 
 // MARK: - replay 结果缓存（bug f-1 修复②，lead 批准 f①+f②）
 
@@ -878,10 +897,12 @@ struct EventStreamView: View {
 
             // F070 最小前置：分享当前会话 .jsonl 原文件（iOS 16+ ShareLink；
             // 源文件只读，副本在 Documents/WanWo-Exports/）。
+            // 2026-09-25：item 改 ExportedLogFile（FileRepresentation）——
+            // URL 直传被系统 bookmark 化（用户实测），文件本体分享见类型注。
             if let exportURL = model.exportFileURL {
-                ShareLink(item: exportURL,
+                ShareLink(item: ExportedLogFile(url: exportURL),
                           preview: SharePreview(exportURL.lastPathComponent)) {
-                    Label("导出会话日志（.jsonl）", systemImage: "square.and.arrow.up")
+                    Label("导出会话日志（.txt）", systemImage: "square.and.arrow.up")
                 }
                 .accessibilityLabel("导出会话日志")
             }
@@ -947,9 +968,10 @@ struct EventStreamView: View {
         }
         // F070 最小前置（M9.3 ZIP 完整版之前）：分享当前会话 .jsonl 原文件。
         // iOS 16+ ShareLink；源文件只读，副本在 Documents/WanWo-Exports/。
+        // 2026-09-25：item 改 ExportedLogFile（FileRepresentation，同 exportSection）。
         ToolbarItem(placement: .navigationBarTrailing) {
             if let exportURL = model.exportFileURL {
-                ShareLink(item: exportURL,
+                ShareLink(item: ExportedLogFile(url: exportURL),
                           preview: SharePreview(exportURL.lastPathComponent)) {
                     Image(systemName: "square.and.arrow.up")
                 }
