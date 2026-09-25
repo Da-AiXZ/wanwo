@@ -195,6 +195,16 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         open(.browser(initialURL: url))
     }
 
+    /// 【批12+联动A/B（2026-09-26）】AI 浏览器导航的 UI 落点——新建浏览器
+    /// 页签（initialURL=导航落点）+激活+右栏展开（open 内置）。
+    /// 触发链：BrowserUseManager navigate 成功 → NotificationCenter
+    /// .wanwoAgentBrowserNavigation → WORootFrame onReceive → 本方法。
+    /// 取舍：恒新建（BrowserTabPool.opening 语义=浏览器页签不复用，:115）；
+    /// AI 连续浏览多页时页签按 maxTabs 护栏聚合，手动关闭即可。
+    func openAgentBrowser(url: URL) {
+        open(.browser(initialURL: url))
+    }
+
     /// 当前活动页签。
     var activeTab: WorkspaceTab? {
         tabs.first { $0.id == activeTabID }

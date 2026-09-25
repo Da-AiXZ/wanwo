@@ -430,3 +430,62 @@ struct WOBeamSwapper: View {
         return (char, WOAlias.labelTertiary, .clear, 0)
     }
 }
+
+// MARK: - AI 截图图片条（批12+联动，2026-09-26）
+
+/// AI 回复内嵌截图的渲染条（`![…](wanwo://browser/…)` 经 WOChatView
+/// .splitAgentImages 提取后传入）。文件解析走 WanwoURLSchemeHandler
+/// .resolveWanwoURL（与 WKWebView 内同源同语义：活动会话四桶→全局扫描）；
+/// tap 全屏放大（简版——黑底 scaledToFit，点按关闭）。
+struct WOAgentImageStrip: View {
+    let sources: [URL]
+
+    private struct ZoomItem: Identifiable {
+        let id = UUID()
+        let image: UIImage
+    }
+
+    @State private var zoom: ZoomItem?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(sources, id: \.absoluteString) { url in
+                thumb(url)
+            }
+        }
+        .fullScreenCover(item: $zoom) { item in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                Image(uiImage: item.image)
+                    .resizable()
+                    .scaledToFit()
+                    .ignoresSafeArea()
+            }
+            .onTapGesture { zoom = nil }
+        }
+    }
+
+    /// 单图缩略：解析宿主文件 → UIImage；解析失败/读取失败显示占位行
+    /// （不崩不空转——截图文件可能被会话清理驱逐）。
+    @ViewBuilder
+    private func thumb(_ url: URL) -> some View {
+        if let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url),
+           let image = UIImage(contentsOfFile: fileURL.path) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 260)
+                .frame(maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(WOAlias.bgModulePlatform.opacity(0.6), lineWidth: 0.5))
+                .onTapGesture { zoom = ZoomItem(image: image) }
+                .accessibilityLabel("AI 浏览器截图，点按放大")
+        } else {
+            Label("截图已不可用", systemImage: "photo")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}

@@ -82,6 +82,15 @@ struct WORootFrame: View {
             workspaceSidebar.openResourceURL(url)
             WanwoURLRouter.shared.consumeResourceURL()
         }
+        // 批12+联动A/B（2026-09-26 用户令"AI 能打开右侧栏浏览器"）：AI 的
+        // browser_use 导航成功 → 自动展开右栏 + 浏览器页签打开同一页面
+        // （触发点=BrowserUseManager navigate 成功处；NotificationCenter
+        // 通道避免 Features→App 反向依赖）。
+        .onReceive(NotificationCenter.default.publisher(
+            for: .wanwoAgentBrowserNavigation)) { note in
+            guard let url = note.userInfo?["url"] as? URL else { return }
+            workspaceSidebar.openAgentBrowser(url: url)
+        }
         .onAppear { syncSessionSelection() }
         .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
         // 反向同步：引擎缝开的会话（hero 工作区胶囊 startSession / 深链）写

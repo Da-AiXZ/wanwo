@@ -832,6 +832,21 @@ final class BrowserUseManager: NSObject, ObservableObject {
         pageTitle = webView.title ?? ""
         isLoading = false
 
+        // 【批12+联动A/B（2026-09-26 用户令）】AI 导航成功 → 通知 UI 层打开/
+        // 跟随右栏浏览器页签（用户语"帮我打开右侧栏里的浏览器"=字面预期）。
+        // 通道=NotificationCenter（Features 层不反向依赖 App 层路由器）；
+        // WORootFrame onReceive 消费 → workspaceSidebar.openAgentBrowser(url)。
+        // 页签池与 AI 会话池共用按 sessionId 的持久化文件（BrowserTabPool
+        // loadPersistedURLs :1496），用户之后手动点开页签也能恢复出本 URL。
+        if let navURL = URL(string: currentURL), navURL.scheme.hasPrefix("http") {
+            Task { @MainActor in
+                NotificationCenter.default.post(
+                    name: .wanwoAgentBrowserNavigation,
+                    object: nil,
+                    userInfo: ["url": navURL])
+            }
+        }
+
         let meta = await navigationMetadata()
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - navStart) * 1000)
         logger.info("[NavTiming] total elapsed=\(totalMs)ms url=\(url.absoluteString.prefix(100))")
@@ -3143,4 +3158,15 @@ extension String {
         guard count > head + tail + 1 else { return self }
         return "\(prefix(head))…\(suffix(tail))"
     }
+}
+
+// MARK: - AI 浏览器联动通知（批12+联动A/B，2026-09-26 用户令）
+
+extension Notification.Name {
+    /// AI 的 browser_use 导航成功 → UI 层打开/跟随右栏浏览器页签。
+    /// userInfo: ["url": URL]（导航落点）。
+    /// 消费点 = WORootFrame onReceive → WorkspaceRightSidebarModel
+    /// .openAgentBrowser(url:)（右栏展开 + 浏览器页签导航）。
+    static let wanwoAgentBrowserNavigation =
+        Notification.Name("wanwo.agentBrowserNavigation")
 }

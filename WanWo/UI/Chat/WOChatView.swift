@@ -38,6 +38,53 @@ struct WOChatView: View {
     @EnvironmentObject private var appState: WOAppState
     private let sessionId: String
 
+    /// 批12+联动（2026-09-26）：聊天 Markdown 配置（settled 正文与流式直播
+    /// 共用）。①链接可辨识——库默认 linkTextAttributes 置空
+    /// （ParagraphUIView:200）=链接与正文同款不可辨识，经 withInlineStyle
+    /// 显式染主题蓝+下划线（点击链路库内置 onUrlTap→UIApplication.open，
+    /// wanwo:// 深链本就可用）；②shouldAnimateText=true（三校：逐字淡入，
+    /// 官方 Demo 同款）。
+    private static let chatMarkdownConfig: MarkdownRenderConfig = {
+        let inline = MarkdownRenderConfig.default.inlineStyle
+        return MarkdownRenderConfig.default
+            .withShouldAnimateText(value: true)
+            .withInlineStyle(value: .init(
+                boldTextColor: inline.boldTextColor,
+                linkTextFont: inline.linkTextFont,
+                linkTextColor: WOAlias.stateBusinessPrimary,
+                linkUnderlineStyle: [.single],
+                codeTextFont: inline.codeTextFont,
+                codeTextColor: inline.codeTextColor,
+                codeBackgroundColor: inline.codeBackgroundColor,
+                codeUnderlineColor: inline.codeUnderlineColor))
+    }()
+
+    /// 批12+联动：提取正文中库不支持的自有 scheme 图片（AI 浏览器截图
+    /// `![…](wanwo://browser/…)`——ImageConfig 三源仅 https/asset/bundle 且
+    /// 默认 disabled，MarkdownRenderConfig:286 实证）→ (净化正文, 图片列表)；
+    /// 图片由气泡下方 WOAgentImageStrip 渲染。整文仅图片时 body 为空串
+    /// （MarkdownView 渲染空文档无害）。
+    private static func splitAgentImages(_ text: String) -> (body: String, images: [URL]) {
+        guard let regex = try? NSRegularExpression(
+            pattern: "!\\[[^\\]]*\\]\\((wanwo://[^)\\s]+)\\)") else { return (text, []) }
+        let ns = text as NSString
+        var images: [URL] = []
+        var clean = text
+        for m in regex.matches(in: text,
+                               range: NSRange(location: 0, length: ns.length)).reversed() {
+            let urlStr = ns.substring(with: m.range(at: 1))
+            if let url = URL(string: urlStr) {
+                images.insert(url, at: 0)
+                clean = (clean as NSString).replacingCharacters(in: m.range, with: "")
+            }
+        }
+        while clean.contains("\n\n\n") {
+            clean = clean.replacingOccurrences(of: "\n\n\n", with: "\n\n")
+        }
+        let trimmed = clean.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.isEmpty ? "" : clean, images)
+    }
+
     /// 批C1：顶栏右栏开关回调（workspaceSidebar 真值在 WORootFrame，闭包下发；
     /// nil = 宿主未接（测试/直注实例）→ 顶栏不出开关钮）。
     var onToggleRightSidebar: (() -> Void)? = nil
@@ -906,16 +953,22 @@ struct WOChatView: View {
             // 助手行：渐变头像 + 正文（digest-H Bot 行形态；13px 时间戳因
             // 引擎气泡无墙钟字段缺席，登记报告）。
             // 批12 T7：正文换 MarkdownView（SwiftStreamingMarkdown——标题/
-            // 列表/代码块/表格可渲染；字色库默认跟随系统 primary，字号一期
-            // default 不折腾）。库自带 textSelection 配置——外层 .textSelection
-            // 去掉避免双选区行为。
-            // 批12+回归九校：八校B 的"hold 期间零高度隐藏"判废——换手期改由
-            // 渲染列表过滤（messageList）+ liveTail 占位（同结构带头像）实现
-            // 视觉无缝，本节点恒渲染完整形态。
+            // 列表/代码块/表格可渲染）。库自带 textSelection 配置——外层
+            // .textSelection 去掉避免双选区行为。
+            // 批12+联动（2026-09-26）：①config=chatMarkdownConfig（链接染色
+            // 可辨识——库默认 linkTextAttributes 置空=链接与正文同款）②正文
+            // 预处理提取 wanwo:// 截图（库 ImageConfig 三源均不支持自定义
+            // scheme 且默认 disabled）→ 气泡下方图片条渲染。
+            let (body, images) = Self.splitAgentImages(text)
             HStack(alignment: .top, spacing: 8) {
                 WOAssistantAvatar()
-                MarkdownView(text: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    MarkdownView(text: body, config: Self.chatMarkdownConfig)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !images.isEmpty {
+                        WOAgentImageStrip(sources: images)
+                    }
+                }
             }
             .padding(.top, 1)
 
@@ -983,7 +1036,7 @@ struct WOChatView: View {
                     WOAssistantAvatar()
                     StreamedMarkdownView(
                         source: streamSource,
-                        config: MarkdownRenderConfig.default.withShouldAnimateText(value: true))
+                        config: Self.chatMarkdownConfig)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.top, 1)
