@@ -51,6 +51,13 @@ struct WORootFrame: View {
             // 动画），真值链 = topBar 钮写 model.isFullscreen → 本视图 onChange
             // 桥写 layout.fullscreen；右栏 @State 只此一套（放大后浏览器不再空白）。
         .overlay { WOSettingsModal(isPresented: settingsPresented) }
+        // 批12+权限域修复（2026-09-25）：offload 审批卡挂载迁移——唯一挂载点
+        // 原在旧 RootView.swift:61（新 UI 重构后 RootView 零实例化=死视图），
+        // askOnce 审批请求发出后无任何视图消费 pendingRequest → 30s 超时 deny
+        // = M6 测试 17 个 askOnce 命令全军覆没真因（事件流：每次拒绝精确 30s、
+        // bypass 档同 shell 秒过）。迁移后 sheet 挂新根全局覆盖（offload 审批
+        // 可来自任意会话的内核分发点，非单会话面——原 RootView 挂载同语义）。
+        .offloadPermissionDialog()
         // 批C1：reopenSidebarButton 退役——右栏开关唯一入口=顶栏钮
         //（WOConversationHead，规格沿用本钮的 32pt r9 玻璃白 fab）。
         .alert("操作失败", isPresented: actionErrorPresented) {

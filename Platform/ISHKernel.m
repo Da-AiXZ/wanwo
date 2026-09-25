@@ -1565,15 +1565,20 @@ static int wanwo_offload_checked_trampoline(int argc, char **argv,
         BOOL allowed = gate(commandName, fullCommand);
         if (!allowed) {
             // deny envelope：错误码 AUTHORIZATION_DENIED（noff 统一错误码词汇）
-            // + 退出码 3。v2 为设计强制新实现（OpenMinis 无内核侧实现），消息
-            // 措辞对齐 OpenMinis OffloadPermissionManager.swift:241 notAllowed
-            // 文案；深链 scheme minis:// → wanwo://（10-design M6.5）。
+            // + 退出码 3。v2 为设计强制新实现（OpenMinis 无内核侧实现）。
+            // 【2026-09-25 文案中性化】gate 只返回 BOOL（approve/deny），本层
+            // 无法区分"设置档位=Not Allowed"与"askOnce 审批卡无人应答 30s
+            // 超时"——原措辞"the user has disabled or declined"把超时误报为
+            // 用户主动禁用（M6 真机测试据此被带偏一轮排查），改中性措辞；
+            // 精确原因见会话判定打点（decisionObserver→diag/trace）与
+            // 设置·权限页的当前档位显示。
             NSString *action = noff_get_subcommand(argc, argv) ?: @"";
             NSDictionary *err = noff_json_error(
                 commandName, action, NOFF_ERR_AUTHORIZATION_DENIED,
                 [NSString stringWithFormat:
-                    @"Permission denied: the user has disabled or declined '%@'. "
-                    @"To enable it, go to Settings > Permissions or tap: "
+                    @"Permission denied: '%@' was not approved "
+                    @"(approval timed out, or the command is set to Not Allowed). "
+                    @"To change permissions: "
                     @"[Open Permissions](wanwo://settings/permissions)", commandName]);
             noff_emit_json(stdout_fd, err, NO, NO);
             result = NOFF_EXIT_AUTH_DENIED;
