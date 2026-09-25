@@ -103,12 +103,16 @@ struct PermissionDefaultsView: View {
             // 全量透明优于原件的"仅隐私类"裁剪；档位三选（免问/每次问/禁止），
             // 写 OffloadPermissionManager 持久化（offloadPermission.<cmd>，
             // 与 OpenMinis 存储形态一致），下次调用立即生效。
-            Section("设备命令权限（AI 调用 iPad 能力的开关）") {
+            Section {
                 ForEach(offloadGroups, id: \.title) { group in
-                    ForEach(group.commands, id: \.name) { cmd in
-                        offloadRow(cmd)
+                    Section(group.title) {
+                        ForEach(group.commands, id: \.name) { cmd in
+                            offloadRow(cmd)
+                        }
                     }
                 }
+            } header: {
+                Text("设备命令权限（AI 调用 iPad 能力的开关）")
             } footer: {
                 Text("「免问」= AI 直接调用；「每次问」= 弹确认卡、本会话内允许一次后免弹；「禁止」= 直接拒绝。修改立即生效。")
             }
@@ -148,7 +152,7 @@ struct PermissionDefaultsView: View {
         ]
         return OffloadCommandCategory.allCases.map { category in
             (title: titles[category] ?? category.rawValue,
-             commands: OffloadPermissionManager.shared.allCommands
+             commands: OffloadPermissionManager.allCommands
                 .filter { $0.category == category })
         }
     }
