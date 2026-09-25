@@ -21,8 +21,9 @@
 //      合并行 seq/时间取块生命周期首事件（原事件时间范围口径）。
 //      页面顶部同时显示原始事件总数与聚合后行数，量级一眼可见。
 //    - 剪贴板导出：工具栏「复制日志」把当前会话 .jsonl 全文（UTF-8 文本）
-//      复制到 UIPasteboard.general.string；超 2MB 截断复制并提示用导出文件
-//      取全文。与 ShareLink 并存（Files App 取 WanWo-Exports 文件本体亦有效）。
+//      复制到 UIPasteboard.general.string；超上限截断复制并提示用导出文件
+//      取全文（2026-09-25 上限 2MB→8MB，M6 测试会话实测 2MB 即截断）。
+//      与 ShareLink 并存（Files App 取 WanWo-Exports 文件本体亦有效）。
 //      复制动作纯读文件，不产生任何事件。
 //  ERR-025② 取证复制（独立的「复制取证」按钮，与「复制日志」分开）：
 //    AgentLoop.logCacheForensics 的相邻请求逐项指纹对比输出进内存环形缓冲
@@ -175,7 +176,12 @@ enum EventStreamLoader {
         let stamp = DateFormatter()
         stamp.locale = Locale(identifier: "en_US_POSIX")
         stamp.dateFormat = "yyyyMMdd-HHmm"
-        let fileName = "wanwo-\(idPrefix)-\(stamp.string(from: Date())).jsonl"
+        // 扩展名用 .txt（2026-09-25 用户实测修导出）：.jsonl 无注册 UTType，
+        // ShareLink 分享时类型推断失败会退化为把 file:// 路径字符串发出去
+        // （接收端拿到"一串引用"而非文件本体——tmp 目录 bookmark 包装是
+        // 同族问题，:179 注释前科）；.txt 为系统内建类型（plain text），
+        // 全分享途径必走文件本体。内容零改动（逐行 JSON 原样，解析方不受影响）。
+        let fileName = "wanwo-\(idPrefix)-\(stamp.string(from: Date())).txt"
         // 副本写 Documents/WanWo-Exports/（用户 Files App 可见——tmp 目录经部分
         // 分享途径会被系统包装成 bookmark plist，用户拿到的是引用而非文件本体）。
         guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -194,11 +200,13 @@ enum EventStreamLoader {
         }
     }
 
-    /// M2.9 剪贴板导出上限（2MB）：超过则截断复制，UI 提示用导出文件取全文。
-    static let clipboardLimitBytes = 2 * 1_048_576
+    /// M2.9 剪贴板导出上限（2026-09-25 2MB→8MB）：M6 测试会话 2MB 即被截断
+    /// （用户实测拿到的 事件流.txt 恰 2MB 整），大会话全文拿不到；8MB 兜底
+    /// （UIPasteboard 字符串可承受；更大的会话仍以导出文件取全文）。
+    static let clipboardLimitBytes = 8 * 1_048_576
 
     /// M2.9 剪贴板导出的只读读取：当前会话 .jsonl 全文（UTF-8 文本）。
-    /// 纯读文件，不写任何句柄/事件；超 2MB 取前 2MB。
+    /// 纯读文件，不写任何句柄/事件；超上限取前 N 字节。
     /// - Returns: (剪贴板文本, 文件全文字节数)；会话不存在或读取失败返回 nil。
     static func readLogText(sessionID: String) -> (text: String, fullByteCount: Int)? {
         // id 路径安全校验（与 loadAndProject 同口径，fail closed）。
@@ -737,7 +745,8 @@ final class EventStreamViewModel: ObservableObject {
         UIPasteboard.general.string = outcome.text
         if outcome.fullByteCount > EventStreamLoader.clipboardLimitBytes {
             let fullMB = String(format: "%.1f", Double(outcome.fullByteCount) / 1_048_576)
-            showToast("已复制前 2MB（全文 \(fullMB) MB），请用导出文件")
+            let limitMB = EventStreamLoader.clipboardLimitBytes / 1_048_576
+            showToast("已复制前 \(limitMB)MB（全文 \(fullMB) MB），请用导出文件")
         } else {
             showToast("已复制全文（\(outcome.fullByteCount) 字节）")
         }
