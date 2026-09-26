@@ -96,20 +96,45 @@ struct WOChatView: View {
 
     /// 批12+联动B：裸 URL autolink——库 parser 不识别裸 URL（无 .link 属性
     /// =不可点、无链接样式，用户实测"选中才能 Open Link"根因），预处理包成
-    /// markdown 链接（chatMarkdownConfig 染色可辨）。已在 markdown 链接/图片
-    /// 目标位内的 URL 跳过（lookbehind 排除前置 `(` `"` `=` `[`）。
+    /// markdown 链接（chatMarkdownConfig 染色可辨）。
+    /// 已在 markdown 链接/图片目标位内的 URL 跳过（前置 `(` `"` `=` `[` 判定，
+    /// 等价原 lookbehind 语义）。
+    /// 【闪退修复 2026-09-27】原 NSRegularExpression lookbehind 实现渲染首个
+    /// 气泡即 ObjC 异常 abort（.ips lastExceptionBacktrace 实证本函数帧）
+    /// —— Foundation ICU 路径整体弃用，改纯 Swift 手工扫描（无异常面）：
+    /// 逐字符扫，遇协议头判前置字符 → 扫到空白/markdown 结构字符为止 →
+    /// 包 `[url](url)`，指针跳过 URL 本体。
     static func autolinkBareURLs(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(
-            pattern: "(?<![(\\[\"=])((?:https?://|wanwo://)[^\\s<>()\\[\\]\"]+)") else {
-            return text
-        }
-        let ns = text as NSString
-        var out = text
-        for m in regex.matches(in: text,
-                               range: NSRange(location: 0, length: ns.length)).reversed() {
-            let urlStr = ns.substring(with: m.range(at: 2))
-            out = (out as NSString).replacingCharacters(
-                in: m.range, with: "[\(urlStr)](\(urlStr))")
+        let markers = ["https://", "wanwo://"]
+        let stopChars = Set(" \t\n\r<>()\\[]\"'")
+        let blockPrev = Set("(\"=[")
+        var out = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let remaining = text[index...]
+            if let marker = markers.first(where: { remaining.hasPrefix($0) }) {
+                let prevOK: Bool
+                if index == text.startIndex {
+                    prevOK = true
+                } else {
+                    let prev = text[text.index(before: index)]
+                    prevOK = !blockPrev.contains(prev)
+                }
+                var end = index
+                while end < text.endIndex, !stopChars.contains(text[end]) {
+                    end = text.index(after: end)
+                }
+                let url = String(text[index..<end])
+                if prevOK, url.count > marker.count {
+                    out += "[\(url)](\(url))"
+                } else {
+                    out += url
+                }
+                index = end
+            } else {
+                out.append(text[index])
+                index = text.index(after: index)
+            }
         }
         return out
     }
