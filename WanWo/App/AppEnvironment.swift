@@ -303,12 +303,17 @@ final class AppEnvironment: ObservableObject {
         // 批12+（2026-09-27 用户拍板）：bootstrap 不再自动建工作区记录（下方
         // 调用已移除）；**存量自动记录一次性清理**——path==桶根 的记录按删除
         // C 语义连会话清（用户自建工作区路径为 DirectoryPicker 真实目录，不可
-        // 能等于桶根；此刻无开启写柄，sync 删除安全）。阻塞 init 一次，量级小。
+        // 能等于桶根）。会话删除走 actor 异步 API → 启动后 Task 收口（此刻无
+        // 开启写柄，竞争面为零）。
         for record in registry.list() where record.path == WanWoPaths.workspaceLinuxDir {
-            for sid in record.sessionIds {
-                try? sessionStore.deleteSession(id: sid)
+            let orphanSessionIds = record.sessionIds
+            let orphanRecordID = record.id
+            Task { [sessionStore, workspaceController] in
+                for sid in orphanSessionIds {
+                    try? await sessionStore.deleteSession(id: sid)
+                }
+                _ = try? workspaceController.delete(id: orphanRecordID)
             }
-            _ = try? registry.delete(id: record.id)
         }
 
         // UI 对齐批 1（A）：navigation.ts 语义移植——缝闭包注入（weak self；

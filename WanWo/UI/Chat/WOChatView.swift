@@ -175,9 +175,11 @@ struct WOChatView: View {
     @State private var autoSubmitArmed = false
 
     init(environment: AppEnvironment, sessionId: String,
-         onToggleRightSidebar: (() -> Void)? = nil) {
+         onToggleRightSidebar: (() -> Void)? = nil,
+         onOpenAgentBrowser: ((URL) -> Void)? = nil) {
         self.sessionId = sessionId
         self.onToggleRightSidebar = onToggleRightSidebar
+        self.onOpenAgentBrowser = onOpenAgentBrowser
         // dsh 草稿跨切换种子（ConversationSession mount 规则，**只读**——
         // pendingFirstDraft 的消费清理由 onAppear 既有块承担）：会话缓存草稿
         // 优先（blank 会话复用时草稿跟回）；否则用 hero 交接文本。
@@ -197,6 +199,7 @@ struct WOChatView: View {
     init(viewModel: ChatViewModel) {
         self.sessionId = ""
         self.onToggleRightSidebar = nil
+        self.onOpenAgentBrowser = nil
         self.consumesPendingImages = false
         _viewModel = StateObject(wrappedValue: viewModel)
     }
