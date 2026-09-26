@@ -555,8 +555,8 @@ struct WOAgentHintPill: View {
                 HStack(spacing: 1) {
                     ForEach(Array(domain.enumerated()), id: \.offset) { index, ch in
                         let phase = (now - Double(index) * Self.charDelay)
-                            .truncatingRemainder(dividingBy: Self.totalCycle)
-                        let offset = waveOffset(phase: phase < 0 ? phase + Self.totalCycle : phase)
+                            .truncatingRemainder(dividingBy: totalCycle)
+                        let offset = waveOffset(phase: phase < 0 ? phase + totalCycle : phase)
                         Text(String(ch))
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -569,7 +569,7 @@ struct WOAgentHintPill: View {
 
     /// 参考件单字符位移曲线（秒→px；21% 到顶 -8px，42% 回落，其后保持）。
     private func waveOffset(phase: Double) -> CGFloat {
-        let p = phase / Self.totalCycle
+        let p = phase / totalCycle
         switch p {
         case 0..<0.21:
             let k = p / 0.21
