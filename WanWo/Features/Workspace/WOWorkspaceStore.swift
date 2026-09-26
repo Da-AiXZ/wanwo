@@ -457,8 +457,13 @@ final class WOWorkspaceStore: ObservableObject {
             && isDir.boolValue
         if available != reviewAvailable { reviewAvailable = available }
         // 入口条件消失：关审查页签（激活落点走状态机）。
-        if !available, state(for: sessionId).activeTab?.kind == .review {
-            closeTabs(sessionId: sessionId, tabId: WorkspaceTabKind.review.rawValue)
+        if !available {
+            let s = state(for: sessionId)
+            if let activeID = s.activeTabID,
+               let activeTab = s.tabs.first(where: { $0.id == activeID }),
+               activeTab.kind == .review {
+                closeTabs(sessionId: sessionId, tabId: WorkspaceTabKind.review.rawValue)
+            }
         }
     }
 

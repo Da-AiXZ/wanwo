@@ -321,13 +321,13 @@ struct WORootFrame: View {
 
     @ViewBuilder
     private var detailsRegion: some View {
-        if appState.currentSessionId != nil {
+        if let sessionId = appState.currentSessionId {
             // 批B2：有会话恒挂载（dsh AppFrame.tsx:35-38「右栏宽 0 时保持挂载
             // 不卸载」）——批12+右栏重构批1：状态源换 WOWorkspaceStore（按会话
             // 作用域），收起=layout hidden（列宽 0 + 禁触门禁保留）。
             WorkspaceRightSidebarView(store: workspaceStore,
                                       environment: environment,
-                                      sessionId: appState.currentSessionId)
+                                      sessionId: sessionId)
         } else {
             WOSlotPlaceholder(text: nil, quiet: false)
         }
