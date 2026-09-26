@@ -112,6 +112,7 @@ struct BrowserUseTool: AgentTool {
                 "viewport_height": integer("Viewport height in CSS pixels for set_viewport (e.g. 1080). Required together with viewport_width unless reset=true."),
                 "reset": .booleanSchema(description: "For set_viewport: when true, clear the session-level viewport override and fall back to the global browser setting."),
                 "full_page": .booleanSchema(description: "For screenshot: capture the entire scrollable page by temporarily resizing the WebView to document.documentElement.scrollHeight. Default false captures viewport only. Capped at 32768px tall; when capped, result text includes 'Truncated: true' and the original height."),
+                "open_in_sidebar": .booleanSchema(description: "WanWo extension (optional, default false): set true when the user explicitly asked to see the page in the app's right sidebar (e.g. 'open the sidebar browser with this page'). The sidebar then auto-expands showing this page. Leave false for background browsing — the user gets a light hint instead and is not interrupted."),
             ],
             required: ["tool_title", "action"])
         // propertyOrdering（OpenMinis :131 逐字序）以注释锚定：Gemini 专属
@@ -192,6 +193,13 @@ struct BrowserUseTool: AgentTool {
         // ── 引擎执行 ─────────────────────────────────────────────────
         let result: BrowserActionResult
         do {
+            // 批12+联动B：两路展开语义——用户明确要求在右栏看（open_in_sidebar）
+            // → navigate 成功通知携带 openSidebar=true（右栏自动展开落点）；
+            // 自主浏览=false（仅轻提示，不打扰）。旗标经活动 manager 传递后自清。
+            await MainActor.run {
+                pool.activeManager?.openInSidebarNextNavigation =
+                    obj["open_in_sidebar"]?.boolValue == true
+            }
             // pool 是非隔离类方法（async throws），无需 MainActor.run 包裹。
             result = try await pool.execute(action: input)
         } catch {

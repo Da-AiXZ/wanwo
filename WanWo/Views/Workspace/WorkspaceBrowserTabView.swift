@@ -20,7 +20,9 @@ import SwiftUI
 /// BrowserTabPoolRegistry 全局并发护栏协调）。
 struct WorkspaceBrowserTabView: View {
     /// 打开即导航的目标（wanwo:// 资源深链；nil = 空白起始）。
-    let initialURL: URL?
+    /// 批12+联动B：改为 var——AI 单活动页签跟随（右栏模型改写本值，
+    /// onChange 消费=同页签换 URL 不新建）。
+    var initialURL: URL?
 
     /// 【批2 B①】宿主环境——当前选中会话 id 的锚（pool.sessionId 绑定源）。
     @ObservedObject var environment: AppEnvironment
@@ -50,6 +52,14 @@ struct WorkspaceBrowserTabView: View {
             // 会话切换跟随（批2 简报 B① 修法原句：onChange）。
             .onChange(of: environment.selection) { selection in
                 pool.sessionId = WorkspaceRightSidebarView.sessionID(of: selection)
+            }
+            // 批12+联动B：AI 单活动页签跟随——右栏模型改写 initialURL →
+            // 同页签换 URL（不新建页签；WKWebView 原生返回键=AI 开过的页历史）。
+            .onChange(of: initialURL) { newURL in
+                guard let newURL else { return }
+                navigated = true
+                pool.ensureTabForUI()
+                pool.activeManager?.loadURL(newURL.absoluteString)
             }
             .onDisappear {
                 asker.uninstall()

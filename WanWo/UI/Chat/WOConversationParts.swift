@@ -489,3 +489,96 @@ struct WOAgentImageStrip: View {
         }
     }
 }
+
+// MARK: - AI 浏览轻提示胶囊（批12+联动B 2026-09-27 用户参考件 1:1）
+
+/// AI 自主干活时的轻提示（dock 上方一行，不展开右栏不弹卡——两路展开语义的
+/// "不打扰"路）。动画=用户参考件（网页加载动效.txt）1:1：闪烁圆点（1.4s
+/// opacity 呼吸）+ 静态文案 + 域名逐字符波浪（translateY -8px、相邻延迟
+/// 0.13s、单字符周期 1.2s、hold 0.5s、总周期 2.87s、cubic-bezier(0.45,0,
+/// 0.55,1) 近似、等宽字体）。TimelineView 驱动（30fps 足够；字符数=域名长度，
+/// 非热路径）。reduceMotion=静态直出。
+struct WOAgentHintPill: View {
+    let title: String
+    let domain: String
+
+    /// 参考件节拍（秒）。
+    private static let charDelay = 0.13
+    private static let charRise = 1.20
+    private static let hold = 0.50
+    /// 总周期 = 9×0.13 + 1.20 + 0.50（域名字符数决定；实例计算——参考件
+    /// 域名 10 字符 ≈ 2.87s）。
+    private var totalCycle: Double {
+        Double(max(0, domain.count - 1)) * Self.charDelay + Self.charRise + Self.hold
+    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if reduceMotion {
+                Circle().frame(width: 5, height: 5).foregroundStyle(.secondary)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 1.4) / 1.4
+                    let opacity = 1.0 - 0.8 * abs(sin(t * .pi))
+                    Circle().frame(width: 5, height: 5)
+                        .foregroundStyle(WOAlias.labelSecondary.opacity(opacity))
+                }
+            }
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            waveText
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 14).fill(WOAlias.bgLayer2))
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title)\(domain)")
+    }
+
+    /// 域名逐字符波浪（参考件 keyframes：0→0 / 21%→-8px / 42%→0 / 100%→0；
+    /// 相位 = 全局时间 − i×0.13 对总周期取模）。SwiftUI Text 逐字符独立渲染
+    /// （monospaced 防抖动）。
+    @ViewBuilder
+    private var waveText: some View {
+        if reduceMotion {
+            Text(domain)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                let now = context.date.timeIntervalSinceReferenceDate
+                HStack(spacing: 1) {
+                    ForEach(Array(domain.enumerated()), id: \.offset) { index, ch in
+                        let phase = (now - Double(index) * Self.charDelay)
+                            .truncatingRemainder(dividingBy: Self.totalCycle)
+                        let offset = waveOffset(phase: phase < 0 ? phase + Self.totalCycle : phase)
+                        Text(String(ch))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .offset(y: offset)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 参考件单字符位移曲线（秒→px；21% 到顶 -8px，42% 回落，其后保持）。
+    private func waveOffset(phase: Double) -> CGFloat {
+        let p = phase / Self.totalCycle
+        switch p {
+        case 0..<0.21:
+            let k = p / 0.21
+            return CGFloat(-8 * sin(k * .pi / 2))
+        case 0.21..<0.42:
+            let k = (p - 0.21) / 0.21
+            return CGFloat(-8 * cos(k * .pi / 2))
+        default:
+            return 0
+        }
+    }
+}

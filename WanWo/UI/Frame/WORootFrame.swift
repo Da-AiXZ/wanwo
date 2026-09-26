@@ -81,13 +81,28 @@ struct WORootFrame: View {
             WanwoURLRouter.shared.consumeResourceURL()
         }
         // 批12+联动A/B（2026-09-26 用户令"AI 能打开右侧栏浏览器"）：AI 的
-        // browser_use 导航成功 → 自动展开右栏 + 浏览器页签打开同一页面
-        // （触发点=BrowserUseManager navigate 成功处；NotificationCenter
-        // 通道避免 Features→App 反向依赖）。
+        // browser_use 导航成功 → 两路展开语义（批12+联动B 2026-09-27 用户裁决：
+        // "AI 每换一页自动展开=打扰"修法）——openSidebar=true（用户明确要求/
+        // 截图）→ 展开右栏落点；false（AI 自主干活）→ 右栏已展开则单活动页签
+        // 跟随，收起则不打扰（轻提示由 WOChatView 呈现）。通道=Notification
+        // Center（Features 层不反向依赖 App 层路由器）。
         .onReceive(NotificationCenter.default.publisher(
             for: .wanwoAgentBrowserNavigation)) { note in
             guard let url = note.userInfo?["url"] as? URL else { return }
-            workspaceSidebar.openAgentBrowser(url: url)
+            let openSidebar = (note.userInfo?["openSidebar"] as? Bool) == true
+            if openSidebar {
+                workspaceSidebar.isExpanded = true
+                workspaceSidebar.openAgentBrowser(url: url, autoOpen: true)
+            } else if workspaceSidebar.isExpanded {
+                workspaceSidebar.openAgentBrowser(url: url, autoOpen: false)
+            }
+        }
+        // 批12+联动B：会话切换（含新建未发消息会话）→ 右栏自动收起（用户令；
+        // 页签状态保活=批9B 语义不变，重开即回）。
+        .onChange(of: environment.selection) { _ in
+            if workspaceSidebar.isExpanded {
+                workspaceSidebar.isExpanded = false
+            }
         }
         .onAppear { syncSessionSelection() }
         .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
@@ -276,6 +291,12 @@ struct WORootFrame: View {
                                workspaceSidebar.isExpanded = true
                                workspaceSidebar.isFullscreen = false
                            }
+                       },
+                       onOpenAgentBrowser: { url in
+                           // 批12+联动B：轻提示点击落点=展开右栏+AI 页签落点
+                           //（用户主动点击=明确要求场景）。
+                           workspaceSidebar.isExpanded = true
+                           workspaceSidebar.openAgentBrowser(url: url, autoOpen: true)
                        })
                 .id(sessionId)
         } else {

@@ -103,6 +103,9 @@ final class WorkspaceRightSidebarModel: ObservableObject {
     @Published var isFullscreen = false
     /// 「审查」入口可见性（仅 git 仓库项目——工作区宿主根存在 .git 目录时）。
     @Published var reviewAvailable = false
+    /// AI 专用浏览器页签 id（批12+联动B 2026-09-27 用户裁决：单活动页签跟随
+    /// ——AI 换页=同页签跳转不新建；✕ 关闭置 nil，下次明确要求时重建）。
+    var agentBrowserTabID: String?
 
     // MARK: - 状态机纯函数（单测直呼）
 
@@ -170,6 +173,9 @@ final class WorkspaceRightSidebarModel: ObservableObject {
 
     /// 关闭一枚页签（状态机纯函数落点）。
     func close(id: String) {
+        // 批12+联动B：AI 专用页签被手动 ✕ → 旗标清零（下次 AI 导航按
+        // autoOpen 语义重建；防悬挂 id 指向已删页签）。
+        if id == agentBrowserTabID { agentBrowserTabID = nil }
         let result = Self.closing(id: id, tabs: tabs, activeID: activeTabID)
         tabs = result.tabs
         activeTabID = result.newActive
@@ -195,14 +201,28 @@ final class WorkspaceRightSidebarModel: ObservableObject {
         open(.browser(initialURL: url))
     }
 
-    /// 【批12+联动A/B（2026-09-26）】AI 浏览器导航的 UI 落点——新建浏览器
-    /// 页签（initialURL=导航落点）+激活+右栏展开（open 内置）。
-    /// 触发链：BrowserUseManager navigate 成功 → NotificationCenter
-    /// .wanwoAgentBrowserNavigation → WORootFrame onReceive → 本方法。
-    /// 取舍：恒新建（BrowserTabPool.opening 语义=浏览器页签不复用，:115）；
-    /// AI 连续浏览多页时页签按 maxTabs 护栏聚合，手动关闭即可。
-    func openAgentBrowser(url: URL) {
-        open(.browser(initialURL: url))
+    /// 【批12+联动A/B（2026-09-26/27）】AI 浏览器导航的 UI 落点。
+    /// 批12+联动B（用户裁决"AI 每换一页就再开一个"修法）：**单活动页签跟随**
+    /// ——AI 页签已存在=同页签换 URL（视图 onChange(initialURL) 消费）不新建；
+    /// autoOpen（用户明确要求/截图）=激活+右栏展开；autoOpen=false 且无 AI
+    /// 页签=不建签（轻提示由 WOChatView 呈现，不打扰）。✕ 删除=close 清旗。
+    /// 触发链：BrowserUseManager navigate/screenshot 成功 → NotificationCenter
+    /// .wanwoAgentBrowserNavigation（userInfo openSidebar）→ WORootFrame → 本方法。
+    func openAgentBrowser(url: URL, autoOpen: Bool = true) {
+        if let id = agentBrowserTabID,
+           let idx = tabs.firstIndex(where: { $0.id == id }),
+           tabs[idx].kind == .browser {
+            tabs[idx].initialURL = url
+            if autoOpen {
+                activeTabID = id
+                if !isExpanded { isExpanded = true }
+            }
+            return
+        }
+        guard autoOpen else { return }
+        let tab = WorkspaceTab.browser(initialURL: url)
+        agentBrowserTabID = tab.id
+        open(tab)
     }
 
     /// 当前活动页签。

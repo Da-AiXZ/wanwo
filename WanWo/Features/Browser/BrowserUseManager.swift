@@ -37,6 +37,9 @@ final class BrowserUseManager: NSObject, ObservableObject {
 
     @Published var currentURL: String = ""
     @Published var pageTitle: String = ""
+    /// 批12+联动B（两路展开语义）：BrowserUseTool 按"用户是否明确要求在右栏
+    /// 展示"置位；navigate 成功通知携带后自清。false=轻提示不展开。
+    var openInSidebarNextNavigation = false
     @Published var isLoading: Bool = false
     /// [T-ios-webview-error-ui] Non-nil when the last navigation failed
     /// (DNS/host/offline/timeout/TLS). Drives a Safari-style error overlay in
@@ -840,11 +843,13 @@ final class BrowserUseManager: NSObject, ObservableObject {
         // loadPersistedURLs :1496），用户之后手动点开页签也能恢复出本 URL。
         if let navURL = URL(string: currentURL),
            let scheme = navURL.scheme, scheme.hasPrefix("http") {
+            let openSidebar = openInSidebarNextNavigation
+            openInSidebarNextNavigation = false
             Task { @MainActor in
                 NotificationCenter.default.post(
                     name: .wanwoAgentBrowserNavigation,
                     object: nil,
-                    userInfo: ["url": navURL])
+                    userInfo: ["url": navURL, "openSidebar": openSidebar])
             }
         }
 
@@ -963,6 +968,18 @@ final class BrowserUseManager: NSObject, ObservableObject {
         let filename = "screenshot_\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
         let fileURL = Self.screenshotsDir.appendingPathComponent(filename)
         try jpegData.write(to: fileURL)
+
+        // 批12+联动B（2026-09-27 用户令"AI 截图完自动打开右侧栏展示"）：截图
+        // 落盘 → 右栏自动展开并打开 wanwo:// 图片（scheme handler 直读同一
+        // 文件；截图=用户明确要求的动作，属自动展开白名单场景）。
+        if let imageURL = URL(string: "wanwo://browser/\(filename)") {
+            Task { @MainActor in
+                NotificationCenter.default.post(
+                    name: .wanwoAgentBrowserNavigation,
+                    object: nil,
+                    userInfo: ["url": imageURL, "openSidebar": true])
+            }
+        }
 
         let base64 = jpegData.base64EncodedString()
         let size = image.size

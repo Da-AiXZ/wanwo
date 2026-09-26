@@ -39,6 +39,12 @@ struct WOChatView: View {
     /// 批12+归挡（2026-09-27）：offload askOnce 审批卡（composer 座位接管
     /// 第三顺位；App 级单例呈现宿主——offload 审批可来自任意会话内核分发点）。
     @ObservedObject private var offloadPresenter = OffloadApprovalPresenter.shared
+    /// 批12+联动B：轻提示状态（AI 自主干活时 dock 位胶囊；openSidebar 场景
+    /// 不进此态——直接展开右栏落点）。
+    @State private var agentHint: AgentHint?
+    /// 同域 10s 节流（AI 连续多页不刷屏）。
+    @State private var lastHintTimes: [String: Date] = [:]
+    struct AgentHint: Equatable { let url: URL; let domain: String }
     private let sessionId: String
 
     /// 批12+联动（2026-09-26）：聊天 Markdown 配置（settled 正文与流式直播
@@ -88,9 +94,31 @@ struct WOChatView: View {
         return (trimmed.isEmpty ? "" : clean, images)
     }
 
+    /// 批12+联动B：裸 URL autolink——库 parser 不识别裸 URL（无 .link 属性
+    /// =不可点、无链接样式，用户实测"选中才能 Open Link"根因），预处理包成
+    /// markdown 链接（chatMarkdownConfig 染色可辨）。已在 markdown 链接/图片
+    /// 目标位内的 URL 跳过（lookbehind 排除前置 `(` `"` `=` `[`）。
+    static func autolinkBareURLs(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "(?<![(\\[\"=])((?:https?://|wanwo://)[^\\s<>()\\[\\]\"]+)") else {
+            return text
+        }
+        let ns = text as NSString
+        var out = text
+        for m in regex.matches(in: text,
+                               range: NSRange(location: 0, length: ns.length)).reversed() {
+            let urlStr = ns.substring(with: m.range(at: 2))
+            out = (out as NSString).replacingCharacters(
+                in: m.range, with: "[\(urlStr)](\(urlStr))")
+        }
+        return out
+    }
+
     /// 批C1：顶栏右栏开关回调（workspaceSidebar 真值在 WORootFrame，闭包下发；
     /// nil = 宿主未接（测试/直注实例）→ 顶栏不出开关钮）。
     var onToggleRightSidebar: (() -> Void)? = nil
+    /// 批12+联动B：轻提示点击回调（展开右栏+AI 页签落点；真值在 WORootFrame）。
+    var onOpenAgentBrowser: ((URL) -> Void)? = nil
 
     /// 批C4：autoFollow 闸门（digest-K 6.3#1 清偿）——尾部探针可见（用户在
     /// 底部附近）时内容变化才滚底；探针出上缘（用户在历史区）暂停；探针回
@@ -247,8 +275,35 @@ struct WOChatView: View {
                 if let banner = viewModel.resumeBanner {
                     degradationBanner(banner)
                 }
+                // 批12+联动B（2026-09-27 用户令+参考件动画）：轻提示胶囊——
+                // AI 自主干活时 dock 上方一行（不展开不弹卡不打断输入）；
+                // 点击=展开右栏+AI 页签落点。回调真值在 WORootFrame。
+                if let hint = agentHint {
+                    WOAgentHintPill(title: "AI 正在浏览", domain: hint.domain)
+                        .frame(maxWidth: 620)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onOpenAgentBrowser?(hint.url) }
+                        .transition(.opacity)
+                }
                 composerSeat
                     .background(composerChromeMeter)
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: .wanwoAgentBrowserNavigation)) { note in
+                        // 批12+联动B：AI 自主干活（openSidebar≠true）→ 轻提示
+                        // 状态（同域 10s 节流；openSidebar=true 由 WORootFrame
+                        // 直接展开右栏，不进此态）。
+                        guard (note.userInfo?["openSidebar"] as? Bool) != true,
+                              let url = note.userInfo?["url"] as? URL else { return }
+                        let domain = url.host ?? url.absoluteString
+                        let now = Date()
+                        if let last = lastHintTimes[domain],
+                           now.timeIntervalSince(last) < 10 { return }
+                        lastHintTimes[domain] = now
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            agentHint = AgentHint(url: url, domain: domain)
+                        }
+                    }
                 // 批10：composer 上方悬浮渐隐罩退役（2026-09-22 真机反馈"渐变
                 // 太奇怪、就做一小块"——620 宽 36pt 罩在卡上缘呈灰斑；用户令
                 // 删除不再做渐变。内容贴卡上缘自然裁切，滚动跟随由 autoFollow
@@ -330,6 +385,8 @@ struct WOChatView: View {
         .onDisappear { viewModel.close() }
         .onChange(of: viewModel.phase) { phase in
             seedEntry()
+            // 批12+联动B：回合结束 → 轻提示胶囊淡出（浏览过程结束即消失）。
+            if phase != .streaming { agentHint = nil }
             // 批12 T7：流式 Markdown 桥接生命周期——离开 .streaming 即终结流并
             // 重建（供下一回合；finish 后 StreamedMarkdownView 以终态收尾）。
             // 批12+回归六校（闪跳手术 RC1/RC4）：换血帧身份补种——reproject
@@ -970,7 +1027,8 @@ struct WOChatView: View {
             HStack(alignment: .top, spacing: 8) {
                 WOAssistantAvatar()
                 VStack(alignment: .leading, spacing: 8) {
-                    MarkdownView(text: body, config: Self.chatMarkdownConfig)
+                    MarkdownView(text: Self.autolinkBareURLs(body),
+                                 config: Self.chatMarkdownConfig)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !images.isEmpty {
                         WOAgentImageStrip(sources: images)
