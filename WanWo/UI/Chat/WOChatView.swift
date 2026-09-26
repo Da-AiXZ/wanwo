@@ -36,6 +36,9 @@ struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var appState: WOAppState
+    /// 批12+归挡（2026-09-27）：offload askOnce 审批卡（composer 座位接管
+    /// 第三顺位；App 级单例呈现宿主——offload 审批可来自任意会话内核分发点）。
+    @ObservedObject private var offloadPresenter = OffloadApprovalPresenter.shared
     private let sessionId: String
 
     /// 批12+联动（2026-09-26）：聊天 Markdown 配置（settled 正文与流式直播
@@ -544,6 +547,10 @@ struct WOChatView: View {
             WOApprovalCard(viewModel: viewModel, pending: approval)
         } else if let question = viewModel.pendingQuestions.first {
             WOQuestionCard(viewModel: viewModel, pending: question)
+        } else if let offloadRequest = offloadPresenter.pendingRequest {
+            // 批12+归挡：offload askOnce 卡（composer 座位接管第三顺位，
+            // WOApprovalCard 同款骨架——用户指名对齐现有"盖在 dock 上层"样式）。
+            WOOffloadPermissionCard(request: offloadRequest)
         } else {
             // 批C2：composer hero/dock 统一 620 限宽水平居中（IMG_2386 通栏
             // 扁条根治；发送后同卡随 .woMotion 落底，宽度不变=FLIP 平移）。

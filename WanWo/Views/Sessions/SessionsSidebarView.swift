@@ -324,7 +324,7 @@ struct SessionsSidebarView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("删除工作区？")
                             .font(.system(size: 17, weight: .semibold))
-                        Text("「\(wsDeleteTarget?.title ?? "")」将从列表移除；目录与文件不受影响，其中会话将不再显示。")
+                        Text("「\(wsDeleteTarget?.title ?? "")」将连同其中全部会话与工作区文件一并删除，此操作不可恢复。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1204,20 +1204,54 @@ struct SessionsSidebarView: View {
         wsDeleting = true
         wsDeleteCommittedID = nil
         wsDeleteError = nil
-        do {
-            let deleted = try environment.workspaceController.delete(id: target.id)
-            if deleted {
-                // 确认保持到列表渲染出无该 id 才关（dsh :1053-1067——防 stale
-                // frame）；由 onChange(of: workspaces) 收口。
-                wsDeleteCommittedID = target.id
-            } else {
-                // 幂等 no-op（id 已不存在）——直接收口关闭。
-                wsDeleting = false
-                wsDeleteTarget = nil
+        let workspaceID = target.id
+        Task { @MainActor in
+            // 批12+工作区删除 C（2026-09-26 用户裁决）：删工作区 = 连组内会话
+            // 一起删（偏离 dsh delete 只删记录语义，用户裁决优先；删前留底 =
+            // F070 会话 ZIP 导出，M9.3 排期）。工作区目录仅删 App 管控的
+            // projects/<n> 内路径——用户经 DirectoryPicker 外选的真实目录
+            // （iCloud 等）绝不触碰。
+            var failure: String?
+            let sessionIDs = workspaces.first(where: { $0.id == workspaceID })?
+                .sessionIds ?? []
+            for sid in sessionIDs {
+                await environment.deleteSession(id: sid)
+                if let err = environment.sessionActionError {
+                    failure = err
+                    environment.sessionActionError = nil
+                    break
+                }
             }
-        } catch {
-            wsDeleting = false
-            wsDeleteError = "删除失败：\(String(describing: error))"
+            if failure == nil {
+                if let record = environment.workspaceRegistry.list()
+                    .first(where: { $0.id == workspaceID }),
+                   WanWoPaths.isProjectsGuestPath(record.path),
+                   record.path != WanWoPaths.projectsLinuxDir,
+                   let hostDir = WanWoPaths.projectsHostRoot(forGuestPath: record.path) {
+                    try? FileManager.default.removeItem(at: hostDir)
+                    IshExecutorBridge.setProjectDirectories(
+                        environment.workspaceRegistry.list().map(\.path)
+                            .filter { WanWoPaths.isProjectsGuestPath($0)
+                                && $0 != WanWoPaths.projectsLinuxDir })
+                }
+                do {
+                    if try environment.workspaceController.delete(id: workspaceID) {
+                        // 确认保持到列表渲染出无该 id 才关（dsh :1053-1067——
+                        // 防 stale frame）；由 onChange(of: workspaces) 收口。
+                        wsDeleteCommittedID = workspaceID
+                    } else {
+                        // 幂等 no-op（id 已不存在）——直接收口关闭。
+                        wsDeleting = false
+                        wsDeleteTarget = nil
+                    }
+                } catch {
+                    wsDeleting = false
+                    wsDeleteError = "删除失败：\(String(describing: error))"
+                }
+            } else {
+                wsDeleting = false
+                wsDeleteError = failure
+            }
         }
     }
 

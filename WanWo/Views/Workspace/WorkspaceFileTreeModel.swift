@@ -39,14 +39,22 @@ final class WorkspaceFileTreeModel: ObservableObject {
     @Published var loadError: String?
 
     /// 会话工作区桶的宿主根（FsContextRouter 既有面；§7.5 直读纪律）。
-    static func hostRoot(for sessionID: String) -> URL? {
-        FsContextRouter.shared.hostURL(forGuest: WanWoPaths.workspaceLinuxDir,
-                                       sid: sessionID)
+    /// 批12+工作区贯穿（2026-09-27 用户裁决）：workspacePath（会话 header
+    /// cwd）落 projects 根 → 项目模式直返真实项目目录（与 WorkspaceFileAccess
+    /// 项目模式同映射）；nil/legacy 回落桶根既有语义零变化。
+    static func hostRoot(for sessionID: String, workspacePath: String? = nil) -> URL? {
+        if let workspacePath,
+           let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: workspacePath) {
+            return projectHost
+        }
+        return FsContextRouter.shared.hostURL(forGuest: WanWoPaths.workspaceLinuxDir,
+                                               sid: sessionID)
     }
 
     /// 加载工作区根一层（目录懒展开——大目录不全量递归）。
-    func load(sessionID: String) {
-        guard let hostRoot = Self.hostRoot(for: sessionID) else {
+    func load(sessionID: String, workspacePath: String? = nil) {
+        guard let hostRoot = Self.hostRoot(for: sessionID,
+                                           workspacePath: workspacePath) else {
             loadError = "工作区目录不可用"
             roots = []
             return

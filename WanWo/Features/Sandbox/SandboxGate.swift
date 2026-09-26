@@ -103,8 +103,11 @@ enum SandboxGate {
 
     /// 词法前缀 containment（guest Linux 语义）。相对路径（含 ./）按 cwd=工作区
     /// 归入；绝对路径必须落在 workspaceRoot 或 /tmp 白名单内（dsh roots.ts
-    /// writableRoots 的 WanWo 形态，见 SandboxPolicy 头注）。
-    static func fsPathUnderWritableRoots(_ path: String, mode: SandboxMode) -> Bool {
+    /// writableRoots 的 WanWo 形态，见 SandboxPolicy 头注）。批12+工作区贯穿：
+    /// workspacePath = 会话绑定工作区路径（可写根追加项，F073 分工作区后
+    /// workspace-write 名实相符）；nil = legacy 桶根语义零变化。
+    static func fsPathUnderWritableRoots(_ path: String, mode: SandboxMode,
+                                         workspacePath: String? = nil) -> Bool {
         switch mode {
         case .dangerFullAccess:
             return true   // dsh checkedTarget :125 直通
@@ -122,7 +125,7 @@ enum SandboxGate {
         if !p.hasPrefix("/") {
             return true   // 相对路径：cwd 恒为工作区（dsh session cwd 语义）
         }
-        let roots = SandboxPolicy.writableRoots(.workspaceWrite)
+        let roots = SandboxPolicy.writableRoots(.workspaceWrite, workspacePath: workspacePath)
         for root in roots {
             if p == root || p.hasPrefix(root + "/") { return true }
         }
@@ -146,7 +149,8 @@ enum SandboxGate {
                                     args: JSONValue,
                                     standingMode: SandboxMode,
                                     callId: String?,
-                                    approver: SandboxEscalationApprover?) async -> FsMutationGrant {
+                                    approver: SandboxEscalationApprover?,
+                                    workspacePath: String? = nil) async -> FsMutationGrant {
         let mode: SandboxMode
         switch await resolveMode(tool: tool, args: args, standingMode: standingMode,
                                  subject: "operation", callId: callId, approver: approver) {
@@ -154,7 +158,7 @@ enum SandboxGate {
         case .failure(let failure):
             return .denied(.failure(failure.message, code: "SANDBOX_ESCALATION_ERROR"))
         }
-        guard fsPathUnderWritableRoots(path, mode: mode) else {
+        guard fsPathUnderWritableRoots(path, mode: mode, workspacePath: workspacePath) else {
             // dsh mapError（tool-fs sandbox.ts:124-130）：denial marker + hint
             // 逐字，原文案整体替换；isError 结果。
             return .denied(.failure(sandboxDenialMarker(mode) + "\n"
@@ -172,7 +176,8 @@ enum SandboxGate {
                               args: JSONValue,
                               standingMode: SandboxMode,
                               callId: String?,
-                              approver: SandboxEscalationApprover?) async -> ToolOutput? {
+                              approver: SandboxEscalationApprover?,
+                              workspacePath: String? = nil) async -> ToolOutput? {
         let mode: SandboxMode
         switch await resolveMode(tool: tool, args: args, standingMode: standingMode,
                                  subject: "command", callId: callId, approver: approver) {

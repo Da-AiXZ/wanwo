@@ -56,9 +56,10 @@ struct RootView: View {
             }
         }
         // 万我 M6.1 增（B1c ④审批接线）：offload askOnce 权限确认卡全局
-        // 挂载（OpenMinis 挂 ContentView 同位；sheet(item:) 单槽形态原件
-        // 1:1——审批来自内核 offload 分发点，可发生于任意会话/页面）。
-        .offloadPermissionDialog()
+        // 挂载（OpenMinis 挂 ContentView 同位）。批12+归挡（2026-09-27）：
+        // .offloadPermissionDialog() 修饰器退役——卡片迁 composer 座位接管
+        // （WOChatView.composerSeat，WOOffloadPermissionCard）；本视图为新
+        // UI 重构后的死代码（零实例化），挂载点仅作历史注记保留。
         // 万我 M6.5 增（B3）：wanwo:// 深链消费——设置权限页跳转
         // （OffloadPermissionManager deny 文案 [Open Permissions](wanwo://settings/permissions)
         // 的消费端）；M6.6（B4）：资源 URL → 右侧栏浏览器页签（B3 标注的

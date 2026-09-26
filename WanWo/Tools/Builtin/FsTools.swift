@@ -139,7 +139,8 @@ struct FsWriteTool: AgentTool {
         switch await SandboxGate.authorizeFsMutation(
             tool: name, path: path, args: args,
             standingMode: ctx.sandboxMode, callId: ctx.callId,
-            approver: ctx.escalationApprover) {
+            approver: ctx.escalationApprover,
+            workspacePath: ctx.workspace.guestWorkspacePrefix) {
         case .granted(let mode): grantedMode = mode
         case .denied(let denial): return denial
         }
@@ -224,7 +225,8 @@ struct FsEditTool: AgentTool {
         switch await SandboxGate.authorizeFsMutation(
             tool: name, path: path, args: args,
             standingMode: ctx.sandboxMode, callId: ctx.callId,
-            approver: ctx.escalationApprover) {
+            approver: ctx.escalationApprover,
+            workspacePath: ctx.workspace.guestWorkspacePrefix) {
         case .granted(let mode): grantedMode = mode
         case .denied(let denial): return denial
         }
@@ -550,7 +552,8 @@ struct FsStrReplaceEditorTool: AgentTool {
             switch await SandboxGate.authorizeFsMutation(
                 tool: name, path: path, args: args,
                 standingMode: ctx.sandboxMode, callId: ctx.callId,
-                approver: ctx.escalationApprover) {
+                approver: ctx.escalationApprover,
+                workspacePath: ctx.workspace.guestWorkspacePrefix) {
             case .granted(let mode): grantedMode = mode
             case .denied(let denial): return denial
             }

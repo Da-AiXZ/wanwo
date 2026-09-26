@@ -23,7 +23,9 @@ struct ReviewTabView: View {
         self.environment = environment
         let sessionID = WorkspaceRightSidebarView.sessionID(of: environment.selection)
             ?? "m0-shell-test"
-        _model = StateObject(wrappedValue: ReviewTabModel(sessionID: sessionID))
+        _model = StateObject(wrappedValue: ReviewTabModel(
+            sessionID: sessionID,
+            workspacePath: environment.guestWorkspacePath(for: sessionID)))
     }
 
     var body: some View {

@@ -45,13 +45,22 @@ enum SandboxPolicy {
 
     /// dsh roots.ts:38-55 writableRoots：read-only 空表；workspace-write =
     /// workspace root + temp（dsh 另含宿主 tmpdir()，WanWo 无对应物——见头注）。
-    static func writableRoots(_ mode: SandboxMode) -> [String] {
+    /// 批12+工作区贯穿（2026-09-27 用户裁决）：workspace-write 追加**当前会话
+    /// 绑定工作区路径**（F073 分工作区后 cwd=projects/<n>，原静态桶根不含它
+    /// =workspace-write 挡对绑定会话失效、"工作区内修改"被拒后连环提权到
+    /// full——事件流 233KB 实证）。桶根保留（legacy 会话 + hooks 桶根基础设施
+    /// 兼容），去重语义同 dsh Set。
+    static func writableRoots(_ mode: SandboxMode, workspacePath: String? = nil) -> [String] {
         switch mode {
         case .readOnly:
             return []
         case .workspaceWrite:
-            // dsh 去重语义（Set）：workspaceRoot ≠ /tmp 时两元素。
-            return workspaceRoot == tempRoot ? [workspaceRoot] : [workspaceRoot, tempRoot]
+            var roots = [workspaceRoot]
+            if let workspacePath, !workspacePath.isEmpty, workspacePath != workspaceRoot {
+                roots.append(workspacePath)
+            }
+            if tempRoot != workspaceRoot { roots.append(tempRoot) }
+            return roots
         case .dangerFullAccess:
             // dsh 全挡不限写（writableRoots 只服务 workspace-write 围栏）。
             return [workspaceRoot, tempRoot]
@@ -61,7 +70,11 @@ enum SandboxPolicy {
     /// dsh renderPolicyContext（sandbox-policy index.ts:41-58）三段逐字；
     /// workspace-write 段的 `${JSON.stringify(policy.workspaceRoot)}` 以带引号
     /// 字面量承载（JSON.stringify("/var/wanwo/workspace") === "\"/var/wanwo/workspace\""）。
-    static func renderPolicyContext(_ mode: SandboxMode) -> String {
+    /// 批12+工作区贯穿：文本跟随**会话绑定工作区路径**（nil/legacy 回落桶根）
+    /// ——原静态口径与 runtime-context 的 workspace 行互相矛盾，正是模型提权
+    /// 连环问的诱因之一。
+    static func renderPolicyContext(_ mode: SandboxMode, workspacePath: String? = nil) -> String {
+        let effectiveRoot = workspacePath ?? workspaceRoot
         switch mode {
         case .readOnly:
             return "Current DSH file policy: read-only. Any available operation enforced "
@@ -71,7 +84,7 @@ enum SandboxPolicy {
         case .workspaceWrite:
             return "Current DSH file policy: workspace-write. Any available operation "
                 + "enforced by the DSH file sandbox may modify files under the session "
-                + "workspace: \"\(workspaceRoot)\". Some platform temporary areas may also be writable."
+                + "workspace: \"\(effectiveRoot)\". Some platform temporary areas may also be writable."
         case .dangerFullAccess:
             return "Current DSH file policy: danger-full-access. The DSH file sandbox does "
                 + "not restrict file modifications by available operations."

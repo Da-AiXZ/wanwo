@@ -117,7 +117,8 @@ struct ShellTool: AgentTool {
         if let denial = await SandboxGate.authorizeBash(
             tool: name, command: command, args: args,
             standingMode: ctx.sandboxMode, callId: ctx.callId,
-            approver: ctx.escalationApprover) {
+            approver: ctx.escalationApprover,
+            workspacePath: sessionCwd) {
             return denial
         }
         let timeoutSeconds = args.objectValue?["timeout_ms"]?.intValue

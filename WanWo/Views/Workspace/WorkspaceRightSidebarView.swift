@@ -33,10 +33,16 @@ struct WorkspaceRightSidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // 页签随会话切换刷新「审查」入口（git 仓库项目才显示）。
         .onChange(of: environment.selection) { selection in
-            model.updateReviewAvailability(sessionID: Self.sessionID(of: selection))
+            model.updateReviewAvailability(
+                sessionID: Self.sessionID(of: selection),
+                workspacePath: environment.guestWorkspacePath(
+                    for: Self.sessionID(of: selection) ?? ""))
         }
         .onAppear {
-            model.updateReviewAvailability(sessionID: Self.sessionID(of: environment.selection))
+            model.updateReviewAvailability(
+                sessionID: Self.sessionID(of: environment.selection),
+                workspacePath: environment.guestWorkspacePath(
+                    for: Self.sessionID(of: environment.selection) ?? ""))
         }
     }
 

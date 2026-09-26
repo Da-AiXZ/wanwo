@@ -203,9 +203,12 @@ final class ReviewTabModel: ObservableObject {
     }
 
     private let sessionID: String
+    /// 会话绑定工作区路径（批12+工作区贯穿；git -C 落点——nil/legacy 回落桶根）。
+    private let workspacePath: String
 
-    init(sessionID: String) {
+    init(sessionID: String, workspacePath: String? = nil) {
         self.sessionID = sessionID
+        self.workspacePath = workspacePath ?? WanWoPaths.workspaceLinuxDir
     }
 
     /// 探测 + 取 diff（只读命令经 shell 通道；fs_context = 当前会话工作区桶）。
@@ -218,7 +221,7 @@ final class ReviewTabModel: ObservableObject {
             // ① git 二进制 + 仓库判定。
             let probe = try await IshExecutorBridge.shared.execute(
                 sessionId: sessionID,
-                command: "git -C /var/wanwo/workspace rev-parse --is-inside-work-tree 2>&1",
+                command: "git -C \(workspacePath) rev-parse --is-inside-work-tree 2>&1",
                 timeout: 15,
                 lineCallback: { _ in },
                 pidCallback: { _ in })
@@ -233,7 +236,7 @@ final class ReviewTabModel: ObservableObject {
             // ② 已跟踪变更 diff（骨架级：未提交 diff 一档；暂存/分支档 = M9.6）。
             let diff = try await IshExecutorBridge.shared.execute(
                 sessionId: sessionID,
-                command: "git -C /var/wanwo/workspace diff",
+                command: "git -C \(workspacePath) diff",
                 timeout: 30,
                 lineCallback: { _ in },
                 pidCallback: { _ in })

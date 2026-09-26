@@ -300,6 +300,17 @@ final class AppEnvironment: ObservableObject {
         self.workspaceRegistry = registry
         self.workspaceController = WorkspaceController(registry: registry)
 
+        // 批12+（2026-09-27 用户拍板）：bootstrap 不再自动建工作区记录（下方
+        // 调用已移除）；**存量自动记录一次性清理**——path==桶根 的记录按删除
+        // C 语义连会话清（用户自建工作区路径为 DirectoryPicker 真实目录，不可
+        // 能等于桶根；此刻无开启写柄，sync 删除安全）。阻塞 init 一次，量级小。
+        for record in registry.list() where record.path == WanWoPaths.workspaceLinuxDir {
+            for sid in record.sessionIds {
+                try? sessionStore.deleteSession(id: sid)
+            }
+            _ = try? registry.delete(id: record.id)
+        }
+
         // UI 对齐批 1（A）：navigation.ts 语义移植——缝闭包注入（weak self；
         // 测试面同构注入桩，不触真身）。createSessionInWorkspace = createSession
         // (cwd: ws.path) + attachSession 的 B3 既有注入链收口。
@@ -308,8 +319,9 @@ final class AppEnvironment: ObservableObject {
         // 须待全部存储属性完成阶段一（CI 35124325714 实证 :371 Task 捕获被否）。
 
         // 首启 bootstrap（dsh :122——按 header cwd 分组一次；标记最后写）。
-        // 阻塞 init 一次（本地 SQLite + 轻量 header 探针，量级小），之后零开销。
-        _ = registry.bootstrapIfNeeded()
+        // 批12+（2026-09-27 用户拍板）：**不再自动建工作区记录**——调用移除；
+        // 存量自动记录的清理随删工作区 C 批（连会话删语义）。
+        // _ = registry.bootstrapIfNeeded()
 
         // 【工作区模型修正】项目目录快照初始推送（boot 后 performMount 兜底
         // 补注册 meta.db——既有项目在 kernel 冷启动完成前 adopt 的兜底面）。
@@ -630,6 +642,18 @@ final class AppEnvironment: ObservableObject {
     /// injector / loop；审批缝 = M3 P1-3 重做——审批只由沙箱提权请求触发
     /// （ApprovalCoordinator + UserQuestionService 仍在；M2 AutoApprovalSeam
     /// 占位已废）。
+    /// 会话 guest 工作区前缀（header cwd 单一真值源；读失败/无 cwd 回落桶根）
+    /// ——文件页签根、审查页签 git 目录、复制路径钮的统一来源（批12+工作区
+    /// 贯穿 2026-09-27 用户裁决：F073 分工作区后这些站点不再写死桶根）。
+    func guestWorkspacePath(for sessionID: String) -> String {
+        guard let url = Self.sessionFileURL(sessionID),
+              let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+              let cwd = probe.header.cwd, !cwd.isEmpty else {
+            return WanWoPaths.workspaceLinuxDir
+        }
+        return cwd
+    }
+
     /// - Parameters:
     ///   - interactionPresenter: 交互呈现缝（ChatViewModel；nil = 无 answerer，
     ///     审批 fail closed unavailable、提问 fail closed NO_PROVIDER）。
@@ -712,6 +736,13 @@ final class AppEnvironment: ObservableObject {
             newSessionDefaults: { [permissionDefaults] in
                 permissionDefaults.newSessionKnobs()
             })
+        // 批12+归挡（2026-09-27）：预设切换 → offload 27 命令免问覆盖
+        // （完全权限挡=全免问；低挡位按各命令自身档位。App 级最后写语义——
+        // 单用户单活跃会话场景下与直觉一致）。
+        permission.onPresetChanged = { name in
+            OffloadPermissionManager.shared.fullAccessOverride =
+                (name == "danger-full-access")
+        }
 
         // M4-A 件11 装配（M4-A 收口）：MCP server 连接族——每 server 一实例
         // （dsh apply 1:1），后台激活不等会话栈（呈报）；工具桥注册进本会话
@@ -883,8 +914,8 @@ final class AppEnvironment: ObservableObject {
         // （115——ASK_SENTENCE/NEVER_SENTENCE 逐字）。两位都走快照通道注入
         // （ERR-024 纪律：不进 system；完整当前值跟随、仅变化才重注入，
         // 缓存前缀不破）。
-        injector.sandboxPolicyProvider = { [permission] in
-            permission.sandboxPolicyContextLine
+        injector.sandboxPolicyProvider = { [permission, sessionCwd] in
+            permission.sandboxPolicyContextLine(workspacePath: sessionCwd)
         }
         injector.approvalPolicyProvider = { [permission] in
             permission.approvalPolicyContextLine

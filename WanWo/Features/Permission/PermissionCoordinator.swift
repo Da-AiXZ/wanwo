@@ -40,6 +40,9 @@ final class PermissionCoordinator: @unchecked Sendable {
     static let sandboxEventKind = "sandbox/mode"
 
     let knobs = PermissionKnobs()
+    /// 批12+归挡（2026-09-27）：预设切换回调——AppEnvironment 据此同步
+    /// OffloadPermissionManager.fullAccessOverride（完全权限挡=设备命令免问）。
+    var onPresetChanged: ((String) -> Void)?
     private let writer: SessionWriter
 
     /// 新会话缺省双旋钮供值缝（T2.2 派单项 2：App 级默认源——设置·新会话
@@ -161,6 +164,7 @@ final class PermissionCoordinator: @unchecked Sendable {
         knobs.approval = spec.approval
         knobs.sandbox = spec.sandbox
         knobs.lastSelection = spec.name
+        onPresetChanged?(spec.name)
         // 切换叙述（dsh inject user message；<permission-update> 前缀由投影层
         // 过滤——用户可见反馈走 command/done 文本）。叙述丢失不致命（快照位
         // 仍会随下次注入携带当前策略），故 try? 静默。
@@ -194,5 +198,12 @@ final class PermissionCoordinator: @unchecked Sendable {
     /// sandbox-policy renderPolicyContext 三段逐字，SandboxPolicy.renderPolicyContext）。
     var sandboxPolicyContextLine: String? {
         SandboxPolicy.renderPolicyContext(knobs.sandbox)
+    }
+
+    /// 批12+工作区贯穿（2026-09-27）：策略文案跟随会话绑定工作区路径——
+    /// 与 runtime-context 的 workspace 行同源（原静态桶根口径与之一致性矛盾
+    /// =模型提权连环问的诱因之一）。
+    func sandboxPolicyContextLine(workspacePath: String?) -> String? {
+        SandboxPolicy.renderPolicyContext(knobs.sandbox, workspacePath: workspacePath)
     }
 }

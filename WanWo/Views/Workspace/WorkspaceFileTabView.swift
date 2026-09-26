@@ -29,6 +29,11 @@ struct WorkspaceFileTabView: View {
         WorkspaceRightSidebarView.sessionID(of: environment.selection)
     }
 
+    /// 会话 guest 工作区前缀（header cwd 单一真值源；批12+工作区贯穿）。
+    private var workspacePath: String {
+        environment.guestWorkspacePath(for: sessionID ?? "")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -58,7 +63,7 @@ struct WorkspaceFileTabView: View {
             fileContent = nil
             return
         }
-        tree.load(sessionID: sessionID)
+        tree.load(sessionID: sessionID, workspacePath: workspacePath)
         if let selectedPath {
             loadFile(selectedPath)
         }
@@ -68,14 +73,14 @@ struct WorkspaceFileTabView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("/var/wanwo/workspace")
+            Text(workspacePath)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Button {
-                UIPasteboard.general.string = WanWoPaths.workspaceLinuxDir
+                UIPasteboard.general.string = workspacePath
                 copiedToast = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     copiedToast = false
@@ -213,7 +218,8 @@ struct WorkspaceFileTabView: View {
         // 用「已挂载」标记——空 children 与未挂载区分：挂载过则幂等）。
         guard node.children.isEmpty,
               let sessionID,
-              let hostRoot = WorkspaceFileTreeModel.hostRoot(for: sessionID) else { return }
+              let hostRoot = WorkspaceFileTreeModel.hostRoot(for: sessionID,
+                                                             workspacePath: workspacePath) else { return }
         let hostDir = hostRoot.appendingPathComponent(node.id)
         let children = WorkspaceFileTreeModel.enumerate(hostDir: hostDir,
                                                         relativeBase: node.id)
@@ -375,7 +381,8 @@ struct WorkspaceFileTabView: View {
             fileLoadError = "未打开会话"
             return
         }
-        guard let hostRoot = WorkspaceFileTreeModel.hostRoot(for: sessionID) else {
+        guard let hostRoot = WorkspaceFileTreeModel.hostRoot(for: sessionID,
+                                                             workspacePath: workspacePath) else {
             fileLoadError = "工作区目录不可用"
             return
         }

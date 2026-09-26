@@ -228,13 +228,21 @@ final class WorkspaceRightSidebarModel: ObservableObject {
 
     /// 会话切换时刷新「审查」入口可见性（工作区宿主根存在 .git 即可见——
     /// git 二进制可用性在页签打开时再探，探败给空态解释）。
-    func updateReviewAvailability(sessionID: String?) {
+    /// 批12+工作区贯穿：宿主根跟随会话绑定工作区路径（项目模式=真实项目
+    /// 目录），legacy 回落桶根。
+    func updateReviewAvailability(sessionID: String?, workspacePath: String? = nil) {
         guard let sessionID else {
             reviewAvailable = false
             return
         }
-        let workspaceHost = WanWoPaths.sessionPersistentDir(for: sessionID,
+        let workspaceHost: URL
+        if let workspacePath,
+           let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: workspacePath) {
+            workspaceHost = projectHost
+        } else {
+            workspaceHost = WanWoPaths.sessionPersistentDir(for: sessionID,
                                                             bucket: "workspace")
+        }
         var isDir: ObjCBool = false
         let gitDir = workspaceHost.appendingPathComponent(".git", isDirectory: true)
         reviewAvailable = FileManager.default.fileExists(atPath: gitDir.path,

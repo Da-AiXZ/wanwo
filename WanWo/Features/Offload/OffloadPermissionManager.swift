@@ -242,6 +242,11 @@ final class OffloadPermissionManager: ObservableObject {
     /// Per-session "Ask Once" grants: [sessionId: Set<commandName>]
     private var sessionGrants: [String: Set<String>] = [:]
 
+    /// 批12+归挡（2026-09-27 用户裁决）：会话挡位=完全权限时 27 命令整体免问
+    /// （askOnce→bypass；notAllowed 显式禁止除外）。由 PermissionCoordinator
+    /// 在挡位切换点写（AppEnvironment 装配处接缝），存储层不动。
+    var fullAccessOverride = false
+
     private let defaults: UserDefaults
     private let logger = AppLogger(category: "OffloadPermission")
 
@@ -295,7 +300,15 @@ final class OffloadPermissionManager: ObservableObject {
         //  OFFLOAD_GLOBAL_SESSION_ID 全局桶——同 App 会话内第二次免弹。】
         let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let sessionId = trimmed.isEmpty ? OFFLOAD_GLOBAL_SESSION_ID : trimmed
-        let level = permissionLevel(for: command)
+        var level = permissionLevel(for: command)
+        // 批12+归挡（2026-09-27 用户裁决）：offload 27 命令归入"完全权限"挡
+        // ——会话挡位=完全权限时整体免问（askOnce→bypass；notAllowed=用户
+        // 显式禁止，不被挡位覆盖）；低挡位按各命令自身档位走（用户手改的
+        // bypass 恒 bypass）。持久存储不动，纯运行时覆盖。
+        if fullAccessOverride, level == .askOnce {
+            level = .bypass
+            decisionObserver?(sessionId, "完全权限挡覆盖：\(command) askOnce→bypass（免问）")
+        }
 
         switch level {
         case .bypass:

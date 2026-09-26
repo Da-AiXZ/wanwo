@@ -2,143 +2,91 @@
 //  OffloadPermissionDialog.swift
 //  WanWo
 //
-//  【vendored 复用 · 源=OpenMinis src/ios/Views/Chat/OffloadPermissionDialog.swift
-//   全文 128 行，语义 1:1（B1c ④审批卡接线）】
-//  `askOnce` 档 offload 命令的权限确认卡（sheet 形态）。
-//  适配点（其余逐行 1:1）：
-//   1. ObservedObject 目标：OffloadPermissionManager.shared（其 @Published
-//      pendingRequest 在 B1a 缝化时删除）→ OffloadApprovalPresenter.shared
-//      （呈现侧状态宿主；应答走 presenter.respond → 缝应答闭包回写 manager）；
-//   2. 挂载点：原件挂 ContentView，WanWo 挂 RootView（.offloadPermissionDialog()
-//      全局覆盖——offload 审批可来自任意会话的内核分发点，非单会话面）。
-//   3. 文件头注释出处注记。
+//  【语义源=OpenMinis OffloadPermissionDialog（B1c ④审批卡接线）→ 批12+归挡
+//   重塑（2026-09-27 用户裁决）】
+//  askOnce 档 offload 命令的权限确认卡。形态演变：
+//   1. 原件：sheet（ContentView 挂载）；
+//   2. 权限域修复批：sheet 迁 WORootFrame（旧根死视图修复）；
+//   3. 本批：**composer 座位接管卡**（WOChatView.composerSeat 第三顺位，
+//      WOApprovalCard 同款骨架——用户指名对齐"仅可查看询问权限盖在 dock
+//      上层"的现有样式；sheet 形态退役）。
+//  应答链不变：WOOffloadPermissionCard → OffloadApprovalPresenter.respond
+//  → 缝应答闭包回写 OffloadPermissionManager（sessionGrants/30s 超时语义
+//  原样保留）。
 //
 
 import SwiftUI
 
-struct OffloadPermissionDialogModifier: ViewModifier {
+/// offload 权限确认卡（composer 座位接管形态；WOApprovalCard 骨架 1:1）。
+struct WOOffloadPermissionCard: View {
     @ObservedObject private var presenter = OffloadApprovalPresenter.shared
-
-    func body(content: Content) -> some View {
-        content
-            .sheet(item: $presenter.pendingRequest) { request in
-                OffloadPermissionDialogContent(request: request)
-                    // Both detents — long arg lists were getting pushed below
-                    // the medium detent's bottom edge with the Allow / Deny
-                    // buttons trailing them, leaving no way to respond. Allow
-                    // dragging up to .large; the content is scrollable in
-                    // either height.
-                    .presentationDetents([.medium, .large])
-                    .interactiveDismissDisabled()
-            }
-    }
-}
-
-private struct OffloadPermissionDialogContent: View {
     let request: PermissionRequest
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Scrollable content. Long argument lists previously stretched the
-            // outer VStack past the sheet height and pushed the Allow / Deny
-            // buttons below the bottom edge with no way to scroll to them.
-            // Pinning the buttons in a separate sibling and wrapping the rest
-            // in a ScrollView guarantees the action row is always visible.
-            ScrollView {
-                VStack(spacing: 0) {
-                    // Header
-                    VStack(spacing: 8) {
-                        Image(systemName: "shield.lefthalf.filled")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.orange)
-
-                        Text("Permission Request")
-                            .font(.title3.bold())
-
-                        Text("The agent wants to use **\(request.commandName)**")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 24)
-                    .padding(.bottom, 16)
-
-                    // Description
-                    if !request.description.isEmpty {
-                        Text(request.description)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
-                    }
-
-                    // Arguments
-                    let args = request.parsedArguments
-                    if !args.isEmpty {
-                        VStack(spacing: 0) {
-                            ForEach(Array(args.enumerated()), id: \.offset) { idx, arg in
-                                HStack {
-                                    Text(arg.key)
-                                        .font(.footnote.bold())
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 80, alignment: .trailing)
-                                    Text(arg.value)
-                                        .font(.footnote.monospaced())
-                                        .lineLimit(2)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 8)
-                                if idx < args.count - 1 {
-                                    Divider().padding(.leading, 108)
-                                }
-                            }
-                        }
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.stateWarnLabel)
+                Text("需要你的授权")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+                Text(request.displayLabel)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(WOAlias.labelSecondary)
             }
-
-            // Buttons — pinned to the bottom of the sheet, outside the
-            // ScrollView, so they stay tappable even with very long arg lists.
-            VStack(spacing: 10) {
+            if !request.description.isEmpty {
+                Text(request.description)
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.labelSecondary)
+            }
+            if !request.fullCommand.isEmpty {
+                Text(request.fullCommand)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(WOAlias.labelSecondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgModulePlatform))
+                    .lineLimit(6)
+            }
+            HStack(spacing: 10) {
                 Button {
-                    OffloadApprovalPresenter.shared.respond(to: request.id, allowed: true)
+                    presenter.respond(to: request.id, allowed: true)
                 } label: {
-                    Text("Allow in Session")
-                        .font(.headline)
+                    Text("允许（本会话免弹）")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.buttonPrimaryFill))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
+                .buttonStyle(.plain)
+                .woPressable()
 
                 Button {
-                    OffloadApprovalPresenter.shared.respond(to: request.id, allowed: false)
+                    presenter.respond(to: request.id, allowed: false)
                 } label: {
-                    Text("Deny in Session")
-                        .font(.headline)
+                    Text("拒绝")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOAlias.labelPrimary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .buttonStyle(.plain)
+                .woPressable()
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 30)
-            .background(Color(.systemGroupedBackground))
         }
-        .background(Color(.systemGroupedBackground))
-    }
-}
-
-extension View {
-    func offloadPermissionDialog() -> some View {
-        modifier(OffloadPermissionDialogModifier())
+        .padding(14)
+        // 原型卡规格：白底 r22 + soft 阴影 + 0.5px l3 发丝描边（与 WOApprovalCard
+        // 同款；琥珀语义保留在图标）。
+        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 22)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+        .shadow(color: .black.opacity(0.03), radius: 24)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
     }
 }
