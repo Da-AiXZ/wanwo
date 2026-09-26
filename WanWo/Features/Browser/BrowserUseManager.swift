@@ -835,21 +835,20 @@ final class BrowserUseManager: NSObject, ObservableObject {
         pageTitle = webView.title ?? ""
         isLoading = false
 
-        // 【批12+联动A/B（2026-09-26 用户令）】AI 导航成功 → 通知 UI 层打开/
-        // 跟随右栏浏览器页签（用户语"帮我打开右侧栏里的浏览器"=字面预期）。
-        // 通道=NotificationCenter（Features 层不反向依赖 App 层路由器）；
-        // WORootFrame onReceive 消费 → workspaceSidebar.openAgentBrowser(url)。
-        // 页签池与 AI 会话池共用按 sessionId 的持久化文件（BrowserTabPool
-        // loadPersistedURLs :1496），用户之后手动点开页签也能恢复出本 URL。
+        // 【批12+联动A/B（2026-09-26 用户令）】AI 导航成功 → 右栏浏览器页签
+        // 打开/跟随。批12+右栏重构批1（2026-09-27）：NotificationCenter 旁路
+        // 退役——改直调统一打开入口（cc-haha openTarget.ts 语义"agent-driven
+        // opens all come through here"；WOWorkspaceStore 为 Features 层单例，
+        // 无反向依赖）。agent 语义=后台落签不抢焦点，openSidebar（用户明确
+        // 要求/截图）才展开落点；轻提示数据源=store.agentNavigation。
         if let navURL = URL(string: currentURL),
            let scheme = navURL.scheme, scheme.hasPrefix("http") {
             let openSidebar = openInSidebarNextNavigation
             openInSidebarNextNavigation = false
+            let sid = sessionIdProvider?() ?? ""
             Task { @MainActor in
-                NotificationCenter.default.post(
-                    name: .wanwoAgentBrowserNavigation,
-                    object: nil,
-                    userInfo: ["url": navURL, "openSidebar": openSidebar])
+                WOWorkspaceStore.shared.openAgentBrowser(
+                    sessionId: sid, url: navURL, openSidebar: openSidebar)
             }
         }
 
@@ -972,12 +971,12 @@ final class BrowserUseManager: NSObject, ObservableObject {
         // 批12+联动B（2026-09-27 用户令"AI 截图完自动打开右侧栏展示"）：截图
         // 落盘 → 右栏自动展开并打开 wanwo:// 图片（scheme handler 直读同一
         // 文件；截图=用户明确要求的动作，属自动展开白名单场景）。
+        // 批12+右栏重构批1：通知旁路退役 → 统一打开入口直调。
         if let imageURL = URL(string: "wanwo://browser/\(filename)") {
+            let sid = sessionIdProvider?() ?? ""
             Task { @MainActor in
-                NotificationCenter.default.post(
-                    name: .wanwoAgentBrowserNavigation,
-                    object: nil,
-                    userInfo: ["url": imageURL, "openSidebar": true])
+                WOWorkspaceStore.shared.openAgentBrowser(
+                    sessionId: sid, url: imageURL, openSidebar: true)
             }
         }
 
@@ -3178,13 +3177,6 @@ extension String {
     }
 }
 
-// MARK: - AI 浏览器联动通知（批12+联动A/B，2026-09-26 用户令）
-
-extension Notification.Name {
-    /// AI 的 browser_use 导航成功 → UI 层打开/跟随右栏浏览器页签。
-    /// userInfo: ["url": URL]（导航落点）。
-    /// 消费点 = WORootFrame onReceive → WorkspaceRightSidebarModel
-    /// .openAgentBrowser(url:)（右栏展开 + 浏览器页签导航）。
-    static let wanwoAgentBrowserNavigation =
-        Notification.Name("wanwo.agentBrowserNavigation")
-}
+// 【批12+右栏重构批1（2026-09-27）】原「AI 浏览器联动通知」
+// Notification.Name(.wanwoAgentBrowserNavigation) 退役——AI 联动改直调
+// WOWorkspaceStore 统一打开入口（cc-haha openTarget 语义），通知旁路拆除。

@@ -69,6 +69,64 @@ public struct WOToast: View {
     }
 }
 
+// MARK: - WOUndoToast（批12+右栏重构批1 2026-09-27：页签关闭撤销条——用户
+//  裁决方式 B：✕ 后底部飘「已关闭 X · 撤销」，点撤销恢复；cc-haha
+//  reopenClosedTab 语义 + dsh toast 形态）
+
+public struct WOUndoToast: View {
+    public let text: String
+    public let undoLabel: String
+    public let onUndo: () -> Void
+    public let onDone: () -> Void
+
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(text: String, undoLabel: String = "撤销",
+                onUndo: @escaping () -> Void, onDone: @escaping () -> Void) {
+        self.text = text
+        self.undoLabel = undoLabel
+        self.onUndo = onUndo
+        self.onDone = onDone
+    }
+
+    public var body: some View {
+        HStack(spacing: 12) {
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundColor(WOAlias.labelPrimaryInverted)
+                .lineLimit(1)
+            Button {
+                onUndo()
+                onDone()
+            } label: {
+                Text(undoLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(WOStatic.neutral00)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(WOAlias.buttonPrimaryFill))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .frame(height: 40)
+        .background(Capsule().fill(WOAlias.buttonContrastFill))
+        .shadow(color: .black.opacity(0.05), radius: 12)
+        .opacity(shown ? 1 : 0)
+        .offset(y: shown ? 0 : 8)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.18)) { shown = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                withAnimation(.easeInOut(duration: 0.5)) { shown = false }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { onDone() }
+            }
+        }
+        .id(text)
+    }
+}
+
 // MARK: - ConnectionIndicator（断连/重连中/已恢复三态横幅）
 
 public enum WOConnectionState: Equatable {

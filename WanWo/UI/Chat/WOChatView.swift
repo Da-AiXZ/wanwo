@@ -316,20 +316,20 @@ struct WOChatView: View {
                 }
                 composerSeat
                     .background(composerChromeMeter)
-                    .onReceive(NotificationCenter.default.publisher(
-                        for: .wanwoAgentBrowserNavigation)) { note in
-                        // 批12+联动B：AI 自主干活（openSidebar≠true）→ 轻提示
-                        // 状态（同域 10s 节流；openSidebar=true 由 WORootFrame
-                        // 直接展开右栏，不进此态）。
-                        guard (note.userInfo?["openSidebar"] as? Bool) != true,
-                              let url = note.userInfo?["url"] as? URL else { return }
-                        let domain = url.host ?? url.absoluteString
+                    // 批12+右栏重构批1：轻提示数据源换 store.agentNavigation
+                    //（通知旁路退役；AI 自主干活不展开右栏时此处呈现，同域
+                    // 10s 节流；openSidebar=true 由 store 直接展开右栏落点，
+                    // 不进此态——openSidebar 时 agentBrowserTab 语义已激活，
+                    // 节流字段仍记录防双显）。
+                    .onReceive(WOWorkspaceStore.shared.$agentNavigation) { navigation in
+                        guard let navigation else { return }
+                        let domain = navigation.domain
                         let now = Date()
                         if let last = lastHintTimes[domain],
                            now.timeIntervalSince(last) < 10 { return }
                         lastHintTimes[domain] = now
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            agentHint = AgentHint(url: url, domain: domain)
+                            agentHint = AgentHint(url: navigation.url, domain: domain)
                         }
                     }
                 // 批10：composer 上方悬浮渐隐罩退役（2026-09-22 真机反馈"渐变

@@ -27,6 +27,10 @@ struct WorkspaceBrowserTabView: View {
     /// 【批2 B①】宿主环境——当前选中会话 id 的锚（pool.sessionId 绑定源）。
     @ObservedObject var environment: AppEnvironment
 
+    /// 批12+右栏重构批1：导航/标题事实回写（页签条显示真实标题——cc-haha
+    /// updateBrowserTab 语义；nil 段=宿主未接，静默）。
+    var onNavigationReport: ((URL?, String?) -> Void)? = nil
+
     @StateObject private var pool = BrowserTabPool()
     @ObservedObject private var asker = BrowserDownloadAsker.shared
     @State private var navigated = false

@@ -102,7 +102,10 @@ final class UIBatch3BYOKTests: XCTestCase {
     }
 }
 
-// MARK: - C. 右栏可见性（无会话隐藏）+ 全屏状态机
+// MARK: - C. 右栏可见性（无会话隐藏）+ 布局三态
+// 【批12+右栏重构批1】语义源换 cc-haha workspaceStore（三态单值 hidden/split/
+// full），旧双布尔测试面整体迁移为三态断言；WOWorkspaceStore 语义详见
+// WOWorkspaceStore.swift 头注。
 
 @MainActor
 final class UIBatch3RightRailVisibilityTests: XCTestCase {
@@ -115,62 +118,76 @@ final class UIBatch3RightRailVisibilityTests: XCTestCase {
     }
 
     func testNoSessionForcesCollapseAndExitsFullscreen() {
-        let model = WorkspaceRightSidebarModel()
-        model.isExpanded = true
-        model.isFullscreen = true
-        model.reconcileForSelection(sessionID: nil)
-        XCTAssertFalse(model.isExpanded, "无会话必须强制收起")
-        XCTAssertFalse(model.isFullscreen, "无会话必须退出全屏")
+        let store = WOWorkspaceStore()
+        store.setLayout(.full, sessionId: "s1")
+        store.reconcileForNoSession()
+        XCTAssertEqual(store.layout(for: "s1"), .hidden, "无会话必须强制收起（含全屏态）")
     }
 
     func testSessionSelectionKeepsState() {
-        let model = WorkspaceRightSidebarModel()
-        model.isExpanded = true
-        model.isFullscreen = true
-        model.reconcileForSelection(sessionID: "s1")
-        XCTAssertTrue(model.isExpanded)
-        XCTAssertTrue(model.isFullscreen)
+        // 有会话时不触发 reconcile——打开的右栏保持 split。
+        let store = WOWorkspaceStore()
+        store.openTarget(sessionId: "s1", target: .singleton(.files))
+        XCTAssertEqual(store.layout(for: "s1"), .split, "打开页签隐式展开")
     }
 
     func testAlreadyCollapsedIsStable() {
-        let model = WorkspaceRightSidebarModel()
-        model.isExpanded = false
-        model.isFullscreen = false
-        model.reconcileForSelection(sessionID: nil)
-        XCTAssertFalse(model.isExpanded)
-        XCTAssertFalse(model.isFullscreen)
+        let store = WOWorkspaceStore()
+        store.setLayout(.hidden, sessionId: "s1")
+        store.reconcileForNoSession()
+        XCTAssertEqual(store.layout(for: "s1"), .hidden)
+    }
+
+    func testToggleRestoresSplitNeverFull() {
+        // cc-haha :388-392："toggle 不许吞掉对话"——full 态 toggle 归 hidden，
+        // 再 toggle 得 split（永不从 toggle 直达 full）。
+        let store = WOWorkspaceStore()
+        store.setLayout(.full, sessionId: "s1")
+        store.toggleWorkspace(sessionId: "s1")
+        XCTAssertEqual(store.layout(for: "s1"), .hidden)
+        store.toggleWorkspace(sessionId: "s1")
+        XCTAssertEqual(store.layout(for: "s1"), .split)
     }
 }
 
-// MARK: - C③/C⑥. 页签列表页候选 + 文件页多开
+// MARK: - C③/C⑥. 页签列表页候选 + 复用规则（批12+右栏重构批1：cc-haha
+//  openTarget 复用语义——单例 kind 激活既有，browser 恒新建）
 
 @MainActor
 final class UIBatch3TabListPageTests: XCTestCase {
     func testCandidateKinds() {
+        let store = WOWorkspaceStore()
+        // 审查=git 项目时入列（第一位）；false 路径断言（true 路径需 git
+        // 目录 fixture，真机验收面）。
         XCTAssertEqual(
-            WorkspaceRightSidebarModel.candidateKinds(reviewAvailable: false),
+            store.candidateKinds(),
             [.files, .sideChat, .browser, .terminal, .trajectory])
-        // 审查=git 项目时入列（第一位）。
-        XCTAssertEqual(
-            WorkspaceRightSidebarModel.candidateKinds(reviewAvailable: true).first,
-            .review)
     }
 
-    func testFilesTabMultiOpen() {
-        // codex「新开文件页」：连续两次「+」菜单开文件 → 两枚文件页签。
-        let model = WorkspaceRightSidebarModel()
-        model.openFromMenu(.files)
-        model.openFromMenu(.files)
-        XCTAssertEqual(model.tabs.filter { $0.kind == .files }.count, 2)
-        XCTAssertEqual(model.activeTab?.kind, .files)
+    func testFilesTabSingleton() {
+        // 批12+右栏重构批1：files=树签单例（cc-haha file 按 path 复用语义的
+        // 万我形态——树签无 path 概念，重复打开=激活既有）。
+        let store = WOWorkspaceStore()
+        store.openTarget(sessionId: "s1", target: .singleton(.files))
+        store.openTarget(sessionId: "s1", target: .singleton(.files))
+        XCTAssertEqual(store.tabs(for: "s1").filter { $0.kind == .files }.count, 1)
+        XCTAssertEqual(store.activeTab(for: "s1")?.kind, .files)
     }
 
     func testSingletonKindsStillDedup() {
         // 终端/侧聊保持单例（重复点选=激活既有页签）。
-        let model = WorkspaceRightSidebarModel()
-        model.openFromMenu(.terminal)
-        model.openFromMenu(.terminal)
-        XCTAssertEqual(model.tabs.filter { $0.kind == .terminal }.count, 1)
+        let store = WOWorkspaceStore()
+        store.openTarget(sessionId: "s1", target: .singleton(.terminal))
+        store.openTarget(sessionId: "s1", target: .singleton(.terminal))
+        XCTAssertEqual(store.tabs(for: "s1").filter { $0.kind == .terminal }.count, 1)
+    }
+
+    func testBrowserNeverReuses() {
+        // cc-haha browser 不复用：连续打开=多实例页签。
+        let store = WOWorkspaceStore()
+        store.openTarget(sessionId: "s1", target: .browser(url: nil))
+        store.openTarget(sessionId: "s1", target: .browser(url: nil))
+        XCTAssertEqual(store.tabs(for: "s1").filter { $0.kind == .browser }.count, 2)
     }
 }
 

@@ -2,45 +2,47 @@
 //  WorkspaceRightSidebarView.swift
 //  WanWo
 //
-//  【M6.6 新写（B4）· 语义源 m6-scope-brief §6.0/§6.6a】右侧边栏视图：
-//    · 顶部两钮：全屏（右侧栏占满整窗，左栏由 RootView 折叠）+ 收起/展开；
-//    · 顶部页签条：多页签混开 + 每页签 × 关闭 + 「+」菜单五项新开
-//      （审查/git 项目第一位，文件/侧聊/浏览器/终端随后——§6.5 排序 + 派单口径）；
-//    · 页签内容路由：文件/终端/浏览器/侧聊/审查五视图。
-//  UI 形态全新 SwiftUI（A.8 口径：OpenMinis Views 不复用，只对齐形态）。
+//  【M6.6 新写（B4）· 语义源 m6-scope-brief §6.0/§6.6a】右侧边栏视图。
+//  【批12+右栏重构批1（2026-09-27 用户拍板）】状态源换 WOWorkspaceStore
+//  （cc-haha workspaceStore 语义 1:1——按会话作用域/复用规则/真删释放/undo
+//  撤销/布局三态单值）；视图结构不变：顶部两钮 + 页签条 + 内容路由（ZStack
+//  全量挂载保活，批2 B② 语义保留）。全打开动作走 WOWorkspaceOpenRouter。
 //
 
 import SwiftUI
 
 struct WorkspaceRightSidebarView: View {
-    @ObservedObject var model: WorkspaceRightSidebarModel
+    /// 工作台状态机（cc-haha workspaceStore 语义；App 级单例按会话作用域）。
+    @ObservedObject var store: WOWorkspaceStore
     @ObservedObject var environment: AppEnvironment
+    let sessionId: String
+
+    /// 本会话工作台状态（store 按会话作用域的便捷投影）。
+    private var sessionState: WOWorkspaceSessionState { store.state(for: sessionId) }
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
-            if !model.tabs.isEmpty {
+            if !sessionState.tabs.isEmpty {
                 tabStrip
             }
             Divider()
             content
         }
         .background(Color(.systemBackground))
-        // 批B3：去自限宽（原 :29-31 的 expandedWidth/isFullscreen 分支）——
-        // 宽度完全交给父级列：常规态=details 契约列宽（400），全屏态=viewport
-        // −sidebar（WOAppFrame 求列折算），本视图只纵向撑满。RootView 旧根
-        // 的外部 .frame(width: expandedWidth) 仍在，旧宿主渲染不受影响。
+        // 批B3：去自限宽——宽度完全交给父级列：常规态=details 契约列宽（400），
+        // 全屏态=viewport −sidebar（WOAppFrame 求列折算），本视图只纵向撑满。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // 页签随会话切换刷新「审查」入口（git 仓库项目才显示）。
         .onChange(of: environment.selection) { selection in
-            model.updateReviewAvailability(
-                sessionID: Self.sessionID(of: selection),
+            store.updateReviewAvailability(
+                sessionId: Self.sessionID(of: selection),
                 workspacePath: environment.guestWorkspacePath(
                     for: Self.sessionID(of: selection) ?? ""))
         }
         .onAppear {
-            model.updateReviewAvailability(
-                sessionID: Self.sessionID(of: environment.selection),
+            store.updateReviewAvailability(
+                sessionId: Self.sessionID(of: environment.selection),
                 workspacePath: environment.guestWorkspacePath(
                     for: Self.sessionID(of: environment.selection) ?? ""))
         }
@@ -53,7 +55,7 @@ struct WorkspaceRightSidebarView: View {
     }
 
     // MARK: - 顶部条（全屏 + 关闭；2026-09-21 用户令：两钮加大拉开、
-    // 关闭改 ✕ 图标钮——原 chevron 语义不明、28px 命中区小且贴边易误触）
+    //  关闭改 ✕ 图标钮。批12+右栏重构批1：真值换布局三态单值）
 
     private var topBar: some View {
         HStack(spacing: 10) {
@@ -63,10 +65,10 @@ struct WorkspaceRightSidebarView: View {
             Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) {
-                    model.isFullscreen.toggle()
+                    store.toggleFullscreen(sessionId: sessionId)
                 }
             } label: {
-                Image(systemName: model.isFullscreen
+                Image(systemName: sessionState.layout == .full
                         ? "arrow.down.right.and.arrow.up.left"
                         : "arrow.up.left.and.arrow.down.right")
                     .font(.system(size: 14, weight: .medium))
@@ -77,12 +79,11 @@ struct WorkspaceRightSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(model.isFullscreen ? "退出全屏" : "全屏")
+            .accessibilityLabel(sessionState.layout == .full ? "退出全屏" : "全屏")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    model.isExpanded = false
-                    model.isFullscreen = false
+                    store.setLayout(.hidden, sessionId: sessionId)
                 }
             } label: {
                 Image(systemName: "xmark")
@@ -105,7 +106,7 @@ struct WorkspaceRightSidebarView: View {
     private var tabStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(model.tabs) { tab in
+                ForEach(sessionState.tabs) { tab in
                     tabChip(tab)
                 }
                 plusMenu
@@ -116,23 +117,27 @@ struct WorkspaceRightSidebarView: View {
     }
 
     private func tabChip(_ tab: WorkspaceTab) -> some View {
-        let isActive = tab.id == model.activeTabID
+        let isActive = tab.id == sessionState.activeTabID
+        // 批12+右栏重构批1：页签条显示真实标题——浏览器=页标题回写，回落
+        // host，再回落 kind 词汇（cc-haha workspaceTabTitle :965-989 语义）。
+        let label = tabChipTitle(tab)
         return HStack(spacing: 4) {
             Image(systemName: tab.kind.iconName)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-            Text(tab.kind.title)
+            Text(label)
                 .font(.caption)
                 .lineLimit(1)
+                .frame(maxWidth: 96)
             Button {
-                model.close(id: tab.id)
+                store.closeTabs(sessionId: sessionId, tabId: tab.id)
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("关闭\(tab.kind.title)页签")
+            .accessibilityLabel("关闭\(label)页签")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -141,15 +146,28 @@ struct WorkspaceRightSidebarView: View {
         .overlay(Capsule().stroke(isActive ? Color.accentColor.opacity(0.4) : .clear,
                                   lineWidth: 1))
         .contentShape(Capsule())
-        .onTapGesture { model.activeTabID = tab.id }
+        .onTapGesture { store.activateTab(sessionId: sessionId, tabId: tab.id) }
     }
 
-    /// 「+」= 弹出菜单五项新开（codex 词汇；审查仅 git 项目时入列）。
+    /// 页签标题（cc-haha workspaceTabTitle 语义：浏览器=回写标题 → host →
+    /// kind 词汇；其余=kind 词汇）。
+    private func tabChipTitle(_ tab: WorkspaceTab) -> String {
+        if tab.kind == .browser {
+            if let title = tab.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !title.isEmpty { return title }
+            if let host = tab.url?.host, !host.isEmpty { return host }
+        }
+        return tab.kind.title
+    }
+
+    /// 「+」= 弹出菜单新开（codex 词汇；审查仅 git 项目时入列）。
     private var plusMenu: some View {
         Menu {
-            ForEach(model.menuKinds(), id: \.self) { kind in
+            ForEach(store.candidateKinds(), id: \.self) { kind in
                 Button {
-                    model.openFromMenu(kind)
+                    WOWorkspaceOpenRouter.open(.init(
+                        sessionId: sessionId,
+                        target: .singleton(kind)))
                 } label: {
                     Label(kind.title, systemImage: kind.iconName)
                 }
@@ -170,28 +188,29 @@ struct WorkspaceRightSidebarView: View {
     /// 网页状态/终端 shell 随切丢）。全量挂载后每页签视图身份稳定（ForEach
     /// id 锚定），隐藏面 opacity 0 + 关 hit-testing + 关辅助功能；页签资源
     /// （BrowserTabPool / 终端 shell）随页签存续、切走不回收（关闭页签才随
-    /// ForEach 移除而释放）。
+    /// ForEach 移除而释放——批12+右栏重构批1：按会话作用域，跨会话不串）。
     @ViewBuilder
     private var content: some View {
-        if model.tabs.isEmpty {
+        if sessionState.tabs.isEmpty {
             emptyTabsState
         } else {
             ZStack {
-                ForEach(model.tabs) { tab in
+                ForEach(sessionState.tabs) { tab in
                     tabContent(tab)
-                        .opacity(tab.id == model.activeTabID ? 1 : 0)
-                        .allowsHitTesting(tab.id == model.activeTabID)
-                        .accessibilityHidden(tab.id != model.activeTabID)
+                        .opacity(tab.id == sessionState.activeTabID ? 1 : 0)
+                        .allowsHitTesting(tab.id == sessionState.activeTabID)
+                        .accessibilityHidden(tab.id != sessionState.activeTabID)
                 }
             }
             // 页签切换丝滑淡切（UI 修复批 2：保活 ZStack 的 opacity 跳变 →
             // spring 过渡；全局动画标准 response 0.3 / damping 0.85）。
             .animation(.spring(response: 0.3, dampingFraction: 0.85),
-                       value: model.activeTabID)
+                       value: sessionState.activeTabID)
         }
     }
 
-    /// 单页签内容路由（原 content 的 switch 体，视图种类不变）。
+    /// 单页签内容路由（原 content 的 switch 体，视图种类不变；载荷从
+    /// WorkspaceTab 取——浏览器页签 url 为导航目标/最近落点）。
     @ViewBuilder
     private func tabContent(_ tab: WorkspaceTab) -> some View {
         switch tab.kind {
@@ -202,8 +221,15 @@ struct WorkspaceRightSidebarView: View {
         case .browser:
             // 【批2 B①】environment 传入——页签内 pool.sessionId 绑定当前选中
             // 会话（下载落盘依赖；原构造无 environment，下载批准后被静默取消）。
-            WorkspaceBrowserTabView(initialURL: tab.initialURL,
-                                    environment: environment)
+            // 批12+右栏重构批1：tab.url 为导航目标，onChange 消费（视图内既
+            // 有链）；导航/标题事实回写 store（页签条显示真实标题）。
+            WorkspaceBrowserTabView(initialURL: tab.url,
+                                    environment: environment,
+                                    onNavigationReport: { url, title in
+                                        store.updateBrowserTab(sessionId: sessionId,
+                                                               tabId: tab.id,
+                                                               url: url, title: title)
+                                    })
         case .sideChat:
             SideChatView(environment: environment,
                          parentSessionID: Self.sessionID(of: environment.selection))
@@ -217,19 +243,18 @@ struct WorkspaceRightSidebarView: View {
     }
 
     /// 【批3 C③】空态 = 页签列表页（codex 截图 #3 逐字形态：大按钮行 =
-    /// 图标+名称+快捷键提示位；候选与「+」菜单同源——审查=git 项目时入列，
-    /// 【批2 2C】轨迹页签随 menuKinds 口径入列）。原「+」菜单空态撤除
-    /// （plusMenu 仍保留在页签条）。
+    /// 图标+名称+快捷键提示位；候选与「+」菜单同源）。
     private var emptyTabsState: some View {
         VStack(spacing: 16) {
             Text("打开一个页签")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             VStack(spacing: 8) {
-                ForEach(WorkspaceRightSidebarModel.candidateKinds(
-                    reviewAvailable: model.reviewAvailable), id: \.self) { kind in
+                ForEach(store.candidateKinds(), id: \.self) { kind in
                     Button {
-                        model.openFromMenu(kind)
+                        WOWorkspaceOpenRouter.open(.init(
+                            sessionId: sessionId,
+                            target: .singleton(kind)))
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: kind.iconName)

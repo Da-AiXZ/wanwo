@@ -15,8 +15,14 @@ struct WORootFrame: View {
 
     @StateObject private var layout = WOLayoutStore()
     @StateObject private var viewStore = WOWorkspaceViewStore()
-    /// 右栏容器状态机（M6.6 B4 真机验收过的旧件，App 内单实例——页签跨会话保持）。
-    @StateObject private var workspaceSidebar = WorkspaceRightSidebarModel()
+    /// 【批12+右栏重构批1（2026-09-27 用户拍板）】右栏容器状态机换底座——
+    /// cc-haha workspaceStore/openTarget 语义 1:1 移植（三层分离/按会话作用域/
+    /// 复用规则/真删释放/undo 撤销/布局三态单值），替换 M6.6 自创底座
+    /// （WorkspaceRightSidebarModel 双布尔+kind 枚举单实例——串区/堆签/空壳
+    /// 三类 bug 的共同根源）。语义源与逐锚点对照见 WOWorkspaceStore.swift 头注。
+    @ObservedObject private var workspaceStore = WOWorkspaceStore.shared
+    /// 切会话收起用：上一个会话 id（collapseForSessionSwitch 的 from）。
+    @State private var lastSessionId: String?
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var appState: WOAppState
 
@@ -75,36 +81,29 @@ struct WORootFrame: View {
             }
         }
         .onReceive(WanwoURLRouter.shared.$pendingResourceURL) { url in
-            guard let url else { return }
-            workspaceSidebar.isExpanded = true
-            workspaceSidebar.openResourceURL(url)
+            guard let url, let sessionId = appState.currentSessionId else { return }
+            // 批12+右栏重构批1：深链资源 → 统一打开入口（cc-haha openTarget
+            // 语义——wanwo:// 资源打开即浏览器页签导航落点；用户主动深链=
+            // 展开落点）。
+            WOWorkspaceOpenRouter.browser(sessionId: sessionId, url: url,
+                                          requestedBy: .user, openSidebar: true)
             WanwoURLRouter.shared.consumeResourceURL()
         }
-        // 批12+联动A/B（2026-09-26 用户令"AI 能打开右侧栏浏览器"）：AI 的
-        // browser_use 导航成功 → 两路展开语义（批12+联动B 2026-09-27 用户裁决：
-        // "AI 每换一页自动展开=打扰"修法）——openSidebar=true（用户明确要求/
-        // 截图）→ 展开右栏落点；false（AI 自主干活）→ 右栏已展开则单活动页签
-        // 跟随，收起则不打扰（轻提示由 WOChatView 呈现）。通道=Notification
-        // Center（Features 层不反向依赖 App 层路由器）。
-        .onReceive(NotificationCenter.default.publisher(
-            for: .wanwoAgentBrowserNavigation)) { note in
-            guard let url = note.userInfo?["url"] as? URL else { return }
-            let openSidebar = (note.userInfo?["openSidebar"] as? Bool) == true
-            if openSidebar {
-                workspaceSidebar.isExpanded = true
-                workspaceSidebar.openAgentBrowser(url: url, autoOpen: true)
-            } else if workspaceSidebar.isExpanded {
-                workspaceSidebar.openAgentBrowser(url: url, autoOpen: false)
-            }
-        }
+        // 【批12+右栏重构批1】NotificationCenter .wanwoAgentBrowserNavigation
+        // 通道退役——AI 浏览器联动改走统一打开入口（BrowserUseManager 直调
+        // WOWorkspaceStore.openAgentBrowser，agent 语义=后台落签不抢焦点）；
+        // 轻提示数据源改 store.agentNavigation（WOLightHint 消费段在
+        // WOChatView，同批迁移）。
         // 批12+联动B：会话切换（含新建未发消息会话）→ 右栏自动收起（用户令；
         // 页签状态保活=批9B 语义不变，重开即回）。
-        .onChange(of: environment.selection) { _ in
-            if workspaceSidebar.isExpanded {
-                workspaceSidebar.isExpanded = false
-            }
+        .onChange(of: appState.currentSessionId) { newSessionId in
+            workspaceStore.collapseForSessionSwitch(from: lastSessionId)
+            lastSessionId = newSessionId
         }
-        .onAppear { syncSessionSelection() }
+        .onAppear {
+            lastSessionId = appState.currentSessionId
+            syncSessionSelection()
+        }
         .onChange(of: appState.currentSessionId) { _ in syncSessionSelection() }
         // 反向同步：引擎缝开的会话（hero 工作区胶囊 startSession / 深链）写
         // environment.selection → 新 UI 真值跟上（两向同值幂等，不成环）。
@@ -116,12 +115,24 @@ struct WORootFrame: View {
                 appState.sessionRemoved(current)
             }
         }
-        .onChange(of: workspaceSidebar.isExpanded) { expanded in
-            // 右栏收起/展开 ↔ 布局列宽联动（收起=列宽 0 让位给对话区，dsh 让位链）。
-            if expanded {
-                if appState.currentSessionId != nil { layout.openDetails() }
-            } else {
+        .onChange(of: workspaceLayoutSignature) { signature in
+            // 右栏布局 ↔ 布局列宽联动（批12+右栏重构批1：三态单值驱动——
+            // split/full 开列、hidden 关列；双布尔双记账旧桥退役）。
+            if signature.hasSuffix("|hidden") {
                 layout.closeDetails()
+            } else {
+                layout.openDetails()
+            }
+        }
+        // 批12+右栏重构批1：页签关闭撤销条（用户裁决方式 B——✕ 后底部飘
+        // 「已关闭 X · 撤销」，cc-haha reopenClosedTab 语义）。
+        .overlay(alignment: .bottom) {
+            if let undo = workspaceStore.lastClosedUndo {
+                WOUndoToast(text: "已关闭 \(undo.title)",
+                            onUndo: { workspaceStore.reopenLastClosed(sessionId: undo.sessionId) },
+                            onDone: { workspaceStore.dismissUndoToast(token: undo.token) })
+                    .padding(.bottom, 96)
+                    .zIndex(91)
             }
         }
         // 批B3：全屏真值桥接——单一真值 = workspaceSidebar.isFullscreen（右栏
@@ -132,13 +143,15 @@ struct WORootFrame: View {
 
     private var mainFrame: some View {
         let snapshot = makeSnapshot()
+        let sessionId = appState.currentSessionId
         return WOAppFrame(
             store: layout,
             // 批12：hasDetailsSession 入参退役（详情列宽门/自动关卡统一绑
             // hasSession——blank 会话开右栏=400 正常列，点"缩小"回 400 不再
             // 整个消失；snapshot.hasDetails 语义保留在快照侧供别处消费）。
-            hasSession: appState.currentSessionId != nil,
-            fullscreen: workspaceSidebar.isFullscreen,
+            hasSession: sessionId != nil,
+            // 批12+右栏重构批1：全屏 = 布局三态之 full（单值真源，双布尔退役）。
+            fullscreen: workspaceStore.layout(for: sessionId ?? "") == .full,
             sidebar: { collapsed, width in
                 sidebarRegion(snapshot: snapshot, collapsed: collapsed, width: width)
             },
@@ -168,10 +181,10 @@ struct WORootFrame: View {
             if environment.selection != .session(id: id) {
                 environment.selection = .session(id: id)
             }
-            // 批B1：白列根治——只有 isExpanded 时才随会话锚点同步开列；
-            // 收起态切会话不再强制开列（列开/关唯一真值=workspaceSidebar
-            // .isExpanded，右栏本体由 B2 恒挂载保证不再出现纯白 placeholder）。
-            if workspaceSidebar.isExpanded {
+            // 批B1：白列根治——只有右栏开着时才随会话锚点同步开列；收起态
+            // 切会话不再强制开列（列开/关唯一真值 = store 布局三态，批12+
+            // 右栏重构批1 换源）。
+            if workspaceStore.layout(for: id) != .hidden {
                 layout.openDetails()
             }
         } else if environment.selection != .none {
@@ -179,10 +192,15 @@ struct WORootFrame: View {
         }
         if appState.currentSessionId == nil {
             layout.closeDetails()
-            // 批10：layout.fullscreen 投影已退役（真值=model.isFullscreen 直连
-            // WOAppFrame 入参，无投影即无脱钩，无需复位）。
+            workspaceStore.reconcileForNoSession()
         }
-        workspaceSidebar.reconcileForSelection(sessionID: appState.currentSessionId)
+    }
+
+    /// 布局桥签名（会话 id + 布局值——onChange 需 Equatable；三态任一变化
+    /// 或会话切换都驱动列宽重算）。
+    private var workspaceLayoutSignature: String {
+        let sid = appState.currentSessionId ?? ""
+        return "\(sid)|\(workspaceStore.layout(for: sid).rawValue)"
     }
 
     // MARK: - 快照（列表+运行状态+派生输入，一次求值共用）
@@ -278,25 +296,18 @@ struct WORootFrame: View {
     @ViewBuilder
     private var centerRegion: some View {
         if let sessionId = appState.currentSessionId {
-            // 批C1：右栏开关钮在顶栏（WOConversationHead）——workspaceSidebar
-            // 真值在根帧，闭包下发切换（isExpanded onChange 既有链驱动列宽）。
-            // 批12：展开时强制清全屏——无论 isFullscreen 残留何值，点开永远
-            // 是 400pt 正常列（全屏只能由右栏 topBar 放大钮显式触发；"点开=
-            // 半全屏"用户反馈 2026-09-23 的语义级根治）。
+            // 批C1：右栏开关钮在顶栏（WOConversationHead）——批12+右栏重构
+            // 批1：切换改 store.toggleWorkspace（hidden↔split 单值三态；full
+            // 不经由 toggle，"toggle 不许吞掉对话"）。
             WOChatView(environment: environment, sessionId: sessionId,
                        onToggleRightSidebar: {
-                           if workspaceSidebar.isExpanded {
-                               workspaceSidebar.isExpanded = false
-                           } else {
-                               workspaceSidebar.isExpanded = true
-                               workspaceSidebar.isFullscreen = false
-                           }
+                           workspaceStore.toggleWorkspace(sessionId: sessionId)
                        },
                        onOpenAgentBrowser: { url in
-                           // 批12+联动B：轻提示点击落点=展开右栏+AI 页签落点
-                           //（用户主动点击=明确要求场景）。
-                           workspaceSidebar.isExpanded = true
-                           workspaceSidebar.openAgentBrowser(url: url, autoOpen: true)
+                           // 批12+右栏重构批1：轻提示点击落点 = 统一打开入口
+                           //（用户主动点击 = 明确要求场景，展开+激活落点）。
+                           WOWorkspaceOpenRouter.browser(sessionId: sessionId, url: url,
+                                                         requestedBy: .user, openSidebar: true)
                        })
                 .id(sessionId)
         } else {
@@ -312,12 +323,11 @@ struct WORootFrame: View {
     private var detailsRegion: some View {
         if appState.currentSessionId != nil {
             // 批B2：有会话恒挂载（dsh AppFrame.tsx:35-38「右栏宽 0 时保持挂载
-            // 不卸载」；WOAppFrame detailsCol「0 宽不卸载子树」注释同证）——
-            // 收起=布局列宽 0（既有 onChange(isExpanded)→closeDetails 链），
-            // 浏览器网页/文件树/终端页签的 @State 在 0 宽列里保活，再展开原样
-            // 回来。无会话仍走 placeholder（reconcileForSelection 语义不动）。
-            WorkspaceRightSidebarView(model: workspaceSidebar,
-                                      environment: environment)
+            // 不卸载」）——批12+右栏重构批1：状态源换 WOWorkspaceStore（按会话
+            // 作用域），收起=layout hidden（列宽 0 + 禁触门禁保留）。
+            WorkspaceRightSidebarView(store: workspaceStore,
+                                      environment: environment,
+                                      sessionId: appState.currentSessionId)
         } else {
             WOSlotPlaceholder(text: nil, quiet: false)
         }
