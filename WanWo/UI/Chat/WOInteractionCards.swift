@@ -87,6 +87,70 @@ struct WOApprovalCard: View {
     }
 }
 
+// MARK: - 下载确认卡（批12+右栏批2 2026-09-27 用户令：呈现迁移 = composer
+//  座位接管第四顺位，WOApprovalCard 同款骨架覆盖 dock 上层；原浏览器页签
+//  sheet 半屏形态退役。BrowserDownloadAsker 缝/队列/fail closed 语义不动）
+
+struct WODownloadAskCard: View {
+    @ObservedObject var asker: BrowserDownloadAsker
+    let request: BrowserDownloadAsker.Request
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.stateWarnLabel)
+                Text("允许下载？")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(WOAlias.labelPrimary)
+            }
+            Text(request.reason)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(WOAlias.labelSecondary)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(WOAlias.bgModulePlatform))
+                .lineLimit(4)
+            HStack(spacing: 10) {
+                Button {
+                    asker.respond(to: request, allow: true)
+                } label: {
+                    Text("允许下载")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOStatic.neutral00)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.buttonPrimaryFill))
+                }
+                .buttonStyle(.plain)
+                .woPressable()
+
+                Button {
+                    asker.respond(to: request, allow: false)
+                } label: {
+                    Text("拒绝")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(WOAlias.labelPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgLayer3))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        // 接管语义不变（同 WOApprovalCard 卡壳）。
+        .background(RoundedRectangle(cornerRadius: 22).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 22)
+            .strokeBorder(WOAlias.borderL3, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.03), radius: 16, y: 4)
+        .shadow(color: .black.opacity(0.03), radius: 24)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+    }
+}
+
 // MARK: - 提问卡（ask_user_question；选项点选+自由文本，全部真提交）
 
 struct WOQuestionCard: View {

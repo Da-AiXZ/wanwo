@@ -134,6 +134,13 @@ enum ConversationProjector {
                 guard !isMarkerMessage(text) else { continue }
                 result.append(Bubble(id: "u\(event.seq)", kind: .user(text, [])))
 
+            case .system(let note):
+                // 批12+右栏批2 前置（2026-09-27 用户实测"对话突然中断"）：投影
+                // 器此前无 .system 分支 = 宿主纸条落盘不显示（maxTurns 熔断收尾
+                // 用户视角无解释）。note 气泡渲染已有（WOChatView :1089 降噪灰
+                // 字形态）。
+                result.append(Bubble(id: "sys\(event.seq)", kind: .note(note)))
+
             case .extensionEvent(let kind, let payload)
                 where kind == AttachmentStore.imagesEventKind:
                 // F042：附件引用回填归属 userMessage 气泡（引用事件紧随其

@@ -304,10 +304,12 @@ struct WORootFrame: View {
                            workspaceStore.toggleWorkspace(sessionId: sessionId)
                        },
                        onOpenAgentBrowser: { url in
-                           // 批12+右栏重构批1：轻提示点击落点 = 统一打开入口
-                           //（用户主动点击 = 明确要求场景，展开+激活落点）。
-                           WOWorkspaceOpenRouter.browser(sessionId: sessionId, url: url,
-                                                         requestedBy: .user, openSidebar: true)
+                           // 批12+右栏批2 修（2026-09-27 用户实测"轻提示点两次
+                           // 建两个浏览页"）：轻提示点击改走 AI 页签复用路径
+                           // （openAgentBrowser 单活动页签语义）——此前走
+                           // openRouter.browser 恒新建。用户主动点击=展开落点。
+                           workspaceStore.openAgentBrowser(sessionId: sessionId,
+                                                           url: url, openSidebar: true)
                        })
                 .id(sessionId)
         } else {

@@ -39,6 +39,9 @@ struct WOChatView: View {
     /// 批12+归挡（2026-09-27）：offload askOnce 审批卡（composer 座位接管
     /// 第三顺位；App 级单例呈现宿主——offload 审批可来自任意会话内核分发点）。
     @ObservedObject private var offloadPresenter = OffloadApprovalPresenter.shared
+    /// 批12+右栏批2（2026-09-27）：下载确认呈现宿主（BrowserDownloadAsker
+    /// 单例缝不动；呈现端从浏览器页签 sheet 迁移至 composer 座位第四顺位）。
+    @ObservedObject private var downloadAsker = BrowserDownloadAsker.shared
     /// 批12+联动B：轻提示状态（AI 自主干活时 dock 位胶囊；openSidebar 场景
     /// 不进此态——直接展开右栏落点）。
     @State private var agentHint: AgentHint?
@@ -636,6 +639,11 @@ struct WOChatView: View {
             // 批12+归挡：offload askOnce 卡（composer 座位接管第三顺位，
             // WOApprovalCard 同款骨架——用户指名对齐现有"盖在 dock 上层"样式）。
             WOOffloadPermissionCard(request: offloadRequest)
+        } else if let downloadRequest = downloadAsker.frontmost {
+            // 批12+右栏批2（2026-09-27 用户令）：下载确认卡 = composer 座位
+            // 接管第四顺位（原浏览器页签 sheet 半屏形态退役；BrowserDownload
+            // Asker 单例缝/队列/fail closed 语义不动，只挪呈现端）。
+            WODownloadAskCard(asker: downloadAsker, request: downloadRequest)
         } else {
             // 批C2：composer hero/dock 统一 620 限宽水平居中（IMG_2386 通栏
             // 扁条根治；发送后同卡随 .woMotion 落底，宽度不变=FLIP 平移）。

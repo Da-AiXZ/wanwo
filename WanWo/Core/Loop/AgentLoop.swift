@@ -378,10 +378,12 @@ actor AgentLoop {
                 try Task.checkCancellation()
 
                 // maxTurns 熔断（blocked：可恢复——新回合计数重置）。
+                // 批12+右栏批2 前置：文案中文化+投影器 .system 分支补齐后
+                // 用户可见（此前落盘不显示="对话突然中断"无解释，用户实测）。
                 if stepIndex >= config.maxTurns {
                     try? await deps.writer.append(
-                        .system(note: "max turns reached (\(config.maxTurns)); "
-                            + "send a message to continue"), ignorable: true)
+                        .system(note: "本回合已达步数上限（\(config.maxTurns) 步防失控护栏），已暂停——回复「继续」接着跑"),
+                        ignorable: true)
                     endReason = .blocked
                     break
                 }

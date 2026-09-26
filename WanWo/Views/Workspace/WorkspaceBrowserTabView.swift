@@ -68,37 +68,10 @@ struct WorkspaceBrowserTabView: View {
             .onDisappear {
                 asker.uninstall()
             }
-            .sheet(item: Binding(
-                get: { asker.frontmost },
-                set: { newValue in
-                    // 点外/下拉关闭 = 拒绝（fail closed——续流必须收口）。
-                    if newValue == nil, let current = asker.frontmost {
-                        asker.respond(to: current, allow: false)
-                    }
-                })) { request in
-                downloadConfirm(request)
-            }
-    }
-
-    /// 下载确认（形态从简——sheet 双钮；理由随 B4 报告）。
-    private func downloadConfirm(_ request: BrowserDownloadAsker.Request) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("允许下载？")
-                .font(.system(size: 17, weight: .semibold))
-            Text(request.reason)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Spacer()
-                Button("拒绝") { asker.respond(to: request, allow: false) }
-                    .buttonStyle(.bordered)
-                Button("允许下载") { asker.respond(to: request, allow: true) }
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(18)
-        .presentationDetents([.medium])
+            // 批12+右栏批2（2026-09-27 用户令）：下载确认呈现迁移 = composer
+            // 座位接管卡（WOChatView 第四顺位，WOApprovalCard 同款骨架，覆盖
+            // dock 上层）——原 sheet 半屏形态退役。BrowserDownloadAsker 缝
+            // （install/uninstall/队列/fail closed）不动，只挪呈现端。
     }
 }
 
