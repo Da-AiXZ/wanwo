@@ -2404,8 +2404,8 @@ extension BrowserUseManager: WKNavigationDelegate {
             // 【批3 URL 栏小修 2026-09-27】失败导航回显尝试地址——地址栏绑
             // currentURL（BrowserSheetView:239 onChange），此前失败只设 loadError
             // 不动 currentURL，用户输入的新地址被旧页 URL 顶回（日志登记瑕疵）。
-            if let requested = self.lastRequestedURL, !requested.isEmpty {
-                self.currentURL = requested
+            if let requested = self.lastRequestedURL {
+                self.currentURL = requested.absoluteString
             }
             logger.error("Navigation failed: \(error.localizedDescription)")
 
@@ -2422,8 +2422,8 @@ extension BrowserUseManager: WKNavigationDelegate {
             // [T-ios-webview-error-ui] see didFail above.
             self.loadError = WebLoadError(error: error, failedURL: self.lastRequestedURL)
             // 【批3 URL 栏小修】同 didFail：回显尝试地址。
-            if let requested = self.lastRequestedURL, !requested.isEmpty {
-                self.currentURL = requested
+            if let requested = self.lastRequestedURL {
+                self.currentURL = requested.absoluteString
             }
             logger.error("Provisional navigation failed: \(error.localizedDescription)")
 
