@@ -99,8 +99,12 @@ enum ConversationProjector {
     /// SkillCatalogInjector 产物不渲染用户气泡；§5.9 归属识别同位扩展）。
     /// M4-D D6：`<skill ` = 显式触发正文注入消息前缀（SkillMentionInjector
     /// 产物，同不渲染）。
+    /// 【验收修复 P0-2 2026-09-28】`"<file>"` → `"<file"`——F040 注入块形态
+    /// 是 `<file path="...">`（带参数），hasPrefix("<file>") 恒不匹配 → 注入
+    /// 块被当用户气泡渲染（批A-F 验收③真机实证：用户看到代码气泡）。M3 埋
+    /// 雷 C-1 修复后首爆。与 `"<skill "` 带参形态同款对齐。
     static let markerPrefixes = ["<runtime-context>", "<agents-md-update>",
-                                 "<compaction-summary>", "<file>",
+                                 "<compaction-summary>", "<file",
                                  "<permission-update>", "<plan-mode-update>",
                                  "<system-reminder>", "<skill ",
                                  // 真机批 B4：作业完成纸条（JobCompletionNotice——

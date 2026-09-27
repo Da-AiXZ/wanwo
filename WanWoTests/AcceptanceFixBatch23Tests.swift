@@ -170,6 +170,23 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
         XCTAssertTrue(empty.isEmpty)
     }
 
+    // MARK: - P0-2：markerPrefixes 带参形态匹配（M3 埋雷 C-1 后首爆）
+
+    /// `<file path="...">` 带参注入块必须命中过滤器（旧 marker "<file>" 用
+    /// hasPrefix 恒不匹配 → 注入块被当用户气泡渲染——批A-F 验收③真机实证）。
+    func testMarkerMessageMatchesParameterizedFileBlock() {
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(
+            "<file path=\"analysis/analyze_png.py\">\nimport zlib\n</file>"))
+        XCTAssertTrue(ConversationProjector.isMarkerMessage("<file>"))
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(
+            "<runtime-context>\nworkspace: /var/wanwo/projects/2\n</runtime-context>"))
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(
+            "<skill name=\"demo\">body</skill>"))
+        XCTAssertFalse(ConversationProjector.isMarkerMessage("在工作区写一个 index.html"))
+        XCTAssertFalse(ConversationProjector.isMarkerMessage(
+            "看看 <file 这个词出现在句中不触发"))
+    }
+
     // MARK: - E：globRegex 零段语义
 
     private func matches(_ pattern: String, _ path: String) -> Bool {

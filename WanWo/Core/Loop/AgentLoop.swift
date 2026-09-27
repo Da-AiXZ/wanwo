@@ -632,12 +632,22 @@ actor AgentLoop {
 
         // F040：@file 展开（首条用户消息）；F042：图片引用只归属首条真实
         // 用户消息（后续条目均为注入/steer 词汇，无图）。
+        // 【验收修复 P0-1 2026-09-28】双消息方案：文件内容块先独立落盘一条
+        // user/message（markerPrefixes 过滤不渲染），用户原话保留为真实消息
+        // ——旧实现 `text = injected` 把原话整体替换成 <file> 块（批A-F 验收
+        // ③真机实证：用户"引用+提问"发出后问题被吞，AI 只收到文件内容反问
+        // "想让我做什么"）。C-1 修复让项目模式 @ 引用真正解析到文件后，此
+        // F040 原始缺陷首次显形。cleaned == 原话（expandFileReferences 不改写）。
         var expanded: [InboxEntry] = []
         for (index, entry) in entries.enumerated() {
             var text = entry.text
-            if index == 0, let injected = deps.injector.expandFileReferences(
-                in: text, workspace: workspace).injected {
-                text = injected
+            if index == 0 {
+                let refs = deps.injector.expandFileReferences(
+                    in: text, workspace: workspace)
+                if let injected = refs.injected {
+                    _ = try await deps.writer.append(.userMessage(text: injected))
+                    text = refs.cleaned
+                }
             }
             expanded.append(InboxEntry(text: text,
                                        images: index == 0 ? entry.images : []))

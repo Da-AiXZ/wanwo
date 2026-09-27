@@ -149,10 +149,39 @@ struct BrowserUseTool: AgentTool {
                             code: "INVALID_ARGS", name: "BrowserUseError")
         }
 
-        // ── origin 策略工具层前置判定（裁定③）─────────────────────────
+        // ── 审批缝接线（裁定②）───────────────────────────────────────
+        // downloads/uploads 的 ask 档在引擎 delegate 决策处异步回判；此处把
+        // ctx.escalationApprover 适配为 OriginPolicy.askHandler（同一呈现缝：
+        // ApprovalCoordinator.request → 审批卡）。execute 后拆除；exclusive
+        // 车道保证串行无竞态。nil approver → askHandler 返回 false（fail closed）。
+        // 【验收修复 P1 2026-09-28】装配挪到 origin 判定之前——旧序 fetch 的
+        // authorizeDownloads 判定先跑、askHandler 尚未装配（上轮 defer 已拆）
+        // → 恒 fail closed"没有可用的审批人"（批A-F 验收⑥真机实证：AI fetch
+        // 下载永远被拦、只能 wget 绕道）。用户手动路径弹窗正常（uiAskHandler
+        // 独立装配）恰成对照。
+        await MainActor.run {
+            OriginPolicy.shared.askHandler = { [approver = ctx.escalationApprover,
+                                                callId = ctx.callId] reason in
+                guard let approver else { return false }
+                let outcome = await approver("browser_use", callId, reason)
+                return outcome == .allowedOnce
+            }
+        }
+        defer {
+            Task { @MainActor in
+                if OriginPolicy.shared.askHandler != nil {
+                    OriginPolicy.shared.askHandler = nil
+                }
+            }
+        }
+
+        // ── origin 策略工具层前置判定（裁定③ + 【P1 权限归档 2026-09-28】）─
         // fetch = 主动下载 → downloads 维（缺省 ask → 审批缝）；
         // execute_js = 页内代码执行 → access 维（缺省 allow 直通）。
-        if input.action == .fetch {
+        // 【P1 权限归档】下载权限归入三级权限体系（用户拍板 2026-09-28）：
+        // 完全权限（danger-full-access）→ 免问直通；仅可查看/工作区内修改
+        // → ask 弹审批卡（上方 askHandler）。
+        if input.action == .fetch, ctx.sandboxMode != .dangerFullAccess {
             let allowed = await OriginPolicy.shared.authorizeDownloads(for: input.url)
             if !allowed {
                 return .failure("fetch blocked by origin policy (downloads=ask/deny)"
@@ -176,26 +205,8 @@ struct BrowserUseTool: AgentTool {
             }
         }
 
-        // ── 审批缝接线（裁定②）───────────────────────────────────────
-        // downloads/uploads 的 ask 档在引擎 delegate 决策处异步回判；此处把
-        // ctx.escalationApprover 适配为 OriginPolicy.askHandler（同一呈现缝：
-        // ApprovalCoordinator.request → 审批卡）。execute 后拆除；exclusive
-        // 车道保证串行无竞态。nil approver → askHandler 返回 false（fail closed）。
-        await MainActor.run {
-            OriginPolicy.shared.askHandler = { [approver = ctx.escalationApprover,
-                                                callId = ctx.callId] reason in
-                guard let approver else { return false }
-                let outcome = await approver("browser_use", callId, reason)
-                return outcome == .allowedOnce
-            }
-        }
-        defer {
-            Task { @MainActor in
-                if OriginPolicy.shared.askHandler != nil {
-                    OriginPolicy.shared.askHandler = nil
-                }
-            }
-        }
+        // ── 审批缝接线已上移至 origin 判定前（【验收修复 P1 2026-09-28】
+        // 装配顺序修正——此处原位置的旧块删除，见上方注释）。
 
         // ── 引擎执行 ─────────────────────────────────────────────────
         let result: BrowserActionResult

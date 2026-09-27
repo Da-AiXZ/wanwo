@@ -798,7 +798,13 @@ final class BrowserUseManager: NSObject, ObservableObject {
             // loadFileURL，iOS 官方本地文件加载；HTML 相对子资源由 file:// 域
             // 原生解析，无需 handler）。resolve 失败给明确中文错误，不再让
             // WebKit 甩晦涩的 -3001。
-            guard let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(url) else {
+            // 【验收修复 P0-3 2026-09-28】resolve 改用 sessionIdProvider（当前
+            // 工具调用会话；批2-3 装配）替代 mountedSessionIdSnapshot 单参形态
+            // ——App 冷启动后首次调用时 snapshot 尚未就绪(nil) → A1 项目映射
+            // 跳过 → 兜底"扫描全部会话桶"命中历史遗留文件（批A-F 验收①真机
+            // 实证：首次导航 index.html 打开的是旧会话遗留桶里的"本地小游戏"）。
+            guard let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(
+                url, sessionID: sessionIdProvider?() ?? IshExecutorBridge.mountedSessionIdSnapshot) else {
                 isLoading = false
                 let message = "wanwo:// 资源不存在或不可读：\(url.absoluteString)"
                 loadError = WebLoadError(
@@ -2483,7 +2489,13 @@ extension BrowserUseManager: WKNavigationDelegate {
             decisionHandler(.cancel, preferences)
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(url) {
+                // 【验收修复 P0-3 2026-09-28】同 navigate——sessionIdProvider
+                // 优先，snapshot 兜底（冷启动首导航落错桶同根因；read_image
+                // 工具卡点击"无法打开资源"同治——右栏导航经此路径）。
+                if let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(
+                    url,
+                    sessionID: self.sessionIdProvider?()
+                        ?? IshExecutorBridge.mountedSessionIdSnapshot) {
                     self.webView.loadFileURL(target.file, allowingReadAccessTo: target.base)
                 } else {
                     self.loadError = WebLoadError(
