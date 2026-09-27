@@ -481,8 +481,8 @@ final class ChatViewModel: ObservableObject {
             : hostRoot.appendingPathComponent(dirRel, isDirectory: true)
         guard FileManager.default.fileExists(atPath: baseDir.path) else { return [] }
         let rows = WorkspaceFileTreeModel.enumerate(hostDir: baseDir, relativeBase: dirRel.isEmpty ? "" : dirRel)
-        let labels: [String] = rows.map { row in
-            row.node.isDirectory ? "\(row.node.id)/" : row.node.id
+        let labels: [String] = rows.map { node in
+            node.isDirectory ? "\(node.id)/" : node.id
         }
         guard !filter.isEmpty else { return Array(labels.prefix(40)) }
         return Array(labels.filter { $0.lowercased().contains(filter.lowercased()) }.prefix(40))
