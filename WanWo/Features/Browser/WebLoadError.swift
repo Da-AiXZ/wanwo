@@ -36,6 +36,17 @@ struct WebLoadError: Equatable {
     /// The URL that failed, so a Retry can reload exactly it.
     let failedURL: URL?
 
+    /// 【验收修复 A2 2026-09-27】固定文案构造（wanwo:// resolve 失败错误页）。
+    /// 自定义 init?(error:) 抑制了 memberwise init——显式补一个（文案全由
+    /// 调用方给定，不走 WebKit 错误码映射）。WanWo 侧扩展（wanwo scheme 万我
+    /// 独有，vendored 原件无此场景）。
+    init(title: String, message: String, systemImage: String, failedURL: URL?) {
+        self.title = title
+        self.message = message
+        self.systemImage = systemImage
+        self.failedURL = failedURL
+    }
+
     /// Build from a WebKit/Foundation navigation error. Returns nil for the
     /// benign "cancelled" cases (e.g. a load superseded by another, or a
     /// policy-cancelled non-http scheme handed off to the system) so the UI

@@ -309,8 +309,12 @@ final class ChatViewModel: ObservableObject {
                         maxImageBytes: limits.maxImageBytes,
                         aggregateBytes: limits.maxMessageImageBytes)
                     for candidate in candidates {
+                        // DraftImageCandidate.mediaType 类型上为 Optional
+                        //（intake 候选形态）；扫描器只产白名单命中（构造时
+                        // 已保证非 nil），此处 guard 兑现类型承诺。
+                        guard let mediaType = candidate.mediaType else { continue }
                         if let stored = try? store.saveImage(SaveImageAttachment(
-                            data: candidate.data, mediaType: candidate.mediaType,
+                            data: candidate.data, mediaType: mediaType,
                             name: candidate.name)) {
                             refs.append(stored)
                         }

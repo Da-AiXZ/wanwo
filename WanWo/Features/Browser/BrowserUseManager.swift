@@ -2947,7 +2947,7 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
     ///   · 安全边界：路径穿越拒绝——子径含 ".." 组件或规范化后逃出桶根一律不返回
     ///     （fail closed，对齐 OpenMinis 只服务桶内路径的边界 + WanWo P13 沙箱口径）。
     static func resolveWanwoURL(_ url: URL) -> URL? {
-        guard url.scheme?.lowercased() == "wanwo", let host = url.host else { return nil }
+        guard url.scheme?.lowercased() == "wanwo", url.host != nil else { return nil }
         return resolveWanwoURL(url, sessionID: IshExecutorBridge.mountedSessionIdSnapshot)
     }
 
@@ -3286,13 +3286,15 @@ final class BrowserDownloadCenter: ObservableObject {
         guard !lines.isEmpty else { return nil }
 
         let cwd = BrowserUseSessionStore.workspacePathResolver?(sessionId) ?? "/var/wanwo/workspace"
-        return "[browser_downloads] The browser is handling file download(s) NATIVELY "
-            + "(triggered by page navigation/click, saved into this session's workspace Downloads/ dir):\n"
-            + lines.map { "- \($0)" }.joined(separator: "\n")
-            + "\nDo NOT re-download these files with curl/wget in shell_execute. "
+        // 长拼接+插值表达式曾致 type-check 超时（CI 36331037576）——拆子表达式。
+        let header = "[browser_downloads] The browser is handling file download(s) NATIVELY "
+            + "(triggered by page navigation/click, saved into this session's workspace Downloads/ dir):"
+        let body = lines.map { "- \($0)" }.joined(separator: "\n")
+        let tail = "\nDo NOT re-download these files with curl/wget in shell_execute. "
             + "Completed files are already fully saved at the given path; for in-progress "
             + "downloads, wait and check again (e.g. via a later browser_use call or "
             + "shell `ls -l \(cwd)/Downloads/`) instead of downloading in parallel."
+        return header + "\n" + body + tail
     }
 
     private func queueAgentEvent(sessionId: String, filename: String, line: String) {
