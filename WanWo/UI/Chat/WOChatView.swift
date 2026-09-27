@@ -109,8 +109,12 @@ struct WOChatView: View {
     /// 包 `[url](url)`，指针跳过 URL 本体。
     static func autolinkBareURLs(_ text: String) -> String {
         let markers = ["https://", "wanwo://"]
-        let stopChars = Set(" \t\n\r<>()\\[]\"'")
-        let blockPrev = Set("(\"=[")
+        // 【批2 修复 2026-09-27】反引号必须同时是 URL 边界与 code-span 排除位：
+        // AI 常以 `wanwo://…`（inline code）输出链接——此前反引号不在两张表里，
+        // 导致 ①code span 内的 URL 也被包链 ②URL 吃进闭合反引号使原 code span
+        // 未闭合延伸到行尾，整行按纯代码渲染（用户截图 IMG_2463 棕色 [..](..) 字样）。
+        let stopChars = Set(" \t\n\r<>()\\[]\"'`")
+        let blockPrev = Set("(\"=[`")
         var out = ""
         var index = text.startIndex
         while index < text.endIndex {
@@ -374,6 +378,9 @@ struct WOChatView: View {
             // slash 命令菜单（锚定 composer 卡上缘向上生长；zIndex 压过 chrome）。
             if slashMenuOpen {
                 slashMenu
+            } else if mentionMenuOpen {
+                // 【批2 F075】@ 引用菜单（同锚位；与 slash 行首 `/` 天然互斥）。
+                mentionMenu
             }
         }
         // 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal，三入口同一
@@ -391,11 +398,36 @@ struct WOChatView: View {
         // 草稿缓存（dsh draft 持久跨切换；切走再切回文本跟回）。
         .onChange(of: viewModel.draft) { text in
             appState.updateDraft(text, for: sessionId)
+            // 【批2 F075】@ token 变化 → 刷新候选（cc-haha session 搜索 150ms
+            // 防抖同义；此处同步算，枚举为一层目录、开销可控）。
+            if mentionMenuOpen, let range = mentionTokenRange {
+                mentionCandidates = viewModel.mentionCandidates(
+                    query: String(text[range]))
+            }
+        }
+        // 【批3 右栏→AI 引用挂载】文件页签/树行「引用」→ composer 追加 @path
+        // （store 通道；消费后清位，at 防同 token 重复）。
+        .onReceive(WOWorkspaceStore.shared.$pendingComposerInsert) { insert in
+            guard let insert, insert.sessionID == sessionId,
+                  insert.at != lastConsumedInsert else { return }
+            lastConsumedInsert = insert.at
+            WOWorkspaceStore.shared.pendingComposerInsert = nil
+            var draft = viewModel.draft
+            if !draft.isEmpty && !draft.hasSuffix("\n") && !draft.hasSuffix(" ") {
+                draft += " "
+            }
+            viewModel.draft = draft + insert.token + " "
+            slashDismissed = true
         }
         .background(WOAlias.bgBase)
         .onAppear {
             viewModel.open()
             seedEntry()
+            // F075：切回会话恢复草稿若带 @ token，菜单候选立即就位。
+            if mentionMenuOpen, let range = mentionTokenRange {
+                mentionCandidates = viewModel.mentionCandidates(
+                    query: String(viewModel.draft[range]))
+            }
             // dsh「hero 输入文本 = 新会话 composer draft」交接缝消费（旧
             // ChatView 同语义）：文本不丢，用户在会话内点发送才真正提交。
             if let firstDraft = environment.pendingFirstDraft {
@@ -671,6 +703,64 @@ struct WOChatView: View {
         default: return false
         }
         return viewModel.draft.hasPrefix("/")
+    }
+
+    /// 【批2 F075】@ 引用菜单开启判定：draft 尾部存在 `@` 起始 token（@ 后
+    /// 允许部分路径）；与 slash（行首 `/`）天然互斥。cc-haha ComposerReference
+    /// 触发语义。
+    private var mentionMenuOpen: Bool {
+        guard !slashDismissed else { return false }
+        guard viewModel.pendingApprovals.isEmpty,
+              viewModel.pendingQuestions.isEmpty else { return false }
+        switch viewModel.phase {
+        case .idle, .failed: break
+        default: return false
+        }
+        return mentionTokenRange != nil
+    }
+
+    /// draft 尾部 @ token 范围（`@` 起、至尾/首个空白止——F040 令牌语法同款）。
+    private var mentionTokenRange: Range<String.Index>? {
+        let draft = viewModel.draft
+        guard let at = draft.lastIndex(of: "@") else { return nil }
+        let after = draft.index(after: at)
+        // @ 后首个字符若为空白 → 仅 @ 触发（列根层），token 到此为止。
+        if after < draft.endIndex,
+           draft[after].isWhitespace || draft[after].isNewline { return nil }
+        // token 内不得含空白（空白=token 已结束，不再拉菜单）。
+        for ch in draft[after...] where ch.isWhitespace || ch.isNewline { return nil }
+        return at..<draft.endIndex
+    }
+
+    private var mentionQuery: String {
+        guard let range = mentionTokenRange else { return "@" }
+        return String(viewModel.draft[range])
+    }
+
+    @State private var mentionCandidates: [String] = []
+    /// 已消费的 composer 插入请求时间戳（防同 token 重复追加）。
+    @State private var lastConsumedInsert: Date?
+
+    private var mentionMenu: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            WOMentionMenu(
+                candidates: mentionCandidates,
+                onPick: { path in
+                    // 选中：@token 替换为完整 `@path`（带尾随空格封 token；
+                    // 目录选择=继续浏览——不带空格，菜单跟随下一段）。
+                    guard let range = mentionTokenRange else { return }
+                    slashDismissed = true
+                    let isDirectory = path.hasSuffix("/")
+                    viewModel.draft.replaceSubrange(
+                        range, with: isDirectory ? path : "@\(path) ")
+                })
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, composerChromeHeight + 6)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .zIndex(2)
     }
 
     private var slashMenu: some View {

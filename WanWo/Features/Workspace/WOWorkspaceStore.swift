@@ -168,6 +168,51 @@ final class WOWorkspaceStore: ObservableObject {
     /// 最近一次页签关闭（undo Toast 数据源；token=防同文重复触发）。
     @Published private(set) var lastClosedUndo: (sessionId: String, title: String, token: UUID)?
 
+    /// 【批2 文件页签自动刷新 2026-09-27】会话文件活动纪元（AI 工具结果/回合
+    /// 边界驱动——cc-haha useWorkspaceFileWatch 的万我等价触发源：iOS fakefs
+    /// 无 inotify，动作驱动替代 fs 事件；cc-haha 120ms 合并窗口由本节流承担）。
+    /// WorkspaceFileTabView onChange 本会话纪元 → 重载树 + 变更高亮。
+    @Published private(set) var fileChangeEpoch: [String: Int] = [:]
+    /// 节流位（同会话 0.8s 内的连续工具结果合并为一次刷新信号）。
+    private var lastFileActivityAt: [String: Date] = [:]
+
+    /// AI 会话文件活动上报（ChatViewModel onToolCallFinished/onTurnEnd 调）。
+    func noteFileActivity(sessionID: String) {
+        let now = Date()
+        if let last = lastFileActivityAt[sessionID],
+           now.timeIntervalSince(last) < 0.8 { return }
+        lastFileActivityAt[sessionID] = now
+        fileChangeEpoch[sessionID, default: 0] += 1
+    }
+
+    /// 【批2 高亮】回合变更文件集（per-session；turn/end 变更卡同源写入，
+    /// 页签刷新时读取渲染、下次刷新覆盖/清除）。
+    @Published private(set) var changeHighlight: [String: Set<String>] = [:]
+
+    /// 写入本回合变更文件集并 bump 纪元（ChatViewModel onTurnEnd 调）。
+    func noteFileChanges(sessionID: String, paths: Set<String>) {
+        changeHighlight[sessionID] = paths
+        lastFileActivityAt[sessionID] = .distantPast  // 变更落卡必刷新（绕过节流）
+        fileChangeEpoch[sessionID, default: 0] += 1
+    }
+
+    /// 【批3 右栏→AI 引用挂载（cc-haha 链③ file 级）】右栏发起的 composer
+    /// 插入请求（文件页签「引用」钮/树行菜单 → composer 追加 `@path` 令牌；
+    /// 注入端=F040 expandFileReferences 既有语义，dsh file-reference 同款）。
+    /// WOChatView onReceive 消费后置 nil；at=防同 token 重复消费。
+    struct ComposerInsert: Equatable {
+        let sessionID: String
+        let token: String
+        let at: Date
+    }
+    @Published var pendingComposerInsert: ComposerInsert?
+
+    /// 右栏侧发起插入（页签/树行调；token 形如 `@path`）。
+    func requestComposerInsert(sessionID: String, token: String) {
+        pendingComposerInsert = ComposerInsert(
+            sessionID: sessionID, token: token, at: Date())
+    }
+
     /// 撤销条生命周期收口（Toast onDone 调；token 不匹配=已被新关闭顶替，不清）。
     func dismissUndoToast(token: UUID) {
         if lastClosedUndo?.token == token { lastClosedUndo = nil }

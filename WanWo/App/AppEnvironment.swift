@@ -507,6 +507,15 @@ final class AppEnvironment: ObservableObject {
         OffloadPermissionManager.shared.decisionObserver = { [weak self] sessionId, note in
             self?.diagTrace(sessionId: sessionId, "[offload-perm] " + note)
         }
+
+        // 【批3 下载落点 2026-09-27】装配期注册会话工作区路径解析器（同上方
+        // decisionObserver 的 init 末尾捕获纪律）——BrowserTabPool 下载落点经
+        // 此取 guestWorkspacePath（项目真目录 Downloads/，废桶死角修正）。
+        BrowserUseSessionStore.workspacePathResolver = { [weak self] sid in
+            guard let self else { return nil }
+            let path = self.guestWorkspacePath(for: sid)
+            return path.isEmpty ? nil : path
+        }
     }
 
     // MARK: - 会话

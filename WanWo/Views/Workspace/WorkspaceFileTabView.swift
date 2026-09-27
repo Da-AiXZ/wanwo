@@ -24,6 +24,12 @@ struct WorkspaceFileTabView: View {
     /// md 渲染/源码切换（默认渲染视图）。
     @State private var showSource = false
     @State private var copiedToast = false
+    /// 【批2 高亮】本回合变更文件集（store.turn 变更卡同源；树行渲染 tint，
+    /// 下次刷新/会话切换覆盖或清除）。
+    @State private var highlightedPaths: Set<String> = []
+    /// 【批2 自动刷新】右栏真值源订阅——fileChangeEpoch 变化驱动本视图
+    /// 重渲染，onChange 才能求值触发 reload（未订阅则信号永不到达）。
+    @ObservedObject private var workspaceStore = WOWorkspaceStore.shared
 
     private var sessionID: String? {
         WorkspaceRightSidebarView.sessionID(of: environment.selection)
@@ -52,8 +58,21 @@ struct WorkspaceFileTabView: View {
                 }
             }
         }
-        .onAppear { reload() }
-        .onChange(of: environment.selection) { _ in reload() }
+        .onAppear {
+            reload()
+            highlightedPaths = WOWorkspaceStore.shared.changeHighlight[sessionID ?? ""] ?? []
+        }
+        .onChange(of: environment.selection) { _ in
+            reload()
+            highlightedPaths = []
+        }
+        // 【批2 文件页签自动刷新 2026-09-27】文件活动纪元（AI 工具结果/回合
+        // 边界驱动；cc-haha useWorkspaceFileWatch 语义的万我动作驱动等价）→
+        // 重载根层 + 同步高亮集（turn 变更文件；下次刷新覆盖）。
+        .onChange(of: workspaceStore.fileChangeEpoch[sessionID ?? ""]) { _ in
+            reload()
+            highlightedPaths = workspaceStore.changeHighlight[sessionID ?? ""] ?? []
+        }
     }
 
     private func reload() {
@@ -91,6 +110,19 @@ struct WorkspaceFileTabView: View {
                     .font(.caption2)
             }
             .buttonStyle(.borderless)
+            // 【批3 引用挂载】引用当前选中文件到对话（cc-haha FileTab 引用
+            // 入口；无选中文件时禁用）。
+            Button {
+                guard let sessionID, let selectedPath else { return }
+                WOWorkspaceStore.shared.requestComposerInsert(
+                    sessionID: sessionID, token: "@\(selectedPath)")
+            } label: {
+                Label("引用到对话", systemImage: "at")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .disabled(selectedPath == nil)
+            .accessibilityLabel("引用当前文件到对话")
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     tree.treeHidden.toggle()
@@ -198,6 +230,13 @@ struct WorkspaceFileTabView: View {
                     .font(.caption)
                     .lineLimit(1)
                     .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                // 【批2 高亮】本回合变更文件标记（accent 圆点；非文件/已选中
+                // 不叠——选中态已有 accent 前景色）。
+                if highlightedPaths.contains(row.node.id), !isSelected {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 5, height: 5)
+                }
                 Spacer(minLength: 0)
             }
             .padding(.leading, CGFloat(row.depth) * 10)
@@ -206,6 +245,18 @@ struct WorkspaceFileTabView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 【批3 引用挂载】树行长按菜单：引用该路径到对话（cc-haha TreePane
+        // 引用入口语义；file 级=批3 拍板范围，选区/行评论=M9.7）。
+        .contextMenu {
+            Button {
+                guard let sessionID else { return }
+                let token = row.node.isDirectory ? "@\(row.node.id)/" : "@\(row.node.id)"
+                WOWorkspaceStore.shared.requestComposerInsert(
+                    sessionID: sessionID, token: token)
+            } label: {
+                Label("引用到对话", systemImage: "at")
+            }
+        }
     }
 
     private func toggleExpand(_ node: FileTreeNode) {

@@ -430,3 +430,67 @@ struct WOSlashMenu: View {
         .padding(4)
     }
 }
+
+// MARK: - @ 引用菜单（F075；digest-H dd 弹层规格与 WOSlashMenu 同族；
+// 数据源 = VM.mentionCandidates——cc-haha ComposerReferenceMenu 的文件
+// 浏览/搜索双模语义，注入端 = F040 expandFileReferences 既有）
+
+struct WOMentionMenu: View {
+    /// 候选相对路径（目录带尾 `/`）。
+    let candidates: [String]
+    let onPick: (String) -> Void
+
+    private let maxHeight: CGFloat = 320
+
+    var body: some View {
+        Group {
+            if candidates.count > 7 {
+                ScrollView { menuList }
+                    .frame(height: maxHeight)
+            } else {
+                menuList
+            }
+        }
+        .frame(maxWidth: 420)
+        .background(RoundedRectangle(cornerRadius: 20).fill(WOAlias.bgBase))
+        .overlay(RoundedRectangle(cornerRadius: 20)
+            .strokeBorder(WOAlias.borderL2, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
+        .accessibilityLabel("引用菜单")
+    }
+
+    private var menuList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if candidates.isEmpty {
+                Text("无匹配文件")
+                    .font(.system(size: 12))
+                    .foregroundColor(WOAlias.labelTertiary)
+                    .padding(12)
+            }
+            ForEach(candidates, id: \.self) { path in
+                Button {
+                    onPick(path)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: path.hasSuffix("/")
+                            ? "folder" : "doc")
+                            .font(.system(size: 11))
+                            .foregroundColor(WOAlias.labelSecondary)
+                        Text("@\(path)")
+                            .font(.system(size: 13, weight: .medium, design: .monospaced))
+                            .foregroundColor(WOAlias.labelPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 40)
+                    .background(RoundedRectangle(cornerRadius: 10)
+                        .fill(WOAlias.bgBase))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+    }
+}

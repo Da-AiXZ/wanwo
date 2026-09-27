@@ -459,6 +459,35 @@ final class ChatViewModel: ObservableObject {
         (slashCommands?.commands.values.sorted { $0.name < $1.name }) ?? []
     }
 
+    // MARK: - F075 @ 引用菜单数据源（cc-haha ComposerReferenceMenu 语义）
+
+    /// @ 引用候选：guest 工作区相对路径（文件+目录），query 双模——
+    /// `src/` 结尾=浏览 src 子层；`src/ma`=src 下前缀过滤；空=根层。
+    /// 与 cc-haha filesystemApi「搜索/目录浏览」同构；上限 40 条防弹层溢出。
+    /// 【批2 F075 2026-09-27】注入端=F040 expandFileReferences（既有）。
+    func mentionCandidates(query: String) -> [String] {
+        let wsPath = environment.guestWorkspacePath(for: sessionID)
+        guard let hostRoot = WanWoPaths.projectsHostRoot(forGuestPath: wsPath) else {
+            return []
+        }
+        let trimmed = query.hasPrefix("@") ? String(query.dropFirst()) : query
+        // 目录段 / 尾段拆分（"src/ma" → browse "src"，filter "ma"）。
+        let browsing = trimmed.hasSuffix("/")
+        let parts = trimmed.split(separator: "/").map(String.init)
+        let filter = browsing ? "" : (parts.last ?? "")
+        let dirRel = browsing ? trimmed : parts.dropLast().joined(separator: "/")
+        let baseDir = dirRel.isEmpty
+            ? hostRoot
+            : hostRoot.appendingPathComponent(dirRel, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: baseDir.path) else { return [] }
+        let rows = WorkspaceFileTreeModel.enumerate(hostDir: baseDir, relativeBase: dirRel.isEmpty ? "" : dirRel)
+        let labels: [String] = rows.map { row in
+            row.node.isDirectory ? "\(row.node.id)/" : row.node.id
+        }
+        guard !filter.isEmpty else { return Array(labels.prefix(40)) }
+        return Array(labels.filter { $0.lowercased().contains(filter.lowercased()) }.prefix(40))
+    }
+
     /// 幽灵提示（dsh InputBar.tsx:335-353 claim hint：args 为空时显示命令
     /// hint；dsh 词典仅 hint.plan/goal，WanWo 无 goal → 仅 /plan）。
     var commandHint: String? {
@@ -562,6 +591,26 @@ final class ChatViewModel: ObservableObject {
                     // M6.6（B4）：运行态镜像清退（侧聊父会话状态行数据源）。
                     self.environment.noteRunState(sessionId: self.sessionID,
                                                   running: false)
+                    // 【批2 变更卡 2026-09-27】回合结束对比快照（cc-haha
+                    // CurrentTurnChangeCard 语义）→ 有变更：①系统纸条列清单
+                    // （复用批2 .system→note 投影分支，零新投影面；文件行可点
+                    // 性/diff 统计=M9.6 范围已拍板剔除）②文件页签刷新信号
+                    // （高亮承接"去看文件"动线）。diff 为 nil（无快照/超护栏/
+                    // 无变更）不落纸条。
+                    let wsPath = self.environment.guestWorkspacePath(for: self.sessionID)
+                    if let changes = WorkspaceChangeMonitor.shared.consumeChanges(
+                        sessionID: self.sessionID, workspacePath: wsPath) {
+                        let note = Self.turnChangeNote(changes)
+                        let writer = self.writer
+                        Task {
+                            try? await writer?.append(.system(note: note))
+                        }
+                        // 页签高亮数据源（新增/修改/删除合集）。
+                        WOWorkspaceStore.shared.noteFileChanges(
+                            sessionID: self.sessionID,
+                            paths: Set(changes.added + changes.modified + changes.removed))
+                    }
+                    WOWorkspaceStore.shared.noteFileActivity(sessionID: self.sessionID)
                     // F060 可观测性最小纪律：错误必须自解释——turn/end error
                     // 把 failure.message 原文（DeepSeek providerMessage）带进
                     // 状态条（截 200 防撑爆），不能只给 code。
@@ -619,6 +668,10 @@ final class ChatViewModel: ObservableObject {
                         card.isError = isError
                         card.isRunning = false
                         self.bubbles[index].kind = .tool(card)
+                        // 【批2 文件页签自动刷新】工具结果=文件活动信号（store
+                        // 侧 0.8s 节流合并——cc-haha 120ms 合并窗口的万我等价）。
+                        WOWorkspaceStore.shared.noteFileActivity(
+                            sessionID: self.sessionID)
                     } else {
                         // 卡不在场兜底（理论不发生：started 已重投影；防御
                         // 回调乱序/漏发——直接按事件流重建）。
@@ -637,6 +690,13 @@ final class ChatViewModel: ObservableObject {
                     // 随行图片引用（E1 attachment/images 已落盘后发射），重投影
                     // 前图片即时可见。
                     guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    // 【批2 变更检测 2026-09-27】真实用户消息=回合开始 → 拍工作区
+                    // 快照（cc-haha turn checkpoint 语义；平台适配=回合边界宿主
+                    // 快照对比，见 WorkspaceChangeMonitor 头注）。此刻 AI 尚未
+                    // 开始本回合写盘，基线正确。marker（注入纸条）不算回合开始。
+                    WorkspaceChangeMonitor.shared.takeSnapshot(
+                        sessionID: sessionID,
+                        workspacePath: environment.guestWorkspacePath(for: sessionID))
                     // 批12+回归八校（用户日志 entry-diag.log L1/L2 实证）：乐观
                     // 气泡 id 改固定哨兵"u-pending"——原 live-user-UUID 与落盘
                     // 投影 id "u(seq)" 双身份，落盘替换=删掉重插=入场动画重播
@@ -686,6 +746,27 @@ final class ChatViewModel: ObservableObject {
             ? String(flattened.prefix(200)) + "…"
             : flattened
         return "模型错误 [\(failure.code)] \(body)"
+    }
+
+    /// 【批2 变更卡】回合文件变更纸条文本（cc-haha CurrentTurnChangeCard 文案
+    /// 语义的中文对齐：清单+状态标签；折叠阈值 5 与 COLLAPSED_COUNT 同值——
+    /// 纸条形态下列全量但每组截断展示，防超长回合刷屏）。
+    static func turnChangeNote(_ changes: WorkspaceChangeMonitor.ChangeSet) -> String {
+        var lines: [String] = []
+        func section(_ title: String, _ paths: [String], _ tag: String, into out: inout [String]) {
+            guard !paths.isEmpty else { return }
+            out.append("\(title) \(paths.count) 个：")
+            for path in paths.prefix(5) {
+                out.append("· [\(tag)] \(path)")
+            }
+            if paths.count > 5 {
+                out.append("· …等共 \(paths.count) 个")
+            }
+        }
+        section("新增", changes.added, "新增", into: &lines)
+        section("修改", changes.modified, "修改", into: &lines)
+        section("删除", changes.removed, "删除", into: &lines)
+        return "本回合工作区文件变更：\n" + lines.joined(separator: "\n")
     }
 
     private func maybeGenerateTitle() {

@@ -1318,9 +1318,15 @@ final class BrowserTabPool: ObservableObject {
         manager.closeHandler = { [weak self] webView in
             self?.closeWebView(webView)
         }
-        // Downloads land in this session's /var/wanwo/workspace/ so the agent
-        // can read and operate on them in follow-up turns.
+        // Downloads land in the session's project workspace Downloads/ dir so
+        // the agent AND the right-sidebar file tree both see them (批3 修正：
+        // 旧落点=已退役的 workspace 遗留桶=双不可见死角). Resolution is via
+        // the assembly-time workspacePathResolver (AppEnvironment 注册).
         manager.sessionIdProvider = { [weak self] in self?.sessionId }
+        manager.workspacePathProvider = { [weak self] in
+            guard let self, let sid = self.sessionId, !sid.isEmpty else { return nil }
+            return BrowserUseSessionStore.workspacePathResolver?(sid)
+        }
         // [BrowserToolDiag] Let the manager name its own tab when its WebContent
         // process dies. Resolved by identity at call time rather than captured:
         // wireManager runs before the Tab is appended, and ids don't move once

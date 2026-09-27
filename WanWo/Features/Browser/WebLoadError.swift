@@ -60,30 +60,30 @@ struct WebLoadError: Equatable {
         switch (ns.domain, ns.code) {
         case (NSURLErrorDomain, NSURLErrorCannotFindHost),
              (NSURLErrorDomain, NSURLErrorDNSLookupFailed):
-            title = String(localized: "Cannot Open Page")
+            title = String(localized: "无法打开页面")
             message = host.map {
-                String(localized: "WanWo can’t open the page because it can’t find the server “\($0)”.")
-            } ?? String(localized: "WanWo can’t open the page because it can’t find the server.")
+                String(localized: "万我无法打开页面，因为找不到服务器“\($0)”。")
+            } ?? String(localized: "万我无法打开页面，因为找不到服务器。")
             systemImage = "wifi.exclamationmark"
 
         case (NSURLErrorDomain, NSURLErrorCannotConnectToHost):
-            title = String(localized: "Cannot Open Page")
-            message = String(localized: "WanWo can’t open the page because it can’t connect to the server.")
+            title = String(localized: "无法打开页面")
+            message = String(localized: "万我无法打开页面，因为无法连接到服务器。")
             systemImage = "wifi.exclamationmark"
 
         case (NSURLErrorDomain, NSURLErrorNotConnectedToInternet),
              (NSURLErrorDomain, NSURLErrorNetworkConnectionLost),
              (NSURLErrorDomain, NSURLErrorInternationalRoamingOff),
              (NSURLErrorDomain, NSURLErrorDataNotAllowed):
-            title = String(localized: "You Are Not Connected to the Internet")
-            message = String(localized: "The page couldn’t load because you’re not connected to the internet.")
+            title = String(localized: "未连接到互联网")
+            message = String(localized: "页面无法加载：当前未连接到互联网。")
             systemImage = "wifi.slash"
 
         case (NSURLErrorDomain, NSURLErrorTimedOut):
-            title = String(localized: "The Connection Timed Out")
+            title = String(localized: "连接超时")
             message = host.map {
-                String(localized: "The server “\($0)” took too long to respond.")
-            } ?? String(localized: "The server took too long to respond.")
+                String(localized: "服务器“\($0)”响应时间过长。")
+            } ?? String(localized: "服务器响应时间过长。")
             systemImage = "clock.badge.exclamationmark"
 
         case (NSURLErrorDomain, NSURLErrorSecureConnectionFailed),
@@ -93,23 +93,23 @@ struct WebLoadError: Equatable {
              (NSURLErrorDomain, NSURLErrorServerCertificateNotYetValid),
              (NSURLErrorDomain, NSURLErrorClientCertificateRejected),
              (NSURLErrorDomain, NSURLErrorClientCertificateRequired):
-            title = String(localized: "This Connection Is Not Private")
+            title = String(localized: "此连接非私密连接")
             message = host.map {
-                String(localized: "WanWo can’t verify the identity of the server “\($0)”.")
-            } ?? String(localized: "WanWo can’t verify the identity of the server.")
+                String(localized: "万我无法验证服务器“\($0)”的身份。")
+            } ?? String(localized: "万我无法验证服务器的身份。")
             systemImage = "lock.slash"
 
         case (NSURLErrorDomain, NSURLErrorUnsupportedURL),
              (NSURLErrorDomain, NSURLErrorBadURL):
-            title = String(localized: "Cannot Open Page")
-            message = String(localized: "The address isn’t valid.")
+            title = String(localized: "无法打开页面")
+            message = String(localized: "地址无效。")
             systemImage = "exclamationmark.triangle"
 
         default:
-            title = String(localized: "Cannot Open Page")
+            title = String(localized: "无法打开页面")
             message = host.map {
-                String(localized: "A problem occurred loading “\($0)”.")
-            } ?? String(localized: "A problem occurred while loading this page.")
+                String(localized: "加载“\($0)”时出现问题。")
+            } ?? String(localized: "加载此页面时出现问题。")
             systemImage = "exclamationmark.triangle"
         }
     }
@@ -134,7 +134,7 @@ struct WebLoadErrorOverlay: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: onRetry) {
-                Label(String(localized: "Try Again"), systemImage: "arrow.clockwise")
+                Label(String(localized: "重试"), systemImage: "arrow.clockwise")
                     .font(.subheadline.weight(.medium))
             }
             .buttonStyle(.borderedProminent)

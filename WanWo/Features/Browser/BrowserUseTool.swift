@@ -45,6 +45,13 @@ final class BrowserUseSessionStore {
 
     private var pools: [String: BrowserTabPool] = [:]
 
+    /// 装配期注册（AppEnvironment.init；PermissionCoordinator 同款模式）：
+    /// sessionID → 会话 guest 工作区路径（guestWorkspacePath 同源）。下载
+    /// 落点解析用（批3：废桶死角修正）；未注册 → 下载回落会话 browser 桶。
+    /// store 与全部读写方（AppEnvironment.init / pool.wireManager）均在
+    /// @MainActor——static var 默认隔离即正确，无需 unsafe 豁免。
+    static var workspacePathResolver: ((String) -> String?)?
+
     /// 取（惰性建）会话池。OpenMinis 桥在分配 fallback 池前有 ChatStore
     /// 存在性预检（deleted session 拒绝）；WanWo 无跨层会话存在性查询缝
     /// （SessionStore 为装配层 per-app actor）——降级为直接分配，删除会话
@@ -225,12 +232,27 @@ struct BrowserUseTool: AgentTool {
         // 链接仅供用户侧呈现，模型上下文不因此膨胀（每产物一行）。
         let browserDir = WanWoPaths.sessionPersistentDir(for: ctx.sessionId,
                                                          bucket: "browser")
-        if let b64 = result.base64Image, let data = Data(base64Encoded: b64) {
+        // 【批3 截图落点统一 2026-09-27】manager 落盘已改会话 browser 桶
+        // （BrowserUseManager.screenshot 同批）——imageFilePath 命中本会话桶
+        // 时直接复用该文件（同源同名），仅追加 guest 路径与 wanwo_url 行；
+        // 未命中（旧调用方/兜底路径）才走 base64 二次落盘。
+        var persistedName: String? = nil
+        if let path = result.imageFilePath, !path.isEmpty {
+            let dirPath = browserDir.standardizedFileURL.path
+            let filePath = URL(fileURLWithPath: path).standardizedFileURL.path
+            if filePath.hasPrefix(dirPath + "/") {
+                persistedName = (path as NSString).lastPathComponent
+            }
+        }
+        if persistedName == nil, let b64 = result.base64Image, let data = Data(base64Encoded: b64) {
             let filename = "screenshot_\(Int(Date().timeIntervalSince1970)).jpg"
             try? FileManager.default.createDirectory(at: browserDir,
                                                      withIntermediateDirectories: true)
             let persistPath = browserDir.appendingPathComponent(filename)
             try? data.write(to: persistPath)
+            persistedName = filename
+        }
+        if let filename = persistedName {
             let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(filename)"
             text += "\nimage_path: \(linuxPath)"
             if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {

@@ -81,8 +81,14 @@ final class BrowserUseManager: NSObject, ObservableObject {
     var hasInflightDownloads: Bool { !inflightDownloads.isEmpty }
 
     /// Returns the chat session id owning this browser — wired by BrowserTabPool.
-    /// Downloads are saved into that session's /var/wanwo/workspace/ directory.
+    /// 【批3 下载落点 2026-09-27】下载落点语义修正：会话 guest 工作区路径
+    /// （如 /var/wanwo/projects/<名>——AppEnvironment.guestWorkspacePath 同源；
+    /// 装配期经理由 BrowserUseSessionStore.workspacePathResolver 下发）。
     var sessionIdProvider: (() -> String?)?
+
+    /// 会话 guest 工作区路径 provider（BrowserTabPool 经 BrowserUseSessionStore
+    /// 装配期注册链下发；nil = 未装配 → 下载回落会话 browser 桶兜底）。
+    var workspacePathProvider: (() -> String?)?
 
     /// Returns this tab's pool id — wired by BrowserTabPool. Diagnostics only,
     /// so WebContent-process death can be attributed to a tab. [BrowserToolDiag]
@@ -963,9 +969,21 @@ final class BrowserUseManager: NSObject, ObservableObject {
             return .error("Failed to encode screenshot as JPEG")
         }
 
-        // Save to disk
+        // Save to disk.
+        // 【批3 截图落点统一 2026-09-27】落点从 tmp/browser_screenshots 改为
+        // 会话 browser 桶（BrowserUseOffloadBridge:195 同款基准）——此前右栏
+        // 自动打开的 wanwo://browser/<file> 经 resolveWanwoURL 找会话桶、写侧
+        // 却在 tmp，两落点撕裂=右栏死链（"Cannot Open Page 'browser'"）根因。
+        // 统一后三链同源：写=wanwo:// 解析=AI guest /var/wanwo/browser/
+        // （FsContextRouter browser 桶翻译）。无会话态回落 tmp（诊断兜底，
+        // Bridge 同语义 fail-soft）。
         let filename = "screenshot_\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
-        let fileURL = Self.screenshotsDir.appendingPathComponent(filename)
+        let saveSID = sessionIdProvider?() ?? ""
+        let saveDir: URL = saveSID.isEmpty
+            ? Self.screenshotsDir
+            : WanWoPaths.sessionPersistentDir(for: saveSID, bucket: "browser")
+        try? FileManager.default.createDirectory(at: saveDir, withIntermediateDirectories: true)
+        let fileURL = saveDir.appendingPathComponent(filename)
         try jpegData.write(to: fileURL)
 
         // 批12+联动B（2026-09-27 用户令"AI 截图完自动打开右侧栏展示"）：截图
@@ -2383,6 +2401,12 @@ extension BrowserUseManager: WKNavigationDelegate {
             // [T-ios-webview-error-ui] Show a Safari-style overlay in the
             // browser sheet instead of a blank page. Still thrown to the agent.
             self.loadError = WebLoadError(error: error, failedURL: self.lastRequestedURL)
+            // 【批3 URL 栏小修 2026-09-27】失败导航回显尝试地址——地址栏绑
+            // currentURL（BrowserSheetView:239 onChange），此前失败只设 loadError
+            // 不动 currentURL，用户输入的新地址被旧页 URL 顶回（日志登记瑕疵）。
+            if let requested = self.lastRequestedURL, !requested.isEmpty {
+                self.currentURL = requested
+            }
             logger.error("Navigation failed: \(error.localizedDescription)")
 
             if let cont = self.navigationContinuation {
@@ -2397,6 +2421,10 @@ extension BrowserUseManager: WKNavigationDelegate {
             self.isLoading = false
             // [T-ios-webview-error-ui] see didFail above.
             self.loadError = WebLoadError(error: error, failedURL: self.lastRequestedURL)
+            // 【批3 URL 栏小修】同 didFail：回显尝试地址。
+            if let requested = self.lastRequestedURL, !requested.isEmpty {
+                self.currentURL = requested
+            }
             logger.error("Provisional navigation failed: \(error.localizedDescription)")
 
             if let cont = self.navigationContinuation {
@@ -2632,10 +2660,21 @@ extension BrowserUseManager: WKDownloadDelegate {
                 completionHandler(nil)
                 return
             }
-            // 【WanWo 适配】OpenMinis 原件=AIChatViewModel.minisWorkspacePersistentDir(for:)；
-            // WanWo 等价物=WanWoPaths.sessionPersistentDir(for:bucket:)（会话四桶，
-            // bucket="workspace" → /var/wanwo/workspace/ 的宿主持久化目录）。
-            let dir = WanWoPaths.sessionPersistentDir(for: sid, bucket: "workspace")
+            // 【批3 下载落点修正 2026-09-27】OpenMinis 原件落点=会话 workspace
+            // 桶——万我工作区模型改版后该桶翻译整体退役（FsContextRouter
+            // perSessionBuckets 注释），落那里=AI 引擎与右栏文件页签双不可见的
+            // 废桶死角（用户实测：右栏找不到下载文件、AI 全盘 find 无果）。
+            // 修正=落当前项目真目录 Downloads/ 子目录（projectsHostRoot=
+            // fakefs 持久层原生可见）：右栏文件树 + AI guest 双可见；全局共享
+            // 同工作区多会话语义与项目目录一致。workspacePathProvider 未装配
+            // （诊断/早期）→ 回落会话 browser 桶（fail-soft，不静默丢文件）。
+            let dir: URL
+            if let wsPath = self.workspacePathProvider?(), !wsPath.isEmpty,
+               let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: wsPath) {
+                dir = projectHost.appendingPathComponent("Downloads", isDirectory: true)
+            } else {
+                dir = WanWoPaths.sessionPersistentDir(for: sid, bucket: "browser")
+            }
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
             // Unique filename: name.ext, name-1.ext, name-2.ext, …
