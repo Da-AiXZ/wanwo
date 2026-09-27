@@ -32,11 +32,16 @@
 //    - tool:web_search（2000）/ tool:web_fetch（2100）——dsh 无公开文本；
 //      纯自拟，对拍 WebTools 行为（model-mediated 摘要 + UNVERIFIED 语义；
 //      web_fetch 文本净化截断、二进制只回元信息）。
-//    - tool:read_image（1600）/ tool:str_replace_editor（1700）——WanWo 本地
-//      工具，dsh 无对应物；1600/1700 为本次新增槽位（已入 SECTION_ORDERS）。
+//    - tool:read_image（1600→1610）/ tool:str_replace_editor（1700→1620）——
+//      WanWo 本地工具，dsh 无对应物（M5-A J3 归位，见下）。
 //      read_image 明确声明模型当前收不到像素数据，防止模型谎称"已看过图"；
 //      str_replace_editor 定位为 edit 族的补充形态（主力仍是 read/write/
 //      edit/glob/grep），避免绕开 fs-observation-policy 既有语义。
+//    - context:wanwo-links（910）——【M6 验收修复 B 2026-09-27】OpenMinis
+//      AIChatViewModel.swift:1871-1892 minis:// 教学段语义移植（非 dsh 源；
+//      万我适配点见字段批注）。教学 AI 用 [name](wanwo://...) Markdown 形态
+//      在聊天中发链接 + percent-encode + 直接抄工具结果 wanwo_url——批2-3
+//      真机病灶（AI 裸写/反引号包裹 → 蓝链不渲染）的提示词侧根治。
 //
 //  【dsh 环境特有段落——未移植（ERR-025 派单方式）】：
 //    1. harness:identity —— 已解决：WanWo 版自拟文案于本批注册（见上批注）。
@@ -113,6 +118,40 @@ enum PromptSections {
         + "Anything else is a file: use the read tool when its contents are needed, "
         + "and do not claim to have inspected it before reading. "
         + "@\"...\" quotes a path containing spaces."
+
+    /// "context:wanwo-links"（M6 验收修复 B 2026-09-27；OpenMinis
+    /// AIChatViewModel.swift:1871-1892 minis:// 教学段语义移植，order 910）。
+    /// 万我适配点：①映射表只写实证 host——workspace（A1 修复后=项目工作区
+    /// 优先）/browser（截图+提取落点）/attachments；下载文件由
+    /// BrowserUseManager.downloadsAgentPath 文案单独教（wanwo://workspace/
+    /// Downloads/<file>），不在此重复。②"直接抄工具结果里的 wanwo_url"有真
+    /// 指涉——screenshot（BrowserUseTool.swift:259/270）与 fetch/download
+    /// （BrowserUseOffloadBridge.swift:209/239）实证在产；fs write 工具结果
+    /// 无 wanwo_url（grep 全仓实证），故不照搬原件"write files include a
+    /// minis_url"句。③针对批2-3 真机病灶补禁令：裸写/反引号包裹的 wanwo://
+    /// 不渲染蓝链，必须 Markdown 包裹。④inline 只许诺图片（聊天 wanwo 资源行
+    /// 缩略图实证）；音频/视频未实证不教。
+    static let wanwoLinkGuide = "The wanwo:// URL scheme references session files in chat and in the browser: "
+        + "wanwo://workspace/<path> addresses files in the session workspace "
+        + "(e.g. wanwo://workspace/data.csv → the workspace file data.csv), "
+        + "wanwo://browser/<file> browser screenshots and page extracts, "
+        + "and wanwo://attachments/<file> session media files. "
+        + "These are app-internal URLs, not web URLs. "
+        + "The browser_use tool CAN navigate wanwo:// resource URLs: "
+        + "when you build a multi-file web project, write the files into one "
+        + "workspace directory, reference sub-resources with relative paths "
+        + "(e.g. <link href=\"style.css\">, <script src=\"app.js\">, <img src=\"logo.png\">), "
+        + "then navigate to the entry HTML (e.g. wanwo://workspace/myapp/index.html) — "
+        + "the browser resolves relative paths against the wanwo:// base automatically. "
+        + "To surface a wanwo:// URL in chat, ALWAYS write it as Markdown: "
+        + "[name](wanwo://workspace/report.md) for files, "
+        + "![description](wanwo://attachments/photo.png) for images. "
+        + "A bare or backtick-quoted wanwo:// URL does not render as a tappable link. "
+        + "wanwo:// URLs MUST be percent-encoded: non-ASCII characters (Chinese, "
+        + "emoji, spaces) in filenames break Markdown rendering if not encoded. "
+        + "Browser tool results include a wanwo_url line that is already encoded — "
+        + "use it verbatim. If you construct the URL yourself, percent-encode the "
+        + "filename (e.g. %E4%B8%AD%E6%96%87)."
 
     // MARK: - 自拟文本（用户批准稿；analysis/draft-sections.md 逐字）
 
@@ -202,6 +241,10 @@ enum PromptSections {
             name: "context:file-reference",
             order: SECTION_ORDERS.fileReference,
             text: fileReference))
+        assembler.section(PromptSection(
+            name: "context:wanwo-links",
+            order: SECTION_ORDERS.wanwoLinkGuide,
+            text: wanwoLinkGuide))
         assembler.section(PromptSection(
             name: "tool:bash",
             order: SECTION_ORDERS.toolBash,

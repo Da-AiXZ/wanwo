@@ -345,22 +345,35 @@ struct FsGlobTool: AgentTool {
     }
 
     /// 受限 glob → 正则（** 跨目录、* 单段、? 单字符；其余字符字面量）。
+    /// 【验收修复 E 2026-09-27】`**/` 零段语义（minimatch 标准：`**` 可匹配
+    /// 零层目录）——旧实现 `**/*` → `^.*/[^/]*$` 强制要求路径含 `/`，根层
+    /// 文件（如 `你好.txt`）对 `**/*` 永不匹配（真机实证：AI 误诊为"中文
+    /// 文件名失效"；`**/*.jpg` 同样漏根层图）。现 `**/` → `(?:.*/)?`。
+    /// Index 循环（String.Iterator 无 peek；`**` 后窥看下一字符定形态）。
     static func globRegex(pattern: String) -> NSRegularExpression? {
         var rx = "^"
-        var iterator = pattern.makeIterator()
-        while let ch = iterator.next() {
-            switch ch {
-            case "*":
-                if iterator.next() == "*" {
-                    rx += ".*"
+        let chars = Array(pattern)
+        var i = 0
+        while i < chars.count {
+            let ch = chars[i]
+            if ch == "*", i + 1 < chars.count, chars[i + 1] == "*" {
+                i += 2
+                if i < chars.count, chars[i] == "/" {
+                    i += 1
+                    rx += "(?:.*/)?"      // `**/`：零层或多层目录段
                 } else {
-                    rx += "[^/]*"
+                    rx += ".*"            // 尾部/独立 `**`：跨任意层
                 }
+                continue
+            }
+            switch ch {
+            case "*": rx += "[^/]*"
             case "?": rx += "[^/]"
             case ".", "(", ")", "[", "]", "{", "}", "+", "^", "$", "|", "\\":
                 rx += "\\" + String(ch)
             default: rx += String(ch)
             }
+            i += 1
         }
         return try? NSRegularExpression(pattern: rx + "$")
     }

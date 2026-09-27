@@ -258,6 +258,11 @@ final class ChatViewModel: ObservableObject {
         // 归一化）→ 引用随 submit 通道进 loop（userMessage 后 E1 落盘）。
         // 准入失败整批拒绝：横幅 + 恢复 idle（fail closed，不半提交）。
         let store = attachmentStore
+        // 验收修复 C（2026-09-27）注入缝取值（Task 外定格）：@ 图片按发送时
+        // 的会话 cwd 解析（deps.sessionCwd 单一事实源——与 C-1 的 loop 侧
+        // workspaceAccess 同源）。
+        let sid = sessionID
+        let sessionCwd = loop.deps.sessionCwd
         Task { [weak self] in
             var refs: [ImageAttachmentRef] = []
             if !images.isEmpty {
@@ -281,6 +286,35 @@ final class ChatViewModel: ObservableObject {
                         self?.phase = .idle
                     }
                     return
+                }
+            }
+            // 验收修复 C（2026-09-27）：@ 图片引用 → 附件通道。用户在右栏引用
+            // workspace 内图片（@IMG_x.png）时文本通道收不到像素——
+            // ContextInjection.expandFileReferences 二进制跳过（:199 UTF8 解码
+            // 失败 continue），read_image 只回元数据 → AI 只能瞎猜。修法：
+            // 图片引用按 F042 附件语义入库（saveImage 归一化/content-addressed）
+            // 随 InboxEntry.images 进请求（index==0 归属照旧——injectContexts
+            // 既有守卫）。降级纪律：解析失败/超限/坏图一律静默跳过（文本引用
+            // 保留，AI 仍可 read_image 看元数据自救），不整批拒绝打断发送——
+            // 引用是消息正文的一部分，与 draftImages 显式附件的 fail-closed
+            // 语义分立。逐张 saveImage：单张坏图不拖垮同批好图。
+            if let store {
+                let limits = store.imageLimits
+                let quota = max(0, limits.maxImagesPerMessage - refs.count)
+                if quota > 0 {
+                    let workspace = AgentLoop.workspaceAccess(
+                        sessionId: sid, cwd: sessionCwd)
+                    let candidates = Self.workspaceImageCandidates(
+                        in: text, workspace: workspace, quota: quota,
+                        maxImageBytes: limits.maxImageBytes,
+                        aggregateBytes: limits.maxMessageImageBytes)
+                    for candidate in candidates {
+                        if let stored = try? store.saveImage(SaveImageAttachment(
+                            data: candidate.data, mediaType: candidate.mediaType,
+                            name: candidate.name)) {
+                            refs.append(stored)
+                        }
+                    }
                 }
             }
             await loop.submit(text, images: refs)
@@ -316,6 +350,52 @@ final class ChatViewModel: ObservableObject {
             return attachmentErrorText(code: "IMAGES_TOO_LARGE", limits: limits)
         }
         return nil
+    }
+
+    // MARK: 验收修复 C（2026-09-27）：@ 图片引用扫描（发送层附件注入的取数面）
+
+    /// 扫描文本中的 @ 图片引用为附件入库候选。语法与
+    /// ContextInjection.expandFileReferences 同源（@ 后非空白串；不处理
+    /// @"..." 引号形态——与现状一致，不扩范围）。白名单扩展名 → mediaType；
+    /// 解析失败/读取失败/超单图字节帽/重复引用跳过，聚合字节帽触顶即停，
+    /// quota 封顶（并入显式附件已占位数）。静默降级语义：跳过不报错——
+    /// 文本引用保留，AI 仍可 read_image 看元数据。纯函数，单测直呼。
+    nonisolated static func workspaceImageCandidates(
+        in text: String, workspace: WorkspaceFileAccess, quota: Int,
+        maxImageBytes: Int, aggregateBytes: Int) -> [DraftImageCandidate] {
+        guard quota > 0, text.contains("@") else { return [] }
+        var seen = Set<String>()
+        var out: [DraftImageCandidate] = []
+        var usedBytes = 0
+        for token in text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            guard out.count < quota else { break }
+            let word = String(token)
+            guard word.hasPrefix("@"), word.count > 1 else { continue }
+            let path = String(word.dropFirst())
+            guard seen.insert(path).inserted else { continue }
+            let ext = (path as NSString).pathExtension
+            guard let mediaType = Self.imageMediaType(forExtension: ext) else { continue }
+            guard let url = workspace.resolve(path),
+                  let data = try? Data(contentsOf: url),
+                  !data.isEmpty else { continue }
+            guard data.count <= maxImageBytes else { continue }
+            guard usedBytes + data.count <= aggregateBytes else { break }
+            usedBytes += data.count
+            out.append(DraftImageCandidate(data: data, mediaType: mediaType,
+                                           name: url.lastPathComponent))
+        }
+        return out
+    }
+
+    /// 扩展名 → 附件媒体类型（白名单四类；大小写不敏感）。纯函数。
+    nonisolated static func imageMediaType(forExtension ext: String) -> ImageMediaType? {
+        switch ext.lowercased() {
+        case "png": return .png
+        case "jpg", "jpeg": return .jpeg
+        case "webp": return .webp
+        case "gif": return .gif
+        default: return nil
+        }
     }
 
     /// intake 入口（选择器/拖放/粘贴共用一径——one path）。

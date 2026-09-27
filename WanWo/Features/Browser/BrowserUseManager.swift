@@ -787,10 +787,32 @@ final class BrowserUseManager: NSObject, ObservableObject {
             CookieBackupStore.shared.noteVisit(url: url)
         }
 
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.navigationTimeout)
         lastRequestedURL = url          // [T-ios-webview-error-ui]
         loadError = nil                 // clear any prior failure overlay
-        webView.load(request)
+        if scheme == "wanwo" {
+            // 【验收修复 A2 2026-09-27】wanwo:// 顶层导航 loadFileURL 旁路。
+            // WebKit 对已注册 scheme handler 的自定义 scheme 顶层导航仍报
+            // NSURLErrorUnsupportedURL (-3001)——与 OpenMinis BrowserUseManager
+            // 逐字同构（makeWebView 注册/decidePolicy 放行全对齐）仍死，属
+            // WebKit 运行时行为，静态不可修。改 app 层解析（A1 WithBase →
+            // loadFileURL，iOS 官方本地文件加载；HTML 相对子资源由 file:// 域
+            // 原生解析，无需 handler）。resolve 失败给明确中文错误，不再让
+            // WebKit 甩晦涩的 -3001。
+            guard let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(url) else {
+                isLoading = false
+                let message = "wanwo:// 资源不存在或不可读：\(url.absoluteString)"
+                loadError = WebLoadError(
+                    title: String(localized: "无法打开资源"),
+                    message: String(localized: "wanwo:// 资源不存在或不可读。"),
+                    systemImage: "doc.questionmark",
+                    failedURL: url)
+                return .error(message)
+            }
+            webView.loadFileURL(target.file, allowingReadAccessTo: target.base)
+        } else {
+            let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.navigationTimeout)
+            webView.load(request)
+        }
         isLoading = true
 
         // Wait for navigation to complete
@@ -837,7 +859,14 @@ final class BrowserUseManager: NSObject, ObservableObject {
         let navDoneMs = Int((CFAbsoluteTimeGetCurrent() - navStart) * 1000)
         logger.info("[NavTiming] wait_returned elapsed=\(navDoneMs)ms url=\(url.absoluteString.prefix(100))")
 
-        currentURL = webView.url?.absoluteString ?? normalized
+        // 【验收修复 A2】wanwo 旁路加载后 webView.url 是 file:// 形态——
+        // URL 栏回显/AI list_tabs/页签标题保持 wanwo:// 语义（用户/AI 认得
+        // 的形态；重载/分享按 failedURL 通道走）。
+        if scheme == "wanwo" {
+            currentURL = normalized
+        } else {
+            currentURL = webView.url?.absoluteString ?? normalized
+        }
         pageTitle = webView.title ?? ""
         isLoading = false
 
@@ -847,8 +876,9 @@ final class BrowserUseManager: NSObject, ObservableObject {
         // opens all come through here"；WOWorkspaceStore 为 Features 层单例，
         // 无反向依赖）。agent 语义=后台落签不抢焦点，openSidebar（用户明确
         // 要求/截图）才展开落点；轻提示数据源=store.agentNavigation。
+        // 【验收修复 A2】wanwo 资源导航（AI 截图/HTML 预览）同享联动。
         if let navURL = URL(string: currentURL),
-           let scheme = navURL.scheme, scheme.hasPrefix("http") {
+           let scheme = navURL.scheme, scheme.hasPrefix("http") || scheme == "wanwo" {
             let openSidebar = openInSidebarNextNavigation
             openInSidebarNextNavigation = false
             let sid = sessionIdProvider?() ?? ""
@@ -2440,7 +2470,33 @@ extension BrowserUseManager: WKNavigationDelegate {
         preferences: WKWebpagePreferences,
         decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
     ) {
-        let allowedSchemes: Set<String> = ["http", "https", "about", "blob", "wanwo"]
+        let allowedSchemes: Set<String> = ["http", "https", "about", "blob", "wanwo", "file"]
+
+        // 【验收修复 A2 2026-09-27】wanwo:// 主帧导航 → loadFileURL 旁路（页面
+        // 内点击 wanwo:// 链接/AI 二次导航）。WebKit 对自定义 scheme 顶层导航
+        // 的 -3001 玄学同 navigate 注释——app 层解析后走官方本地文件加载。
+        // 子资源（img src="wanwo://…"）不经 decidePolicy——仍由 scheme handler
+        // 服务（保留；教学段引导相对路径引用，file:// 域下由 WebKit 原生解析）。
+        if let url = navigationAction.request.url,
+           url.scheme?.lowercased() == "wanwo",
+           navigationAction.targetFrame?.isMainFrame == true {
+            decisionHandler(.cancel, preferences)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let target = WanwoURLSchemeHandler.resolveWanwoURLWithBase(url) {
+                    self.webView.loadFileURL(target.file, allowingReadAccessTo: target.base)
+                } else {
+                    self.loadError = WebLoadError(
+                        title: String(localized: "无法打开资源"),
+                        message: String(localized: "wanwo:// 资源不存在或不可读。"),
+                        systemImage: "doc.questionmark",
+                        failedURL: url)
+                    self.resumePendingNavigationWithError(
+                        "wanwo:// resource not found: \(url.absoluteString)")
+                }
+            }
+            return
+        }
 
         // <a download> anchors (including blob: URLs) mark the action as a
         // download — route it through WKDownload instead of navigating.
@@ -2897,16 +2953,41 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// 测试缝 + 实体：sessionID 可注入（生产路径注入 mountedSessionIdSnapshot）。
     static func resolveWanwoURL(_ url: URL, sessionID: String?) -> URL? {
+        resolveWanwoURLWithBase(url, sessionID: sessionID)?.file
+    }
+
+    /// 【验收修复 A2 2026-09-27】带 base 变体——loadFileURL 旁路需要
+    /// allowingReadAccessTo 锚根（桶根），单返回 file 不够。
+    static func resolveWanwoURLWithBase(_ url: URL, sessionID: String?)
+        -> (file: URL, base: URL)? {
         guard url.scheme?.lowercased() == "wanwo", let host = url.host else { return nil }
         let subPaths = WanwoURLPathDecoding.subPathCandidates(for: url)
         let fm = FileManager.default
+
+        // 0.【验收修复 A1 2026-09-27】host="workspace" 优先解析当前会话项目
+        // 工作区（guest cwd 真身=projectsHostRoot）。旧映射=退役 workspace
+        // 遗留桶（sessionPersistentDir(bucket:"workspace")）——AI 按系统提示
+        // 语义把工作区文件包装成 wanwo://workspace/<path> 时解析不到 → 打开
+        // 全死（批2-3 真机实证）。cwd 非项目路径（无项目工作区会话）落回既有链。
+        if host == "workspace", let sid = sessionID,
+           let cwd = BrowserUseSessionStore.workspacePathResolver?(sid),
+           WanWoPaths.isProjectsGuestPath(cwd),
+           let projectHost = WanWoPaths.projectsHostRoot(forGuestPath: cwd) {
+            let contained = containedCandidates(base: projectHost, subPaths: subPaths)
+            if let hit = contained.first(where: { fm.fileExists(atPath: $0.path) }) {
+                return (hit, projectHost)
+            }
+            // 工作区未命中：继续走既有链（会话遗留桶兜底——旧桶文件仍可达）。
+        }
 
         // 1. 活动会话四桶（原件 Primary: resolve via active session）。
         let sessionBuckets = Set(["offloads", "attachments", "workspace", "browser"])
         if sessionBuckets.contains(host), let sid = sessionID {
             let base = WanWoPaths.sessionPersistentDir(for: sid, bucket: host)
             let contained = containedCandidates(base: base, subPaths: subPaths)
-            return contained.first { fm.fileExists(atPath: $0.path) } ?? contained.first
+            if let hit = contained.first(where: { fm.fileExists(atPath: $0.path) }) ?? contained.first {
+                return (hit, base)
+            }
         }
 
         // 2. 全局桶（原件 Global directories + WanWo mcp-servers 静态桶）。
@@ -2918,7 +2999,9 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
         ]
         for (subdir, dir) in globalDirs where host == subdir {
             let contained = containedCandidates(base: dir, subPaths: subPaths)
-            return contained.first { fm.fileExists(atPath: $0.path) } ?? contained.first
+            if let hit = contained.first(where: { fm.fileExists(atPath: $0.path) }) ?? contained.first {
+                return (hit, dir)
+            }
         }
 
         // 3. 扫描全部会话（default 分组下 UUID 形状的会话桶目录——原件
@@ -2933,7 +3016,7 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     .appendingPathComponent(host, isDirectory: true)
                 let contained = containedCandidates(base: base, subPaths: subPaths)
                 if let hit = contained.first(where: { fm.fileExists(atPath: $0.path) }) {
-                    return hit
+                    return (hit, base)
                 }
             }
         }
@@ -2943,10 +3026,20 @@ final class WanwoURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if host == "mounts", let mountsName = subPaths.first?.split(separator: "/").first {
             let rest = String(subPaths.first?.dropFirst(mountsName.count + 1) ?? "")
             let resolved = resolveWanwoMountsPath(name: String(mountsName), subPath: rest)
-            if let resolved { return resolved }
+            if let resolved {
+                // base=文件父目录（挂载根授权更宽，取最小可读锚——穿越拒绝
+                // 已保证 resolved 在挂载根内）。
+                return (resolved, resolved.deletingLastPathComponent())
+            }
         }
 
         return nil
+    }
+
+    /// 生产路径单参形态（活动会话 = mountedSessionIdSnapshot；navigate/decidePolicy
+    /// 的 loadFileURL 旁路消费面）。
+    static func resolveWanwoURLWithBase(_ url: URL) -> (file: URL, base: URL)? {
+        resolveWanwoURLWithBase(url, sessionID: IshExecutorBridge.mountedSessionIdSnapshot)
     }
 
     /// 外挂载桶解析：wanwo://mounts/<name>/<tail> → 激活挂载的宿主路径（含穿越
@@ -3102,6 +3195,14 @@ final class BrowserDownloadCenter: ObservableObject {
         downloads(for: sessionId).filter { $0.state == .downloading || !$0.seen }.count
     }
 
+    /// 下载实际落点的 AI 可见路径（批2-3 落点=会话工作区 Downloads/ 子目录；
+    /// 旧文案 wanwo://workspace/<file>（无 Downloads 段）指向已退役的 workspace
+    /// 遗留桶形态，AI 被 shell path 带偏找不到文件——验收 F 修复 2026-09-27）。
+    private func downloadsAgentPath(sessionId: String, filename: String) -> String {
+        let cwd = BrowserUseSessionStore.workspacePathResolver?(sessionId) ?? "/var/wanwo/workspace"
+        return "wanwo://workspace/Downloads/\(filename) (shell path: \(cwd)/Downloads/\(filename))"
+    }
+
     func began(sessionId: String, filename: String, progress: Progress,
                onCancel: (() -> Void)? = nil) -> UUID {
         let id = UUID()
@@ -3109,7 +3210,7 @@ final class BrowserDownloadCenter: ObservableObject {
                              progress: progress, state: .downloading,
                              startedAt: Date(), onCancel: onCancel))
         queueAgentEvent(sessionId: sessionId, filename: filename,
-                        line: "\(filename): download started → saving to wanwo://workspace/\(filename)")
+                        line: "\(filename): download started → saving to \(downloadsAgentPath(sessionId: sessionId, filename: filename))")
         return id
     }
 
@@ -3119,7 +3220,7 @@ final class BrowserDownloadCenter: ObservableObject {
         entries[idx].seen = false
         let e = entries[idx]
         queueAgentEvent(sessionId: e.sessionId, filename: e.filename,
-                        line: "\(e.filename): download COMPLETED (\(sizeText)) → wanwo://workspace/\(e.filename) (shell path: /var/wanwo/workspace/\(e.filename))")
+                        line: "\(e.filename): download COMPLETED (\(sizeText)) → \(downloadsAgentPath(sessionId: e.sessionId, filename: e.filename))")
     }
 
     func failed(id: UUID, reason: String) {
@@ -3178,19 +3279,20 @@ final class BrowserDownloadCenter: ObservableObject {
             let done = ByteCountFormatter.string(fromByteCount: p.completedUnitCount, countStyle: .file)
             let total = p.totalUnitCount > 0
                 ? ByteCountFormatter.string(fromByteCount: p.totalUnitCount, countStyle: .file) : "?"
-            return "\(e.filename): downloading \(pct) (\(done) / \(total)) → saving to wanwo://workspace/\(e.filename)"
+            return "\(e.filename): downloading \(pct) (\(done) / \(total)) → saving to \(downloadsAgentPath(sessionId: e.sessionId, filename: e.filename))"
         }
         // A live progress line supersedes the same file's queued "started" line.
         lines += events.filter { !inflightNames.contains($0.filename) }.map(\.line)
         guard !lines.isEmpty else { return nil }
 
+        let cwd = BrowserUseSessionStore.workspacePathResolver?(sessionId) ?? "/var/wanwo/workspace"
         return "[browser_downloads] The browser is handling file download(s) NATIVELY "
-            + "(triggered by page navigation/click, saved into this session's workspace):\n"
+            + "(triggered by page navigation/click, saved into this session's workspace Downloads/ dir):\n"
             + lines.map { "- \($0)" }.joined(separator: "\n")
             + "\nDo NOT re-download these files with curl/wget in shell_execute. "
             + "Completed files are already fully saved at the given path; for in-progress "
             + "downloads, wait and check again (e.g. via a later browser_use call or "
-            + "shell `ls -l /var/wanwo/workspace/`) instead of downloading in parallel."
+            + "shell `ls -l \(cwd)/Downloads/`) instead of downloading in parallel."
     }
 
     private func queueAgentEvent(sessionId: String, filename: String, line: String) {

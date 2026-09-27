@@ -102,6 +102,11 @@ struct WOToolCard: View {
                                 : WOAlias.labelTertiary) {
                 ioCard
             }
+            // 【验收修复 D 2026-09-27】read_image 缩略图行（恒显不随折叠——
+            // statusNote 同款结构模式。M2 承诺"原图经 meta 供工具卡呈现"的
+            // 消费面补齐：AI 说"图片已在工具卡片中"时用户点开卡片却无图，
+            // 批2-3 真机病灶）。
+            readImageRow
             // 琥珀状态行恒显（审批等待/结算——不随折叠消失；dsh statusNote 语义）。
             if let status = card.statusNote, !status.isEmpty {
                 HStack(spacing: 6) {
@@ -117,6 +122,88 @@ struct WOToolCard: View {
             }
         }
         .padding(.leading, 30) // dsh tool-card 左缩进（状态点留位语义）
+    }
+
+    // MARK: - 验收修复 D（2026-09-27）：read_image 缩略图行
+
+    /// read_image 成功收敛时的 meta.path（meta 形态见 FsReadImageTool.execute：
+    /// {"path","format","bytes"}；path=模型传入的 guest/相对路径原串）。
+    private var readImagePath: String? {
+        guard card.name == "read_image", !card.isError, !card.isRunning,
+              case .object(let meta)? = card.meta,
+              case .string(let path)? = meta["path"], !path.isEmpty else { return nil }
+        return path
+    }
+
+    /// meta.path → 宿主文件 URL（与 FsReadImageTool 自身解析同语义：
+    /// WorkspaceFileAccess.resolveForRead——相对路径、/var/wanwo/workspace/**
+    /// 前缀、guest 绝对路径（含 /var/wanwo/projects/**）全覆盖；cwd 经
+    /// BrowserUseSessionStore.workspacePathResolver（AppEnvironment 装配期
+    /// 全会话注册）——与 A1 修复同源单一事实源）。
+    private var readImageFileURL: URL? {
+        guard let sessionID else { return nil }
+        let cwd = BrowserUseSessionStore.workspacePathResolver?(sessionID)
+        let workspace = AgentLoop.workspaceAccess(sessionId: sessionID, cwd: cwd)
+        return workspace.resolveForRead(readImagePath ?? "")
+    }
+
+    /// meta.path → wanwo://workspace/<tail>（右栏跳转路由；tail=剥工作区前缀
+    /// 或会话 cwd 前缀后的相对路径。URLComponents 构造——path 分量自动
+    /// percent-encode，非 ASCII 文件名安全）。
+    private var readImageWanwoURL: URL? {
+        guard var tail = readImagePath else { return nil }
+        let wsPrefix = "/var/wanwo/workspace/"
+        if tail.hasPrefix(wsPrefix) {
+            tail = String(tail.dropFirst(wsPrefix.count))
+        } else if let sessionID,
+                  let cwd = BrowserUseSessionStore.workspacePathResolver?(sessionID),
+                  tail.hasPrefix(cwd + "/") {
+            tail = String(tail.dropFirst(cwd.count + 1))
+        }
+        var comps = URLComponents()
+        comps.scheme = "wanwo"
+        comps.host = "workspace"
+        comps.path = "/" + tail
+        return comps.url
+    }
+
+    /// 缩略图行：64×48 图 + path 单行；点击经 WanwoURLRouter 开右栏
+    /// （wanwoResourceRow 同款路由语义）。文件不可读时不占位（无图可显）。
+    @ViewBuilder
+    private var readImageRow: some View {
+        if let path = readImagePath, let fileURL = readImageFileURL,
+           let thumb = UIImage(contentsOfFile: fileURL.path) {
+            Button {
+                if let url = readImageWanwoURL {
+                    WanwoURLRouter.shared.handle(url)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 48)
+                        .clipped()
+                        .cornerRadius(4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(WOAlias.labelSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("点按在右栏打开")
+                            .font(.system(size: 10))
+                            .foregroundColor(WOAlias.labelTertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看图片 \(path)")
+        }
     }
 
     // MARK: - 行头 leading（dsh ToolRow：error 红点 / 其余工具图标；展开时

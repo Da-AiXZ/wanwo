@@ -45,6 +45,11 @@ enum ConversationProjector {
         /// 交互状态行（M3 T1：审批 waiting/结算态、提问 waiting——dsh 流内
         /// toolview 行的 WanWo 形态；琥珀语义行）。
         var statusNote: String?
+        /// 【验收修复 D 2026-09-27】工具输出 meta（ToolOutput.meta 随 tool/result
+        /// 事件落盘；read_image 的 path/format/bytes 消费方=WOToolCard 缩略图行）。
+        /// replay 重投影从事件重折叠，无需瞬态续接（liveOutput/statusNote 同理
+        /// 不在此列——meta 在收敛事件里，非流式瞬态）。
+        var meta: JSONValue?
     }
 
     struct Bubble: Identifiable, Equatable {
@@ -231,6 +236,8 @@ enum ConversationProjector {
                     // error.name:code 头行语义）。
                     card.errorName = errorName
                     card.errorCode = errorCode
+                    // 【验收修复 D 2026-09-27】meta 随卡（read_image 缩略图消费面）。
+                    card.meta = meta
                     card.isRunning = false
                     // 结算态即事件可证状态：审批未通过（NOT_APPROVED）琥珀行；
                     // 其余瞬态行（等待审批/N/M 已回答）让位于 presentResult 复现

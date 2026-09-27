@@ -19,6 +19,14 @@ enum SECTION_ORDERS {
     static let planPolicy = 500
     static let ptcOnly = 800
     static let fileReference = 900
+    // M6 验收修复 B（2026-09-27）：wanwo:// 链接教学段——OpenMinis
+    // AIChatViewModel.swift:1871-1892 minis:// 教学段语义移植（品牌/路径体系
+    // 适配：minis→wanwo、/var/minis→万我桶语义）。万我此前只搬了
+    // BrowserUseTool.description 半截（ navigate 可用 wanwo://），系统提示里
+    // 缺"如何在聊天中发 wanwo:// 链接"教学 → AI 裸写/反引号包裹 → 聊天蓝链
+    // 不渲染（批2-3 真机实证）。910=自拟槽位：fileReference(900) 之后
+    // toolBash(1000) 之前——与 @file 引用教学（同为"路径→聊天呈现"主题）相邻。
+    static let wanwoLinkGuide = 910
     static let toolBash = 1000
     static let toolRead = 1100
     static let toolWrite = 1200

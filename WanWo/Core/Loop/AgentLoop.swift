@@ -604,7 +604,13 @@ actor AgentLoop {
     // MARK: - 上下文注入（F038/F039/F040）
 
     private func injectContexts(entries: [InboxEntry]) async throws -> [InboxEntry] {
-        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId)
+        // 验收修复 C-1（2026-09-27）：workspaceAccess 补 cwd 注入。原调用缺
+        // cwd → WorkspaceFileAccess 恒 legacy 会话桶解析——项目模式（cwd 落
+        // projects 根）会话里 @ 引用任何文件都解析不到、静默失败（F040 建于
+        // legacy 单一桶时代，项目模式铺开后语义脱节；批2-3 真机实证 @ 引用
+        // 图片零注入的一半真凶，文本文件引用同样受害）。
+        let workspace = AgentLoop.workspaceAccess(sessionId: deps.sessionId,
+                                                  cwd: deps.sessionCwd)
 
         // F038'：runtime context 快照投影（ERR-024；dsh RuntimeContextProjection
         // 语义）。①每步刷新 retained（归属消息被压缩影子化 → 失效重注入）；
