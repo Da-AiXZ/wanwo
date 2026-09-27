@@ -187,6 +187,36 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
             "看看 <file 这个词出现在句中不触发"))
     }
 
+    // MARK: - P2-2：wanwo:// 资源分流判定（cc-haha 分流语义万我版）
+
+    /// HTML → 浏览器（"要运行的"）；workspace 内其它文件 → 文件页签
+    /// （文本在文件里打开——用户拍板）；非 workspace 桶维持浏览器。
+    func testRouteTargetSplitsWorkspaceFilesFromBrowser() throws {
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://workspace/index.html"))),
+            .browser)
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://workspace/myapp/index.htm"))),
+            .browser)
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://workspace/report.md"))),
+            .workspaceFile(relativePath: "report.md"))
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://workspace/Downloads/data.bin"))),
+            .workspaceFile(relativePath: "Downloads/data.bin"))
+        // 中文文件名（percent-encoded → url.path 单层解码还原）。
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://workspace/%E4%BD%A0%E5%A5%BD.txt"))),
+            .workspaceFile(relativePath: "你好.txt"))
+        // 其它桶（browser 截图桶/attachments）维持浏览器。
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://browser/screenshot_1.jpg"))),
+            .browser)
+        XCTAssertEqual(
+            WanwoURLRouter.routeTarget(for: try XCTUnwrap(URL(string: "wanwo://attachments/a.png"))),
+            .browser)
+    }
+
     // MARK: - E：globRegex 零段语义
 
     private func matches(_ pattern: String, _ path: String) -> Bool {

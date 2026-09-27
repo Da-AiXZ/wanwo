@@ -442,8 +442,14 @@ struct WOBeamSwapper: View {
 /// 缩略行（统一 120×90 块，scaledToFill 裁切）；点击 onTapGesture →
 /// Button 化（ScrollView 内手势优先级更可靠——用户实证"点击预览不了"）；
 /// 全屏预览保留。
+/// 【验收修复 P2-1b 2026-09-28】resolve 显式 sessionID（渲染处随行传入）
+/// ——单参形态依赖 mountedSessionIdSnapshot：跨会话切换后重放渲染时
+/// snapshot 尚未跟随（或渲染先于挂载完成且不自动刷新）→"截图已不可用"，
+/// 删后台重开才恢复（批P0-P2 验收⑤真机实证）。会话桶路径只依赖
+/// sessionID 构造，显式传入后与会话打开即命中、不依赖挂载时序。
 struct WOAgentImageStrip: View {
     let sources: [URL]
+    var sessionID: String? = nil
 
     private struct ZoomItem: Identifiable {
         let id = UUID()
@@ -478,7 +484,7 @@ struct WOAgentImageStrip: View {
     /// tap 可靠性——onTapGesture 在 ScrollView 内被滚动手势抢占实证）。
     @ViewBuilder
     private func thumb(_ url: URL) -> some View {
-        let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url)
+        let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url, sessionID: sessionID)
         let image = fileURL.flatMap { UIImage(contentsOfFile: $0.path) }
         if let image {
             Button {

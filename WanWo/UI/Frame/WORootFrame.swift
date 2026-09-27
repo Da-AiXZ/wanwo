@@ -89,6 +89,14 @@ struct WORootFrame: View {
                                           requestedBy: .user, openSidebar: true)
             WanwoURLRouter.shared.consumeResourceURL()
         }
+        // 【P2-2 方案甲】工作区文件深链 → 文件页签定位打开（文本在文件里
+        // 打开；HTML/其它桶维持浏览器通道——WanwoURLRouter.routeTarget 分流）。
+        .onReceive(WanwoURLRouter.shared.$pendingWorkspaceFilePath) { path in
+            guard let path, let sessionId = appState.currentSessionId else { return }
+            WOWorkspaceOpenRouter.file(sessionId: sessionId, path: path,
+                                       requestedBy: .user, openSidebar: true)
+            WanwoURLRouter.shared.consumeWorkspaceFilePath()
+        }
         // 【批12+右栏重构批1】NotificationCenter .wanwoAgentBrowserNavigation
         // 通道退役——AI 浏览器联动改走统一打开入口（BrowserUseManager 直调
         // WOWorkspaceStore.openAgentBrowser，agent 语义=后台落签不抢焦点）；

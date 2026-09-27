@@ -111,6 +111,10 @@ enum WOWorkspaceOpenTarget: Equatable {
     case singleton(WorkspaceTabKind)
     /// 浏览器（多实例；url = 打开即导航）。
     case browser(url: URL?)
+    /// 【P2-2 方案甲 2026-09-28】文件页签内打开指定工作区文件（cc-haha
+    /// workspaceOpen.file 语义——树点击/深链分流落点；文件页签内部按形态
+    /// 渲染：markdown/代码/图片/二进制提示）。path = 相对工作区根路径。
+    case file(path: String)
 }
 
 struct WOWorkspaceOpenOptions {
@@ -213,6 +217,21 @@ final class WOWorkspaceStore: ObservableObject {
             sessionID: sessionID, token: token, at: Date())
     }
 
+    /// 【P2-2 方案甲 2026-09-28】文件页签外源打开请求（深链分流/后续 AI
+    /// 联动共用——cc-haha workspaceOpen.file 落点）。WorkspaceFileTabView
+    /// onChange 消费 → 选中 + 加载；消费后置 nil（同会话连开取后者）。
+    struct FileOpen: Equatable {
+        let sessionID: String
+        let path: String
+        let at: Date
+    }
+    @Published var pendingFileOpen: FileOpen?
+
+    /// 外源打开工作区文件（统一打开入口 / 深链分流调）。
+    func requestFileOpen(sessionID: String, path: String) {
+        pendingFileOpen = FileOpen(sessionID: sessionID, path: path, at: Date())
+    }
+
     /// 撤销条生命周期收口（Toast onDone 调；token 不匹配=已被新关闭顶替，不清）。
     func dismissUndoToast(token: UUID) {
         if lastClosedUndo?.token == token { lastClosedUndo = nil }
@@ -295,6 +314,12 @@ final class WOWorkspaceStore: ObservableObject {
                 s.activeTabID = existing.id
                 if s.layout == .hidden { s.layout = .split }
             }
+            // 【P2-2】file 打开请求随激活落通道（WorkspaceFileTabView 消费
+            // → 选中 + 加载该文件）。
+            if case .file(let path) = target {
+                pendingFileOpen = FileOpen(sessionID: sessionId, path: path,
+                                           at: Date())
+            }
             bySession[sessionId] = s
             return existing.id
         }
@@ -313,6 +338,13 @@ final class WOWorkspaceStore: ObservableObject {
             tab = .singleton(kind)
         case .browser(let url):
             tab = .browser(initialURL: url)
+        case .file:
+            tab = .singleton(.files)
+        }
+        // 【P2-2】file 打开请求落通道（新建 files 页签同消费）。
+        if case .file(let path) = target {
+            pendingFileOpen = FileOpen(sessionID: sessionId, path: path,
+                                       at: Date())
         }
         s.tabs.append(tab)
         if activate || s.activeTabID == nil {
@@ -578,6 +610,20 @@ enum WOWorkspaceOpenRouter {
         options.background = (requestedBy == .agent) && !openSidebar
         return open(Request(sessionId: sessionId,
                             target: .browser(url: url),
+                            options: options))
+    }
+
+    /// 【P2-2 方案甲】文件页签内打开工作区文件（cc-haha workspaceOpen.file
+    /// 同位——深链分流/树点击共用落点；用户语义=展开右栏看到文件）。
+    @discardableResult
+    static func file(sessionId: String, path: String,
+                     requestedBy: WOWorkspaceOpenOptions.WOWorkspaceOpenRequester = .user,
+                     openSidebar: Bool = false) -> String? {
+        var options = WOWorkspaceOpenOptions()
+        options.requestedBy = requestedBy
+        options.background = (requestedBy == .agent) && !openSidebar
+        return open(Request(sessionId: sessionId,
+                            target: .file(path: path),
                             options: options))
     }
 }

@@ -1157,7 +1157,10 @@ struct WOChatView: View {
                                  config: Self.chatMarkdownConfig)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !images.isEmpty {
-                        WOAgentImageStrip(sources: images)
+                        // 【P2-1b】sessionID 随行——截图桶解析不依赖挂载时序
+                        //（跨会话切换重放渲染"截图已不可用"实证）。
+                        WOAgentImageStrip(sources: images,
+                                          sessionID: sessionId.isEmpty ? nil : sessionId)
                     }
                 }
             }

@@ -41,8 +41,38 @@ final class WanwoURLRouter: ObservableObject {
     /// M6.6（B4）：待消费的资源 URL（右侧栏浏览器页签消费——B3 骨架日志位
     /// 的接线点落位；RootView openResourceURL 后清零）。
     @Published var pendingResourceURL: URL?
+    /// 【P2-2 方案甲 2026-09-28】待消费的工作区文件打开请求（非 HTML 文本/
+    /// 二进制类分流落点——文件页签打开；RootFrame 消费后清零）。
+    @Published var pendingWorkspaceFilePath: String?
 
     private init() {}
+
+    // MARK: - 分流判定（cc-haha 分流语义万我版；纯函数——单测直呼）
+
+    /// wanwo:// 资源链接的打开落点判定。
+    /// 出处对拍（cc-haha 全链调研 2026-09-28）：
+    ///   · 文件树/普通点击 → 恒文件视图（WorkspaceFileTab.tsx:346
+    ///     workspaceOpen.file——tab 内部按形态渲染 code/md/image/binary 提示）
+    ///   · HTML 特例走浏览器（CurrentTurnChangeCard.tsx:89-96 +
+    ///     htmlPreviewPolicy.ts shouldOfferStaticHtmlPreview——"要运行的"才
+    ///     进浏览器；万我简化：.html/.htm 一律浏览器，框架项目模板区分不做
+    ///     ——万我 AI 场景产物以手写单页为主，登记差异）
+    ///   · 非 workspace host（browser 截图桶/attachments 媒体）维持浏览器
+    ///     （文件页签树只见项目工作区，其它桶文件它无处定位）
+    /// 用户拍板语义：文本在文件里打开，HTML 在浏览器里打开。
+    enum ResourceRouteTarget: Equatable {
+        case browser
+        case workspaceFile(relativePath: String)
+    }
+    nonisolated static func routeTarget(for url: URL) -> ResourceRouteTarget {
+        guard url.host?.lowercased() == "workspace" else { return .browser }
+        // url.path 已 percent-decode 一次（WanwoURLPathDecoding 契约）。
+        let path = url.path.hasPrefix("/")
+            ? String(url.path.dropFirst()) : url.path
+        let ext = (path as NSString).pathExtension.lowercased()
+        if ext == "html" || ext == "htm" { return .browser }
+        return .workspaceFile(relativePath: path)
+    }
 
     /// onOpenURL 入口：识别 wanwo:// 族并分发；非 wanwo scheme 忽略。
     func handle(_ url: URL) {
@@ -57,11 +87,17 @@ final class WanwoURLRouter: ObservableObject {
             pendingPermissionsRoute = true
             return
         }
-        // 资源链接：B4 接线点落位——路由到右侧栏浏览器页签（资源 URL 由
-        // WKWebView 内 WanwoURLSchemeHandler 直接服务，B2 保留代码路径；
-        // RootView onReceive 消费后清零）。
-        Self.logger.info("resource URL routed → workspace sidebar browser tab: \(url.absoluteString)")
-        pendingResourceURL = url
+        // 资源链接：B4 接线点落位——【P2-2 方案甲】按形态分流（routeTarget）：
+        // HTML/非 workspace 桶 → 浏览器页签（原语义）；workspace 内其它文件
+        // → 文件页签定位（文本在文件里打开——用户拍板 2026-09-28）。
+        switch Self.routeTarget(for: url) {
+        case .browser:
+            Self.logger.info("resource URL routed → sidebar browser tab: \(url.absoluteString)")
+            pendingResourceURL = url
+        case .workspaceFile(let relativePath):
+            Self.logger.info("resource URL routed → sidebar files tab: \(relativePath)")
+            pendingWorkspaceFilePath = relativePath
+        }
     }
 
     /// RootView 消费完毕后复位。
@@ -72,5 +108,10 @@ final class WanwoURLRouter: ObservableObject {
     /// 资源 URL 消费完毕后复位（B4）。
     func consumeResourceURL() {
         pendingResourceURL = nil
+    }
+
+    /// 【P2-2】工作区文件打开请求消费完毕后复位。
+    func consumeWorkspaceFilePath() {
+        pendingWorkspaceFilePath = nil
     }
 }
