@@ -33,6 +33,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
     case mcpServers
     case skills
     case permissions
+    case memory
     case mounts
     case diagnostics
 
@@ -45,6 +46,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .mcpServers: return "MCP"
         case .skills: return "Skills"
         case .permissions: return "权限"
+        case .memory: return "记忆"
         case .mounts: return "外挂载文件夹"
         case .diagnostics: return "诊断"
         }
@@ -57,6 +59,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .mcpServers: return "puzzlepiece.extension"
         case .skills: return "square.stack.3d.up"
         case .permissions: return "lock.shield"
+        case .memory: return "brain"
         case .mounts: return "externaldrive.badge.plus"
         case .diagnostics: return "list.bullet.rectangle"
         }
@@ -69,6 +72,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .mcpServers: return "MCP server 管理"
         case .skills: return "技能启停与导入"
         case .permissions: return "新会话默认权限"
+        case .memory: return "长期记忆沉淀与清空"
         case .mounts: return "外挂载文件夹管理"
         case .diagnostics: return "事件流（只读）"
         }
@@ -81,6 +85,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .mcpServers: return "MCPServersView"
         case .skills: return "SkillsView"
         case .permissions: return "PermissionDefaultsView"
+        case .memory: return "MemorySettingsView"
         case .mounts: return "MountedFoldersSettingsView"
         case .diagnostics: return "EventStreamView"
         }
@@ -252,6 +257,8 @@ struct SettingsPanelView: View {
             SkillsView(environment: environment)
         case .permissions:
             PermissionDefaultsView(environment: environment)
+        case .memory:
+            MemorySettingsView(environment: environment)
         case .mounts:
             MountedFoldersSettingsView()
         case .diagnostics:

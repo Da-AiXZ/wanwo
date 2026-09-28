@@ -55,6 +55,11 @@ enum SECTION_ORDERS {
     // 动态取值，本构建无对应布局项——1640 为自拟槽位（goal 1630 之后、PTY
     // 1700 之前），登记待对拍 dsh 原值后归位。
     static let toolSubagent = 1640
+    // M7 件 G（F043）：memory:read-path 段（codex build_memory_tool_developer_
+    // instructions——ext/memories prompts.rs；dsh 无对应布局位——920 为自拟槽位
+    // （wanwoLinkGuide 910 之后、toolBash 1000 之前——同为"模型可见路径体系"
+    // 主题族），登记待对拍后归位。
+    static let memorySummary = 920
     static let toolWebSearch = 2000
     static let toolWebFetch = 2100
     static let toolsSDK = 5000

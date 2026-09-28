@@ -18,6 +18,10 @@
 //      interrupt_agent（薄适配层：residency/cold-resume/祖先授权全归 runtime）。
 //    - tool-subagent-control/src/list-agents.ts —— list_agents（children|
 //      descendants；仅列 continuable）。
+//    - multi_agents_v2/wait.rs + multi_agents_spec.rs:280-290/858-868 ——
+//      wait_agent（M7.3 件 H 新增：主理人判定①"六工具仅 spawn/send_message/
+//      interrupt/list_agents 与批1 重叠，仅新增 wait_agent"；spec description
+//      逐字 + timeout 夹取 wait.rs:53-65 + 结果文案 from_outcome :139-159）。
 //
 //  万我适配裁定（登记）：
 //    - model selection 面（provider/model/reasoning_effort 成对 + KV-cache
@@ -28,8 +32,8 @@
 //    - fork 实例工具名 "fork"（dsh toolName 是 per-instance 配置面；spawn
 //      实例用缺省 "subagent" 1:1）。
 //    - statusOf（list-agents.ts:59-63 running|idle|ready）M7.2 无运行态查询缝
-//      → 驻留= idle / 无驻留= ready 两档（running 判定随 phase 查询缝缺失
-//      登记）。
+//      → 驻留= idle / 无驻留= ready 两档；M7.3 件 H 起 AgentLoop.currentPhase
+//      查询缝在场 → running/idle/ready 三档完整承载（SubagentRuntime.statusOf）。
 //    - exec.signal 取消观察 → ToolExecutionContext 无 signal 缝（工具协作式
 //      取消经 registry timeout/Task 取消面，M7.2 不挂）。
 //
@@ -393,12 +397,11 @@ struct ListAgentsTool: AgentTool {
             return .success("(no subagents)", meta: .array([]))
         }
         let lines = entries.map { entry -> String in
-            // M7.2 status 两档：驻留= idle / 无驻留= ready（登记见头注）。
-            let status = "idle"
+            // M7.3：status 三档（runtime phase 查询——running/idle/ready）。
             let at = scope == "descendants"
                 ? " parent=\(ctx.sessionId) depth=\(entry.depth)"
                 : ""
-            return "\(entry.subagentId) [\(status)]\(at) — \(entry.label)"
+            return "\(entry.subagentId) [\(entry.status)]\(at) — \(entry.label)"
         }
         return .success(lines.joined(separator: "\n"), meta: .array(
             entries.map { entry in
@@ -406,7 +409,7 @@ struct ListAgentsTool: AgentTool {
                     "kind": .string("child"),
                     "id": .string(entry.subagentId),
                     "label": .string(entry.label),
-                    "status": .string("idle"),
+                    "status": .string(entry.status),
                 ])
             }))
     }
@@ -416,9 +419,91 @@ struct ListAgentsTool: AgentTool {
     }
 }
 
+/// wait_agent：等任意存活 agent 的 mailbox 活动（M7.3 件 H 新增——codex
+/// multi_agents_v2/wait.rs 1:1；主理人判定①：批1 工具词汇之外唯一新增工具）。
+/// 等待-唤醒基于 AgentLoop.waitForInboxActivity（watch 通道语义，不轮询）；
+/// timeout 语义（wait.rs:53-65）：>max 拒绝 / <min 上夹至 min / 缺省 30s。
+struct WaitAgentTool: AgentTool {
+    let name = "wait_agent"
+    let description = "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+    let parameters: JSONValue = .schemaObject(
+        properties: [
+            "timeout_ms": .object([
+                "type": .string("number"),
+                "description": .string("Timeout in milliseconds. Defaults to "
+                    + "\(SubagentGovernance.defaultWaitTimeoutMs), min "
+                    + "\(SubagentGovernance.minWaitTimeoutMs), max "
+                    + "\(SubagentGovernance.maxWaitTimeoutMs)."),
+            ]),
+        ],
+        required: [])
+
+    private let parentLoop: AgentLoop
+
+    init(parentLoop: AgentLoop) {
+        self.parentLoop = parentLoop
+    }
+
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        // wait.rs:52 parse_arguments + :57-65 夹取语义 1:1。
+        let requestedMs: Int64?
+        if let field = args.field("timeout_ms") {
+            if let intValue = field.intValue {
+                requestedMs = Int64(intValue)
+            } else if let doubleValue = field.doubleValue {
+                requestedMs = Int64(doubleValue)
+            } else {
+                return .failure("timeout_ms must be a number",
+                                code: "WAIT_TIMEOUT_INVALID", name: "SubagentError")
+            }
+        } else {
+            requestedMs = nil
+        }
+        let effectiveMs: Int64
+        if let requestedMs {
+            if requestedMs > SubagentGovernance.maxWaitTimeoutMs {
+                // RespondToModel 等价（wait.rs:58-61）。
+                return .failure(
+                    "timeout_ms must be at most \(SubagentGovernance.maxWaitTimeoutMs)",
+                    code: "WAIT_TIMEOUT_INVALID", name: "SubagentError")
+            }
+            effectiveMs = max(requestedMs, SubagentGovernance.minWaitTimeoutMs)
+        } else {
+            effectiveMs = SubagentGovernance.defaultWaitTimeoutMs
+        }
+
+        // wait_for_activity（wait.rs:187-205）：watch 通道挂起至活动/超时。
+        let outcome = await parentLoop.waitForInboxActivity(timeoutMs: effectiveMs)
+        // WaitAgentResult.from_outcome（wait.rs:139-159）1:1：三分支消息 +
+        // 夹取提示行 + timed_out 旗标。恒 success（wait.rs:167 success_for_logging）。
+        let base: String
+        var timedOut = false
+        switch outcome {
+        case .mailbox: base = "Wait completed."
+        case .steer: base = "Wait interrupted by new input."
+        case nil:
+            base = "Wait timed out."
+            timedOut = true
+        }
+        var message = base
+        if let requestedMs, requestedMs < effectiveMs {
+            message += "\n\nRequested timeout of \(requestedMs)ms was clamped to "
+                + "the minimum of \(effectiveMs)ms."
+        }
+        return .success(message, meta: .object([
+            "timed_out": .bool(timedOut),
+        ]))
+    }
+
+    func presentCall(_ args: JSONValue) -> ToolCardIntent? {
+        ToolCardIntent(title: "Wait for subagents")
+    }
+}
+
 // MARK: - 注册面（装配辅助）
 
-/// tool-subagent + tool-subagent-control + list-agents 的 WanWo 装配入口。
+/// tool-subagent + tool-subagent-control + list-agents + wait_agent 的
+/// WanWo 装配入口。
 enum SubagentTools {
     /// 注册全部委派/控制工具 + continuable 提示段（AppEnvironment.makeAgentStack
     /// 调用；spawn=one-shot/subagent、fork=continuable/fork 两实例）。注册冲突
@@ -429,11 +514,13 @@ enum SubagentTools {
     ///     knob 直传，登记见报告）。
     ///   - modelSelection: 父会话模型选择（QA-3 P1-6：子栈同路由——KV-cache
     ///     fork 前缀跨端点失效修复）。
+    ///   - parentLoop: 父 loop（M7.3 件 H：wait_agent 等待-唤醒底座）。
     static func registerAll(into registry: ToolRegistry,
                             assembler: PromptAssembler,
                             runtime: SubagentRuntime,
                             jobs: JobRegistryProtocol,
                             writer: SessionWriter,
+                            parentLoop: AgentLoop,
                             modelSelection: SessionModelSelection? = nil,
                             sandboxOverride: @escaping @Sendable () -> SandboxMode? = { nil },
                             maxDepth: Int? = 3) {
@@ -451,6 +538,7 @@ enum SubagentTools {
             SendMessageAgentTool(runtime: runtime),
             InterruptAgentTool(runtime: runtime),
             ListAgentsTool(runtime: runtime),
+            WaitAgentTool(parentLoop: parentLoop),
         ]
         for tool in candidates {
             do {

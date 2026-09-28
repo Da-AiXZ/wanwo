@@ -42,6 +42,8 @@ struct WanWoApp: App {
                     // .active 即前台返回语义。
                     switch phase {
                     case .background:
+                        // M7 件 G：前台镜像旗标（触发器前台门供值——F043）。
+                        environment.isAppForegroundActive = false
                         // 真机批 B4：后台保活（~30s 执行窗口——回合在窗口内
                         // 继续跑完 → onTurnEnd 通知"回来验收"；到期冻结=
                         // iOS 硬约束，回前台解冻涌出为既有恢复路径）。
@@ -55,6 +57,10 @@ struct WanWoApp: App {
                         // effectiveWritable；MountedFoldersManager 内部仅在有
                         // 变化时落盘+重推快照）。
                         MountedFoldersManager.shared.refreshAllWritability()
+                        // M7 件 G（F043）：记忆管线前台转入门（触发三重门之一
+                        // ——前台+空闲+总开关；单飞闸在 MemoryTrigger 内）。
+                        environment.isAppForegroundActive = true
+                        environment.memoryTrigger.onDidEnterForeground()
                     case .inactive:
                         break
                     @unknown default:

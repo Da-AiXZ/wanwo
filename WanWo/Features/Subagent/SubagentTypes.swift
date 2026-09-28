@@ -193,15 +193,25 @@ enum SubagentLineage {
         var delegationDepth: Int
         /// Whether this child inherits a parent-log prefix（含显式空）。
         var seeded: Bool
+        /// 本子会话的 agent path（M7.3 件 H：Supervisor 恢复树重建的持久
+        /// path 权威——codex stored_thread.agent_path 等价承载。可选字段：
+        /// schema requiredFields 不含（ExtensionEventRegistry 校验只查
+        /// required，额外字段放行——实证 ExtensionEventRegistry.swift:155-171），
+        /// 旧日志缺省 nil = 恢复时按 label 重派生，登记）。
+        var agentPath: String?
     }
 
     static func payload(for record: Record) -> JSONValue {
-        .object([
+        var fields: [String: JSONValue] = [
             "origin": .string("subagent"),
             "parentSession": .string(record.parentSession),
             "delegationDepth": .int(record.delegationDepth),
             "seeded": .bool(record.seeded),
-        ])
+        ]
+        if let agentPath = record.agentPath {
+            fields["agentPath"] = .string(agentPath)
+        }
+        return .object(fields)
     }
 
     /// 从子日志读 lineage（首条权威；无 → nil = 顶层会话）。
@@ -212,7 +222,8 @@ enum SubagentLineage {
                       let depth = payload.field("delegationDepth")?.intValue,
                       let seeded = payload.field("seeded")?.boolValue else { return nil }
                 return Record(parentSession: parentSession, delegationDepth: depth,
-                              seeded: seeded)
+                              seeded: seeded,
+                              agentPath: payload.field("agentPath")?.stringValue)
             }
         }
         return nil

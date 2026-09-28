@@ -79,6 +79,9 @@ struct SubagentResolvedRequest: Sendable {
     var childId: String
     /// 子会话深度（resolveChildDepth 结果；SubagentDepth 地板单调语义）。
     var childDepth: Int
+    /// 本子会话的 agent path（M7.3 件 H：startContinuable 分配后回填——
+    /// AppEnvironment 写 lineage 事件时持久化；one-shot 恒 nil）。
+    var agentPath: String?
 }
 
 /// One registered transport for running child agents（dsh SubagentProvider；
@@ -209,6 +212,8 @@ actor SubagentRuntime {
     /// M7.2 冷读并发上限（简报拍板：只做并发上限计数）。
     static let concurrencyLimit = 4
 
+    private nonisolated static let logger = AppLogger(category: "subagent")
+
     private var providers: [String: any SubagentProviderProtocol] = [:]
     private var activations: [String: SubagentActivation] = [:]
     private let startGate = SubagentStartGate(limit: SubagentRuntime.concurrencyLimit)
@@ -318,9 +323,34 @@ actor SubagentRuntime {
             agentProvider: nil, agentModel: nil, agentReasoningEffort: nil,
             persona: nil, toolFilter: nil)
         let childId = UUID().uuidString
-        let resolved = SubagentResolvedRequest(
+        // var：agentPath 分配后回填（治理②——值类型属性赋值要求，
+        // registry.rs reserve_agent_path 原位改写语义）。
+        var resolved = SubagentResolvedRequest(
             request: request, descriptor: descriptor, childId: childId,
             childDepth: childDepth)
+        // M7.3 治理①：总数上限（registry.rs:337-353 try_increment_spawned CAS
+        // 循环的 actor 等价——本 actor 串行化下计数自增即原子；上限
+        // SubagentGovernance.totalChildrenLimit = 3，mod.rs:233 缺省 4 - 1）。
+        // 仅治理 continuable 驻留树：one-shot 生命周期由调用方/jobs 持有，
+        // ephemeral 形态不计入（裁定见 SubagentSupervisor.swift 裁定书④）。
+        guard liveChildrenCount < SubagentGovernance.totalChildrenLimit else {
+            throw SubagentError(
+                message: "subagent limit reached "
+                    + "(\(SubagentGovernance.totalChildrenLimit) live children per session)",
+                code: "AGENT_LIMIT_REACHED")
+        }
+        liveChildrenCount += 1
+        do {
+            // M7.3 治理②：path 分配（registry.rs reserve_agent_path 唯一性
+            // + protocol/agent_path.rs 寻址；label 消毒段名 + 冲突计数后缀）。
+            resolved.agentPath = try assignChildPath(
+                parentSessionId: request.parentSessionId,
+                label: descriptor.label ?? "",
+                childId: childId).value
+        } catch {
+            liveChildrenCount -= 1
+            throw error
+        }
         // 种子由 provider 决定有无（fork 前缀在创建时一次捕获，:85-91）。
         let seed = provider.seedFor(resolved, parentLogEvents: parentLogEvents)
         // settle 通知钩（回传双通道②：settle 时给父发 notice——WanWo 以
@@ -335,27 +365,47 @@ actor SubagentRuntime {
         }
         await startGate.acquire()
         defer { startGate.release() }
-        let materializerReturn = try await materializer(resolved, (seed?.isEmpty == false) ? seed : nil, callback)
-        let loop = materializerReturn.loop
-        // QA-3 P1-4：settle 时按 boundary 读子日志 closing message
-        //（createSettlementMessage :135-154 的 terminal.output 等价——boundary
-        // 取 materializer 返回时的 eventCount，自有事件起点，同 driver P0-2 修正；
-        // 先于 activation 注册，settle 回调不早于该点被 actor 串行化消费）。
-        registerSettlementBoundary(childId: childId,
-                                   boundary: materializerReturn.writer.eventCount,
-                                   writer: materializerReturn.writer)
-        let activation = SubagentActivation(
-            childId: childId, parentSessionId: request.parentSessionId,
-            provider: providerName, label: request.label ?? "", loop: loop)
-        activations[childId] = activation
-        // 初始 prompt 排队（独立回合；dsh delivery 'queue'）+ 相邻 Agent 回传
-        // 指引（QA-3 P1-3：continuation-messages.ts:81-97
-        // withContinuableReturnGuidance 逐字）。
-        await loop.followup(Self.withContinuableReturnGuidance(
-            parentId: request.parentSessionId, prompt: request.prompt), source: .user)
-        activation.announced = true
-        let messageId = UUID().uuidString
-        return ContinuableStart(childId: childId, messageId: messageId)
+        do {
+            let materializerReturn = try await materializer(resolved, (seed?.isEmpty == false) ? seed : nil, callback)
+            let loop = materializerReturn.loop
+            // M7.3 治理③：边表持久化（control.rs persist_thread_spawn_edge_for_source
+            // :817-846 语义：spawn 成功 upsert Open；失败 warn 不致命）。
+            // 万我仅 continuable 落边——one-shot 即 ephemeral 形态
+            //（codex :827-829 ephemeral 跳过同语义，登记）。
+            if let edgeStore {
+                do {
+                    try edgeStore.upsertThreadSpawnEdge(
+                        parent: request.parentSessionId, child: childId, status: .open)
+                } catch {
+                    Self.logger.warning("supervisor: failed to persist thread-spawn edge "
+                        + "for \(childId): \(String(describing: error))")
+                }
+            }
+            // QA-3 P1-4：settle 时按 boundary 读子日志 closing message
+            //（createSettlementMessage :135-154 的 terminal.output 等价——boundary
+            // 取 materializer 返回时的 eventCount，自有事件起点，同 driver P0-2 修正；
+            // 先于 activation 注册，settle 回调不早于该点被 actor 串行化消费）。
+            registerSettlementBoundary(childId: childId,
+                                       boundary: materializerReturn.writer.eventCount,
+                                       writer: materializerReturn.writer)
+            let activation = SubagentActivation(
+                childId: childId, parentSessionId: request.parentSessionId,
+                provider: providerName, label: request.label ?? "", loop: loop)
+            activations[childId] = activation
+            // 初始 prompt 排队（独立回合；dsh delivery 'queue'）+ 相邻 Agent 回传
+            // 指引（QA-3 P1-3：continuation-messages.ts:81-97
+            // withContinuableReturnGuidance 逐字）。
+            await loop.followup(Self.withContinuableReturnGuidance(
+                parentId: request.parentSessionId, prompt: request.prompt), source: .user)
+            activation.announced = true
+            let messageId = UUID().uuidString
+            return ContinuableStart(childId: childId, messageId: messageId)
+        } catch {
+            // 启动失败回收治理登记（registry.rs SpawnReservation Drop :393-402
+            // 语义：reservation 未 commit 即回收计数与 path）。
+            releaseResidentChild(childId)
+            throw error
+        }
     }
 
     /// Append adjacent-Agent return guidance to a continuable child's initial
@@ -443,11 +493,20 @@ actor SubagentRuntime {
 
     /// 模型面消息投递（dsh sendMessage :202-232 语义子集）：目标为直接
     /// continuable 子 → 运行中 steer 最近步边界 / 空闲 followup 新回合；
-    /// 非驻留子 → NOT_RESUMABLE（cold resume 登记不实现）。
+    /// 非驻留子 → NOT_RESUMABLE。
+    /// M7.3 增强：目标解析（resolveAgentTarget——dsh agent_id 优先 + codex
+    /// resolve_agent_reference path 寻址补充）+ 惰性重挂（恢复登记子先重挂
+    /// 再投递——批1 cold resume NOT_RESUMABLE 台账偿还）。
     /// - Returns: 接受的消息 id。
     func sendMessage(from senderSessionId: String, to targetId: String,
                      text: String) async throws -> String {
-        guard let activation = activations[targetId] else {
+        let resolvedTarget = resolveAgentTarget(senderSessionId, targetId)
+        if let candidate = resolvedTarget, activations[candidate] == nil {
+            // 恢复登记子先重挂（重挂失败原样上抛——投递未发生）；非登记
+            // 目标不触发重挂，落入下方 guard 抛 NOT_RESUMABLE（批1 语义不变）。
+            try await remountIfNeeded(candidate)
+        }
+        guard let activation = activations[resolvedTarget ?? targetId] else {
             throw SubagentError(
                 message: "subagent \"\(targetId)\" has no supported continuation state and cannot be resumed; choose a different target",
                 code: "NOT_RESUMABLE")
@@ -465,6 +524,22 @@ actor SubagentRuntime {
         // 排队（steer 运行中最近步边界需 phase 查询，登记）。
         await loop.followup(text, source: .user)
         return UUID().uuidString
+    }
+
+    /// 目标解析（M7.3）：dsh agent_id 直命中（驻留或恢复登记）优先；否则按
+    /// codex resolve_agent_reference（control.rs:444-463）path 寻址——相对
+    /// 引用按发送方 path 拼接，发送方无注册 path = 顶层 = /root。
+    private func resolveAgentTarget(_ senderSessionId: String,
+                                    _ reference: String) -> String? {
+        if activations[reference] != nil || pendingRecovery[reference] != nil {
+            return reference
+        }
+        // 纯 id（无 "/"）不走 path 解析（万我 childId 为 UUID 形态）。
+        guard reference.contains("/") else { return nil }
+        let senderPath = childPaths[senderSessionId].flatMap { try? AgentPath(from: $0) }
+            ?? AgentPath.root()
+        guard let resolved = try? senderPath.resolve(reference) else { return nil }
+        return pathIndex[resolved.value]
     }
 
     /// 驻留子向直接父回传（dsh sendToParent :337-360 等价；QA-2 P1-2：经
@@ -506,31 +581,62 @@ actor SubagentRuntime {
     // MARK: listing（tool-subagent-control list-agents 语义）
 
     /// 列出驻留 continuable 子（dsh list-agents：仅列 continuable；scope
-    /// children|descendants——M7.2 深度展开=children 直系）。
+    /// children|descendants）。M7.3：status 三档（list-agents.ts:59-63）——
+    /// running=子 loop 处于 running/maintenance（phase 查询缝在场）、
+    /// idle=驻留但回合间、ready=仅存于持久层（恢复登记，未重挂）。
     struct AgentListing: Sendable, Equatable {
         var subagentId: String
         var label: String
         var provider: String
         var depth: Int
+        var status: String
     }
 
-    func listAgents(callerSessionId: String, includeDescendants: Bool) -> [AgentListing] {
+    /// 激活状态判定（M7.3：phase 查询缝——批1 两档登记的升级承载）。
+    private func statusOf(_ activation: SubagentActivation) async -> String {
+        guard let loop = activation.loop else { return "idle" }
+        switch await loop.currentPhase() {
+        case .running, .maintenance: return "running"
+        case .idle: return "idle"
+        }
+    }
+
+    func listAgents(callerSessionId: String, includeDescendants: Bool) async -> [AgentListing] {
         var out: [AgentListing] = []
-        for (childId, activation) in activations where activation.parentSessionId == callerSessionId {
+        for (childId, activation) in activations
+        where activation.parentSessionId == callerSessionId {
             out.append(AgentListing(subagentId: childId, label: activation.label,
-                                    provider: activation.provider, depth: 1))
+                                    provider: activation.provider, depth: 1,
+                                    status: await statusOf(activation)))
+        }
+        // 恢复登记子（仅存持久层）= ready——ListAgentsTool 文案承诺的第三档。
+        for (childId, meta) in pendingRecovery
+        where meta.parentSessionId == callerSessionId {
+            out.append(AgentListing(subagentId: childId, label: meta.label,
+                                    provider: "recovered", depth: 1, status: "ready"))
         }
         if includeDescendants {
-            // descendants：广度展开（M7.2 简版——按 lineage 链逐层收集）。
+            // descendants：广度展开（按 lineage 链逐层收集；驻留与恢复登记
+            // 同层混排，depth = 距 caller 的层数）。
             var frontier = out.map(\.subagentId)
             var depth = 2
             while !frontier.isEmpty {
-                let next = activations.values.filter { frontier.contains($0.parentSessionId) }
-                for item in next {
-                    out.append(AgentListing(subagentId: item.childId, label: item.label,
-                                            provider: item.provider, depth: depth))
+                var next: [AgentListing] = []
+                for (childId, activation) in activations
+                where frontier.contains(activation.parentSessionId) {
+                    next.append(AgentListing(
+                        subagentId: childId, label: activation.label,
+                        provider: activation.provider, depth: depth,
+                        status: await statusOf(activation)))
                 }
-                frontier = next.map(\.childId)
+                for (childId, meta) in pendingRecovery
+                where frontier.contains(meta.parentSessionId) {
+                    next.append(AgentListing(
+                        subagentId: childId, label: meta.label,
+                        provider: "recovered", depth: depth, status: "ready"))
+                }
+                out.append(contentsOf: next)
+                frontier = next.map(\.subagentId)
                 depth += 1
             }
         }
@@ -538,6 +644,8 @@ actor SubagentRuntime {
     }
 
     /// 释放驻留激活（drain 子集：精确 children；dispose 幂等）。
+    /// M7.3 纪律：drain **不置边表 Closed**（codex legacy.rs:5-7——shutdown
+    /// 不置 Closed = 崩溃恢复依据）；仅回收治理计数与 path 注册表。
     func drainChildren(of parentId: String) async {
         let targets = activations.values.filter { $0.parentSessionId == parentId }
         for activation in targets {
@@ -547,6 +655,247 @@ actor SubagentRuntime {
             activation.close()
             activations.removeValue(forKey: activation.childId)
             settlementBoundaries.removeValue(forKey: activation.childId)
+            releaseResidentChild(activation.childId)
+        }
+    }
+
+    // MARK: - Supervisor 治理+持久化+恢复层（M7.3 件 H · F050）
+
+    /// 驻留子计数（registry.rs:25-28 total_count CAS 的 actor 等价：本 actor
+    /// 内自增自减天然原子）。口径 = 活跃 continuable activation + 恢复登记
+    ///（pendingRecovery）+ 在途 continuable 启动；one-shot 不计入
+    ///（SubagentSupervisor.swift 裁定书④）。
+    private var liveChildrenCount = 0
+    /// childId → agent path（registry.rs:33 thread_paths 等价）。
+    private var childPaths: [String: String] = [:]
+    /// path → childId（registry.rs:32 agent_tree 等价——path 寻址面）。
+    private var pathIndex: [String: String] = [:]
+    /// 崩溃恢复登记（Open 边元数据；惰性重挂前驻此——listAgents ready 档）。
+    private var pendingRecovery: [String: RecoveredChild] = [:]
+    /// 边表宿主（SessionDatabase 装配注册；nil = 无持久化面，治理退化为内存态）。
+    private var edgeStore: (any SubagentEdgeStoring)?
+    /// 恢复元数据读取缝（AppEnvironment 装配——openWriter + 子日志 fold）。
+    private var childMetadataReader: ChildMetadataReader?
+    /// 恢复重挂物化缝（AppEnvironment 装配——openWriter + makeAgentStack）。
+    private var recoveryMaterializer: ChildRecoveryMaterializer?
+
+    /// 恢复登记行（树元数据：path/深度/label——codex spawn.rs:156-225
+    /// restore_v2_agent_metadata 的 AgentMetadata 等价最小集）。
+    struct RecoveredChild: Sendable, Equatable {
+        var childId: String
+        var parentSessionId: String
+        var depth: Int
+        var label: String
+        var path: String
+    }
+
+    /// 恢复元数据读取缝（lineage fold + descriptor fold）。
+    typealias ChildMetadataReader = @Sendable (
+        _ childId: String
+    ) async throws -> (lineage: SubagentLineage.Record,
+                       descriptor: SubagentDescriptor.Record?)
+
+    /// 恢复重挂物化缝（AppEnvironment：openWriter + makeAgentStack——子会话
+    /// 已存在，不重写 lineage/descriptor/种子）。
+    typealias ChildRecoveryMaterializer = @Sendable (
+        _ childId: String,
+        _ onTurnEnd: @escaping @Sendable (TurnEndReason) -> Void
+    ) async throws -> (loop: AgentLoop, writer: SessionWriter)
+
+    /// 装配期注册边表宿主（幂等覆写；一次注册终身有效）。
+    func registerEdgeStore(_ store: any SubagentEdgeStoring) {
+        edgeStore = store
+    }
+
+    /// 装配期注册恢复元数据读取缝。
+    func registerChildMetadataReader(_ reader: @escaping ChildMetadataReader) {
+        childMetadataReader = reader
+    }
+
+    /// 装配期注册恢复重挂物化缝。
+    func registerRecoveryMaterializer(_ materializer: @escaping ChildRecoveryMaterializer) {
+        recoveryMaterializer = materializer
+    }
+
+    /// 崩溃恢复：根会话打开时列出 Open 后代 → 树元数据恢复（path/深度/label）
+    /// → 惰性登记（重挂在 sendMessage 目标命中时按需发生——派单落点②）。
+    /// codex spawn.rs:156-225 语义映射：恢复**不设上限门**
+    ///（reserve_spawn_slot(None)——仅计数）；单子恢复失败 warn 跳过不致命。
+    @discardableResult
+    func recoverOpenChildren(rootSessionId: String) async -> [RecoveredChild] {
+        guard let edgeStore, let reader = childMetadataReader else { return [] }
+        let openIds: [String]
+        do {
+            openIds = try edgeStore.listThreadSpawnDescendants(
+                root: rootSessionId, statusFilter: .open)
+        } catch {
+            Self.logger.warning("supervisor: failed to list open descendants of "
+                + "\(rootSessionId): \(String(describing: error))")
+            return []
+        }
+        var restored: [RecoveredChild] = []
+        for childId in openIds {
+            if activations[childId] != nil || pendingRecovery[childId] != nil { continue }
+            do {
+                let meta = try await reader(childId)
+                let label = meta.descriptor?.label ?? ""
+                var path: String
+                if let recorded = meta.lineage.agentPath,
+                   pathIndex[recorded] == nil || pathIndex[recorded] == childId {
+                    path = recorded
+                } else {
+                    // 持久 path 缺失（旧日志）或已被占用（重派生碰撞）→ 按
+                    // label 确定性重派生（登记：可能与原始 path 差异，仅寻址面）。
+                    path = try assignChildPath(
+                        parentSessionId: meta.lineage.parentSession,
+                        label: label, childId: childId).value
+                }
+                childPaths[childId] = path
+                pathIndex[path] = childId
+                liveChildrenCount += 1
+                let record = RecoveredChild(
+                    childId: childId, parentSessionId: meta.lineage.parentSession,
+                    depth: meta.lineage.delegationDepth, label: label, path: path)
+                pendingRecovery[childId] = record
+                restored.append(record)
+            } catch {
+                Self.logger.warning("supervisor: failed to restore child "
+                    + "\(childId): \(String(describing: error))")
+            }
+        }
+        return restored
+    }
+
+    /// 惰性重挂（批1 cold resume NOT_RESUMABLE 台账偿还：恢复后的 continuable
+    /// 子可继续——重挂后 sendMessage/settle 通知/closing message 全链复活）。
+    /// boundary 取重挂时 eventCount——重挂前事件全为历史，自有输出唯一真源
+    ///（QA-3 P0-2 同纪律）。
+    private func remountIfNeeded(_ childId: String) async throws {
+        if activations[childId] != nil { return }
+        // QA-4 P2-②：先验 materializer 再摘登记——原实现两者同 guard 解包，
+        // materializer 缺位时 meta 已摘且不回滚（恢复元数据不可再生 = 永久
+        // 无法重挂，且边表 Open 残留失回收路径）。
+        guard let materializer = recoveryMaterializer else { return }
+        guard let meta = pendingRecovery.removeValue(forKey: childId) else { return }
+        let runtime = self
+        let callback: @Sendable (TurnEndReason) -> Void = { reason in
+            Task {
+                await runtime.noticeSettled(
+                    childId: childId,
+                    stopReason: SubagentStopReason(turnEndReason: reason))
+            }
+        }
+        do {
+            let materializerReturn = try await materializer(childId, callback)
+            registerSettlementBoundary(childId: childId,
+                                       boundary: materializerReturn.writer.eventCount,
+                                       writer: materializerReturn.writer)
+            let activation = SubagentActivation(
+                childId: childId, parentSessionId: meta.parentSessionId,
+                provider: "recovered", label: meta.label,
+                loop: materializerReturn.loop)
+            activations[childId] = activation
+            activation.announced = true
+        } catch {
+            // 重挂失败 → 登记回滚（下次投递可再试）。
+            pendingRecovery[childId] = meta
+            throw error
+        }
+    }
+
+    /// close_agent（codex control/legacy.rs:48-98 语义）：显式关闭——停当前
+    /// 回合 + 摘除激活/恢复登记 + 回收治理计数与 path + 边表置 Closed。
+    /// 纪律：宿主 shutdown / drainChildren **不**走此路（legacy.rs:5-7——
+    /// shutdown 不置 Closed = 崩溃恢复依据）。工具面不含 close_agent（主理人
+    /// 判定①：仅新增 wait_agent）——本 API 供宿主/后续装配消费。
+    /// - Returns: 是否完成边表 Closed 置位。
+    @discardableResult
+    func closeAgent(childId: String, callerSessionId: String) async throws -> Bool {
+        var known = false
+        if let activation = activations[childId] {
+            known = true
+            guard activation.parentSessionId == callerSessionId else {
+                throw SubagentError(message: "close requires ancestor authority",
+                                    code: "UNAUTHORIZED")
+            }
+            if let loop = activation.loop {
+                await loop.cancel(cause: .parent)
+            }
+            activation.close()
+            activations.removeValue(forKey: childId)
+            settlementBoundaries.removeValue(forKey: childId)
+        }
+        // QA-4 P1-1：pendingRecovery 分支同授权校验（activation 分支口径
+        // 一致——仅父祖链 caller 可摘登记，否则任意 callerSessionId 都能
+        // 摘除恢复登记并置边 Closed = 越权关停）。
+        if let meta = pendingRecovery[childId] {
+            known = true
+            guard meta.parentSessionId == callerSessionId else {
+                throw SubagentError(message: "close requires ancestor authority",
+                                    code: "UNAUTHORIZED")
+            }
+            pendingRecovery.removeValue(forKey: childId)
+        }
+        releaseResidentChild(childId)
+        guard let edgeStore else { return false }
+        // 边表置 Closed：活跃/登记子正常置位；未知但边在（stale edge）同样
+        // 置位（legacy.rs:65-81 ThreadNotFound 分支同语义；缺 child = no-op）。
+        do {
+            try edgeStore.setThreadSpawnEdgeStatus(child: childId, status: .closed)
+            return true
+        } catch {
+            Self.logger.warning("supervisor: failed to persist closed edge for "
+                + "\(childId): \(String(describing: error))")
+            return false
+        }
+    }
+
+    /// path 分配（M7.3 治理②）：父 path（registry 无记录 = 顶层 = /root，
+    /// control.rs:450-452 unwrap_or(root) 同语义）+ label 消毒段名 + 兄弟
+    /// 冲突计数后缀（codex nickname 池的确定性等价——无随机词汇表，登记）。
+    private func assignChildPath(parentSessionId: String, label: String,
+                                 childId: String) throws -> AgentPath {
+        let parentPath = childPaths[parentSessionId].flatMap { try? AgentPath(from: $0) }
+            ?? AgentPath.root()
+        var base = Self.sanitizePathSegment(label)
+        if base.isEmpty || base == AgentPath.rootSegment {
+            base = "agent"
+        }
+        var candidate = try parentPath.join(base)
+        var counter = 2
+        while pathIndex[candidate.value] != nil {
+            candidate = try parentPath.join("\(base)_\(counter)")
+            counter += 1
+        }
+        pathIndex[candidate.value] = childId
+        childPaths[childId] = candidate.value
+        return candidate
+    }
+
+    /// 段名消毒：非 [a-z0-9_] 一律折叠为 "_"（validate_agent_name 值域内保真；
+    /// "root" 保留名由调用方置换为 "agent"）。
+    private static func sanitizePathSegment(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        var out = ""
+        for character in lowered {
+            if (character.isASCII && character.isLowercase)
+                || (character.isASCII && character.isNumber) {
+                out.append(character)
+            } else {
+                out.append("_")
+            }
+        }
+        return out
+    }
+
+    /// 驻留子注册表摘除（path 双向索引 + 总数计数同步回收；drain/close/
+    /// 启动失败共用——registry.rs release_spawned_thread :117-134 等价）。
+    private func releaseResidentChild(_ childId: String) {
+        if let path = childPaths.removeValue(forKey: childId) {
+            if pathIndex[path] == childId {
+                pathIndex.removeValue(forKey: path)
+            }
+            liveChildrenCount = max(0, liveChildrenCount - 1)
         }
     }
 }

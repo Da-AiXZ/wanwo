@@ -27,7 +27,10 @@ struct SessionIndexRow: Equatable, Sendable {
 
 /// SQLite 会话索引投影（事实源 = JSONL；写路径同步维护，兜底可由
 /// SessionStore.reconcileIndex 快速重建）。
-final class SessionDatabase {
+/// M7.3 件 H：@unchecked Sendable——SubagentEdgeStoring: Sendable 约束承载；
+/// dbQueue（GRDB DatabaseQueue）本身线程安全，onIndexChanged 遵循头注的
+/// 「装配期赋值一次、运行期只读」纪律。
+final class SessionDatabase: @unchecked Sendable {
     private let dbQueue: DatabaseQueue
     private static let logger = AppLogger(category: "database")
 
@@ -108,6 +111,27 @@ final class SessionDatabase {
             try db.alter(table: "sessionIndex") { t in
                 t.add(column: "archivedAtMs", .double)
             }
+        }
+        // v5（M7.3 件 H · F050）：threadSpawnEdges 子代理谱系边表——codex
+        // state/migrations/0021_thread_spawn_edges.sql 1:1 列结构
+        //（parent_thread_id TEXT NOT NULL / child_thread_id PRIMARY KEY /
+        // status TEXT NOT NULL）+ (parent,status) 复合索引。status 存 wire 名
+        // "open"/"closed"（types.rs serde snake_case）。生命周期纪律
+        //（codex control/legacy.rs:5-7 注释语义）：子 spawn 成功 upsert Open；
+        // close_agent 置 Closed；**会话正常关闭/宿主 shutdown 不置 Closed**
+        // ——Open 残留边即崩溃恢复依据（SubagentRuntime.recoverOpenChildren）。
+        migrator.registerMigration("wanwo.sessionIndex.v5") { db in
+            try db.create(table: "threadSpawnEdges") { t in
+                t.column("parentThreadId", .text).notNull()
+                // QA-4 P2-①：SQLite 的 TEXT PRIMARY KEY 不隐含 NOT NULL
+                //（仅 INTEGER PRIMARY KEY 隐含）——显式声明与 0021 迁移
+                // child TEXT NOT NULL PRIMARY KEY 对齐。
+                t.column("childThreadId", .text).primaryKey().notNull()
+                t.column("status", .text).notNull()
+            }
+            try db.create(index: "idx_thread_spawn_edges_parent_status",
+                          on: "threadSpawnEdges",
+                          columns: ["parentThreadId", "status"])
         }
         try migrator.migrate(dbQueue)
     }
@@ -281,5 +305,77 @@ final class SessionDatabase {
         return try dbQueue.read { db in
             try body(db)
         }
+    }
+}
+
+// MARK: - SubagentEdgeStoring（M7.3 件 H · F050）
+
+/// threadSpawnEdges 边表的 SubagentEdgeStoring 实现（agent-graph-store/src/
+/// local.rs LocalAgentGraphStore 语义；稳定排序契约：list 一律按 childThreadId
+/// 升序——descendants 的层序+层内排序由 SubagentEdgeTree 纯函数统一承担）。
+extension SessionDatabase: SubagentEdgeStoring {
+    func upsertThreadSpawnEdge(parent: String, child: String,
+                               status: ThreadSpawnEdgeStatus) throws {
+        try dbQueue.write { db in
+            // child 至多一个持久父：重插同 child 同步替换 parent + status
+            //（store.rs:22-27 upsert 契约）。
+            try db.execute(
+                sql: """
+                INSERT INTO threadSpawnEdges (parentThreadId, childThreadId, status)
+                VALUES (?, ?, ?)
+                ON CONFLICT(childThreadId) DO UPDATE SET
+                    parentThreadId = excluded.parentThreadId,
+                    status = excluded.status
+                """,
+                arguments: [parent, child, status.rawValue])
+        }
+    }
+
+    func setThreadSpawnEdgeStatus(child: String,
+                                  status: ThreadSpawnEdgeStatus) throws {
+        try dbQueue.write { db in
+            // 缺 child = 成功 no-op（store.rs:32-36 契约；UPDATE 零命中即等价）。
+            try db.execute(
+                sql: "UPDATE threadSpawnEdges SET status = ? WHERE childThreadId = ?",
+                arguments: [status.rawValue, child])
+        }
+    }
+
+    func listThreadSpawnChildren(parent: String,
+                                 statusFilter: ThreadSpawnEdgeStatus?) throws -> [String] {
+        try dbQueue.read { db in
+            if let statusFilter {
+                return try String.fetchAll(
+                    db,
+                    sql: "SELECT childThreadId FROM threadSpawnEdges "
+                       + "WHERE parentThreadId = ? AND status = ? ORDER BY childThreadId",
+                    arguments: [parent, statusFilter.rawValue])
+            }
+            return try String.fetchAll(
+                db,
+                sql: "SELECT childThreadId FROM threadSpawnEdges "
+                   + "WHERE parentThreadId = ? ORDER BY childThreadId",
+                arguments: [parent])
+        }
+    }
+
+    func listThreadSpawnDescendants(root: String,
+                                    statusFilter: ThreadSpawnEdgeStatus?) throws -> [String] {
+        // 全表边集读出 + SubagentEdgeTree 纯函数遍历（BFS 逐层 + 层内升序 +
+        // 过滤作用于沿途每条边——local.rs:87-109 语义）。
+        let edges: [SubagentSpawnEdge] = try dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT parentThreadId, childThreadId, status FROM threadSpawnEdges")
+                .map { row in
+                    SubagentSpawnEdge(
+                        parent: row["parentThreadId"] ?? "",
+                        child: row["childThreadId"] ?? "",
+                        status: ThreadSpawnEdgeStatus(
+                            rawValue: row["status"] ?? "") ?? .closed)
+                }
+        }
+        return SubagentEdgeTree.descendants(edges: edges, root: root,
+                                            statusFilter: statusFilter)
     }
 }

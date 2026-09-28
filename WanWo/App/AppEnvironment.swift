@@ -80,6 +80,16 @@ final class AppEnvironment: ObservableObject {
     /// App 级单例同 resourceGovernor/jobRegistry 位）。注入缝经 JobNotifier
     /// 可变闭包（测试桩替换）。
     let jobNotifier = JobNotifier()
+    /// M7 件 G（F043）：长期记忆账本（独立 GRDB 库 memory-index.sqlite3——
+    /// 理由见 MemoryDatabase 头注：E1 禁碰/生命周期独立/codex 拓扑同构）。
+    let memoryDatabase: MemoryDatabase
+    /// M7 件 G：memory 工件面（memoryPersistentDir 树 + 快照清单——适配③）。
+    let memoryStorage: MemoryStorage
+    /// M7 件 G：Phase1/Phase2/触发器（App 级单例同 subagentRuntime 位；
+    /// runner/seams 在 init 尾 bind——两阶段初始化纪律同 workspaceNavigator）。
+    let memoryPhase1: MemoryPhase1
+    let memoryPhase2: MemoryPhase2
+    let memoryTrigger: MemoryTrigger
     /// 真机批 B 全方位诊断：会话 writer 注册表（diagTrace 写事件流用）。
     /// nonisolated(unsafe)：NSLock 自保护（diagTrace 标 nonisolated 供
     /// 非隔离上下文调用——闭包/调度/通知各面）。
@@ -371,6 +381,34 @@ final class AppEnvironment: ObservableObject {
                               "\(String(describing: error))")
         }
 
+        // M7 件 G（F043）：memory 组件装配（fail-open 兜底同 SessionDatabase
+        // 既有纪律——打开失败落临时路径，App 可启动、管线自愈）。
+        // 账本/工件/Phase1/Phase2/触发器五件一起装配；runner/seams 在 init 尾
+        // bind（两阶段初始化——self 捕获须待全部存储属性完成阶段一）。
+        let memoryDB: MemoryDatabase?
+        do {
+            memoryDB = try MemoryDatabase(
+                path: base.appendingPathComponent("memory-index.sqlite3").path)
+        } catch {
+            Self.logger.fault("memory database open failed: \(String(describing: error))")
+            memoryDB = nil
+        }
+        let resolvedMemoryDB = memoryDB ?? (try? MemoryDatabase(
+            path: FileManager.default.temporaryDirectory
+                .appendingPathComponent("wanwo-memory-fallback.sqlite3").path))!
+        self.memoryDatabase = resolvedMemoryDB
+        let resolvedMemoryStorage = MemoryStorage(
+            rootURL: WanWoPaths.memoryPersistentDir,
+            manifestURL: configDir.appendingPathComponent("memory-snapshot.json"))
+        self.memoryStorage = resolvedMemoryStorage
+        self.memoryPhase1 = MemoryPhase1(database: resolvedMemoryDB, complete: { _ in
+            // 占位缝：configure 前不可达（触发器仅在装配后启动管线）。
+            throw LLMError(message: "memory phase-1 not configured", code: "UNKNOWN")
+        })
+        self.memoryPhase2 = MemoryPhase2(database: resolvedMemoryDB)
+        self.memoryTrigger = MemoryTrigger(database: resolvedMemoryDB,
+                                           storage: resolvedMemoryStorage)
+
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
         if !ExtensionEventRegistry.shared.isRegistered(
@@ -520,6 +558,159 @@ final class AppEnvironment: ObservableObject {
             guard let self else { return nil }
             let path = self.guestWorkspacePath(for: sid)
             return path.isEmpty ? nil : path
+        }
+
+        // M7 件 G（F043）：memory 管线缝 bind（init 末尾——self 捕获纪律同上方
+        // workspacePathResolver/decisionObserver）。装配行号随交付报告呈报。
+        // ①Phase2：整合 runner（受限子会话——ChildMaterializer 模式复用）+
+        //   工件 storage + 元数据 cwd 供值缝。
+        // ②Phase1：连接事实（活动端点冻结——管线运行期不观察配置变化，dsh
+        //   凭据同代配对语义）。
+        // ③触发器：宿主缝（前台/空闲镜像 + 只读枚举 + 模型窗缺省）。
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.memoryPhase2.configure(MemoryPhase2.Configuration(
+                storage: self.memoryStorage,
+                runner: { [weak self] prompt in
+                    guard let self else {
+                        throw LLMError(message: "environment released", code: "UNKNOWN")
+                    }
+                    try await self.runMemoryConsolidationSession(prompt: prompt)
+                },
+                cwdFor: { threadId in
+                    guard let url = AppEnvironment.sessionFileURL(threadId),
+                          let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+                          let cwd = probe.header.cwd, !cwd.isEmpty else {
+                        return WanWoPaths.workspaceLinuxDir
+                    }
+                    return cwd
+                }))
+            if let endpoint = self.endpointStore.activeEndpoint(),
+               let apiKey = await self.endpointStore.apiKey(for: endpoint),
+               !apiKey.isEmpty {
+                await self.memoryPhase1.configure(
+                    baseURL: endpoint.baseURL, apiKey: apiKey, model: endpoint.model)
+            }
+            self.memoryTrigger.attach(MemoryTrigger.HostSeams(
+                listSessions: { [weak self] in
+                    await self?.sessionStore.listSessions() ?? []
+                },
+                readSessionEvents: { sid in
+                    guard let url = AppEnvironment.sessionFileURL(sid) else { return nil }
+                    guard let log = try? JsonlEventLog.open(
+                        fileURL: url, writeMode: false, expectedID: sid) else {
+                        return nil
+                    }
+                    return await log.snapshotEvents()
+                },
+                activeRunSessionIDs: { [weak self] in
+                    await MainActor.run { self?.activeRunSessionIDs ?? [] }
+                },
+                isForeground: { [weak self] in
+                    await MainActor.run { self?.isAppForegroundActive ?? false }
+                },
+                phase1: self.memoryPhase1,
+                phase2: self.memoryPhase2,
+                contextWindowTokens: { nil },
+                sessionCWD: { sid in
+                    guard let url = AppEnvironment.sessionFileURL(sid),
+                          let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+                          let cwd = probe.header.cwd, !cwd.isEmpty else {
+                        return WanWoPaths.workspaceLinuxDir
+                    }
+                    return cwd
+                }))
+        }
+    }
+
+    // MARK: - M7 件 G（F043）：memory 前台镜像 + 整合 runner
+
+    /// 前台快照（scenePhase 转入门的镜像源——WanWoApp onChange .active 落
+    /// memoryTrigger.onDidEnterForeground 的同时翻转本旗标；装配行号随报告）。
+    @Published var isAppForegroundActive = true
+
+    /// Phase2 整合子会话 runner（agent::get_config 锁死清单的万我承载——
+    /// 完整对照与偏差登记见 MemoryPhase2 头注）：
+    ///   · ephemeral：临时子会话（UUID），收口后删除（get_config :322）；
+    ///   · cwd=memory guest 根：文件/shell/技能 project 根全部限定 memory 树；
+    ///   · 收口判定：尾回合（turn/end 且本回合无 tool/call——agent 自然终止
+    ///     语义；onTurnEnd 信号 + 事件流复核）；
+    ///   · generate/use_memories=false → 子会话 cwd 不在候选枚举面（触发器
+    ///     防回流判定）+ 非根会话；notify=None → onTurnEnd 仅收口信号；
+    ///   · mcp_servers=空/approval=Never/Collab/MemoryTool/Apps/Plugins 禁/
+    ///     WorkspaceWrite 仅 memory root 无网 → QA-5 P1-1 三闸已装（最小
+    ///     修法）：MemoryTools/web 双族 toolFilter 注册闸禁 + 沙箱锁定
+    ///     （subagentSandboxOverride=.workspaceWrite × cwd=memoryGuestPath，
+    ///     approval Never 随缝折叠）+ effort medium（会话级选择缝）；完整
+    ///     per-stack 策略参数化（mcp_servers 空/Collab/Apps 面等）仍留 P2。
+    func runMemoryConsolidationSession(prompt: String) async throws {
+        let childId = UUID().uuidString
+        _ = try await sessionStore.createSession(
+            withID: childId, cwd: MemoryConstants.memoryGuestPath)
+        do {
+            let opened = try await sessionStore.openWriter(id: childId)
+            let writer = opened.writer
+            // 尾回合判定：turn/end 且自对应 turn/start 起无 tool/call。
+            let gate = MemoryTurnCompletionGate(writer: writer)
+            // QA-5 P1-1③：整合会话推理档锁定 medium（codex get_config :338-348
+            // reasoning_effort=Medium）——经会话级选择缝承载（活动端点 + effort
+            // 覆盖；无活动端点时选值空，由下方 stack.loop 装配失败兜底）。
+            let modelSelection: SessionModelSelection
+            if let active = endpointStore.activeEndpoint() {
+                modelSelection = SessionModelSelection(initial: .init(
+                    endpointID: active.id,
+                    reasoningEffort: MemoryConstants.stageTwoReasoningEffort))
+            } else {
+                modelSelection = SessionModelSelection()
+            }
+            let stack = await makeAgentStack(
+                sessionId: childId,
+                writer: writer,
+                callbacks: AgentLoop.Callbacks(onTurnEnd: { [gate] _ in
+                    gate.evaluateAndSignalIfFinal()
+                }),
+                interactionPresenter: nil,
+                modelSelection: modelSelection,
+                subagentDepth: nil,
+                // QA-5 P1-1③：沙箱锁定（workspaceWrite × cwd=memoryGuestPath
+                // = 仅 memory 树可写）+ approval Never（override 缝随
+                // PermissionCoordinator.newSessionDefaults 折叠为 (.workspaceWrite,
+                // .never)——codex get_config :322-348 对应）。
+                subagentSandboxOverride: .workspaceWrite,
+                // QA-5 P1-1①②：整合会话禁 MemoryTools 族（codex :333 MemoryTool
+                // disable——防递归抽取）+ 禁 web 族（codex :352 network_access=
+                // false）——toolFilter 注册闸按工具名裁决。
+                toolFilter: { tool in
+                    switch tool.name {
+                    case "list_memories", "read_memory", "search_memories",
+                         "add_ad_hoc_note", "web_search", "web_fetch":
+                        return false
+                    default:
+                        return true
+                    }
+                })
+            guard let loop = stack.loop else {
+                throw MemoryError(message:
+                    "consolidation stack assembly failed: "
+                        + (stack.failureReason ?? "unknown"))
+            }
+            await loop.submit(prompt)
+            // QA-5 P2-②：超时兜底（codex status_poll 等价——AgentLoop 异常
+            // 路径不发 onTurnEnd 时 gate 永挂 → 触发器整进程单飞死锁；超时
+            // 抛错 = failed_agent 语义，进重试窗）。
+            guard await gate.wait(
+                timeout: MemoryConstants.consolidationWaitTimeoutSeconds) else {
+                throw MemoryError(message:
+                    "consolidation agent did not finalize within "
+                        + "\(Int(MemoryConstants.consolidationWaitTimeoutSeconds))s")
+            }
+            await sessionStore.closeWriter(id: childId)
+            try? await sessionStore.deleteSession(id: childId)
+        } catch {
+            // ephemeral 收口：任何失败路径都删除临时会话。
+            await sessionStore.closeWriter(id: childId)
+            try? await sessionStore.deleteSession(id: childId)
+            throw error
         }
     }
 
@@ -680,16 +871,30 @@ final class AppEnvironment: ObservableObject {
     ///     子会话——goal isTopLevel=false + 委派纪律段注入）。
     ///   - subagentSandboxOverride: 父委派的沙箱承载（QA-3 P1-5：非 nil 时
     ///     子会话双旋钮初始值 = (override, .never)——dsh child-agent.ts:221-268
-    ///     子纪律；万我 knob 直传登记见报告）。
+    ///     子纪律；万我 knob 直传登记见报告）。QA-5 P1-1③：整合会话亦经本缝
+    ///     锁定（.workspaceWrite × cwd=memory 根 + approval Never）。
+    ///   - toolFilter: 工具注册闸（QA-5 P1-1①②：整合会话传过滤闭包——
+    ///     禁 MemoryTools 族防递归抽取（codex :333 MemoryTool disable）+
+    ///     禁 web 族（codex :352 network_access=false）；nil = 不过滤）。
     /// - Returns: loop = nil 表示装配失败（无端点/凭据不可读），failureReason 带具体
     ///   原因（ERR-016：原 try? 吞错导致降级横幅只有泛化提示，无法定位）。
+    /// QA-5 P1-1：注册闸——toolFilter 非 nil 时以探针工具裁决整族注册
+    /// （整族语义：codex disable MemoryTool / network_access=false 均为配置
+    /// 面整族开关；探针构造成本 = 一次轻量 struct init，仅闸路径发生）。
+    private static func toolFamilyAllowed(_ filter: ((AgentTool) -> Bool)?,
+                                          _ probe: @autoclosure () -> AgentTool) -> Bool {
+        guard let filter else { return true }
+        return filter(probe())
+    }
+
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
                         callbacks: AgentLoop.Callbacks,
                         interactionPresenter: SessionInteractionPresenter? = nil,
                         modelSelection: SessionModelSelection? = nil,
                         subagentDepth: Int? = nil,
-                        subagentSandboxOverride: SandboxMode? = nil)
+                        subagentSandboxOverride: SandboxMode? = nil,
+                        toolFilter: ((AgentTool) -> Bool)? = nil)
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
@@ -741,7 +946,11 @@ final class AppEnvironment: ObservableObject {
         // apply 的 ctx.tools.register ×3 对应；controller 已在 init 挂接）。
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
         FsTools.registerAll(into: registry, sessionId: sessionId)
-        WebTools.registerAll(into: registry, policy: networkPolicy)
+        // QA-5 P1-1②：整合会话禁网（codex :352 network_access=false——web
+        // 双件整族跳过；toolFilter 注册闸，探针裁决整族）。
+        if Self.toolFamilyAllowed(toolFilter, { WebFetchTool() }) {
+            WebTools.registerAll(into: registry, policy: networkPolicy)
+        }
         // M7 件 A（F049）：todo_write 工具（dsh tool-todo apply 1:1——整表
         // 替换 + allowParallelInProgress=false 万我拍板）。
         registry.register(TodoTool(writer: writer))
@@ -773,7 +982,11 @@ final class AppEnvironment: ObservableObject {
                 // 钉死 never + sandbox 承载父委派 override；顶层会话走 App 级
                 // 默认源不动。万我 PermissionCoordinator 无显式 override 与
                 // 部署缺省的区分缝——knob 直传（子恒收父当前值），登记。
-                guard subagentDepth != nil else { return defaults }
+                // QA-5 P1-1③：整合会话复用本缝锁定——subagentSandboxOverride
+                // 显式供值即锁定（.workspaceWrite × cwd=memory 根 + approval
+                // Never；codex get_config :322-348 对应）。
+                guard subagentDepth != nil || subagentSandboxOverride != nil
+                else { return defaults }
                 return (subagentSandboxOverride ?? defaults.sandbox, .never)
             })
         // 批12+归挡（2026-09-27）：预设切换 → offload 27 命令免问覆盖
@@ -937,6 +1150,24 @@ final class AppEnvironment: ObservableObject {
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
         PromptSections.registerAll(into: assembler)
+        // M7 件 G（F043）：memory read-path 段（codex build_memory_tool_
+        // developer_instructions 万我承载——summary 缺失/空 = 不注册段落，
+        // prompts.rs :41-43 None 语义；槽位 920 登记见 SECTION_ORDERS）。
+        if let summaryData = try? Data(contentsOf: WanWoPaths.memoryPersistentDir
+            .appendingPathComponent("memory_summary.md")),
+           let summaryText = String(data: summaryData, encoding: .utf8),
+           let memorySection = MemoryPromptSection.summarySection(summaryText: summaryText) {
+            assembler.section(memorySection)
+        }
+        // M7 件 G（F043）：memory 四工具（codex memories 扩展四工具——原名 +
+        // schema 逐字；后端宿主直读 memoryPersistentDir，件头注裁定）。
+        // QA-5 P1-1①：整合会话禁注册（codex :333 MemoryTool disable——防
+        // 递归抽取；toolFilter 注册闸，探针裁决整族）。
+        let memoryBackend = MemoryBackend(rootURL: WanWoPaths.memoryPersistentDir)
+        if Self.toolFamilyAllowed(toolFilter,
+                                  { MemoryListTool(backend: memoryBackend) }) {
+            MemoryTools.registerAll(into: registry, backend: memoryBackend)
+        }
         // M5-B P4：PTC 模式两段（tools:ptc-only@800 / tools:sdk@5000——dsh
         // index.ts:826-829 仅 mode ≠ native 注册；.both 档下 ptc-only 渲染空）。
         PtcPromptSections.registerSections(into: assembler, registry: registry)
@@ -1048,10 +1279,15 @@ final class AppEnvironment: ObservableObject {
         // + 工具面五件 + continuable 提示段）。sandboxOverride 供值缝 =
         // 父 knobs.sandbox 实时读（QA-3 P1-5）；modelSelection 随链透传
         // （QA-3 P1-6——子栈与父同路由）。
-        await setupSubagentRuntime(parentSessionId: sessionId, parentLoop: agentLoop)
+        // M7.3 件 H：工具面增 wait_agent（主理人判定①唯一新增）；装配段增
+        // Supervisor 治理+持久化+恢复层（edge store/元数据读取/重挂物化三缝
+        // + 根会话 Open 边恢复登记，见 setupSubagentRuntime）。
+        await setupSubagentRuntime(parentSessionId: sessionId, parentLoop: agentLoop,
+                                   writer: writer)
         SubagentTools.registerAll(into: registry, assembler: assembler,
                                   runtime: subagentRuntime, jobs: jobRegistry,
                                   writer: writer,
+                                  parentLoop: agentLoop,
                                   modelSelection: modelSelection,
                                   sandboxOverride: { [permission] in
                                       permission.knobs.sandbox
@@ -1113,8 +1349,11 @@ final class AppEnvironment: ObservableObject {
     /// provider-added 与 activation 回传通道的进程内承载）。
     /// QA-3 P1-7：同会话栈重建前先 drain 旧驻留子（cancel + close 幂等）——
     /// 防父会话栈重建/关闭后驻留子孤儿化。
+    /// M7.3 件 H：Supervisor 三缝注册（边表宿主 / 恢复元数据读取 / 重挂物化）
+    /// + 根会话 Open 边恢复登记（惰性，不重挂不投递）。
     private func setupSubagentRuntime(parentSessionId: String,
-                                      parentLoop: AgentLoop) async {
+                                      parentLoop: AgentLoop,
+                                      writer: SessionWriter) async {
         await subagentRuntime.drainChildren(of: parentSessionId)
         if !subagentRuntimeWired {
             subagentRuntimeWired = true
@@ -1145,8 +1384,29 @@ final class AppEnvironment: ObservableObject {
                 return try await self.makeSubagentChildStack(
                     resolved: resolved, seed: seed, onTurnEnd: onTurnEnd)
             }
+            // M7.3 件 H：Supervisor 三缝（[weak self] 同纪律）。
+            await subagentRuntime.registerEdgeStore(database)
+            await subagentRuntime.registerChildMetadataReader { [weak self] childId in
+                guard let self else {
+                    throw LLMError(message: "environment released", code: "UNKNOWN")
+                }
+                return try await self.readSubagentChildMetadata(childId: childId)
+            }
+            await subagentRuntime.registerRecoveryMaterializer { [weak self] childId, onTurnEnd in
+                guard let self else {
+                    throw LLMError(message: "environment released", code: "UNKNOWN")
+                }
+                return try await self.remountSubagentChildStack(
+                    childId: childId, onTurnEnd: onTurnEnd)
+            }
         }
         await subagentRuntime.registerParentLoop(sessionId: parentSessionId, loop: parentLoop)
+        // M7.3：崩溃恢复触发——仅根会话（子会话的恢复由其根在打开时统一承载；
+        // codex restore_v2_agent_metadata 以 root_thread_id 调用同语义）。
+        // Open 边 → 树元数据惰性登记（path/深度/label），不重挂不投递。
+        if SubagentLineage.read(events: writer.events) == nil {
+            await subagentRuntime.recoverOpenChildren(rootSessionId: parentSessionId)
+        }
     }
 
     /// in-process provider 共用工厂（spawn/fork 同栈，种子差异在 provider 层
@@ -1183,12 +1443,15 @@ final class AppEnvironment: ObservableObject {
         let childWriter = opened.writer
         // lineage 事件（dsh childSessionMeta meta 的 extensionEvent 改案承载
         // ——SubagentTypes 头注登记；delegationDepth 持久权威由此 fold）。
+        // M7.3 件 H：agentPath 随行持久化（resolved.agentPath 由 runtime
+        // 分配——恢复树重建的 path 权威，codex stored_thread.agent_path 等价）。
         _ = try await childWriter.append(.extensionEvent(
             kind: SubagentLineage.eventKind,
             payload: SubagentLineage.payload(for: .init(
                 parentSession: resolved.request.parentSessionId,
                 delegationDepth: resolved.childDepth,
-                seeded: seed?.isEmpty == false))))
+                seeded: seed?.isEmpty == false,
+                agentPath: resolved.agentPath))))
         // descriptor 事件（创建窗口直写——dsh attachDescriptorAppend 为首个
         // pre-step 落盘，万我创建窗口先于首个 turn，登记）。
         _ = try await childWriter.append(.extensionEvent(
@@ -1211,6 +1474,46 @@ final class AppEnvironment: ObservableObject {
             modelSelection: resolved.request.modelSelection,
             subagentDepth: resolved.childDepth,
             subagentSandboxOverride: resolved.request.sandboxModeOverride)
+        guard let loop = stack.loop else {
+            throw SubagentError(message: "child agent stack assembly failed: "
+                + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")
+        }
+        return (loop, childWriter)
+    }
+
+    /// M7.3 件 H：恢复元数据读取（openWriter + 子日志 fold——lineage 持久权威
+    /// + descriptor label；openWriter 幂等复用，重挂时同一 writer）。
+    private func readSubagentChildMetadata(childId: String) async throws
+        -> (lineage: SubagentLineage.Record, descriptor: SubagentDescriptor.Record?) {
+        let opened = try await sessionStore.openWriter(id: childId)
+        let events = opened.writer.events
+        guard let lineage = SubagentLineage.read(events: events) else {
+            throw SubagentError(
+                message: "child session \(childId) has no subagent lineage record",
+                code: "RECOVERY_METADATA_INVALID")
+        }
+        return (lineage, SubagentDescriptor.fold(events: events))
+    }
+
+    /// M7.3 件 H：恢复重挂物化（openWriter + makeAgentStack——子会话已存在，
+    /// **不**重写 lineage/descriptor/种子；settle 回调同 startContinuable）。
+    /// 登记适配：modelSelection 重挂传 nil——由子栈自身请求头 resume 解析
+    /// （新建路径的父路由随链面仅存在于创建时）；subagentSandboxOverride 传
+    /// nil 走子会话缺省解析 (defaults.sandbox, .never)——与新建一致。
+    private func remountSubagentChildStack(
+        childId: String,
+        onTurnEnd: @escaping @Sendable (TurnEndReason) -> Void)
+        async throws -> (loop: AgentLoop, writer: SessionWriter) {
+        let opened = try await sessionStore.openWriter(id: childId)
+        let childWriter = opened.writer
+        let stack = await makeAgentStack(
+            sessionId: childId,
+            writer: childWriter,
+            callbacks: AgentLoop.Callbacks(onTurnEnd: onTurnEnd),
+            interactionPresenter: nil,
+            modelSelection: nil,
+            subagentDepth: SubagentLineage.read(events: childWriter.events)?.delegationDepth,
+            subagentSandboxOverride: nil)
         guard let loop = stack.loop else {
             throw SubagentError(message: "child agent stack assembly failed: "
                 + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")

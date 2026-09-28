@@ -303,17 +303,20 @@ actor AgentLoop {
         nextTurnInbox.append(entry)
         goalNoteNextTurnInsert(entry)
         wake()
+        notifyActivity(.mailbox)
     }
 
     /// steer：本回合下一步注入 + 唤醒（打断注入；dsh next-step + wakeup）。
     func steer(_ text: String, source: InboxSource = .user) {
         nextStepInbox.append(InboxEntry(text: text, source: source))
         wake()
+        notifyActivity(.steer)
     }
 
     /// inject：本回合下一步注入，不唤醒（dsh inject）。
     func inject(_ text: String, source: InboxSource = .user) {
         nextStepInbox.append(InboxEntry(text: text, source: source))
+        notifyActivity(.steer)
     }
 
     /// followup：排队独立回合 + 唤醒。
@@ -322,6 +325,7 @@ actor AgentLoop {
         nextTurnInbox.append(entry)
         goalNoteNextTurnInsert(entry)
         wake()
+        notifyActivity(.mailbox)
     }
 
     /// 子 agent 消息回传投递（QA-2 P1-2 deliverFromSubagent——dsh
@@ -333,6 +337,7 @@ actor AgentLoop {
             source: .subagentMessage(childId: childId))
         nextStepInbox.append(entry)
         wake()
+        notifyActivity(.steer)
     }
 
     // MARK: goal-round-driver（M7 件 B；dsh goal-round-driver/src/index.ts 语义）
@@ -585,6 +590,71 @@ actor AgentLoop {
         let waiters = idleWaiters
         idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
+    }
+
+    /// phase 查询缝（M7.3 件 H：list_agents running/idle 判定 + wait 面测试
+    /// 观察用；只读不扰核心循环——派单"改动仅限新增查询/等待缝"）。
+    func currentPhase() -> Phase {
+        phase
+    }
+
+    // MARK: - inbox 活动等待缝（M7.3 件 H · wait_agent 底座）
+
+    /// inbox 活动类别（codex InputQueueActivity 1:1——wait.rs:180-185
+    /// WaitOutcome 的来源通道）。
+    enum InboxActivity: Equatable, Sendable {
+        /// next-turn 条目到达（followup——子结算通知/新回合输入排队）。
+        case mailbox
+        /// 本回合步边界条目到达（steer/inject/deliverFromSubagent——新输入
+        /// 打断等待）。
+        case steer
+    }
+
+    /// 活动等待者（一次一续体；activity 与 timeout 双端竞争，先到先 resume，
+    /// 后到按 id 摘除不再 resume——续体单次恢复纪律）。
+    private struct ActivityWaiter {
+        let id = UUID()
+        let continuation: CheckedContinuation<InboxActivity?, Never>
+    }
+
+    private var activityWaiters: [ActivityWaiter] = []
+
+    /// 等待 inbox 活动（wait.rs:187-205 wait_for_activity 的 watch 通道语义
+    /// 等价——挂起至活动到达或超时，**不轮询状态**）。
+    /// pending 语义（wait.rs:190-197）：调用时已有排队条目（steer 面优先，
+    /// 与条目消费序一致）→ 立即返回，不等待。
+    /// - Returns: 活动类别；nil = 超时（WaitOutcome::TimedOut）。
+    func waitForInboxActivity(timeoutMs: Int64) async -> InboxActivity? {
+        if !nextStepInbox.isEmpty { return .steer }
+        if !nextTurnInbox.isEmpty { return .mailbox }
+        return await withCheckedContinuation { (cont: CheckedContinuation<InboxActivity?, Never>) in
+            let waiter = ActivityWaiter(continuation: cont)
+            activityWaiters.append(waiter)
+            let waiterID = waiter.id
+            let nanoseconds = UInt64(max(0, timeoutMs)) * 1_000_000
+            // 超时哨兵：到期摘除自身并 resume nil；若活动先到，waiter 已被
+            // notifyActivity 摘除，本任务到期后摘除 no-op（firstIndex 为 nil）。
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                await self?.finishActivityWait(id: waiterID, result: nil)
+            }
+        }
+    }
+
+    /// 按摘除并恢复（活动端/超时端共用；续体单次恢复由摘除唯一性保证）。
+    private func finishActivityWait(id: UUID, result: InboxActivity?) {
+        guard let index = activityWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = activityWaiters.remove(at: index)
+        waiter.continuation.resume(returning: result)
+    }
+
+    /// 活动发射（条目入列点独占调用——先入列后发射，等待者恢复时快照已含条目）。
+    private func notifyActivity(_ activity: InboxActivity) {
+        let waiters = activityWaiters
+        activityWaiters.removeAll()
+        for waiter in waiters {
+            waiter.continuation.resume(returning: activity)
+        }
     }
 
     // MARK: - 回合（dsh turn()）
