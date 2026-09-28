@@ -1,0 +1,104 @@
+# iOS Unit Tests (one-shot) —— 【M7 批1 件 F 重建 2026-09-28：一次性验证面】
+# 触发：仅 workflow_dispatch（手动，统一 CI 时 dispatch），绝不随 push 自动跑
+#（2026-09-11 用户裁决"不建常驻轨道"维持——ios.yml:65-114 六次终局留痕）。
+# 用途：M7 批1 种子①（件 D 全屏预览缩放+长按菜单）与种子②（件 E fetch 落点
+# Downloads/）单测的 CI 编译+运行验证。
+#
+# 语义源（逐段对齐）：
+#   · 步骤主体 = git 历史权威先例 816ae62:.github/workflows/test.yml 1:1
+#     （该件源自 M4-A 先例 957aa41，经 M6 终验环境七轮修正收敛——ios-sim 库
+#     变体重编/SIM_UDID 最新 runtime 解析/WebKit Swift overlay 弱链接方案）；
+#   · runner/Xcode 版本 = ios.yml 对齐（macos-15 / Xcode 16.4 / 同款工具链
+#     安装与 iSH 库构建步骤）；
+#   · 占位 rootfs = issue-ledger ERR-008（ledger:27-32）：App target 把
+#     alpine-rootfs.zip 声明为构建期必须存在的资源，test 前必须生成——
+#     单测不 boot guest，内容无关（真实 rootfs 仍由 ios.yml fetch_rootfs.sh
+#     产出；本工作流按派单裁定用占位 zip，不下载 Alpine）。
+name: iOS Unit Tests (one-shot)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install toolchain
+        run: |
+          brew install xcodegen
+          brew install meson ninja
+          # llvm + lld：vdso 交叉构建需要（clang -target aarch64-linux-gnu -fuse-ld=lld）
+          brew install --quiet llvm || echo "WARN: llvm install failed"
+          brew install --quiet lld || echo "WARN: lld install failed, vdso will be skipped"
+
+      - name: Build iSH static libraries
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build_ish.sh release
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Generate placeholder Alpine rootfs (ERR-008)
+        run: |
+          # ERR-008（issue-ledger:27-32）：App target 资源依赖——构建期需要
+          # 文件存在、运行期（单测不 boot guest）才无关内容；真实 rootfs 仍由
+          # ios.yml fetch_rootfs.sh 产出。
+          mkdir -p WanWo/Resources
+          PLACEHOLDER_DIR="$(mktemp -d)"
+          echo "placeholder rootfs (unit tests never boot the guest — ERR-008)" \
+            > "$PLACEHOLDER_DIR/placeholder.txt"
+          (cd "$PLACEHOLDER_DIR" && zip -qry "$GITHUB_WORKSPACE/WanWo/Resources/alpine-rootfs.zip" .)
+          ls -lh WanWo/Resources/alpine-rootfs.zip
+
+      - name: Run unit tests (iOS Simulator)
+        run: |
+          set -o pipefail
+          # iSH 库的平台变体：arm64 真机库与 arm64 模拟器是不同 Mach-O 平台，
+          # 链接器拒绝混链——重编 sim 平台库覆盖工作区副本供模拟器测试链接
+          # （真机产物路径与脚本默认行为零影响）。
+          ./scripts/build_ish.sh release ios-sim "$PWD/build/simlibs"
+          cp build/simlibs/*.a Vendor/libs/
+          # 终验补三（2026-09-16）：WebKit Swift overlay（libswiftWebKit.dylib）
+          # 在 18.4+ sim runtime 被移除（18.5 dyld 早崩 35041393412 实证）——
+          # runner 实测 runtimes=18.5/18.6/26.0/26.1/26.2（无旧可逃）→ 改选
+          # 最新 runtime（26.x 或已恢复 overlay/或其 dyld cache 含之）。
+          # awk 匹配修正："/iPhone/"（设备名带空格，原 /iPhone \( / 永不命中
+          # = UDID 空实证 35043626399）。
+          echo "=== available runtimes ==="
+          xcrun simctl list runtimes
+          SIM_UDID=$(xcrun simctl list devices available | awk '
+            /^-- iOS/ { ver = $3 + 0 }   # 节头="-- iOS 26.2 --"：版本在 $3（$2 是"iOS"）
+            /iPhone/ && ver > 0 { print ver, $0 }
+          ' | sort -nr | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          echo "Using simulator UDID: $SIM_UDID (newest runtime preferred)"
+          test -n "$SIM_UDID"
+          # 终验（项目侧弱链接方案，见 project.yml OTHER_LDFLAGS）：WebKit
+          # Swift overlay 在新 sim runtime/新工具链已被移除——弱链接=缺失容忍，
+          # 单阶段 xcodebuild test 即可（两阶段复制方案作废：runner 全盘
+          # find 无此 dylib，35042226955 实证）。真机 16.6 自带不受影响。
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -scheme WanWo \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            test | tee test.log
+
+      - name: Upload test log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          retention-days: 14

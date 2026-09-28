@@ -8,7 +8,10 @@
 //  纪律：body 拆子计算属性（SwiftUI type-check 超时防御，run 35468152722 教训）。
 //
 
+import Photos
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 struct WORootFrame: View {
     // MARK: - 状态
@@ -529,25 +532,85 @@ struct WOSlotPlaceholder: View {
     }
 }
 
-// MARK: - 集中式图片全屏预览（P2-1c 修5 2026-09-28）
+// MARK: - 集中式图片全屏预览（P2-1c 修5 → 【M7 种子① 件 D 重做 2026-09-28】）
 
-/// 黑底 scaledToFit 点按关闭（workspaceStore.pendingImagePreview 唯一呈现
-/// 端；宿主绝对路径直读——发起方手持解析产物，呈现端零二次解析）。
+/// 全屏图片预览：UIScrollView 手势仲裁缩放面 + 长按菜单（复制/存相册/分享）。
+///
+/// 语义源（逐行移植，禁简化——派单铁律）：
+///   · OpenMinis src/ios/Views/Chat/Media/ImagePreview.swift
+///     ImagePreviewContent（:125-152）+ ImagePreviewContentView（:155-383）
+///     ——双指捏合 midpoint 锚定 / 单指下拉 dismiss（跟手 1:1 +
+///     lateralDriftFactor 0.5 + 阈值 80 弹回 + backdrop alpha 渐隐）/
+///     双击 1x↔max（tap 位置锚定 zoom to rect）/ scale>1 平移钳制 /
+///     contentInset 居中 / 单指 pan maximumNumberOfTouches=1（双指让路
+///     pinch）/ gestureRecognizerShouldBegin 竖直主导判定。
+///   · 存相册 = 原件 ImagePreviewView.saveImageToPhotos（:514-534）逐行移植
+///     （PHPhotoLibrary.requestAuthorization(.addOnly) +
+///     creationRequestForAsset）。
+///   · 分享 = 原件 MinisShareSheet.swift:15-101 逐行移植为 WOShareSheet
+///     （png 临时文件 → UIActivityViewController，原件 :506-510 同形态）。
+///   · 全屏隐藏状态栏 = 原件 ImagePreviewView:511 `.statusBar(hidden:)`——
+///     iOS 16 基线改用新 API `.statusBarHidden(true)`（旧 API 已 deprecated，
+///     【QA P1-1 修正 2026-09-28】补齐漏移植）。
+/// 已拍板适配（派单简报件 D"用户拍板交互"，勿再议）：
+///   ① 单击=关闭（onSingleTap→onClose；原件单击=chrome 切换）；✕ 按钮保留。
+///   ② 复制/存相册/分享三功能经 contextMenu（长按触发，挂在图片视图上，
+///     非常驻按钮排）——contextMenu 为 SwiftUI 修饰符叠加在
+///     UIViewRepresentable 上，与 UIScrollView 手势共存需真机验证；若冲突，
+///     改 UILongPressGestureRecognizer + UIMenu 自实现（报告登记）。
+///   ③ 存相册结果经既有 WOToast 呈现（菜单形态无原件顶栏按钮位承载
+///     saveStatus；PHPhotoLibrary 授权/写入语义不变，saved 2s 复位同原件）。
 struct ImageFullScreenPreview: View {
     let hostPath: String
     let onClose: () -> Void
 
     @State private var image: UIImage?
+    /// 存相册状态机（原件 :394-396 SaveStatus 1:1；呈现面适配 toast，拍板③）。
+    @State private var saveStatus: SaveStatus = .idle
+    /// 存相册终态 toast 文案（nil = 不呈现）。
+    @State private var saveToast: String?
+    /// 分享面板（sheet 呈现 WOShareSheet，原件 :392 showShareSheet 同语义）。
+    @State private var showShareSheet = false
+
+    private enum SaveStatus {
+        case idle, saving, saved, failed
+    }
 
     var body: some View {
         ZStack {
+            // 原件 ImagePreviewView :398-408 同款：全 bleed 黑底——
+            // representable 在安全区内布局，外层黑底补 safe-area 带色差。
             Color.black.ignoresSafeArea()
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .ignoresSafeArea()
+                ImagePreviewContent(
+                    image: image,
+                    onDismiss: { onClose() },
+                    // 拍板①：单击=关闭（原件 onSingleTap=chrome 切换）。
+                    onSingleTap: { onClose() }
+                )
+                .ignoresSafeArea()
+                // 拍板②：长按菜单挂在图片视图上（非常驻按钮排）。
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.image = image
+                    } label: {
+                        Label("复制图片", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        saveImageToPhotos(image)
+                    } label: {
+                        Label(saveStatus == .saving ? "正在存入相册…" : "存入相册",
+                              systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(saveStatus == .saving)
+                    Button {
+                        showShareSheet = true
+                    } label: {
+                        Label("分享…", systemImage: "square.and.arrow.up")
+                    }
+                }
             } else {
+                // 图片不可用兜底（旧宿主形态保留；无缩放面可挂——点按关闭）。
                 VStack(spacing: 8) {
                     Image(systemName: "photo")
                         .font(.system(size: 36))
@@ -556,7 +619,10 @@ struct ImageFullScreenPreview: View {
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.6))
                 }
+                .onTapGesture { onClose() }
             }
+            // ✕ 按钮保留（拍板①）；zIndex 压过手势层
+            //（原件 :415-416 注释同语义——iPad 上按钮在手势层之上）。
             VStack {
                 HStack {
                     Spacer()
@@ -572,10 +638,461 @@ struct ImageFullScreenPreview: View {
                 }
                 Spacer()
             }
+            .zIndex(10)
         }
-        .onTapGesture { onClose() }
+        // 存相册结果 toast（拍板③）。
+        .overlay(alignment: .bottom) {
+            if let toast = saveToast {
+                WOToast(text: toast,
+                        icon: Image(systemName: saveStatus == .saved
+                                        ? "checkmark.circle"
+                                        : "exclamationmark.triangle"),
+                        onDone: { saveToast = nil })
+                    .padding(.bottom, 96)
+            }
+        }
+        // 分享=原件 :506-510 形态：png 临时文件 → WOShareSheet。
+        .sheet(isPresented: $showShareSheet) {
+            if let data = image?.pngData(),
+               let tmpURL = Self.writeTempImageFile(data: data) {
+                WOShareSheet(url: tmpURL)
+            }
+        }
+        // 【QA P1-1 修正 2026-09-28】原件 ImagePreviewView:511
+        // `.statusBar(hidden: true)` 漏移植补齐——全屏预览隐藏状态栏；
+        // iOS 16 基线用新 API statusBarHidden（原件旧 API 已 deprecated）。
+        .statusBarHidden(true)
         .onAppear {
             image = UIImage(contentsOfFile: hostPath)
         }
+    }
+
+    /// 存相册（原件 :514-534 逐行移植——授权档/limited 放行/performChanges/
+    /// 成功 2s 复位全同；终态呈现由按钮状态改 toast，拍板③）。
+    private func saveImageToPhotos(_ image: UIImage) {
+        saveStatus = .saving
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                DispatchQueue.main.async {
+                    saveStatus = .failed
+                    saveToast = "存入相册失败——未获授权"
+                }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            } completionHandler: { success, _ in
+                DispatchQueue.main.async {
+                    saveStatus = success ? .saved : .failed
+                    saveToast = success ? "已存入相册" : "存入相册失败"
+                    if success {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            saveStatus = .idle
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 原件 :536-540 逐行移植。
+    fileprivate static func writeTempImageFile(data: Data) -> URL? {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("share_image_\(UUID().uuidString).png")
+        try? data.write(to: tmp)
+        return tmp
+    }
+}
+
+// MARK: - 全屏预览缩放面（M7 种子① 件 D · OpenMinis ImagePreview.swift 逐行移植）
+
+/// Zoomable / pannable / pull-to-dismiss image surface. Backed by a UIKit
+/// `UIScrollView` so gesture arbitration (1-finger pan vs. 2-finger pinch
+/// vs. tap vs. double-tap) is handled by UIKit's recognizer system.
+/// SwiftUI's composite gestures deferred all state updates until the
+/// finger lifted and treated 2-finger touches as drags.
+///
+/// Behavior（原件 :107-118 注释逐行对齐）:
+///   · 1 finger drag at scale 1  → pull-to-dismiss (follows finger 1:1).
+///     Release past `dismissThreshold` fires `onDismiss`. Release short
+///     of threshold springs back.
+///   · 1 finger drag at scale > 1 → pan inside zoomed image, clamped
+///     to edges. Not a dismiss.
+///   · 2 finger pinch            → zoom around the pinch midpoint
+///     (native UIScrollView behavior).
+///   · double tap                → toggle between 1x and max zoom,
+///     anchored at the tap location.
+///   · single tap                → host callback (`onSingleTap`)——
+///     万我拍板①：单击=关闭预览（原件 Minis 中为 chrome 切换）。
+///
+/// `horizontalDragLocked`（gallery 场景参数）万我全屏无画廊恒缺省 false；
+/// 参数与语义逐行保留（禁简化），竖直主导判定随值生效。
+struct ImagePreviewContent: UIViewRepresentable {
+    let image: UIImage
+    let onDismiss: () -> Void
+    var horizontalDragLocked: Bool = false
+    var onSingleTap: (() -> Void)? = nil
+    /// Downward-pull distance (in pt) past which release triggers dismiss.
+    var dismissThreshold: CGFloat = 80
+    /// Maximum zoom scale for pinch / double-tap.
+    var maximumScale: CGFloat = 3.0
+
+    func makeUIView(context: Context) -> ImagePreviewContentView {
+        let view = ImagePreviewContentView(image: image)
+        view.onDismiss = onDismiss
+        view.onSingleTap = onSingleTap
+        view.horizontalDragLocked = horizontalDragLocked
+        view.dismissThreshold = dismissThreshold
+        view.maximumScale = maximumScale
+        return view
+    }
+
+    func updateUIView(_ view: ImagePreviewContentView, context: Context) {
+        view.onDismiss = onDismiss
+        view.onSingleTap = onSingleTap
+        view.horizontalDragLocked = horizontalDragLocked
+        view.dismissThreshold = dismissThreshold
+        view.maximumScale = maximumScale
+    }
+}
+
+/// UIKit implementation backing `ImagePreviewContent`.
+/// （原件 :155-383 逐行移植；仅两处抽出见 `shouldDismiss` /
+/// `backdropDimProgress` 单测缝注释——算式 1:1，承载处改变。）
+final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    var onDismiss: (() -> Void)?
+    var onSingleTap: (() -> Void)?
+    var horizontalDragLocked: Bool = false
+    var dismissThreshold: CGFloat = 80
+    var maximumScale: CGFloat = 3.0 {
+        didSet { scrollView.maximumZoomScale = maximumScale }
+    }
+
+    private let scrollView = UIScrollView()
+    private let imageView: UIImageView
+    private let backdrop = UIView()
+
+    /// Translation applied to the scrollView during an in-progress
+    /// dismiss drag. Lives on `scrollView.transform` (not
+    /// contentOffset) so the scrollView's own clamping doesn't fight
+    /// us.
+    private var dismissTranslation: CGPoint = .zero
+    /// Lateral drift factor so horizontal motion during dismiss still
+    /// produces sideways movement (matches Photos.app feel).
+    private let lateralDriftFactor: CGFloat = 0.5
+
+    private var singleFingerDismissPan: UIPanGestureRecognizer!
+    private var doubleTap: UITapGestureRecognizer!
+    private var singleTap: UITapGestureRecognizer!
+
+    init(image: UIImage) {
+        self.imageView = UIImageView(image: image)
+        super.init(frame: .zero)
+
+        backgroundColor = .clear
+        backdrop.backgroundColor = .black
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backdrop)
+
+        scrollView.delegate = self
+        scrollView.minimumZoomScale = 1.0
+        scrollView.maximumZoomScale = maximumScale
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.alwaysBounceHorizontal = false
+        scrollView.alwaysBounceVertical = false
+        scrollView.bouncesZoom = true
+        scrollView.decelerationRate = .fast
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scrollView)
+
+        // NOTE: imageView uses manual frame layout (not autolayout) so
+        // we can size it to the aspect-fitted rect within the scroll
+        // view's bounds every time layoutSubviews runs. Pinning it to
+        // the contentLayoutGuide instead would leave a tall image
+        // running off-screen and appear to the user as "already zoomed".
+        imageView.contentMode = .scaleToFill  // we compute the exact aspect-fit frame ourselves
+        imageView.isUserInteractionEnabled = false
+        scrollView.addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            backdrop.topAnchor.constraint(equalTo: topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
+
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+
+        // Single-finger dismiss pan. `maximumNumberOfTouches = 1` so
+        // two-finger touches bypass this recognizer and reach the
+        // scrollView's pinch recognizer instead.
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleDismissPan(_:)))
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = self
+        singleFingerDismissPan = pan
+        addGestureRecognizer(pan)
+
+        let double = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        double.numberOfTapsRequired = 2
+        double.numberOfTouchesRequired = 1
+        addGestureRecognizer(double)
+        doubleTap = double
+
+        let single = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        single.numberOfTapsRequired = 1
+        single.numberOfTouchesRequired = 1
+        single.require(toFail: double)
+        addGestureRecognizer(single)
+        singleTap = single
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        sizeAndCenterImageView()
+    }
+
+    /// 件 D 单测缝（派单简报"dismissThreshold 判定可抽测"）：原件
+    /// handleDismissPan :313-317 的内联释放判定抽出为纯函数——
+    /// 算式 1:1（`pulled >= dismissThreshold`），仅承载处改变。
+    static func shouldDismiss(pulledY: CGFloat, threshold: CGFloat) -> Bool {
+        pulledY >= threshold
+    }
+
+    /// 件 D 单测缝：原件 applyDismissTransform :337-338 的内联渐隐进度
+    /// 算式抽出为纯函数——1:1（clamp 到 [0, threshold] 再归一）。
+    static func backdropDimProgress(pulledY: CGFloat, threshold: CGFloat) -> CGFloat {
+        min(max(pulledY, 0), threshold) / threshold
+    }
+
+    /// Compute the aspect-fitted rect for the image within the
+    /// scrollView's bounds and set the imageView's frame to it at
+    /// zoom 1.  Also drives `contentSize` so the scrollView knows
+    /// the true natural page size. When zoomed in, the imageView's
+    /// frame is grown by `zoomScale` via `scrollView.zoom(...)`'s
+    /// internal transform — we only re-center on layout changes.
+    private func sizeAndCenterImageView() {
+        let boundsSize = scrollView.bounds.size
+        guard boundsSize.width > 0, boundsSize.height > 0 else { return }
+        let imgSize = imageView.image?.size ?? .zero
+        guard imgSize.width > 0, imgSize.height > 0 else { return }
+
+        // Only recompute the base (zoomScale == 1) frame when the
+        // scroll view is at its resting zoom. When zoomed in, the
+        // content size and imageView frame are already managed by the
+        // scroll view itself, and we just re-center via insets.
+        if abs(scrollView.zoomScale - 1.0) < 0.01 {
+            let ratio = min(boundsSize.width / imgSize.width,
+                            boundsSize.height / imgSize.height)
+            let fitted = CGSize(width: imgSize.width * ratio,
+                                height: imgSize.height * ratio)
+            imageView.frame = CGRect(origin: .zero, size: fitted)
+            scrollView.contentSize = fitted
+        }
+
+        // Re-center content so it sits in the middle of the viewport
+        // when the content is smaller than the viewport (both at
+        // zoom 1 and while zooming out).
+        let xInset = max((boundsSize.width - scrollView.contentSize.width) / 2, 0)
+        let yInset = max((boundsSize.height - scrollView.contentSize.height) / 2, 0)
+        scrollView.contentInset = UIEdgeInsets(top: yInset, left: xInset, bottom: yInset, right: xInset)
+    }
+
+    // MARK: UIScrollViewDelegate
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        // Re-center via contentInset as the content grows/shrinks
+        // relative to the viewport.
+        let boundsSize = scrollView.bounds.size
+        let xInset = max((boundsSize.width - scrollView.contentSize.width) / 2, 0)
+        let yInset = max((boundsSize.height - scrollView.contentSize.height) / 2, 0)
+        scrollView.contentInset = UIEdgeInsets(top: yInset, left: xInset, bottom: yInset, right: xInset)
+    }
+
+    // MARK: Dismiss pan
+
+    @objc private func handleDismissPan(_ gr: UIPanGestureRecognizer) {
+        guard scrollView.zoomScale <= 1.01 else { return }
+
+        switch gr.state {
+        case .began, .changed:
+            let t = gr.translation(in: self)
+            dismissTranslation = CGPoint(x: t.x * lateralDriftFactor, y: t.y)
+            applyDismissTransform()
+        case .ended, .cancelled, .failed:
+            let pulled = dismissTranslation.y
+            if Self.shouldDismiss(pulledY: pulled, threshold: dismissThreshold) {
+                onDismiss?()
+                return
+            }
+            UIView.animate(
+                withDuration: 0.3,
+                delay: 0,
+                usingSpringWithDamping: 0.8,
+                initialSpringVelocity: 0,
+                options: [.curveEaseOut, .allowUserInteraction],
+                animations: {
+                    self.dismissTranslation = .zero
+                    self.applyDismissTransform()
+                }
+            )
+        default:
+            break
+        }
+    }
+
+    private func applyDismissTransform() {
+        scrollView.transform = CGAffineTransform(translationX: dismissTranslation.x,
+                                                  y: dismissTranslation.y)
+        let progress = Self.backdropDimProgress(pulledY: dismissTranslation.y,
+                                                threshold: dismissThreshold)
+        backdrop.alpha = 1.0 - progress * 0.6
+    }
+
+    // MARK: Taps
+
+    @objc private func handleDoubleTap(_ gr: UITapGestureRecognizer) {
+        if scrollView.zoomScale > 1.01 {
+            scrollView.setZoomScale(1.0, animated: true)
+        } else {
+            let location = gr.location(in: imageView)
+            let targetScale = maximumScale
+            let size = scrollView.bounds.size
+            let w = size.width / targetScale
+            let h = size.height / targetScale
+            let rect = CGRect(x: location.x - w / 2,
+                              y: location.y - h / 2,
+                              width: w,
+                              height: h)
+            scrollView.zoom(to: rect, animated: true)
+        }
+    }
+
+    @objc private func handleSingleTap(_ gr: UITapGestureRecognizer) {
+        onSingleTap?()
+    }
+
+    // MARK: UIGestureRecognizerDelegate
+
+    // `UIView` has its own `gestureRecognizerShouldBegin(_:)` so this
+    // needs `override` even though the signature originates on the
+    // `UIGestureRecognizerDelegate` protocol.
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === singleFingerDismissPan else { return true }
+        guard scrollView.zoomScale <= 1.01 else { return false }
+        if horizontalDragLocked {
+            let v = singleFingerDismissPan.velocity(in: self)
+            if abs(v.x) > abs(v.y) { return false }
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        return false
+    }
+}
+
+// MARK: - 分享面板（M7 种子① 件 D · OpenMinis MinisShareSheet.swift 逐行移植）
+
+/// UIKit UIActivityViewController wrapper for sharing a single URL
+/// (file or link). 语义源：OpenMinis src/ios/Views/Chat/MinisShareSheet.swift
+/// :15-101 逐行品牌折算（Minis→WO；注释内 minis:// 同折算为 wanwo://）——
+/// 万我无 UIActivityViewController 既有先例（grep 实证仅 ShareLink），
+/// 按派单口径照原件形态移植。
+struct WOShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let safeURL = WOShareSheet.sanitizedShareURL(url) ?? url
+        return UIActivityViewController(activityItems: [safeURL], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+
+    /// [T-share-sheet-uti] Catalyst ShareKit crash mitigation
+    /// (`Minis-2026-05-18-205557.ips`): `SHKItemIsPDF` →
+    /// `UTTypeGetForIdentifier` traps on file URLs whose path extension
+    /// produces a malformed UTI string (empty / non-ASCII / very long
+    /// extensions, or when iOS can't map the extension to a registered
+    /// type). Workaround: if the URL is a file URL whose extension
+    /// isn't a short ASCII-alphanumeric token that resolves to a known
+    /// `UTType`, copy the file to a `.bin` neighbor in `tmp/` so the
+    /// share sheet sees a vanilla `public.data` UTI and skips the
+    /// PDF-detection assert. http/https URLs pass through unchanged;
+    /// other schemes (wanwo://, file:// with no path, etc.) return
+    /// nil so the caller can fall back to the raw URL — those scheme
+    /// strings reach ShareKit through a different code path and have
+    /// not been observed to crash.
+    static func sanitizedShareURL(_ url: URL) -> URL? {
+        // Non-file URLs: only sanitize http/https; let everything else
+        // through untouched (ShareKit handles raw URLs via the URL
+        // branch, not the file-UTI branch).
+        guard url.isFileURL else {
+            return nil
+        }
+        let ext = url.pathExtension
+        if isSafePathExtension(ext) {
+            return nil // original URL is fine — no copy needed
+        }
+        // Make a sanitized copy in tmp with a `.bin` extension. We
+        // keep the basename to retain hint value in the share UI but
+        // strip non-ASCII / control chars so the receiving app sees a
+        // sane filename.
+        let fm = FileManager.default
+        let tmpDir = fm.temporaryDirectory.appendingPathComponent("share-sanitized", isDirectory: true)
+        try? fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let baseName = sanitizedBaseName(url.deletingPathExtension().lastPathComponent)
+        let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
+        let safeURL = tmpDir.appendingPathComponent("\(baseName)-\(stamp).bin")
+        // If the source file doesn't exist or copy fails, returning
+        // nil makes the caller fall back to the raw URL — better to
+        // attempt the share with the original (and risk the assert
+        // again) than to silently swallow the user's share request.
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        try? fm.removeItem(at: safeURL)
+        do {
+            try fm.copyItem(at: url, to: safeURL)
+            return safeURL
+        } catch {
+            return nil
+        }
+    }
+
+    /// `true` iff `ext` is a short ASCII-alphanumeric string that maps
+    /// to a registered `UTType`. Empty extensions, anything containing
+    /// non-ASCII or punctuation, and extensions that don't resolve to
+    /// a known type all fail the check — those are the inputs that
+    /// can produce the ShareKit assertion.
+    private static func isSafePathExtension(_ ext: String) -> Bool {
+        guard !ext.isEmpty, ext.count <= 8 else { return false }
+        for scalar in ext.unicodeScalars {
+            // 0-9 / A-Z / a-z only.
+            let v = scalar.value
+            let isDigit = v >= 0x30 && v <= 0x39
+            let isUpper = v >= 0x41 && v <= 0x5A
+            let isLower = v >= 0x61 && v <= 0x7A
+            if !(isDigit || isUpper || isLower) { return false }
+        }
+        return UTType(filenameExtension: ext) != nil
+    }
+
+    /// Strip non-ASCII-alnum / non-`-_.` chars from a basename so the
+    /// share-sheet's filename hint is benign even if the source name
+    /// contained CJK or punctuation that contributed to the original
+    /// UTI mishap.
+    private static func sanitizedBaseName(_ name: String) -> String {
+        let allowed: Set<Character> = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        let filtered = String(name.filter { allowed.contains($0) })
+        return filtered.isEmpty ? "share" : String(filtered.prefix(40))
     }
 }

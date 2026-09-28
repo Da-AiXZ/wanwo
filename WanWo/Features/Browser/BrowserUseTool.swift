@@ -28,6 +28,11 @@
 //    ④ 截图/fetch 产物的 wanwo:// 资源 URL 随 B3 scheme 体系接入后才可
 //       解析——本批落盘宿主 browser 桶（=guest /var/wanwo/browser/）并以
 //       guest 路径随行，不产 wanwo_url（避免产不可解析引用，B3 接线后补）。
+//       【M7 种子② 件 E 2026-09-28】上述 fetch 半段退役：fetch 落点改对齐
+//       WKDownload 链路——projectHost/Downloads/（未装配/解析失败回落
+//       browser 桶 fail-soft），wanwo_url = wanwo://workspace/Downloads/<file>
+//       （downloadsAgentPath :3213-3216 同款形态）；截图落点维持 browser 桶
+//       不变（本件范围仅 fetch 段）。
 //
 
 import Foundation
@@ -72,6 +77,69 @@ final class BrowserUseSessionStore {
 
     /// 存活池快照（诊断面；BrowserTabPoolRegistry 之外的本店在册数）。
     var livePoolCount: Int { pools.count }
+}
+
+// MARK: - FetchDestinationResolver（种子② 件 E · fetch 产物落点解析）
+
+/// fetch 产物落点解析（M7 种子② 件 E 2026-09-28）：
+/// 对齐 WKDownload 链路（BrowserUseManager.swift:2739-2745 已验证形态）——
+/// `BrowserUseSessionStore.workspacePathResolver?(sessionId)` →
+/// `WanWoPaths.projectsHostRoot(forGuestPath:)` → `projectHost/Downloads/`；
+/// **未装配/解析失败 → 回落会话 browser 桶（fail-soft，同 WKDownload 语义）**。
+/// 解析与文案算式抽为纯函数（hostRoot 注入缝）供单测
+///（WanWoTests/SeedFetchDestinationTests.swift 两例：有 resolver→Downloads/；
+/// 无→browser 桶）。
+enum FetchDestinationResolver {
+
+    /// 落点两形态：
+    ///   - workspaceDownloads：项目真目录 Downloads/（右栏文件树 + AI guest
+    ///     双可见——BrowserUseManager :2731-2738 修正注释同语义）；
+    ///   - browserBucket：回落会话 browser 桶（=guest /var/wanwo/browser/）。
+    enum Destination: Equatable {
+        /// hostDir=宿主落盘目录；guestDirPath=AI 可见 guest 路径 `<wsPath>/Downloads`。
+        case workspaceDownloads(hostDir: URL, guestDirPath: String)
+        case browserBucket(hostDir: URL)
+    }
+
+    /// 落点解析。`hostRoot` 默认绑 WanWoPaths.projectsHostRoot(forGuestPath:)
+    ///（非 projects guest 路径返回 nil，fail closed）——单测注入假根避开
+    /// RootfsInstaller 装配态。
+    static func resolve(sessionId: String,
+                        resolver: ((String) -> String?)?,
+                        hostRoot: (String) -> URL? = WanWoPaths.projectsHostRoot(forGuestPath:)) -> Destination {
+        if let wsPath = resolver?(sessionId), !wsPath.isEmpty,
+           let projectHost = hostRoot(wsPath) {
+            return .workspaceDownloads(
+                hostDir: projectHost.appendingPathComponent("Downloads", isDirectory: true),
+                guestDirPath: "\(wsPath)/Downloads")
+        }
+        return .browserBucket(
+            hostDir: WanWoPaths.sessionPersistentDir(for: sessionId, bucket: "browser"))
+    }
+
+    /// `fetched_path:` 行（件 E 文案锚点）= guest 工作区路径 + /Downloads/<file>
+    ///（wsPath 形态 = workspacePathResolver 返回值——AppEnvironment.swift:514-518
+    /// guestWorkspacePath 注册处实证）；回落分支维持旧文案 browser 桶 linux 路径。
+    static func agentFetchedPath(for destination: Destination, filename: String) -> String {
+        switch destination {
+        case .workspaceDownloads(_, let guestDirPath):
+            return "\(guestDirPath)/\(filename)"
+        case .browserBucket:
+            return "\(WanWoPaths.browserLinuxDir)/\(filename)"
+        }
+    }
+
+    /// `wanwo_url:` 行 = `wanwo://workspace/Downloads/<file>`
+    ///（BrowserDownloadCenter.downloadsAgentPath :3213-3216 同款形态）；
+    /// browser 桶回落 = nil（execute 侧维持 linuxPathToWanwoURL 旧生成面）。
+    static func agentWanwoURL(for destination: Destination, filename: String) -> String? {
+        switch destination {
+        case .workspaceDownloads:
+            return "wanwo://workspace/Downloads/\(filename)"
+        case .browserBucket:
+            return nil
+        }
+    }
 }
 
 // MARK: - BrowserUseTool（AgentTool 本体）
@@ -270,15 +338,41 @@ struct BrowserUseTool: AgentTool {
                 text += "\nwanwo_url: \(link)"
             }
         }
+        // 【M7 种子② 件 E 2026-09-28】fetch 产物落盘：落点对齐 WKDownload
+        // 链路（BrowserUseManager.swift:2739-2745 已验证形态）——
+        // workspacePathResolver → projectsHostRoot → projectHost/Downloads/
+        //（createDirectory intermediate）；未装配/解析失败 → 回落会话
+        // browser 桶（fail-soft，同 WKDownload 语义）。文案：
+        // fetched_path = guest 工作区路径 + /Downloads/<file>（wsPath 形态
+        // = workspacePathResolver 返回值）；wanwo_url =
+        // wanwo://workspace/Downloads/<file>（downloadsAgentPath :3213-3216
+        // 同款形态）。算式见 FetchDestinationResolver（本文件，纯函数单测缝）。
         if let fetchData = result.fetchedFileData, let fetchName = result.fetchedFileName {
-            try? FileManager.default.createDirectory(at: browserDir,
+            // workspacePathResolver 为 @MainActor static——经 MainActor.run
+            // 取值（本文件 pool 解析 :194-196 同款纪律）。
+            let resolver = await MainActor.run {
+                BrowserUseSessionStore.workspacePathResolver
+            }
+            let destination = FetchDestinationResolver.resolve(
+                sessionId: ctx.sessionId, resolver: resolver)
+            let hostDir: URL
+            switch destination {
+            case .workspaceDownloads(let dir, _): hostDir = dir
+            case .browserBucket(let dir): hostDir = dir
+            }
+            try? FileManager.default.createDirectory(at: hostDir,
                                                      withIntermediateDirectories: true)
-            let persistPath = browserDir.appendingPathComponent(fetchName)
+            let persistPath = hostDir.appendingPathComponent(fetchName)
             try? fetchData.write(to: persistPath)
-            let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(fetchName)"
-            text += "\nfetched_path: \(linuxPath)"
-            if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {
+            text += "\nfetched_path: \(FetchDestinationResolver.agentFetchedPath(for: destination, filename: fetchName))"
+            if let link = FetchDestinationResolver.agentWanwoURL(for: destination, filename: fetchName) {
                 text += "\nwanwo_url: \(link)"
+            } else {
+                // 回落分支维持旧生成面（批2 B⑥ 语义不变）。
+                let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(fetchName)"
+                if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {
+                    text += "\nwanwo_url: \(link)"
+                }
             }
         }
 
