@@ -89,9 +89,9 @@ final class M7RalphTests: XCTestCase {
     private struct WorkflowTestTimeout: Error {}
 
     private func withDeadline<T: Sendable>(_ seconds: Double,
-                                           _ op: @escaping @Sendable () async -> T) async throws -> T {
+                                           _ op: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { await op() }
+            group.addTask { try await op() }
             group.addTask {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw WorkflowTestTimeout()
