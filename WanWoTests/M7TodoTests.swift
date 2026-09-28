@@ -124,14 +124,17 @@ final class M7TodoTests: XCTestCase {
             ])))
         XCTAssertEqual(TodoInvariants.validate(events: writer.events),
                        "todo/write appended outside any open turn")
-        // 开放 turn 内 → 合法。
-        try await writer.append(.turnStart(turn: 1))
-        try await writer.append(.extensionEvent(
+        // 开放 turn 内 → 合法。validate 是全量日志 replay（首段刻意违规的
+        // 写入恒定命中），故合法面以干净的第二会话日志承载。
+        let (cleanWriter, cleanDir) = try await makeWriter()
+        defer { try? FileManager.default.removeItem(at: cleanDir) }
+        try await cleanWriter.append(.turnStart(turn: 1))
+        try await cleanWriter.append(.extensionEvent(
             kind: TodoEvents.writeKind, payload: TodoTool.payload(for: [
                 TodoItem(content: "a", status: .pending),
             ])))
-        try await writer.append(.turnEnd(turn: 1, reason: .completed))
-        XCTAssertNil(TodoInvariants.validate(events: writer.events))
+        try await cleanWriter.append(.turnEnd(turn: 1, reason: .completed))
+        XCTAssertNil(TodoInvariants.validate(events: cleanWriter.events))
     }
 
     // MARK: - 投影 fold（index.ts:130-145 对拍）

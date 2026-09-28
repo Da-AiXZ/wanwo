@@ -257,9 +257,11 @@ final class M7GoalTests: XCTestCase {
         // 投影 nil（墓碑后无活性 goal）。
         let projected = try await service.get()
         XCTAssertNil(projected)
-        // 旧 ref 的 CAS 在墓碑上失守（revision 已 bump）。
+        // 旧 ref 在墓碑上失守：投影 nil（墓碑后无活性 goal）→ CAS 前置的
+        // 投影读即 GOAL_NOT_FOUND（index.ts:447-470 expectCurrent 语义表：
+        // 投影 nil → GOAL_NOT_FOUND，先于 id+revision 比对）。
         let error = await assertAsyncThrows { try await service.complete(ref: goal.ref) }
-        XCTAssertEqual((error as? GoalError)?.code, .goalStaleRevision)
+        XCTAssertEqual((error as? GoalError)?.code, .goalNotFound)
     }
 
     // MARK: - activation 进程本地（types.ts:70-71 对拍）
