@@ -55,6 +55,11 @@ final class M7RalphTests: XCTestCase {
             // handler 闭包内计数盒承载（RoundFeed）。
             return SubagentRun(id: request.childId, result: task) {}
         }
+
+        /// Ralph 桩走 one-shot start 路径——无 continuable 创建面（协议
+        /// requirement 补齐，与 M7WorkflowTests 同期）。
+        func seedFor(_ request: SubagentResolvedRequest,
+                     parentLogEvents: [SessionEvent]) -> [SessionEvent]? { return nil }
     }
 
     /// 轮次供数盒（线程安全 callIndex 计数 + 逐轮交付表）。

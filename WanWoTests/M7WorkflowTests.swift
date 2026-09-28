@@ -68,10 +68,14 @@ final class M7WorkflowTests: XCTestCase {
             }
             return SubagentRun(id: request.childId, result: task) {}
         }
-    }
 
-    /// 阻塞闸（取消测试用：child 卡在 handler 内，测试方择机放行）。
-    final class Gate: @unchecked Sendable {
+        /// Workflow 桩走 one-shot start 路径——无 continuable 创建面（协议
+        /// requirement 批3 补齐：M7TeamTests 同期发现测试文件编译段后置暴露）。
+        func seedFor(_ request: SubagentResolvedRequest,
+                     parentLogEvents: [SessionEvent]) -> [SessionEvent]? { return nil }
+
+        /// 阻塞闸（取消测试用：child 卡在 handler 内，测试方择机放行）。
+        final class Gate: @unchecked Sendable {
         private let lock = NSLock()
         private var continuations: [CheckedContinuation<Void, Never>] = []
         private var opened = false
@@ -95,6 +99,7 @@ final class M7WorkflowTests: XCTestCase {
             continuations = []
             lock.unlock()
             for cont in resumed { cont.resume() }
+        }
         }
     }
 
