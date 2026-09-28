@@ -52,7 +52,7 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
     /// workspace host 命中项目工作区文件（真身=projectsHostRoot）：A1 分支优先于
     /// legacy 桶链——cwd 经 workspacePathResolver 注入，legacy 桶不建同名文件，
     /// 命中必经项目分支。文件名含中文（真机病灶原样：AI 对中文文件名glob 误诊）。
-    func testResolveWanwoURLWorkspaceHostPrefersProjectWorkspace() throws {
+    func testResolveWanwoURLWorkspaceHostPrefersProjectWorkspace() async throws {
         let guestCwd = "/var/wanwo/projects/wanwo-accfix-\(Self.testSID)"
         let projectHost = try XCTUnwrap(
             WanWoPaths.projectsHostRoot(forGuestPath: guestCwd))
@@ -79,7 +79,7 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
 
     /// 项目工作区未命中 → 落回既有链（会话 legacy 桶兜底——A1 存在优先语义：
     /// `first(where: exists) ?? first`；旧桶文件仍可达）。
-    func testResolveWanwoURLWorkspaceHostFallsBackToLegacyBucket() throws {
+    func testResolveWanwoURLWorkspaceHostFallsBackToLegacyBucket() async throws {
         let guestCwd = "/var/wanwo/projects/wanwo-accfix-\(Self.testSID)"
         let projectHost = try XCTUnwrap(
             WanWoPaths.projectsHostRoot(forGuestPath: guestCwd))
