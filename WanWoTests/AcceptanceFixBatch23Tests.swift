@@ -36,7 +36,7 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
         let sidRoot = bucketRoot.deletingLastPathComponent()
         try? FileManager.default.removeItem(at: sidRoot)
         // A1 注入的 workspacePathResolver 还原（静态全局——防泄漏到其它测试）。
-        BrowserUseSessionStore.workspacePathResolver = nil
+        await MainActor.run { BrowserUseSessionStore.workspacePathResolver = nil }
     }
 
     private func makeFile(_ relative: String, in base: URL) throws -> URL {
@@ -59,8 +59,10 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
         let file = try makeFile("你好.txt", in: projectHost)
         defer { try? FileManager.default.removeItem(at: projectHost) }
 
-        BrowserUseSessionStore.workspacePathResolver = { [guestCwd] sid in
-            sid == Self.testSID ? guestCwd : nil
+        await MainActor.run {
+            BrowserUseSessionStore.workspacePathResolver = { [guestCwd] sid in
+                sid == Self.testSID ? guestCwd : nil
+            }
         }
 
         let url = try XCTUnwrap(URL(string: "wanwo://workspace/%E4%BD%A0%E5%A5%BD.txt"))
@@ -83,8 +85,10 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
             WanWoPaths.projectsHostRoot(forGuestPath: guestCwd))
         defer { try? FileManager.default.removeItem(at: projectHost) }
 
-        BrowserUseSessionStore.workspacePathResolver = { [guestCwd] sid in
-            sid == Self.testSID ? guestCwd : nil
+        await MainActor.run {
+            BrowserUseSessionStore.workspacePathResolver = { [guestCwd] sid in
+                sid == Self.testSID ? guestCwd : nil
+            }
         }
 
         // legacy 桶建文件（项目目录为空）——唯一命中面=legacy 桶。
@@ -223,7 +227,7 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
     func testSplitAgentSegmentsPreservesOrder() {
         let text = "图1：\n\n![a](wanwo://browser/1.jpg)\n\n图2：\n\n![b](wanwo://browser/2.jpg)\n\n收尾文字"
         let segments = WOChatView.splitAgentSegments(text)
-        XCTAssertEqual(segments.map(\.image?.absoluteString ?? "text"),
+        XCTAssertEqual(segments.map { $0.image?.absoluteString ?? "text" },
                        ["text", "wanwo://browser/1.jpg",
                         "text", "wanwo://browser/2.jpg", "text"])
         XCTAssertTrue(segments[0].text.contains("图1："))

@@ -255,7 +255,8 @@ final class M7GoalTests: XCTestCase {
         XCTAssertEqual(tombstone.id, goal.id)
         XCTAssertEqual(tombstone.revision, goal.revision + 1)
         // 投影 nil（墓碑后无活性 goal）。
-        XCTAssertNil(try await service.get())
+        let projected = try await service.get()
+        XCTAssertNil(projected)
         // 旧 ref 的 CAS 在墓碑上失守（revision 已 bump）。
         let error = await assertAsyncThrows { try await service.complete(ref: goal.ref) }
         XCTAssertEqual((error as? GoalError)?.code, .goalStaleRevision)

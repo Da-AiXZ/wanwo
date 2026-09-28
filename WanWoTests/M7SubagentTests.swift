@@ -135,8 +135,8 @@ final class M7SubagentTests: XCTestCase {
         ])
         let events: [SessionEvent] = [
             event(.turnStart(turn: 0), seq: 0),
-            event(.extensionEvent(SubagentDescriptor.eventKind, first), seq: 1),
-            event(.extensionEvent(SubagentDescriptor.eventKind, second), seq: 2),
+            event(.extensionEvent(kind: SubagentDescriptor.eventKind, payload: first), seq: 1),
+            event(.extensionEvent(kind: SubagentDescriptor.eventKind, payload: second), seq: 2),
         ]
         // 首条权威：后写不可改写已声明组合（descriptor.ts:317-323）。
         XCTAssertEqual(SubagentDescriptor.fold(events: events)?.label, "first")
@@ -328,10 +328,10 @@ final class M7SubagentTests: XCTestCase {
         ]
         // 子日志：lineage(0) descriptor(1) 种子(2..4) + 子自有 turnEnd(5)。
         let childLog: [SessionEvent] = [
-            event(.extensionEvent(SubagentLineage.eventKind, .object([
+            event(.extensionEvent(kind: SubagentLineage.eventKind, payload: .object([
                 "origin": .string("subagent"), "parentSession": .string("parent"),
                 "delegationDepth": .int(1), "seeded": .bool(true)])), seq: 0),
-            event(.extensionEvent(SubagentDescriptor.eventKind, .object([
+            event(.extensionEvent(kind: SubagentDescriptor.eventKind, payload: .object([
                 "version": .int(3), "mode": .string("one-shot"),
                 "provider": .string("fork"), "label": .string("research")])), seq: 1),
             event(parentLog[0].payload, seq: 2),

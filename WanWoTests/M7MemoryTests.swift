@@ -295,15 +295,15 @@ final class M7MemoryTests: XCTestCase {
 
     func testStage1OutputStrictDecoding() throws {
         // 未知键拒绝（deny_unknown_fields 等价）。
-        XCTAssertThrowsError(try MemoryRollout.parseStage1Output(
+        XCTAssertThrowsError(try MemoryPhase1.parseStage1Output(
             #"{"raw_memory":"r","rollout_summary":"s","rollout_slug":null,"extra":1}"#))
         // slug 可空。
-        let ok = try MemoryRollout.parseStage1Output(
+        let ok = try MemoryPhase1.parseStage1Output(
             "```json\n{\"raw_memory\":\"r\",\"rollout_summary\":\"s\",\"rollout_slug\":null}\n```")
         XCTAssertEqual(ok.rawMemory, "r")
         XCTAssertNil(ok.rolloutSlug)
         // 非 JSON → 抛。
-        XCTAssertThrowsError(try MemoryRollout.parseStage1Output("no json here"))
+        XCTAssertThrowsError(try MemoryPhase1.parseStage1Output("no json here"))
     }
 
     // MARK: - redactor

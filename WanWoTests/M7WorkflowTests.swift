@@ -61,8 +61,9 @@ final class M7WorkflowTests: XCTestCase {
             lock.unlock()
             let task = Task<SubagentResult, Error> { [handler, weak self] in
                 defer {
-                    guard let self else { return }
-                    self.lock.lock(); self._inFlight -= 1; self.lock.unlock()
+                    if let self {
+                        self.lock.lock(); self._inFlight -= 1; self.lock.unlock()
+                    }
                 }
                 return try await handler(request.request.prompt, index)
             }
@@ -464,7 +465,7 @@ final class M7WorkflowTests: XCTestCase {
     /// 钩子入口抛 CANCELLED；start/end 恰好配对。
     func testCancelAtHookBoundaryPairsAgentEvents() async throws {
         let runtime = SubagentRuntime()
-        let gate = Gate()
+        let gate = ScriptedProvider.Gate()
         let provider = ScriptedProvider(name: "scripted") { prompt, _ in
             if prompt == "hold me" {
                 await gate.hold()
@@ -697,7 +698,7 @@ final class M7WorkflowTests: XCTestCase {
             event(.assistantMessage(turn: 0, step: 0,
                                     id: "a1", provider: "p", model: "m",
                                     content: [.text(output)]),
-                  usage: nil, interrupted: false), seq: 1),
+                  seq: 1),
             event(.turnEnd(turn: 0, reason: .completed), seq: 2),
         ]
     }

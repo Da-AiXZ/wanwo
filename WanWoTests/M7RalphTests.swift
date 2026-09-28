@@ -105,7 +105,7 @@ final class M7RalphTests: XCTestCase {
     }
 
     /// continue 形状报告（JSONValue 面——脚本 validateReport 的输入）。
-    private func continueReport(summary: String = "working") -> JSONValue {
+    private static func continueReport(summary: String = "working") -> JSONValue {
         .object([
             "status": .string("continue"),
             "summary": .string(summary),
@@ -181,7 +181,7 @@ final class M7RalphTests: XCTestCase {
             }
         }
         let (result, _) = try await withDeadline(15) {
-            await Self.runRalph(feed: feed, maxRounds: 3)
+            try await Self.runRalph(feed: feed, maxRounds: 3)
         }
 
         XCTAssertEqual(result.stopReason, .completed)
@@ -202,7 +202,7 @@ final class M7RalphTests: XCTestCase {
                            diagnostic: nil, stopReason: .completed)
         }
         let (result, _) = try await withDeadline(15) {
-            await Self.runRalph(feed: feed, maxRounds: 2)
+            try await Self.runRalph(feed: feed, maxRounds: 2)
         }
 
         XCTAssertEqual(result.stopReason, .completed)
@@ -225,7 +225,7 @@ final class M7RalphTests: XCTestCase {
                            diagnostic: nil, stopReason: .completed)
         }
         let (result, _) = try await withDeadline(15) {
-            await Self.runRalph(feed: feed, maxRounds: 3)
+            try await Self.runRalph(feed: feed, maxRounds: 3)
         }
 
         XCTAssertEqual(result.stopReason, .completed)
@@ -251,7 +251,7 @@ final class M7RalphTests: XCTestCase {
                            diagnostic: nil, stopReason: .completed)
         }
         let (result, _) = try await withDeadline(15) {
-            await Self.runRalph(feed: feed, maxRounds: 2)
+            try await Self.runRalph(feed: feed, maxRounds: 2)
         }
 
         XCTAssertEqual(result.stopReason, .error)
@@ -473,7 +473,11 @@ final class M7RalphTests: XCTestCase {
             SubagentResult(output: "", structured: nil, diagnostic: nil,
                            stopReason: .completed)
         })
-        XCTAssertNoThrow(try await RalphTool.requireFreshProvider(runtime, name: "fresh"))
+        do {
+            _ = try await RalphTool.requireFreshProvider(runtime, name: "fresh")
+        } catch {
+            XCTFail("fresh provider should pass: \(error)")
+        }
     }
 
     func testResolveMaxRoundsTexts() {

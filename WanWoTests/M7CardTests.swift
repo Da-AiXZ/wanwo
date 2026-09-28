@@ -46,7 +46,7 @@ final class M7CardTests: XCTestCase {
         XCTAssertEqual(todos?.count, 2)
         XCTAssertEqual(todos?.filter { $0.status == .completed }.count, 1)
         // turn/start 清空（卡片空态来源）。
-        let cleared = TodoProjection.fold(events + [
+        let cleared = TodoProjection.fold(events: events + [
             SessionEvent(seq: 2, timeMs: 0, payload: .turnStart(turn: 2)),
         ])
         XCTAssertNil(cleared)
