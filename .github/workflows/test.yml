@@ -42,20 +42,22 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/build_ish.sh release
 
-      - name: Generate Xcode project
-        run: xcodegen generate
-
       - name: Generate placeholder Alpine rootfs (ERR-008)
         run: |
-          # ERR-008（issue-ledger:27-32）：App target 资源依赖——构建期需要
-          # 文件存在、运行期（单测不 boot guest）才无关内容；真实 rootfs 仍由
-          # ios.yml fetch_rootfs.sh 产出。
+          # ERR-008（issue-ledger:27-32）：App target 资源依赖——xcodegen 校验
+          # project.yml 声明的构建期资源必须存在（首跑 36417036877 实证：
+          # "missing source directory .../alpine-rootfs.zip"——本步必须先于
+          # xcodegen generate；运行期（单测不 boot guest）才无关内容；真实
+          # rootfs 仍由 ios.yml fetch_rootfs.sh 产出。
           mkdir -p WanWo/Resources
           PLACEHOLDER_DIR="$(mktemp -d)"
           echo "placeholder rootfs (unit tests never boot the guest — ERR-008)" \
             > "$PLACEHOLDER_DIR/placeholder.txt"
           (cd "$PLACEHOLDER_DIR" && zip -qry "$GITHUB_WORKSPACE/WanWo/Resources/alpine-rootfs.zip" .)
           ls -lh WanWo/Resources/alpine-rootfs.zip
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Run unit tests (iOS Simulator)
         run: |
