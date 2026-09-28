@@ -431,76 +431,37 @@ struct WOBeamSwapper: View {
     }
 }
 
-// MARK: - AI 截图图片条（批12+联动，2026-09-26）
+// MARK: - AI 内嵌图片原位视图（P2-1c 修5，2026-09-28；批12+ 图片条退役）
 
-/// AI 回复内嵌截图的渲染条（`![…](wanwo://browser/…)` 经 WOChatView
-/// .splitAgentImages 提取后传入）。文件解析走 WanwoURLSchemeHandler
-/// .resolveWanwoURL（与 WKWebView 内同源同语义：活动会话四桶→全局扫描）；
-/// tap 全屏放大（简版——黑底 scaledToFit，点按关闭）。
-/// 【验收修复 P2-1 2026-09-28】形态重做：竖排堆叠（AI 连发多图刷屏、
-/// 长图 scaledToFit 缩成小条难看——批A-F 验收④真机实证）→ 横向滚动
-/// 缩略行（统一 120×90 块，scaledToFill 裁切）；点击 onTapGesture →
-/// Button 化（ScrollView 内手势优先级更可靠——用户实证"点击预览不了"）；
-/// 全屏预览保留。
-/// 【验收修复 P2-1b 2026-09-28】resolve 显式 sessionID（渲染处随行传入）
-/// ——单参形态依赖 mountedSessionIdSnapshot：跨会话切换后重放渲染时
-/// snapshot 尚未跟随（或渲染先于挂载完成且不自动刷新）→"截图已不可用"，
-/// 删后台重开才恢复（批P0-P2 验收⑤真机实证）。会话桶路径只依赖
-/// sessionID 构造，显式传入后与会话打开即命中、不依赖挂载时序。
-struct WOAgentImageStrip: View {
-    let sources: [URL]
-    var sessionID: String? = nil
-
-    private struct ZoomItem: Identifiable {
-        let id = UUID()
-        let image: UIImage
-    }
-
-    @State private var zoom: ZoomItem?
+/// 【P2-1c 修5】AI 回复内嵌图片（`![…](wanwo://…)` 保序切分的原位渲染
+/// 视图；WOAgentImageStrip 退役——旧抽取式条形设计：图片堆消息尾部、
+/// onTapGesture 在 ScrollView 内不可靠、单参 resolve 跨会话失效，三项
+/// 真机实证）。点击 → 集中预览通道（WOWorkspaceStore.requestImagePreview
+/// → WORootFrame overlay 全屏；sessionID 显式锚不依赖挂载时序）。
+struct WOInlineAgentImage: View {
+    let url: URL
+    let sessionID: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 8) {
-                ForEach(sources, id: \.absoluteString) { url in
-                    thumb(url)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-        .fullScreenCover(item: $zoom) { item in
-            ZStack {
-                Color.black.ignoresSafeArea()
-                Image(uiImage: item.image)
-                    .resizable()
-                    .scaledToFit()
-                    .ignoresSafeArea()
-            }
-            .onTapGesture { zoom = nil }
-        }
-    }
-
-    /// 单图缩略：解析宿主文件 → UIImage；解析失败/读取失败显示占位行
-    /// （不崩不空转——截图文件可能被会话清理驱逐）。Button 化点击（真机
-    /// tap 可靠性——onTapGesture 在 ScrollView 内被滚动手势抢占实证）。
-    @ViewBuilder
-    private func thumb(_ url: URL) -> some View {
         let fileURL = WanwoURLSchemeHandler.resolveWanwoURL(url, sessionID: sessionID)
         let image = fileURL.flatMap { UIImage(contentsOfFile: $0.path) }
         if let image {
             Button {
-                zoom = ZoomItem(image: image)
+                guard let sessionID, let fileURL else { return }
+                WOWorkspaceStore.shared.requestImagePreview(
+                    sessionID: sessionID, hostPath: fileURL.standardizedFileURL.path)
             } label: {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
-                    .frame(width: 120, height: 90)
+                    .scaledToFit()
+                    .frame(maxWidth: 300, maxHeight: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .strokeBorder(WOAlias.bgModulePlatform.opacity(0.6), lineWidth: 0.5))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("AI 浏览器截图，点按放大")
+            .accessibilityLabel("AI 图片，点按放大")
         } else {
             Label("截图已不可用", systemImage: "photo")
                 .font(.caption)

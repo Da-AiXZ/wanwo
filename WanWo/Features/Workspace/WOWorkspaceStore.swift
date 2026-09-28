@@ -232,6 +232,23 @@ final class WOWorkspaceStore: ObservableObject {
         pendingFileOpen = FileOpen(sessionID: sessionID, path: path, at: Date())
     }
 
+    /// 【P2-1c 2026-09-28】集中式图片全屏预览请求。path = **宿主绝对路径**
+    /// （发起方手里已有解析产物：聊天内嵌图=resolveWanwoURL 显式 sessionID
+    /// 产物、文件页签图片=loadFile 同源 URL——browser 桶截图不在文件页签
+    /// 树语义内，二次 resolve 会错）。呈现端=WORootFrame overlay（黑底
+    /// scaledToFit 点按关闭），消费后置 nil。
+    struct ImagePreview: Equatable, Identifiable {
+        let sessionID: String
+        let path: String
+        var id: String { sessionID + "/" + path }
+    }
+    @Published var pendingImagePreview: ImagePreview?
+
+    /// 发起图片全屏预览（文件页签/聊天内嵌图片点击调）。
+    func requestImagePreview(sessionID: String, hostPath: String) {
+        pendingImagePreview = ImagePreview(sessionID: sessionID, path: hostPath)
+    }
+
     /// 撤销条生命周期收口（Toast onDone 调；token 不匹配=已被新关闭顶替，不清）。
     func dismissUndoToast(token: UUID) {
         if lastClosedUndo?.token == token { lastClosedUndo = nil }
@@ -307,9 +324,19 @@ final class WOWorkspaceStore: ObservableObject {
         var s = state(for: sessionId)
         let activate = options.activate && !options.background
 
-        // —— 复用：单例 kind（cc-haha file/review/terminal reuse 同段语义）——
-        if case .singleton(let kind) = target,
-           let existing = s.tabs.first(where: { $0.kind == kind }) {
+        // —— 复用：单例 kind（cc-haha file/review/terminal reuse 同段语义）。
+        // 【P2-2 修1 2026-09-28】.file(path:) 同样复用 files 单例页签——旧实现
+        // 复用分支只匹配 .singleton，.file 恒走新建 → 每次深链多一个"文件"
+        // 页签（批P2 复测①真机实证）；且新建视图初装错过 pendingFileOpen
+        // （onChange 只监变化）→ 首次不加载、第二次才开（同实证）。
+        let reuseKind: WorkspaceTabKind?
+        switch target {
+        case .singleton(let kind): reuseKind = kind
+        case .file: reuseKind = .files
+        case .browser: reuseKind = nil
+        }
+        if let reuseKind,
+           let existing = s.tabs.first(where: { $0.kind == reuseKind }) {
             if activate {
                 s.activeTabID = existing.id
                 if s.layout == .hidden { s.layout = .split }

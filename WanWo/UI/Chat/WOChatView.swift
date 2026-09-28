@@ -71,30 +71,51 @@ struct WOChatView: View {
                 codeUnderlineColor: inline.codeUnderlineColor))
     }()
 
-    /// 批12+联动：提取正文中库不支持的自有 scheme 图片（AI 浏览器截图
-    /// `![…](wanwo://browser/…)`——ImageConfig 三源仅 https/asset/bundle 且
-    /// 默认 disabled，MarkdownRenderConfig:286 实证）→ (净化正文, 图片列表)；
-    /// 图片由气泡下方 WOAgentImageStrip 渲染。整文仅图片时 body 为空串
-    /// （MarkdownView 渲染空文档无害）。
-    private static func splitAgentImages(_ text: String) -> (body: String, images: [URL]) {
-        guard let regex = try? NSRegularExpression(
-            pattern: "!\\[[^\\]]*\\]\\((wanwo://[^)\\s]+)\\)") else { return (text, []) }
+    /// 【P2-1c 修5 2026-09-28】保序切分：正文按 wanwo:// 图片出现位置切段
+    /// ——每段文本 + 段尾可选图片，渲染时图片**跟随 AI 叙述位置**（"图1：
+    /// …图1"紧邻呈现），不再抽取堆消息尾部（旧 splitAgentImages 设计、用户
+    /// 两轮实证排版不可接受）。库 ImageConfig 三源不支持自定义 scheme
+    ///（ImageConfig+SourceResolution `case .some → nil` 实证，SPM 远程依赖
+    /// 不可 fork）→ 图片走原生视图插段。连续图片产生空文本段（跳过渲染）。
+    struct AgentSegment: Identifiable {
+        let id: Int
+        let text: String
+        let image: URL?
+    }
+
+    private static let agentImageRegex = try? NSRegularExpression(
+        pattern: "!\\[[^\\]]*\\]\\((wanwo://[^)\\s]+)\\)")
+
+    static func splitAgentSegments(_ text: String) -> [AgentSegment] {
+        guard let regex = agentImageRegex, !text.isEmpty else {
+            return text.isEmpty ? [] : [AgentSegment(id: 0, text: text, image: nil)]
+        }
         let ns = text as NSString
-        var images: [URL] = []
-        var clean = text
-        for m in regex.matches(in: text,
-                               range: NSRange(location: 0, length: ns.length)).reversed() {
-            let urlStr = ns.substring(with: m.range(at: 1))
-            if let url = URL(string: urlStr) {
-                images.insert(url, at: 0)
-                clean = (clean as NSString).replacingCharacters(in: m.range, with: "")
+        let matches = regex.matches(in: text,
+                                    range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else {
+            return [AgentSegment(id: 0, text: text, image: nil)]
+        }
+        var segments: [AgentSegment] = []
+        var cursor = 0
+        for (index, m) in matches.enumerated() {
+            let head = ns.substring(with: NSRange(location: cursor,
+                                                  length: m.range.location - cursor))
+            let trimmedHead = head.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedHead.isEmpty || index == 0 {
+                segments.append(AgentSegment(id: segments.count, text: head, image: nil))
             }
+            if let url = URL(string: ns.substring(with: m.range(at: 1))) {
+                segments.append(AgentSegment(id: segments.count, text: "", image: url))
+            }
+            cursor = m.range.location + m.range.length
         }
-        while clean.contains("\n\n\n") {
-            clean = clean.replacingOccurrences(of: "\n\n\n", with: "\n\n")
+        let tail = ns.substring(from: cursor)
+        let trimmedTail = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTail.isEmpty {
+            segments.append(AgentSegment(id: segments.count, text: tail, image: nil))
         }
-        let trimmed = clean.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed.isEmpty ? "" : clean, images)
+        return segments
     }
 
     /// 批12+联动B：裸 URL autolink——库 parser 不识别裸 URL（无 .link 属性
@@ -1149,18 +1170,23 @@ struct WOChatView: View {
             // 可辨识——库默认 linkTextAttributes 置空=链接与正文同款）②正文
             // 预处理提取 wanwo:// 截图（库 ImageConfig 三源均不支持自定义
             // scheme 且默认 disabled）→ 气泡下方图片条渲染。
-            let (body, images) = Self.splitAgentImages(text)
+            // 【P2-1c 修5】保序切分：图片跟随 AI 叙述位置原位插段（旧设计
+            // 抽取堆消息尾部，用户两轮实证排版不可接受）；图片视图点击 →
+            // 集中预览通道（sessionID 显式锚，不依赖挂载时序——P2-1b 语义）。
+            let segments = Self.splitAgentSegments(text)
             HStack(alignment: .top, spacing: 8) {
                 WOAssistantAvatar()
                 VStack(alignment: .leading, spacing: 8) {
-                    MarkdownView(text: Self.autolinkBareURLs(body),
-                                 config: Self.chatMarkdownConfig)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if !images.isEmpty {
-                        // 【P2-1b】sessionID 随行——截图桶解析不依赖挂载时序
-                        //（跨会话切换重放渲染"截图已不可用"实证）。
-                        WOAgentImageStrip(sources: images,
-                                          sessionID: sessionId.isEmpty ? nil : sessionId)
+                    ForEach(segments) { segment in
+                        if !segment.text.isEmpty {
+                            MarkdownView(text: Self.autolinkBareURLs(segment.text),
+                                         config: Self.chatMarkdownConfig)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if let url = segment.image {
+                            WOInlineAgentImage(url: url,
+                                               sessionID: sessionId.isEmpty ? nil : sessionId)
+                        }
                     }
                 }
             }

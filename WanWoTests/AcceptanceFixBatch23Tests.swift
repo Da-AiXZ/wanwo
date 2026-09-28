@@ -217,6 +217,31 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
             .browser)
     }
 
+    // MARK: - P2-1c：保序切分（图片跟随 AI 叙述位置——修5）
+
+    /// "图1：→图1、图2：→图2、尾段"的顺序保持（真机实证堆尾部形态的反例）。
+    func testSplitAgentSegmentsPreservesOrder() {
+        let text = "图1：\n\n![a](wanwo://browser/1.jpg)\n\n图2：\n\n![b](wanwo://browser/2.jpg)\n\n收尾文字"
+        let segments = WOChatView.splitAgentSegments(text)
+        XCTAssertEqual(segments.map(\.image?.absoluteString ?? "text"),
+                       ["text", "wanwo://browser/1.jpg",
+                        "text", "wanwo://browser/2.jpg", "text"])
+        XCTAssertTrue(segments[0].text.contains("图1："))
+        XCTAssertTrue(segments[2].text.contains("图2："))
+        XCTAssertTrue(segments[4].text.contains("收尾文字"))
+    }
+
+    /// 无图 → 单段原文；连续图片 → 空文本段跳过；空串 → 空数组。
+    func testSplitAgentSegmentsEdges() {
+        XCTAssertEqual(WOChatView.splitAgentSegments("plain text").count, 1)
+        XCTAssertTrue(WOChatView.splitAgentSegments("").isEmpty)
+
+        let consecutive = "![a](wanwo://browser/1.jpg)\n\n![b](wanwo://browser/2.jpg)"
+        let segments = WOChatView.splitAgentSegments(consecutive)
+        XCTAssertEqual(segments.compactMap(\.image).count, 2)
+        XCTAssertTrue(segments.filter { $0.text.isEmpty }.count >= 2)
+    }
+
     // MARK: - E：globRegex 零段语义
 
     private func matches(_ pattern: String, _ path: String) -> Bool {

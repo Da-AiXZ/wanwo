@@ -22,6 +22,8 @@ struct WorkspaceFileTabView: View {
     @State private var fileContent: String?
     /// 【P2-2】图片形态内容（loadFile 按扩展名分流；非空=图片预览态）。
     @State private var fileImageData: UIImage?
+    /// 【P2-1c】当前选中文件的宿主绝对路径（图片态点击预览直接用）。
+    @State private var selectedHostPath: String?
     @State private var fileLoadError: String?
     /// md 渲染/源码切换（默认渲染视图）。
     @State private var showSource = false
@@ -63,6 +65,10 @@ struct WorkspaceFileTabView: View {
         .onAppear {
             reload()
             highlightedPaths = WOWorkspaceStore.shared.changeHighlight[sessionID ?? ""] ?? []
+            // 【P2-2 修1】初装即消费外源打开请求——新建页签场景 pendingFileOpen
+            // 已在页签创建前置位，onChange 注册晚于置位会永久错过（真机实证
+            // "第一次点不打开、第二次才开"）；onAppear 主动消费一次补齐。
+            consumePendingFileOpen()
         }
         .onChange(of: environment.selection) { _ in
             reload()
@@ -77,14 +83,20 @@ struct WorkspaceFileTabView: View {
         }
         // 【P2-2 方案甲 2026-09-28】外源打开请求（深链分流/统一打开入口）→
         // 选中 + 加载该文件（树行点击之外的第二入口；cc-haha openTarget 落点）。
-        .onChange(of: workspaceStore.pendingFileOpen) { request in
-            guard let request, request.sessionID == sessionID,
-                  !request.path.isEmpty, !request.path.contains("..") else { return }
-            expandAncestors(to: request.path)
-            selectedPath = request.path
-            loadFile(request.path)
-            workspaceStore.pendingFileOpen = nil
+        .onChange(of: workspaceStore.pendingFileOpen) { _ in
+            consumePendingFileOpen()
         }
+    }
+
+    /// 消费外源打开请求（onAppear 初装 + onChange 变化两路共用）。
+    private func consumePendingFileOpen() {
+        guard let request = workspaceStore.pendingFileOpen,
+              request.sessionID == sessionID,
+              !request.path.isEmpty, !request.path.contains("..") else { return }
+        expandAncestors(to: request.path)
+        selectedPath = request.path
+        loadFile(request.path)
+        workspaceStore.pendingFileOpen = nil
     }
 
     /// 外源打开时展开祖先目录链（懒展开树——逐级枚举宿主目录挂载子层 +
@@ -362,16 +374,23 @@ struct WorkspaceFileTabView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else if let image = fileImageData {
-            // 【P2-2】图片预览态（cc-haha previewType=image 同语义；
-            // scaledToFit + 黑底衬托透明区，点按放大）。
-            ScrollView([.horizontal, .vertical]) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(12)
-                    .frame(maxWidth: .infinity)
-            }
-            .background(Color.black.opacity(0.85))
+            // 【P2-2】图片预览态（cc-haha previewType=image 同语义）。
+            // 【P2-1c 修4】去 ScrollView 直铺容器（ScrollView 内 scaledToFit
+            // 拿无限约束=原始尺寸渲染，真机实证"完全没适配大小"）；点击 →
+            // 集中预览通道全屏。
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(12)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if let sessionID, let selectedHostPath {
+                        WOWorkspaceStore.shared.requestImagePreview(
+                            sessionID: sessionID, hostPath: selectedHostPath)
+                    }
+                }
+                .background(Color.black.opacity(0.85))
         } else if let content = fileContent {
             let isMarkdown = LightweightSyntaxHighlighter.isMarkdown(
                 fileName: (selectedPath as NSString?)?.lastPathComponent ?? "")
@@ -468,6 +487,7 @@ struct WorkspaceFileTabView: View {
     private func loadFile(_ relativePath: String) {
         fileContent = nil
         fileImageData = nil
+        selectedHostPath = nil
         fileLoadError = nil
         showSource = false
         guard let sessionID else {
@@ -485,6 +505,7 @@ struct WorkspaceFileTabView: View {
             return
         }
         let url = hostRoot.appendingPathComponent(relativePath)
+        selectedHostPath = url.standardizedFileURL.path
         // 【P2-2】大小帽（cc-haha too_large 态语义）——超大文件直读卡 UI。
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
            let size = attrs[.size] as? Int, size > Self.maxPreviewBytes {

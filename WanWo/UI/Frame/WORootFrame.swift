@@ -143,6 +143,18 @@ struct WORootFrame: View {
                     .zIndex(91)
             }
         }
+        // 【P2-1c 修5 2026-09-28】集中式图片全屏预览（聊天内嵌图/文件页签
+        // 图片点击唯一呈现端——黑底 scaledToFit 点按关闭；宿主绝对路径直读，
+        // 不依赖挂载时序）。
+        .fullScreenCover(item: Binding(
+            get: { workspaceStore.pendingImagePreview },
+            set: { if $0 == nil { workspaceStore.pendingImagePreview = nil } }
+        )) { preview in
+            ImageFullScreenPreview(hostPath: preview.path) {
+                workspaceStore.pendingImagePreview = nil
+            }
+            .ignoresSafeArea()
+        }
         // 批B3：全屏真值桥接——单一真值 = workspaceSidebar.isFullscreen（右栏
         // topBar 全屏/关闭钮写它，语义不变）；layout.fullscreen 只是布局投影，
         // 仅由本桥与 syncSessionSelection 的无会话复位写入，不独立记账。
@@ -513,6 +525,57 @@ struct WOSlotPlaceholder: View {
                     .font(.system(size: 11))
                     .foregroundColor(WOAlias.labelDimmed)
             }
+        }
+    }
+}
+
+// MARK: - 集中式图片全屏预览（P2-1c 修5 2026-09-28）
+
+/// 黑底 scaledToFit 点按关闭（workspaceStore.pendingImagePreview 唯一呈现
+/// 端；宿主绝对路径直读——发起方手持解析产物，呈现端零二次解析）。
+struct ImageFullScreenPreview: View {
+    let hostPath: String
+    let onClose: () -> Void
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .ignoresSafeArea()
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.white.opacity(0.6))
+                    Text("图片不可用")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .padding(16)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+        }
+        .onTapGesture { onClose() }
+        .onAppear {
+            image = UIImage(contentsOfFile: hostPath)
         }
     }
 }
