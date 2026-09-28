@@ -1007,9 +1007,9 @@ final class AppEnvironment: ObservableObject {
     /// （整族语义：codex disable MemoryTool / network_access=false 均为配置
     /// 面整族开关；探针构造成本 = 一次轻量 struct init，仅闸路径发生）。
     private static func toolFamilyAllowed(_ filter: ((AgentTool) -> Bool)?,
-                                          _ probe: @autoclosure () -> AgentTool) -> Bool {
+                                          _ probe: AgentTool) -> Bool {
         guard let filter else { return true }
-        return filter(probe())
+        return filter(probe)
     }
 
     func makeAgentStack(sessionId: String,
@@ -1076,7 +1076,7 @@ final class AppEnvironment: ObservableObject {
         FsTools.registerAll(into: registry, sessionId: sessionId)
         // QA-5 P1-1②：整合会话禁网（codex :352 network_access=false——web
         // 双件整族跳过；toolFilter 注册闸，探针裁决整族）。
-        if Self.toolFamilyAllowed(toolFilter, { () -> AgentTool in WebFetchTool() }) {
+        if Self.toolFamilyAllowed(toolFilter, WebFetchTool()) {
             WebTools.registerAll(into: registry, policy: networkPolicy)
         }
         // M7 件 A（F049）：todo_write 工具（dsh tool-todo apply 1:1——整表
@@ -1293,7 +1293,7 @@ final class AppEnvironment: ObservableObject {
         // 递归抽取；toolFilter 注册闸，探针裁决整族）。
         let memoryBackend = MemoryBackend(rootURL: WanWoPaths.memoryPersistentDir)
         if Self.toolFamilyAllowed(toolFilter,
-                                  { () -> AgentTool in MemoryListTool(backend: memoryBackend) }) {
+                                  MemoryListTool(backend: memoryBackend)) {
             MemoryTools.registerAll(into: registry, backend: memoryBackend)
         }
         // M5-B P4：PTC 模式两段（tools:ptc-only@800 / tools:sdk@5000——dsh
@@ -1449,9 +1449,9 @@ final class AppEnvironment: ObservableObject {
         // 族同处置——受限整合会话不装编排工具，防递归一致性：编排出的子栈
         // 再编排会绕过 toolFilter 收缩面）。gate 关闭 = 工具面登记跳过。
         if Self.toolFamilyAllowed(toolFilter,
-                                  { () -> AgentTool in WorkflowTool(engine: WorkflowEngine(
+                                  WorkflowTool(engine: WorkflowEngine(
                                       runtime: subagentRuntime),
-                                      parentWriter: writer) }) {
+                                      parentWriter: writer)) {
             let workflowEngine = WorkflowEngine(runtime: subagentRuntime)
             WorkflowTools.registerAll(into: registry, assembler: assembler,
                                       engine: workflowEngine, parentWriter: writer)

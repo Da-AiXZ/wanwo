@@ -73,7 +73,7 @@ enum GoalFold {
             throw GoalError(message: "current goal fold lacks updatedAt", code: .goalInvalidTransition)
         }
         if change.createdAt != state.createdAt
-            || change.updatedAt < state.updatedAt
+            || change.updatedAt < state.updatedAt!
             || change.roundsStarted != state.roundsStarted {
             throw GoalError(
                 message: "goal \(change.operation.rawValue) does not preserve the current counters and timestamps",

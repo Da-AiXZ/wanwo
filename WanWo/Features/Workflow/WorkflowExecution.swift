@@ -136,7 +136,7 @@ final class WorkflowStopBox: @unchecked Sendable {
 final class WorkflowSlotGate: @unchecked Sendable {
     private let lock = NSLock()
     private var activeSlots = 0
-    private var waiters: [CheckedContinuation<Void, WorkflowError>] = []
+    private var waiters: [CheckedContinuation<Void, any Error>] = []
     let limit: Int
 
     init(limit: Int) {
