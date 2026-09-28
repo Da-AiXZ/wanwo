@@ -62,7 +62,7 @@ final class WorkflowRunHandle: @unchecked Sendable {
     /// Started-but-not-ended agents by seq——宿主保证的配对账本。
     private var liveAgents: [Int: WorkflowAgentInfo] = [:]
     /// 已登记子（callId/seq → handle）；entry 只在 disposal 结算后离开。
-    private var children: [Int: WorkflowChildHandle] = []
+    private var children: [Int: WorkflowChildHandle] = [:]
     /// 子 quiescence 等待者（children 清空时释放）。
     private var quiescenceWaiters: [CheckedContinuation<Void, Never>] = []
     private var disposed = false
