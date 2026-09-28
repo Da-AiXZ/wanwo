@@ -38,7 +38,7 @@ enum GoalCommandHandler {
 
     /// Parse only the grammar owned by `/goal`; arbitrary other input is an
     /// objective（index.ts:34-44 1:1）。
-    static func parse(_ rawInput: String) -> CommandKind {
+    private static func parse(_ rawInput: String) -> CommandKind {
         let input = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if input.isEmpty { return .show }
         let control = input.lowercased()

@@ -267,7 +267,7 @@ actor TeamService {
     private func appendAndFlush(_ rootId: String, kind: String, payload: JSONValue) async throws {
         try await seams.appendEvent(rootId, kind, payload)
         if var cached = states[rootId] {
-            TeamProjection.apply(&cached, payload: .extensionEvent(kind, payload))
+            TeamProjection.apply(&cached, payload: .extensionEvent(kind: kind, payload: payload))
             states[rootId] = cached
         }
         activityNotify(rootId)

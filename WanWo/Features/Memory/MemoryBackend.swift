@@ -503,6 +503,6 @@ struct SearchMatcher {
 
     /// matched_queries 1:1（命中 query 原文保序）。
     func matchedQueries(_ flags: [Bool]) -> [String] {
-        zip(queries, flags).compactMap { matched ? $0 : nil }
+        zip(queries, flags).compactMap { $0.1 ? $0.0 : nil }
     }
 }

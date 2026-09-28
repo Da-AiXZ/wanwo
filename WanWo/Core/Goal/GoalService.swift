@@ -86,7 +86,7 @@ actor GoalService {
 
     /// 当前持久投影（严格折叠；软失败保留在 failure）。
     private func projection() throws -> (snapshot: GoalSnapshot, roundsStarted: Int,
-                                         createdAt: Int64, updatedAt: Int64)? {
+                                         createdAt: Int, updatedAt: Int)? {
         if let failure {
             throw GoalError(message: failure, code: .goalInvalidTransition)
         }
@@ -107,7 +107,7 @@ actor GoalService {
     /// 构建活性视图（index.ts:604-614 view 1:1：durable + roundsStarted +
     /// timestamps + 进程本地 activation）。
     private func view(_ projection: (snapshot: GoalSnapshot, roundsStarted: Int,
-                                     createdAt: Int64, updatedAt: Int64)) -> GoalView {
+                                     createdAt: Int, updatedAt: Int)) -> GoalView {
         let s = projection.snapshot
         return GoalView(id: s.id, revision: s.revision, objective: s.objective,
                         phase: s.phase, blockedReason: s.blockedReason,
@@ -176,7 +176,7 @@ actor GoalService {
                 message: "goal \"\(current.snapshot.id)\" already exists with phase \"\(current.snapshot.phase.rawValue)\"",
                 code: .goalAlreadyExists)
         }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let now = Int(Date().timeIntervalSince1970 * 1000)
         let goal = GoalSnapshot(id: "goal-\(UUID().uuidString)", revision: 1,
                                 objective: spec.objective, phase: .active,
                                 blockedReason: nil, maxGoalRounds: spec.maxGoalRounds)
@@ -320,8 +320,8 @@ actor GoalService {
     private struct CurrentProjection {
         var snapshot: GoalSnapshot
         var roundsStarted: Int
-        var createdAt: Int64
-        var updatedAt: Int64
+        var createdAt: Int
+        var updatedAt: Int
     }
 
     private func expectCurrent(_ ref: GoalRef) throws -> CurrentProjection {
@@ -388,16 +388,16 @@ actor GoalService {
 
     /// Clamp a current goal's next timestamp across backward wall-clock movement
     ///（index.ts:550-552）。
-    private func nextMutationTime(_ previousUpdatedAt: Int64) -> Int64 {
-        max(Int64(Date().timeIntervalSince1970 * 1000), previousUpdatedAt)
+    private func nextMutationTime(_ previousUpdatedAt: Int) -> Int {
+        max(Int(Date().timeIntervalSince1970 * 1000), previousUpdatedAt)
     }
 
     /// Build and commit one full-snapshot mutation（index.ts:555-582）。
     private func commitSnapshot(_ operation: GoalOperation,
                                 goal: GoalSnapshot,
                                 roundsStarted: Int,
-                                createdAt: Int64,
-                                updatedAt: Int64,
+                                createdAt: Int,
+                                updatedAt: Int,
                                 activation newActivation: GoalActivation,
                                 origin: GoalMutationOrigin) async throws -> GoalView {
         let change = GoalChangeMeta.snapshot(GoalSnapshotChange(

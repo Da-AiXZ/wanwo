@@ -26,8 +26,8 @@ import Foundation
 struct GoalFoldState: Equatable, Sendable {
     var goal: GoalSnapshot?
     var roundsStarted: Int = 0
-    var createdAt: Int64?
-    var updatedAt: Int64?
+    var createdAt: Int?
+    var updatedAt: Int?
     var lastRef: GoalRef?
     /// Goal identities already created in this Session, retained to reject reuse。
     var seenGoalIds: Set<GoalId> = []

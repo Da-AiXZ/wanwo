@@ -163,7 +163,8 @@ final class MemoryTrigger: @unchecked Sendable {
         let claims: [MemoryStage1Claim]
         do {
             claims = try database.filterEligibleStage1Candidates(
-                candidates, maxClaimed: MemoryConstants.maxRolloutsPerStartup)
+                candidates.map { ($0.threadId, $0.sourceUpdatedAt) },
+                maxClaimed: MemoryConstants.maxRolloutsPerStartup)
         } catch {
             Self.logger.warning("stage1 claim failed: \(String(describing: error))")
             return

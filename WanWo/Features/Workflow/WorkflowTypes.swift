@@ -284,7 +284,7 @@ func validateWorkflowMeta(_ value: JSONValue) throws -> WorkflowMeta {
     }
     var phases: [WorkflowPhaseDecl] = []
     if let phasesValue = record["phases"] {
-        guard let phaseArray = phasesValue.arrayItems else {
+        if let phaseArray = phasesValue.arrayItems {
             violations.append("meta.phases must be an array")
         } else {
             for (index, phase) in phaseArray.enumerated() {

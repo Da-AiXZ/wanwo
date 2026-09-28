@@ -151,7 +151,7 @@ final class WorkflowSlotGate: @unchecked Sendable {
             return
         }
         lock.unlock()
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, WorkflowError>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             lock.lock()
             // 双检（cancel 与 release 的竞态窗口内可能已放行）。
             if activeSlots < limit && waiters.isEmpty {
@@ -328,7 +328,7 @@ extension WorkflowJsonSchema {
                 } else if additional?.boolValue == false {
                     return "\(path).\(key) is not an allowed property"
                 } else if let additionalSchema = additional?.objectValue {
-                    if let violation = match(fields[key]!, against: additionalSchema,
+                    if let violation = match(fields[key]!, against: .object(additionalSchema),
                                              path: "\(path).\(key)") {
                         return violation
                     }
@@ -862,7 +862,7 @@ final class WorkflowExecution: @unchecked Sendable {
         // agent(prompt, opts?) —— JS 包装器归一缺省 opts（undefined → null）。
         let agentInner: @convention(block) (JSValue, JSValue) -> JSValue = { [weak self] prompt, opts in
             guard let self else {
-                return api.rejectedPromise.call(withArguments: [])!
+                return api.objectForKeyedSubscript("rejectedPromise")!.call(withArguments: [])!
             }
             return self.agentHook(prompt: prompt, opts: opts)
         }
@@ -873,7 +873,7 @@ final class WorkflowExecution: @unchecked Sendable {
 
         // parallel(thunks)。
         let parallelInner: @convention(block) (JSValue) -> JSValue = { [weak self] thunks in
-            guard let self else { return api.rejectedPromise.call(withArguments: [])! }
+            guard let self else { return api.objectForKeyedSubscript("rejectedPromise")!.call(withArguments: [])! }
             return self.parallelHook(thunks: thunks, isFatalFn: isFatalFn)
         }
         context.setObject(unsafeBitCast(parallelInner, to: AnyObject.self),
@@ -881,7 +881,7 @@ final class WorkflowExecution: @unchecked Sendable {
 
         // pipeline(items, ...stages)——JS 包装器收拢变参 stages。
         let pipelineInner: @convention(block) (JSValue, JSValue) -> JSValue = { [weak self] items, stages in
-            guard let self else { return api.rejectedPromise.call(withArguments: [])! }
+            guard let self else { return api.objectForKeyedSubscript("rejectedPromise")!.call(withArguments: [])! }
             return self.pipelineHook(items: items, stages: stages, isFatalFn: isFatalFn)
         }
         let pipelineHookFn = api.objectForKeyedSubscript("makePipelineHook")!.call(withArguments: [
@@ -1056,7 +1056,7 @@ final class WorkflowExecution: @unchecked Sendable {
         if rawOpts.isUndefined || rawOpts.isNull { return WorkflowAgentOptions() }
         // 必须是 plain JSON 数据（realm.ts 物化；getter 执行同一信任前提）。
         let materialized = try await callHelper("materialize", args: [rawOpts, "agent() options"])
-        guard let materialized, materialized.objectForKeyedSubscript("ok")?.boolValue == true else {
+        guard let materialized, materialized.objectForKeyedSubscript("ok")?.toBool() == true else {
             let reason = materialized?.objectForKeyedSubscript("reason")?.toString() ?? "unknown"
             throw WorkflowError(
                 message: "agent() options must be plain JSON data — \(reason)",
@@ -1201,7 +1201,7 @@ final class WorkflowExecution: @unchecked Sendable {
         }
         let outcome = api.objectForKeyedSubscript("materialize")!
             .call(withArguments: [raw, "workflow result"])
-        let ok = outcome?.objectForKeyedSubscript("ok")?.boolValue == true
+        let ok = outcome?.objectForKeyedSubscript("ok")?.toBool() == true
         if ok, let jsonText = outcome?.objectForKeyedSubscript("json")?.toString(),
            let value = try? JSONDecoder().decode(JSONValue.self, from: Data(jsonText.utf8)) {
             settleTerminal(WorkflowResult(value: value, stopReason: .completed,

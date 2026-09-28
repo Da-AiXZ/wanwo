@@ -119,9 +119,9 @@ enum MemoryRollout {
               trimmedStart.prefix(start.count).lowercased() == start.lowercased() else {
             return false
         }
-        let trimmedEnd = trimmedStart.reversed().drop(while: {
+        let trimmedEnd = String(trimmedStart.reversed().drop(while: {
             $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r"
-        }).reversed()
+        }).reversed())
         guard trimmedEnd.utf8.count >= end.utf8.count,
               trimmedEnd.suffix(end.count).lowercased() == end.lowercased() else {
             return false

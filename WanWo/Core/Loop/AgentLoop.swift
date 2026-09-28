@@ -370,7 +370,7 @@ actor AgentLoop {
               attempt.round == source.round, attempt.text == entry.text else {
             return false
         }
-        guard let goal = try? await service.get(), let goal else { return false }
+        guard let goal = try? await service.get() else { return false }
         return goal.id == source.goalId && goal.revision == source.revision
             && goal.phase == .active && goal.activation == .armed
             && source.round == goal.roundsStarted + 1

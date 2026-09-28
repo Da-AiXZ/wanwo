@@ -150,8 +150,8 @@ actor MemoryPhase1 {
         var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // ```json 围栏剥离（模型面围栏常见形态；codex schema 约束下无围栏）。
         if body.hasPrefix("```") {
-            body = body.dropFirst(3)
-            if body.hasPrefix("json") { body = body.dropFirst(4) }
+            body = String(body.dropFirst(3))
+            if body.hasPrefix("json") { body = String(body.dropFirst(4)) }
             if let fenceEnd = body.range(of: "```", options: .backwards) {
                 body = String(body[..<fenceEnd.lowerBound])
             }

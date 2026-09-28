@@ -88,9 +88,9 @@ struct GoalView: Equatable, Sendable {
     /// Highest admitted round number for this goal.
     var roundsStarted: Int
     /// Epoch milliseconds of the create mutation.
-    var createdAt: Int64
+    var createdAt: Int
     /// Epoch milliseconds of the latest mutation.
-    var updatedAt: Int64
+    var updatedAt: Int
     /// Process-local continuation eligibility; never persisted.
     var activation: GoalActivation
 
@@ -105,8 +105,8 @@ struct GoalView: Equatable, Sendable {
 struct FoldedGoal: Equatable, Sendable {
     var goal: GoalSnapshot?
     var roundsStarted: Int
-    var createdAt: Int64?
-    var updatedAt: Int64?
+    var createdAt: Int?
+    var updatedAt: Int?
     var lastRef: GoalRef?
 }
 
@@ -121,14 +121,14 @@ struct GoalSnapshotChange: Equatable, Sendable {
     var operation: GoalOperation            // 非 clear
     var goal: GoalSnapshot
     var roundsStarted: Int
-    var createdAt: Int64
-    var updatedAt: Int64
+    var createdAt: Int
+    var updatedAt: Int
 }
 
 /// clear 墓碑形态（domain.ts:35-41）。
 struct GoalClearChange: Equatable, Sendable {
     var cleared: GoalRef
-    var clearedAt: Int64
+    var clearedAt: Int
 }
 
 /// Durable change union（domain.ts:44）。

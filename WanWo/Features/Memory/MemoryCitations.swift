@@ -35,6 +35,10 @@ struct MemoryCitationPayload: Equatable, Sendable {
 /// citation 解析纯函数集（citations.rs 1:1；无 I/O 无状态）。
 enum MemoryCitations {
 
+    /// citations.rs CitationEntry 的承载类型（MemoryCitationPayload 嵌套；
+    /// 本 enum 内多处以短名 Entry 引用——typealias 统一）。
+    private typealias Entry = MemoryCitationPayload.Entry
+
     /// parse_memory_citation 1:1。
     static func parse(_ citations: [String]) -> MemoryCitationPayload? {
         var entries: [Entry] = []
