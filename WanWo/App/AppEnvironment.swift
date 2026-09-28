@@ -734,7 +734,7 @@ final class AppEnvironment: ObservableObject {
                     guard let self else { return false }
                     return try await self.subagentRuntime.closeAgent(
                         childId: childId, callerSessionId: callerSessionId)
-                })
+                }))
             // 启动恢复（index.ts scheduleRecovery/recoverFor 承载）：provisioning
             // reconcile + pending 邮箱重试。后台一次性；失败 warn 不致命。
             let teamService = self.teamService

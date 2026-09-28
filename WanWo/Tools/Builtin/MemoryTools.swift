@@ -55,8 +55,8 @@ enum MemoryTools {
     }
 
     /// clamp_max_results 1:1（tools/mod.rs :91-93）。
-    static func clampMaxResults(_ requested: Int?, default def: Int, max: Int) -> Int {
-        min(max(requested ?? def, 1), max)
+    static func clampMaxResults(_ requested: Int?, default def: Int, cap: Int) -> Int {
+        min(Swift.max(requested ?? def, 1), cap)
     }
 
     /// 后端错误 → 工具失败输出（backend_error_to_function_call RespondToModel 面；
@@ -101,7 +101,7 @@ struct MemoryListTool: AgentTool {
         let maxResults = MemoryTools.clampMaxResults(
             args.field("max_results")?.intValue,
             default: MemoryConstants.listDefaultMaxResults,
-            max: MemoryConstants.listMaxResults)
+            cap: MemoryConstants.listMaxResults)
         // QA-5 P2-③：cursor 非法拒绝（codex local.rs :39-43 invalid_cursor
         // 语义——非整数字符串报错回模型，不静默回落 0）。
         let cursor: Int
@@ -274,7 +274,7 @@ struct MemorySearchTool: AgentTool {
         let maxResults = MemoryTools.clampMaxResults(
             args.field("max_results")?.intValue,
             default: MemoryConstants.searchDefaultMaxResults,
-            max: MemoryConstants.searchMaxResults)
+            cap: MemoryConstants.searchMaxResults)
         // QA-5 P2-③：cursor 非法拒绝（codex search.rs :39-43 invalid_cursor
         // 语义——非整数字符串报错回模型，不静默回落 0）。
         let cursor: Int
