@@ -696,8 +696,10 @@ final class M7WorkflowTests: XCTestCase {
         [
             event(.turnStart(turn: 0), seq: 0),
             event(.assistantMessage(turn: 0, step: 0,
-                                    id: "a1", provider: "p", model: "m",
-                                    content: [.text(output)]),
+                                    message: AssistantMessage(id: "a1", provider: "p",
+                                                              model: "m",
+                                                              content: [.text(output)]),
+                                    usage: nil, interrupted: false),
                   seq: 1),
             event(.turnEnd(turn: 0, reason: .completed), seq: 2),
         ]
