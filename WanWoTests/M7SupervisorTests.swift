@@ -336,6 +336,11 @@ final class M7SupervisorTests: XCTestCase {
     func testContinuableTotalCapRejectsFourthChild() async throws {
         let runtime = SubagentRuntime()
         await runtime.registerProvider(harness.makeForkProvider())  // QA-4 P0-2
+        // close_agent 的 Closed 置位需要边表宿主（缺 edgeStore 时恒返回
+        // false——SubagentRuntime.closeAgent 的 `guard let edgeStore else
+        // { return false }` 收尾面）。
+        let database = try harness.makeEdgeDatabase()
+        await runtime.registerEdgeStore(database)
         await runtime.registerChildMaterializer(harness.makeMaterializer())
         var started: [SubagentRuntime.ContinuableStart] = []
         for index in 0..<SubagentGovernance.totalChildrenLimit {
@@ -482,6 +487,11 @@ final class M7SupervisorTests: XCTestCase {
             remounted.note(loop: loop, writer: childWriter)
             return (loop, childWriter)
         }
+
+        // 崩溃恢复登记（Open 边 → pendingRecovery——listAgents ready 档的
+        // 数据源；生产路径由宿主会话打开时调用 recoverOpenChildren，缺此步
+        // 则恢复登记为空、sendMessage 惰性重挂无目标可命中）。
+        _ = await runtime.recoverOpenChildren(rootSessionId: "root")
 
         // 恢复登记 = ready（ListAgentsTool 文案承诺的第三档）；path 取自
         // lineage 持久权威。

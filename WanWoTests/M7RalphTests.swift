@@ -432,10 +432,19 @@ final class M7RalphTests: XCTestCase {
     }
 
     func testHostSideHandoffCap() {
-        // 宿主侧 16384 帽：readReport oversized 拒绝（:273-276 文案）。
+        // 宿主侧 16384 帽：readReport oversized 拒绝（:273-276 文案）。形状
+        // 校验（状态/字段集/规范化）先于帽面——须用形状合法的 complete 报告
+        // 触发帽面（continue 形状挂在 complete 信封下会先撞 "malformed
+        // round report"，到不了帽检查）。
         let oversized = String(repeating: "x", count: 20_000)
         let report = Self.terminal(status: "complete", roundsStarted: 1,
-                                   report: Self.continueReport(summary: oversized))
+                                   report: .object([
+                                       "status": .string("complete"),
+                                       "summary": .string(oversized),
+                                       "evidence": .array([.string("verified")]),
+                                       "nextSteps": .array([]),
+                                       "blocker": .string(""),
+                                   ]))
         XCTAssertThrowsError(try RalphTool.readRunResult(
             report, maxRounds: 5, maxHandoffChars: 16_384)) { error in
             XCTAssertTrue("\(error)".contains("oversized handoff"))

@@ -84,11 +84,15 @@ final class M7MemoryTests: XCTestCase {
 
     func testPhase2SelectedRewrite() throws {
         let (db, _) = try makeDatabase()
-        try db.markStage1JobSucceeded(threadId: "a", sourceUpdatedAt: 10,
+        // 水位须用新鲜的 epoch 秒：getPhase2InputSelection 按
+        // COALESCE(last_usage, source_updated_at) >= now - maxUnusedDays 过滤，
+        // 远古水位（1970 附近）会被保留期谓词整体排除。
+        let now = Int(Date().timeIntervalSince1970)
+        try db.markStage1JobSucceeded(threadId: "a", sourceUpdatedAt: now,
                                       rawMemory: "r", rolloutSummary: "s", rolloutSlug: nil)
-        try db.markStage1JobSucceeded(threadId: "b", sourceUpdatedAt: 20,
+        try db.markStage1JobSucceeded(threadId: "b", sourceUpdatedAt: now + 10,
                                       rawMemory: "r", rolloutSummary: "s", rolloutSlug: nil)
-        try db.markGlobalPhase2JobSucceeded(completionWatermark: 20, selectedThreadIds: ["b"])
+        try db.markGlobalPhase2JobSucceeded(completionWatermark: now + 10, selectedThreadIds: ["b"])
         let rows = try db.allStage1Outputs()
         XCTAssertEqual(rows.first(where: { $0.threadId == "b" })?.selectedForPhase2, true)
         XCTAssertEqual(rows.first(where: { $0.threadId == "a" })?.selectedForPhase2, false)
@@ -365,7 +369,10 @@ final class M7MemoryTests: XCTestCase {
                    encoding: .utf8)
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent("rollout_summaries"), withIntermediateDirectories: true)
-        try "alpha summary".write(to: root
+        // 内容不含 "alpha"/"delta"：search 递归 rollout_summaries（目录栈遍历），
+        // 该文件若含查询词会把 any 模式命中数抬到 3（与 MEMORY.md 两行命中的
+        // 断言口径冲突）。
+        try "zeta summary".write(to: root
             .appendingPathComponent("rollout_summaries/20260101T000000-abcd.md"),
             atomically: true, encoding: .utf8)
         return (MemoryBackend(rootURL: root), root)
@@ -503,7 +510,12 @@ final class M7MemoryTests: XCTestCase {
             try reopened.tryClaimGlobalPhase2Job(cooldownSeconds: 21_600)
         else { return XCTFail("expected skippedRetryUnavailable after recovery") }
         // 重试窗归零注入 → 立即可再抢（error→claimed，重试窗语义 intact）。
+        // 注：interruptedRetryDelaySeconds 只作用于 init 的 running 残行回收；
+        // 上一步回收产物（error + retry_at=now+3600）须经 markGlobalPhase2Job
+        // Failed(retryDelaySeconds: 0) 等价改写为"窗口已过"的 error 态。
         let third = try MemoryDatabase(path: path, interruptedRetryDelaySeconds: 0)
+        try third.markGlobalPhase2JobFailed(reason: "retry window elapsed injection",
+                                            retryDelaySeconds: 0)
         guard case .claimed = try third.tryClaimGlobalPhase2Job(cooldownSeconds: 21_600)
         else { return XCTFail("expected claimed after retry window elapsed") }
     }

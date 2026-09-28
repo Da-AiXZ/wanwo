@@ -39,7 +39,7 @@ final class M7GoalTests: XCTestCase {
         GoalEvents.register()
         // goal/change 与 goal/round 都在开放 turn 内落盘（生产路径：工具执行
         // 与轮次 admit 均在 turn 内——测试同构）。
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         return GoalService(writer: writer)
     }
 
@@ -194,16 +194,16 @@ final class M7GoalTests: XCTestCase {
     func testNoteTurnProvenanceMergesWithinTurnAndRejectsStaleTurn() async throws {
         let (writer, dir) = try await makeWriter()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         let service = GoalService(writer: writer)
 
-        // step0 claim：用户输入建立人类权威。
-        await service.noteTurnProvenance(turn: 0, directHuman: true, goalRound: nil)
-        // QA-2 关键 bug 形状：step1 空 claim（工具结果步，injected 空 →
+        // turn 首步 claim：用户输入建立人类权威。
+        await service.noteTurnProvenance(turn: 1, directHuman: true, goalRound: nil)
+        // QA-2 关键 bug 形状：后续步空 claim（工具结果步，injected 空 →
         // directHuman=false）——同回合合并，人类权威不丢失。
-        await service.noteTurnProvenance(turn: 0, directHuman: false, goalRound: nil)
+        await service.noteTurnProvenance(turn: 1, directHuman: false, goalRound: nil)
         do {
-            let authority = try await service.completionAuthority(turn: 0)
+            let authority = try await service.completionAuthority(turn: 1)
             if case .directHuman = authority {} else {
                 XCTFail("step1 空 claim 后 directHuman 权威丢失（合并语义未生效）")
             }
@@ -211,11 +211,11 @@ final class M7GoalTests: XCTestCase {
             XCTFail("合并语义下 completionAuthority 应放行 directHuman：\(error)")
         }
         // goalRound 非空才更新（合并进同回合记录）；directHuman OR 合并仍 true。
-        await service.noteTurnProvenance(turn: 0, directHuman: false,
+        await service.noteTurnProvenance(turn: 1, directHuman: false,
                                          goalRound: GoalRef.Round(
                                              goalId: "g", revision: 1, round: 1))
         do {
-            let authority = try await service.completionAuthority(turn: 0)
+            let authority = try await service.completionAuthority(turn: 1)
             if case .directHuman = authority {} else {
                 XCTFail("goalRound 更新不应抹掉 directHuman")
             }
@@ -223,21 +223,21 @@ final class M7GoalTests: XCTestCase {
             XCTFail("OR 合并后 completionAuthority 应仍放行：\(error)")
         }
 
-        // stale 跨回合守卫（防御 fence 失效）：turn 0 记录残留到 turn 1 开放
-        // 时被拒绝——turn 1 的权威判定恒拒（provenance.turn != ctx.turn 兜底）。
-        try await writer.append(.turnEnd(turn: 0, reason: .completed))
-        try await writer.append(.turnStart(turn: 1))
-        await service.noteTurnProvenance(turn: 1, directHuman: true, goalRound: nil)
+        // stale 跨回合守卫（防御 fence 失效）：turn 1 记录残留到 turn 2 开放
+        // 时被拒绝——turn 2 的权威判定恒拒（provenance.turn != ctx.turn 兜底）。
+        try await writer.append(.turnEnd(turn: 1, reason: .completed))
+        try await writer.append(.turnStart(turn: 2))
+        await service.noteTurnProvenance(turn: 2, directHuman: true, goalRound: nil)
         let staleError = await assertAsyncThrows {
-            try await service.completionAuthority(turn: 1)
+            try await service.completionAuthority(turn: 2)
         }
         XCTAssertNotNil(staleError)
 
         // fence 清账后新回合正常登记（生产路径：turnEnd fence clearTurnProvenance）。
         await service.clearTurnProvenance()
-        await service.noteTurnProvenance(turn: 1, directHuman: true, goalRound: nil)
+        await service.noteTurnProvenance(turn: 2, directHuman: true, goalRound: nil)
         do {
-            let authority = try await service.completionAuthority(turn: 1)
+            let authority = try await service.completionAuthority(turn: 2)
             if case .directHuman = authority {} else {
                 XCTFail("fence 清账后新回合登记应生效")
             }
@@ -306,22 +306,22 @@ final class M7GoalTests: XCTestCase {
     func testRequireDirectHumanAuthorityGatesSubagents() async throws {
         let (writer, dir) = try await makeWriter()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         // 子 agent 会话：恒拒绝（isTopLevel=false）。
         let child = GoalService(writer: writer, isTopLevel: false)
         let childError = await assertAsyncThrows {
-            try await child.requireDirectHumanAuthority(turn: 0)
+            try await child.requireDirectHumanAuthority(turn: 1)
         }
         XCTAssertEqual((childError as? GoalToolError)?.code, "GOAL_TOOL_AUTHORITY_REQUIRED")
         // 顶层无 provenance → 拒绝；directHuman provenance → 放行。
         let top = GoalService(writer: writer)
         let noProvenance = await assertAsyncThrows {
-            try await top.requireDirectHumanAuthority(turn: 0)
+            try await top.requireDirectHumanAuthority(turn: 1)
         }
         XCTAssertNotNil(noProvenance)
-        await top.noteTurnProvenance(turn: 0, directHuman: true, goalRound: nil)
+        await top.noteTurnProvenance(turn: 1, directHuman: true, goalRound: nil)
         do {
-            try await top.requireDirectHumanAuthority(turn: 0)
+            try await top.requireDirectHumanAuthority(turn: 1)
         } catch {
             XCTFail("directHuman provenance 应放行：\(error)")
         }

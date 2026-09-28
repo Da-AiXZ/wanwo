@@ -572,6 +572,7 @@ const __wanwoWorkflowApi = (function () {
   };
   return api;
 })();
+__wanwoWorkflowApi
 """
 
 // MARK: - 执行观察者（runtime.ts:31-37 ExecutionObserver 的闭包形态）
@@ -798,8 +799,17 @@ final class WorkflowExecution: @unchecked Sendable {
                      WorkflowExecution.interruptCallback, stopBoxRef!.toOpaque())
         }
         // 宿主 helper（FATAL symbol/deferred/物化等——程序运行前定死）。
+        // 源码末行以 `__wanwoWorkflowApi` 表达式收尾：const 声明语句的脚本
+        // 完成值恒为 undefined，必须补表达式语句令 evaluateScript 取回 api
+        // 对象（否则 helper bootstrap 恒败——CI 首跑执行面实证）。
         guard let api = context.evaluateScript(workflowHelperSource), !api.isUndefined else {
-            let detail = context.exception.map { $0.toString() } ?? "unknown"
+            let detail: String
+            if let exception = context.exception {
+                let text = exception.toString()
+                detail = text.isEmpty ? "unknown" : text
+            } else {
+                detail = "evaluateScript yielded no completion value and no exception"
+            }
             context.exception = nil
             settleTerminal(WorkflowResult(
                 value: .null, stopReason: .error,

@@ -32,10 +32,10 @@ final class M7SubagentTests: XCTestCase {
 
     func testCompletedTurnPrefixIncludesLastTurnEnd() {
         let events: [SessionEvent] = [
-            event(.turnStart(turn: 0), seq: 0),
+            event(.turnStart(turn: 1), seq: 0),
             event(.userMessage(text: "u1"), seq: 1),
-            event(.turnEnd(turn: 0, reason: .completed), seq: 2),
-            event(.turnStart(turn: 1), seq: 3),
+            event(.turnEnd(turn: 1, reason: .completed), seq: 2),
+            event(.turnStart(turn: 2), seq: 3),
             event(.userMessage(text: "in-flight"), seq: 4),
         ]
         let prefix = ForkInProcessProvider.completedTurnPrefix(events)
@@ -45,7 +45,7 @@ final class M7SubagentTests: XCTestCase {
 
     func testCompletedTurnPrefixEmptyWithoutCompletedTurn() {
         let events: [SessionEvent] = [
-            event(.turnStart(turn: 0), seq: 0),
+            event(.turnStart(turn: 1), seq: 0),
             event(.userMessage(text: "in-flight"), seq: 1),
         ]
         // 无完成回合 = 空种子 = 不传 seed（:80-82）。
@@ -134,7 +134,7 @@ final class M7SubagentTests: XCTestCase {
             "provider": .string("fork"), "label": .string("second"),
         ])
         let events: [SessionEvent] = [
-            event(.turnStart(turn: 0), seq: 0),
+            event(.turnStart(turn: 1), seq: 0),
             event(.extensionEvent(kind: SubagentDescriptor.eventKind, payload: first), seq: 1),
             event(.extensionEvent(kind: SubagentDescriptor.eventKind, payload: second), seq: 2),
         ]
@@ -240,10 +240,10 @@ final class M7SubagentTests: XCTestCase {
         await runtime.registerProvider(ForkInProcessProvider(name: "fork",
                                                              childFactory: factory))
         let parentLog: [SessionEvent] = [
-            event(.turnStart(turn: 0), seq: 0),
+            event(.turnStart(turn: 1), seq: 0),
             event(.userMessage(text: "u1"), seq: 1),
-            event(.turnEnd(turn: 0, reason: .completed), seq: 2),
-            event(.turnStart(turn: 1), seq: 3),
+            event(.turnEnd(turn: 1, reason: .completed), seq: 2),
+            event(.turnStart(turn: 2), seq: 3),
         ]
         _ = try await runtime.start(provider: "fork", request: SubagentStartRequest(
             prompt: "p", parentSessionId: "parent", parentCwd: nil, parentDepth: 0),
@@ -275,13 +275,13 @@ final class M7SubagentTests: XCTestCase {
 
     func testFinalAssistantOutputSelection() {
         let events: [SessionEvent] = [
-            event(.turnStart(turn: 0), seq: 0),
-            event(.assistantMessage(turn: 0, step: 0,
+            event(.turnStart(turn: 1), seq: 0),
+            event(.assistantMessage(turn: 1, step: 1,
                                     message: AssistantMessage(
                                         id: "a1", provider: "p", model: "m",
                                         content: [.text("earlier")]),
                                     usage: nil, interrupted: false), seq: 1),
-            event(.assistantMessage(turn: 0, step: 1,
+            event(.assistantMessage(turn: 1, step: 2,
                                     message: AssistantMessage(
                                         id: "a2", provider: "p", model: "m",
                                         content: [.text("final "), .toolCall(id: "t", name: "x", arguments: "{}")]),
@@ -319,12 +319,12 @@ final class M7SubagentTests: XCTestCase {
         // 父日志（= fork 种子来源，3 条）。
         let parentLog: [SessionEvent] = [
             event(.userMessage(text: "parent prompt"), seq: 0),
-            event(.assistantMessage(turn: 0, step: 0,
+            event(.assistantMessage(turn: 1, step: 1,
                                     message: AssistantMessage(
                                         id: "p1", provider: "p", model: "m",
                                         content: [.text("parent final answer")]),
                                     usage: nil, interrupted: false), seq: 1),
-            event(.turnEnd(turn: 0, reason: .completed), seq: 2),
+            event(.turnEnd(turn: 1, reason: .completed), seq: 2),
         ]
         // 子日志：lineage(0) descriptor(1) 种子(2..4) + 子自有 turnEnd(5)。
         let childLog: [SessionEvent] = [
@@ -337,7 +337,7 @@ final class M7SubagentTests: XCTestCase {
             event(parentLog[0].payload, seq: 2),
             event(parentLog[1].payload, seq: 3),
             event(parentLog[2].payload, seq: 4),
-            event(.turnEnd(turn: 0, reason: .completed), seq: 5),
+            event(.turnEnd(turn: 1, reason: .completed), seq: 5),
         ]
         // 旧推导（boundary = seed.count = 3）：自有段误含父 assistant 输出
         // ——父文本冒充（回归对照，锁定 bug 形状）。
@@ -356,7 +356,7 @@ final class M7SubagentTests: XCTestCase {
         XCTAssertEqual(aborted.stopReason, .aborted)
         // 正向：子自有输出在 boundary 之后 → 唯一真源。
         var childWithOwn = childLog
-        childWithOwn.append(event(.assistantMessage(turn: 0, step: 0,
+        childWithOwn.append(event(.assistantMessage(turn: 1, step: 1,
                                                     message: AssistantMessage(
                                                         id: "c1", provider: "p", model: "m",
                                                         content: [.text("child answer")]),

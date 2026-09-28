@@ -160,10 +160,12 @@ enum TodoProjection {
         return state
     }
 
-    /// 载荷 → 条目数组（畸形载荷返回 nil = 保持原状态；写侧 schema 已 fail
-    /// closed，此处软化仅为防御 replay 时未注册 schema 的旧构建产物）。
+    /// 'todo/write' 载荷 → 条目数组（载荷形状 = {todos:[...]} 对象——与
+    /// TodoTool.payload(for:) / TodoInvariants.validate 的取字段口径一致；
+    /// 畸形载荷返回 nil = 保持原状态；写侧 schema 已 fail closed，此处软化
+    /// 仅为防御 replay 时未注册 schema 的旧构建产物）。
     static func decodeTodos(_ payload: JSONValue) -> [TodoItem]? {
-        guard let items = payload.arrayItems else { return nil }
+        guard let items = payload.field("todos")?.arrayItems else { return nil }
         var todos: [TodoItem] = []
         for item in items {
             guard let content = item.field("content")?.stringValue,

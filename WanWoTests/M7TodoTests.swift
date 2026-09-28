@@ -125,12 +125,12 @@ final class M7TodoTests: XCTestCase {
         XCTAssertEqual(TodoInvariants.validate(events: writer.events),
                        "todo/write appended outside any open turn")
         // 开放 turn 内 → 合法。
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         try await writer.append(.extensionEvent(
             kind: TodoEvents.writeKind, payload: TodoTool.payload(for: [
                 TodoItem(content: "a", status: .pending),
             ])))
-        try await writer.append(.turnEnd(turn: 0, reason: .completed))
+        try await writer.append(.turnEnd(turn: 1, reason: .completed))
         XCTAssertNil(TodoInvariants.validate(events: writer.events))
     }
 
@@ -142,7 +142,7 @@ final class M7TodoTests: XCTestCase {
         TodoEvents.register()
         // 首写前 = nil。
         XCTAssertNil(TodoProjection.fold(events: writer.events))
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         try await writer.append(.extensionEvent(
             kind: TodoEvents.writeKind, payload: TodoTool.payload(for: [
                 TodoItem(content: "a", status: .pending),
@@ -158,10 +158,10 @@ final class M7TodoTests: XCTestCase {
             TodoItem(content: "b", status: .inProgress),
         ])
         // turn/end 不清（"keeps the finished checklist visible"）。
-        try await writer.append(.turnEnd(turn: 0, reason: .completed))
+        try await writer.append(.turnEnd(turn: 1, reason: .completed))
         XCTAssertEqual(TodoProjection.fold(events: writer.events)?.count, 2)
         // turn/start 清空（"cleared by the next turn/start"）。
-        try await writer.append(.turnStart(turn: 1))
+        try await writer.append(.turnStart(turn: 2))
         XCTAssertNil(TodoProjection.fold(events: writer.events))
     }
 
@@ -171,7 +171,7 @@ final class M7TodoTests: XCTestCase {
         let (writer, dir) = try await makeWriter()
         defer { try? FileManager.default.removeItem(at: dir) }
         TodoEvents.register()
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         let tool = TodoTool(writer: writer)
         let output = try await tool.execute(.object(["todos": .array([
             item("a", .pending),
@@ -192,7 +192,7 @@ final class M7TodoTests: XCTestCase {
         let (writer, dir) = try await makeWriter()
         defer { try? FileManager.default.removeItem(at: dir) }
         TodoEvents.register()
-        try await writer.append(.turnStart(turn: 0))
+        try await writer.append(.turnStart(turn: 1))
         let tool = TodoTool(writer: writer)
         let output = try await tool.execute(.object(["todos": .array([
             item("a", .inProgress), item("b", .inProgress),

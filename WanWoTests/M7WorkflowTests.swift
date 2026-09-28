@@ -181,8 +181,10 @@ final class M7WorkflowTests: XCTestCase {
         }
     }
 
-    /// echo provider：第 N 次调用返回 "child-N" 文本。
-    private func makeEchoProvider(name: String = "scripted") -> ScriptedProvider {
+    /// echo provider：第 N 次调用返回 "child-N" 文本（注册名与引擎缺省路由
+    /// 对齐——WorkflowEngine.start 以 request.subagentProvider ?? config.provider
+    /// 查注册表，config.provider 缺省 "spawn"）。
+    private func makeEchoProvider(name: String = "spawn") -> ScriptedProvider {
         ScriptedProvider(name: name) { _, index in
             SubagentResult(output: "child-\(index)", structured: nil,
                            diagnostic: nil, stopReason: .completed)
@@ -379,7 +381,6 @@ final class M7WorkflowTests: XCTestCase {
         let runtime = SubagentRuntime()
         await runtime.registerProvider(makeEchoProvider())
         var config = WorkflowEngineConfig()
-        config.provider = "scripted"
         config.maxTotalAgents = 2
         let engine = makeEngine(runtime: runtime, config: config)
 
@@ -401,7 +402,6 @@ final class M7WorkflowTests: XCTestCase {
         let runtime = SubagentRuntime()
         await runtime.registerProvider(makeEchoProvider())
         var config = WorkflowEngineConfig()
-        config.provider = "scripted"
         config.maxItemsPerCall = 10
         let engine = makeEngine(runtime: runtime, config: config)
 
@@ -422,7 +422,6 @@ final class M7WorkflowTests: XCTestCase {
         let runtime = SubagentRuntime()
         await runtime.registerProvider(makeEchoProvider())
         var config = WorkflowEngineConfig()
-        config.provider = "scripted"
         config.syncTimeoutMs = 300
         let engine = makeEngine(runtime: runtime, config: config)
 
@@ -661,11 +660,14 @@ final class M7WorkflowTests: XCTestCase {
                                                value: .null, maxChars: 50000)
         XCTAssertTrue(plural.contains("(2 agents)"))
 
-        // 截断通知（index.ts:198-199 文案）。
+        // 截断通知（index.ts:198-199 文案；计数 = 渲染 JSON 总长 − 保留长度
+        // ——字符串字面量含引号，须按 prettyJSON 实长推）。
         let big = JSONValue.string(String(repeating: "x", count: 100))
+        let renderedLength = WorkflowTool.prettyJSON(big).count
         let clipped = WorkflowTool.renderResult(name: "f", agentsStarted: 0,
                                                 value: big, maxChars: 10)
-        XCTAssertTrue(clipped.contains("\n… [truncated: 90 more characters]"))
+        XCTAssertTrue(clipped.contains(
+            "\n… [truncated: \(renderedLength - 10) more characters]"))
     }
 
     func testWorkflowToolStopReasonErrorTexts() {
@@ -694,14 +696,14 @@ final class M7WorkflowTests: XCTestCase {
     /// 一段已 completed 的子自有事件（单 assistant 消息 + turnEnd）。
     private func completedChildEvents(output: String) -> [SessionEvent] {
         [
-            event(.turnStart(turn: 0), seq: 0),
-            event(.assistantMessage(turn: 0, step: 0,
+            event(.turnStart(turn: 1), seq: 0),
+            event(.assistantMessage(turn: 1, step: 1,
                                     message: AssistantMessage(id: "a1", provider: "p",
                                                               model: "m",
                                                               content: [.text(output)]),
                                     usage: nil, interrupted: false),
                   seq: 1),
-            event(.turnEnd(turn: 0, reason: .completed), seq: 2),
+            event(.turnEnd(turn: 1, reason: .completed), seq: 2),
         ]
     }
 

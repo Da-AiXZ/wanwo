@@ -66,6 +66,10 @@ enum TeamProjection {
         guard state.failure == nil else { return }
         guard isTeamEvent(payload) else { return }
         guard case .extensionEvent(let kind, let data) = payload else { return }
+        // 他 Team 事件不投影（applyProjectionEvent :226 return——teamId 缺失/
+        // 不匹配即静默跳过，不中毒 failure；命中本 Team 的事件才继续做
+        // selector 的 version==2 校验）。
+        guard data.field("teamId")?.stringValue == state.id else { return }
         do {
             try TeamEvents.selector(of: data, teamId: state.id)
             switch kind {
