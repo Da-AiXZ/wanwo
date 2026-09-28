@@ -83,7 +83,16 @@ final class WOWorkspaceStoreTests: XCTestCase {
         let b = store.openTarget(sessionId: "s1", target: .singleton(.terminal))!
         let c = store.openTarget(sessionId: "s1", target: .singleton(.review))!
         store.closeTabs(sessionId: "s1", tabId: b, scope: .others)
-        XCTAssertEqual(store.tabs(for: "s1").map(\.id), [a, c].compactMap { $0 })
+        // 【CI修17 判卷：断言语义反置，非回归】批12+右栏重构批1 closeTabs
+        // 真删语义（cc-haha closeTabs :684-720 对齐）：scope .others =
+        // 保留锚点签 tabId、关闭其余（标准「关闭其他页签」——关掉可关的、
+        // 保留锚点）。旧断言把锚点签当关闭对象（预期 [a, c]），语义反置，
+        // 过时退役。
+        XCTAssertEqual(store.tabs(for: "s1").map(\.id), [b],
+                       "close-others 保留锚点签、真删其余")
+        // 真删签整组入 undo 栈（位次随组，可恢复）。
+        XCTAssertEqual(store.state(for: "s1").closed.last?.map(\.id),
+                       [a, c].sorted())
     }
 
     // MARK: undo（方式 B 数据面）

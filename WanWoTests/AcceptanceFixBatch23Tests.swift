@@ -114,6 +114,12 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
 
     /// 扫描主体：图片 token 入选（顺序保持）、文本/未知扩展/不存在文件跳过、
     /// 同 token 去重、name=磁盘真名。
+    /// 【CI修17 判卷：fixture 错，非扫描器回归】@ 语法与
+    /// ContextInjection.expandFileReferences 同源 =「@ 后非空白串」（令牌按
+    /// 空白/换行切分，中文标点不分词——ContextInjection.swift:188 注释原文）。
+    /// 旧 fixture 以中文逗号黏连引用（"@photo.JPG，@notes.txt"），按同源语法
+    /// 是含"，@notes.txt"的单 token、扩展名不命中白名单被静默跳过——fixture
+    /// 违反其自引用的语法约定。修 = 引用一律以空白分隔，语义面不变。
     func testWorkspaceImageCandidatesScansAndFilters() throws {
         let png = try makeFile("IMG_1.png", in: bucketRoot)
         let jpg = try makeFile("photo.JPG", in: bucketRoot)
@@ -121,8 +127,8 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
         let workspace = WorkspaceFileAccess(sessionId: Self.testSID)
 
         let candidates = ChatViewModel.workspaceImageCandidates(
-            in: "看 @IMG_1.png 和 @photo.JPG，@notes.txt 是文本，@missing.png 不存在，"
-                + "再看看 @IMG_1.png（重复引用）",
+            in: "看 @IMG_1.png 和 @photo.JPG @notes.txt 是文本 @missing.png 不存在 "
+                + "再看看 @IMG_1.png 重复引用",
             workspace: workspace, quota: 20,
             maxImageBytes: 20 * 1024 * 1024,
             aggregateBytes: 200 * 1024 * 1024)

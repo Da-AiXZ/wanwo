@@ -18,10 +18,20 @@ import XCTest
 // MARK: - A. 设置面板分区路由/迁移完整性
 
 final class UIBatch3SettingsPaneTests: XCTestCase {
-    func testSixPanesComplete() {
-        XCTAssertEqual(SettingsPane.allCases.count, 6)
-        // 迁移目标视图一一对应（Providers/MCP/Skills/权限/外挂载/诊断）。
-        XCTAssertEqual(Set(SettingsPane.allCases.map(\.destinationIdentifier)).count, 6)
+    /// 【CI修17 判卷：合法演化】SettingsPane 由 6 案扩至 8 案——M7 记忆卡
+    /// 新增 .memory 分区（M7CardTests.testSettingsPaneMemoryRegistered 同源
+    /// 断言）、Agent Teams 新增 .team 分区（TeamBoardView 落点）。旧"6 分区"
+    /// 断言未跟上分区演化，过时退役。
+    func testAllPanesComplete() {
+        XCTAssertEqual(SettingsPane.allCases.count, 8)
+        // 迁移目标视图一一对应（Providers/MCP/Skills/权限/记忆/Teams/外挂载/
+        // 诊断）。
+        XCTAssertEqual(Set(SettingsPane.allCases.map(\.destinationIdentifier)).count, 8)
+        // 新分区元数据（M7 记忆卡路由 + Teams 花名册路由）。
+        XCTAssertEqual(SettingsPane.memory.destinationIdentifier,
+                       "MemorySettingsView")
+        XCTAssertEqual(SettingsPane.team.destinationIdentifier,
+                       "TeamBoardView")
         for pane in SettingsPane.allCases {
             XCTAssertFalse(pane.title.isEmpty, "\(pane) 标题缺失")
             XCTAssertFalse(pane.iconName.isEmpty, "\(pane) 图标缺失")

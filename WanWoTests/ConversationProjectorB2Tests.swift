@@ -3,8 +3,8 @@
 //  WanWoTests
 //
 //  【批2 2B】对话区缺件的投影纯函数面断言：
-//    · 件3 foldTurnProcess——连续 tool/reasoning 游程折叠（≥2 折叠、单卡平铺、
-//      计数与成员、空游程无组、user/assistant 文本断开游程）
+//    · 件3 foldTurnProcess——【CI修17】批12+回归八校（2026-09-25）扁平化
+//      后语义：全平铺、不产折叠组（原游程折叠断言退役，见各测试内注释）
 //    · 件4 turnUsage——turnStart→assistantMessage(usage)→turnEnd 折叠发射
 //      （分项汇总、billed/total 口径、零用量不发射、runMs 计算）
 //    · 件5 prettyJSON——可解析 pretty 化、非法 JSON 原样兜底
@@ -64,7 +64,12 @@ final class ConversationProjectorB2Tests: XCTestCase {
 
     // MARK: - 件3：foldTurnProcess
 
-    func testFoldGroupsConsecutiveToolAndReasoningRuns() {
+    /// 【CI修17 判卷：合法演化】批12+回归八校（2026-09-25）扁平化——
+    /// foldTurnProcess 不再产出 .process 折叠组节点（换节点身份=modifier
+    /// 状态重置、入场动画重播——用户实测"首次工具调用动画来两次"；身份
+    /// 稳定铁律，出处见 ConversationProjector.foldTurnProcess 头注）。组
+    /// 折叠行未来批次以"节点标记位"恢复，旧游程折叠断言全部退役。
+    func testFoldTurnProcessFlattensAllBubbles() {
         let bubbles = [
             userBubble("u1"),
             reasoningBubble("a1"),
@@ -74,19 +79,13 @@ final class ConversationProjectorB2Tests: XCTestCase {
             ConversationProjector.Bubble(id: "a2", kind: .assistant("答")),
         ]
         let nodes = ConversationProjector.foldTurnProcess(bubbles)
-        // 平铺：u1 + a2；折叠组 ×1。
-        XCTAssertEqual(nodes.filter {
-            if case .plain = $0 { return true }; return false
-        }.count, 2)
-        let groups = nodes.compactMap { node -> ConversationProjector.TurnProcessGroup? in
-            if case .process(let g) = node { return g }
-            return nil
+        // 全平铺：6 节点、无折叠组、身份 = 原气泡 id（身份稳定铁律）。
+        XCTAssertEqual(nodes.count, 6)
+        for node in nodes {
+            if case .process = node { XCTFail("扁平化后不应有折叠组节点") }
         }
-        XCTAssertEqual(groups.count, 1)
-        XCTAssertEqual(groups[0].toolCallCount, 3)
-        XCTAssertEqual(groups[0].messageCount, 1)
-        XCTAssertEqual(groups[0].bubbles.count, 4)
-        XCTAssertEqual(groups[0].id, "tp-a1")
+        XCTAssertEqual(nodes.map(\.id),
+                       ["u1", "a1", "tc1", "tc2", "tc3", "a2"])
     }
 
     func testSingleToolCardStaysPlain() {
@@ -99,17 +98,15 @@ final class ConversationProjectorB2Tests: XCTestCase {
         }
     }
 
-    func testReasoningOnlyRunFoldsToThoughtLabel() {
-        // 仅 reasoning 游程（计数段全空 → 视图层回落「思考了一会儿」）。
+    /// 【CI修17 判卷：合法演化】批12+回归八校扁平化（出处同上）——仅
+    /// reasoning 游程不再折叠为「思考了一会儿」摘要行，原样平铺。
+    func testReasoningOnlyRunStaysPlain() {
         let bubbles = [reasoningBubble("r1"), reasoningBubble("r2")]
         let nodes = ConversationProjector.foldTurnProcess(bubbles)
-        let groups = nodes.compactMap { node -> ConversationProjector.TurnProcessGroup? in
-            if case .process(let g) = node { return g }
-            return nil
+        XCTAssertEqual(nodes.count, 2)
+        for node in nodes {
+            if case .process = node { XCTFail("扁平化后不应有折叠组节点") }
         }
-        XCTAssertEqual(groups.count, 1)
-        XCTAssertEqual(groups[0].toolCallCount, 0)
-        XCTAssertEqual(groups[0].messageCount, 2)
     }
 
     func testEmptyStreamYieldsNoNodes() {
