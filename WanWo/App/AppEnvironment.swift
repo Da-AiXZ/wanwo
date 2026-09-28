@@ -90,6 +90,12 @@ final class AppEnvironment: ObservableObject {
     let memoryPhase1: MemoryPhase1
     let memoryPhase2: MemoryPhase2
     let memoryTrigger: MemoryTrigger
+    /// M7 件 L（F046）：Agent Teams 服务（journal/花名册/邮箱/任务板/活动——
+    /// App 级单例；seams 在 init 尾 configure——两阶段初始化纪律同 memoryPhase2）。
+    let teamService: TeamService
+    /// M7 件 L：Team loop 目录（Lead 运行态供值——TeamSeams.leadStatus 消费；
+    /// makeAgentStack 登记每个装配栈的 loop 公开缝引用）。
+    let teamLoops = TeamLoopDirectory()
     /// 真机批 B 全方位诊断：会话 writer 注册表（diagTrace 写事件流用）。
     /// nonisolated(unsafe)：NSLock 自保护（diagTrace 标 nonisolated 供
     /// 非隔离上下文调用——闭包/调度/通知各面）。
@@ -408,6 +414,9 @@ final class AppEnvironment: ObservableObject {
         self.memoryPhase2 = MemoryPhase2(database: resolvedMemoryDB)
         self.memoryTrigger = MemoryTrigger(database: resolvedMemoryDB,
                                            storage: resolvedMemoryStorage)
+        // M7 件 L（F046）：Team 服务占位创建（missing 缝——真缝在 init 尾
+        // configure；闭包捕获 self 须待全部存储属性完成阶段一）。
+        self.teamService = TeamService(seams: .missing)
 
         // M3 T2 报批登记：approval/policy 扩展事件 schema（E1 通道——T2 批次
         // 报批项，已批；projection=logOnly，pairing=none，policy ∈ {ask, never}）。
@@ -620,6 +629,118 @@ final class AppEnvironment: ObservableObject {
                     }
                     return cwd
                 }))
+
+            // M7 件 L（F046）：Team 服务真缝绑定（AgentLoop/SubagentRuntime
+            // 冻结件一律经公开缝调用；所需新缝清单见交付报告）。
+            teamService.configure(seams: TeamSeams(
+                appendEvent: { [weak self] rootId, kind, payload in
+                    guard let self else {
+                        throw LLMError(message: "environment released", code: "UNKNOWN")
+                    }
+                    // journal appendAndFlush 的 append+落盘半边（append 返回即
+                    // 持久——SessionWriter.append 落盘语义，flush 等价承载）。
+                    let opened = try await self.sessionStore.openWriter(id: rootId)
+                    _ = try await opened.writer.append(
+                        .extensionEvent(kind: kind, payload: payload))
+                },
+                readEvents: { sessionId in
+                    guard let url = AppEnvironment.sessionFileURL(sessionId) else {
+                        return nil
+                    }
+                    guard let log = try? JsonlEventLog.open(
+                        fileURL: url, writeMode: false, expectedID: sessionId) else {
+                        return nil
+                    }
+                    return await log.snapshotEvents()
+                },
+                allSessionIds: { [weak self] in
+                    await self?.sessionStore.listSessions().map(\.id) ?? []
+                },
+                leadSteer: { [weak self] rootId, text, senderId in
+                    // target=Lead 投递分支（批1 steer 语义缝——mailbox
+                    // dispatchOnce :249-253 对应）。所需缝：InboxSource 增
+                    // `.teamMessage(senderId: String)` case（AgentLoop.swift
+                    // :39-40 subagentMessage case 后插）；当前以
+                    // .subagentMessage 过渡（非 directHuman 语义等价）。
+                    guard let self, let loop = self.teamLoops.get(rootId) else {
+                        throw TeamError("team lead is not live",
+                                        code: "TEAM_INVALID_TARGET")
+                    }
+                    await loop.steer(text, source: .subagentMessage(childId: senderId))
+                },
+                deliverToTeammate: { [weak self] rootId, targetId, text in
+                    // teammate 分支（SubagentRuntime.sendMessage 公开缝——宿主
+                    // 仲裁形态 from=rootId，dsh steerHostSubagentPrompt 同族；
+                    // inactive 目标缝内惰性冷恢复/remountIfNeeded 承载）。
+                    // source=.subagentMessage 透传（主理人合并 2026-09-28：缝
+                    // 已就位——teammate 收 team 消息不计 directHuman authority，
+                    // QA-6 P1-5 误判防线闭环）。
+                    guard let self else {
+                        throw TeamError("environment released", code: "TEAM_INVALID_TARGET")
+                    }
+                    _ = try await self.subagentRuntime.sendMessage(
+                        from: rootId, to: targetId, text: text,
+                        source: .subagentMessage(childId: rootId))
+                },
+                interruptTeammate: { [weak self] childId, callerSessionId in
+                    guard let self else { return false }
+                    return try await self.subagentRuntime.interrupt(
+                        childId: childId, callerSessionId: callerSessionId)
+                },
+                memberStatuses: { [weak self] rootId in
+                    guard let self else { return [:] }
+                    let listings = await self.subagentRuntime.listAgents(
+                        callerSessionId: rootId, includeDescendants: false)
+                    return Dictionary(uniqueKeysWithValues:
+                        listings.map { ($0.subagentId, $0.status) })
+                },
+                leadStatus: { [weak self] rootId in
+                    guard let self, let loop = self.teamLoops.get(rootId) else { return nil }
+                    switch await loop.currentPhase() {
+                    case .running, .maintenance: return "running"
+                    case .idle: return "idle"
+                    }
+                },
+                sessionCwd: { sessionId in
+                    guard let url = AppEnvironment.sessionFileURL(sessionId),
+                          let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+                          let cwd = probe.header.cwd, !cwd.isEmpty else { return nil }
+                    return cwd
+                },
+                startTeammate: { [weak self] provider, request in
+                    guard let self else {
+                        throw TeamError("environment released", code: "TEAM_INVALID_TARGET")
+                    }
+                    // QA-6 P1-3：fork teammate 真继承 Lead 完成回合（dsh fork
+                    // 语义）——缝内读 root 日志 + completedTurnPrefix 切片（批1
+                    // ForkInProcessProvider 切片语义复用；spawn/fresh 不读）。
+                    var parentLogEvents: [SessionEvent] = []
+                    if provider == "fork" {
+                        if let url = AppEnvironment.sessionFileURL(request.parentSessionId),
+                           let log = try? JsonlEventLog.open(
+                            fileURL: url, writeMode: false,
+                            expectedID: request.parentSessionId) {
+                            parentLogEvents = ForkInProcessProvider.completedTurnPrefix(
+                                await log.snapshotEvents())
+                        }
+                    }
+                    return try await self.subagentRuntime.startContinuable(
+                        provider: provider, request: request,
+                        parentLogEvents: parentLogEvents)
+                },
+                // QA-6 P1-2：journal 权威拒绝后 drain 孤儿活子（closeAgent
+                // 停回合+摘激活/恢复登记+回收治理计数+置边 Closed）。
+                drainChild: { [weak self] childId, callerSessionId in
+                    guard let self else { return false }
+                    return try await self.subagentRuntime.closeAgent(
+                        childId: childId, callerSessionId: callerSessionId)
+                })
+            // 启动恢复（index.ts scheduleRecovery/recoverFor 承载）：provisioning
+            // reconcile + pending 邮箱重试。后台一次性；失败 warn 不致命。
+            let teamService = self.teamService
+            Task {
+                await teamService.recoverAll()
+            }
         }
     }
 
@@ -876,6 +997,10 @@ final class AppEnvironment: ObservableObject {
     ///   - toolFilter: 工具注册闸（QA-5 P1-1①②：整合会话传过滤闭包——
     ///     禁 MemoryTools 族防递归抽取（codex :333 MemoryTool disable）+
     ///     禁 web 族（codex :352 network_access=false）；nil = 不过滤）。
+    ///   - teamScope: Agent Teams 作用域（M7 件 L：teammate 栈由子物化器按
+    ///     label 前缀判定传入；nil 时顶层会话（subagentDepth==nil）缺省
+    ///     .lead——dsh 隐式 Team 语义（types.ts :7）；teamScope 显式 nil 且
+    ///     subagentDepth 非 nil = 普通子会话不注册）。
     /// - Returns: loop = nil 表示装配失败（无端点/凭据不可读），failureReason 带具体
     ///   原因（ERR-016：原 try? 吞错导致降级横幅只有泛化提示，无法定位）。
     /// QA-5 P1-1：注册闸——toolFilter 非 nil 时以探针工具裁决整族注册
@@ -894,7 +1019,8 @@ final class AppEnvironment: ObservableObject {
                         modelSelection: SessionModelSelection? = nil,
                         subagentDepth: Int? = nil,
                         subagentSandboxOverride: SandboxMode? = nil,
-                        toolFilter: ((AgentTool) -> Bool)? = nil)
+                        toolFilter: ((AgentTool) -> Bool)? = nil,
+                        teamScope: TeamTools.ScopeContext? = nil)
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
@@ -937,6 +1063,8 @@ final class AppEnvironment: ObservableObject {
         TodoEvents.register()
         GoalEvents.register()
         SubagentEvents.register()
+        // M7 件 L（F046）：team 四事件 schema 注册（幂等——TodoEvents 同款）。
+        TeamEvents.register()
         // 【工作区模型修正】会话 header cwd（创建时定格）——shell 前台/后台
         // 通道、hooks、技能 project 根与文件工具直读根的单一事实源。
         let sessionCwd = writer.header.cwd
@@ -1185,6 +1313,21 @@ final class AppEnvironment: ObservableObject {
         registry.register(CreateGoalTool(service: goalService))
         registry.register(UpdateGoalTool(service: goalService, agentLink: goalAgentLink))
         assembler.section(GoalTools.promptSection())
+        // M7 件 L（F046）：Agent Teams 工具族（九作用域——wait_agent 复用批1
+        // WaitAgentTool 不在此注册）。作用域安装经注册序承载：team 栈（顶层
+        // 会话缺省 .lead / teammate 由子物化器 label 前缀判定）先注册八件占名
+        //（QA-6 P1-4 主理人裁决批准：Lead 栈同样装 team 版 send_message/
+        // interrupt_agent/list_agents——Lead 的团队通信走邮箱持久语义，批1
+        // 四件同名对 Lead 被遮蔽是正确的），其后 setupSubagentRuntime 的
+        // SubagentTools.registerAll tryRegister 冲突跳过——team 栈只见 team
+        // 版（dsh scoped install 语义）；普通（非 team）子代理栈 scope=nil
+        // 不注册任何件 → 批1 四件照常生效；受限整合会话（toolFilter 闸在场）
+        // 同样不装（dsh 隐式 Team 语义不适用于整合 runner）。
+        let effectiveTeamScope = teamScope ?? ((subagentDepth == nil && toolFilter == nil)
+            ? TeamTools.ScopeContext(role: .lead, name: "lead", teamId: sessionId)
+            : nil)
+        TeamTools.registerAll(into: registry, assembler: assembler,
+                              service: teamService, scope: effectiveTeamScope)
         // M7 件 C：子会话委派纪律段（child-agent.ts:171-175 子可见声明）。
         if subagentDepth != nil {
             assembler.section(SubagentDelegation.promptSection())
@@ -1267,6 +1410,9 @@ final class AppEnvironment: ObservableObject {
             // M7 件 B：goal 服务（goal-round-driver 驱动面 + 工具权威面）。
             goalService: goalService)
         let agentLoop = AgentLoop(deps: deps)
+        // M7 件 L：loop 目录登记（TeamSeams.leadStatus/leadSteer 供值——
+        // TeamLoopDirectory NSLock 自保护）。
+        teamLoops.register(sessionId, agentLoop)
 
         // M7 件 B：goal 接线（wrapup 注入缝回填 + 'goal/changed' 通知 →
         // AgentLoop.onGoalChanged——dsh agentEvents emit 对应；weak 防环）。
@@ -1292,6 +1438,30 @@ final class AppEnvironment: ObservableObject {
                                   sandboxOverride: { [permission] in
                                       permission.knobs.sandbox
                                   })
+
+        // M7.4 件 K（F047/F048）：Workflow 引擎 + tool:workflow + tool:ralph
+        // 装配。per-stack 引擎（dsh cordis 单例服务的万我 per-stack 承载——
+        // 生命周期 listener 随会话栈闭合，addWorkflowListener 归档面 defer：
+        // extensionEvent 冻结期不新增 kind，API 在场待启用，登记）。
+        // 引擎缺省 config（provider 'spawn'/auto 并发/总帽 1000/片内 5s
+        // Watchdog/宽限 5s——worker index.ts:31-49 缺省 1:1）。
+        // QA-7 P2⑥（主理人裁决）：两工具收进 toolFilter gate（与 Team 工具
+        // 族同处置——受限整合会话不装编排工具，防递归一致性：编排出的子栈
+        // 再编排会绕过 toolFilter 收缩面）。gate 关闭 = 工具面登记跳过。
+        if Self.toolFamilyAllowed(toolFilter,
+                                  { WorkflowTool(engine: WorkflowEngine(
+                                      runtime: subagentRuntime),
+                                      parentWriter: writer) }) {
+            let workflowEngine = WorkflowEngine(runtime: subagentRuntime)
+            WorkflowTools.registerAll(into: registry, assembler: assembler,
+                                      engine: workflowEngine, parentWriter: writer)
+            RalphTools.registerAll(into: registry, assembler: assembler,
+                                   engine: workflowEngine,
+                                   runtime: subagentRuntime,
+                                   parentWriter: writer)
+        } else {
+            Self.logger.info("workflow/ralph tools skipped: restricted session (toolFilter gate)")
+        }
 
         // M5-A J3：完成纸条接线（dsh tool-jobs index.ts:278-299 的 owner 归一
         // 形态）。每会话一枚 listener：reported / owner nil → 跳过（dsh :279
@@ -1466,6 +1636,19 @@ final class AppEnvironment: ObservableObject {
         // 透传（QA-3 P1-6——fork 前缀 KV-cache 同端点复用）+ 沙箱/审批承载
         // （QA-3 P1-5——子旋钮初始 (override, .never)）+ goal isTopLevel=false
         // + 纪律段注入（subagentDepth）。
+        // M7 件 L：team 作用域判定（label 前缀承载——TeamConstants.
+        // memberLabelPrefix；dsh durable roster 判定的万我创建窗口承载，登记：
+        // descriptor/roster 此时尚未落子日志，前缀是创建窗口唯一可判定面）。
+        let teamScope: TeamTools.ScopeContext?
+        if let label = resolved.request.label,
+           label.hasPrefix(TeamConstants.memberLabelPrefix) {
+            teamScope = TeamTools.ScopeContext(
+                role: .teammate,
+                name: String(label.dropFirst(TeamConstants.memberLabelPrefix.count)),
+                teamId: resolved.request.parentSessionId)
+        } else {
+            teamScope = nil
+        }
         let stack = await makeAgentStack(
             sessionId: childId,
             writer: childWriter,
@@ -1473,7 +1656,8 @@ final class AppEnvironment: ObservableObject {
             interactionPresenter: nil,
             modelSelection: resolved.request.modelSelection,
             subagentDepth: resolved.childDepth,
-            subagentSandboxOverride: resolved.request.sandboxModeOverride)
+            subagentSandboxOverride: resolved.request.sandboxModeOverride,
+            teamScope: teamScope)
         guard let loop = stack.loop else {
             throw SubagentError(message: "child agent stack assembly failed: "
                 + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")
@@ -1506,6 +1690,17 @@ final class AppEnvironment: ObservableObject {
         async throws -> (loop: AgentLoop, writer: SessionWriter) {
         let opened = try await sessionStore.openWriter(id: childId)
         let childWriter = opened.writer
+        // M7 件 L：恢复重挂的 team 作用域判定（descriptor label 前缀——与新建
+        // 路径同语义；cold-resume teammate 栈续持 team 版工具面）。
+        let remountDescriptor = SubagentDescriptor.fold(events: childWriter.events)
+        let teamScope: TeamTools.ScopeContext? = remountDescriptor?.label.flatMap { label in
+            guard label.hasPrefix(TeamConstants.memberLabelPrefix) else { return nil }
+            return TeamTools.ScopeContext(
+                role: .teammate,
+                name: String(label.dropFirst(TeamConstants.memberLabelPrefix.count)),
+                teamId: SubagentLineage.read(events: childWriter.events)?.parentSession
+                    ?? childId)
+        }
         let stack = await makeAgentStack(
             sessionId: childId,
             writer: childWriter,
@@ -1513,7 +1708,8 @@ final class AppEnvironment: ObservableObject {
             interactionPresenter: nil,
             modelSelection: nil,
             subagentDepth: SubagentLineage.read(events: childWriter.events)?.delegationDepth,
-            subagentSandboxOverride: nil)
+            subagentSandboxOverride: nil,
+            teamScope: teamScope)
         guard let loop = stack.loop else {
             throw SubagentError(message: "child agent stack assembly failed: "
                 + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")

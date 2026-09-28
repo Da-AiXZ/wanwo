@@ -60,6 +60,20 @@ enum SECTION_ORDERS {
     // （wanwoLinkGuide 910 之后、toolBash 1000 之前——同为"模型可见路径体系"
     // 主题族），登记待对拍后归位。
     static let memorySummary = 920
+    // M7 件 L（F046）：team:policy 段（tool-agent-team install :164-171——
+    // dsh getSectionOrder('TEAM_POLICY') 动态取值，本构建无对应布局项——
+    // 1650 为自拟槽位（toolSubagent 1640 之后、PTY 1700 之前——同属 agent
+    // 协作面主题族），登记待对拍 dsh 原值后归位。
+    static let teamPolicy = 1650
+    // M7.4 件 K（F047）：tool:workflow 提示段（tool-workflow apply :211-215
+    // ——dsh getSectionOrder('TOOL_WORKFLOW') 动态取值，本构建无对应布局项
+    // ——1660 为自拟槽位（teamPolicy 1650 之后、PTY 1700 之前——同属 agent
+    // 协作面主题族），登记待对拍 dsh 原值后归位。
+    static let toolWorkflow = 1660
+    // M7.4 件 K（F048）：tool:ralph 提示段（tool-ralph apply :405-409——
+    // dsh getSectionOrder('TOOL_RALPH') 动态取值——1670 为自拟槽位
+    // （toolWorkflow 1660 之后、PTY 1700 之前），登记待对拍后归位。
+    static let toolRalph = 1670
     static let toolWebSearch = 2000
     static let toolWebFetch = 2100
     static let toolsSDK = 5000

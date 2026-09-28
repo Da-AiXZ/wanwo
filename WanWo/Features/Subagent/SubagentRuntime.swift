@@ -499,7 +499,8 @@ actor SubagentRuntime {
     /// 再投递——批1 cold resume NOT_RESUMABLE 台账偿还）。
     /// - Returns: 接受的消息 id。
     func sendMessage(from senderSessionId: String, to targetId: String,
-                     text: String) async throws -> String {
+                     text: String,
+                     source: InboxSource = .user) async throws -> String {
         let resolvedTarget = resolveAgentTarget(senderSessionId, targetId)
         if let candidate = resolvedTarget, activations[candidate] == nil {
             // 恢复登记子先重挂（重挂失败原样上抛——投递未发生）；非登记
@@ -522,7 +523,10 @@ actor SubagentRuntime {
         }
         // WanMo loop 无运行态查询缝（actor 相位私有）——统一 followup 新回合
         // 排队（steer 运行中最近步边界需 phase 查询，登记）。
-        await loop.followup(text, source: .user)
+        // source 缺省 .user 保批1 零回归；Team 邮箱投递透传 .subagentMessage
+        // （QA-6 P1-5：teammate 收 team 消息不得计入 directHuman authority——
+        // goal 轮次判定面误判防线；主理人合并 2026-09-28）。
+        await loop.followup(text, source: source)
         return UUID().uuidString
     }
 

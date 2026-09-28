@@ -113,11 +113,17 @@ struct SubagentStartRequest: Sendable {
     /// 父会话模型选择（QA-3 P1-6：fork 前缀跨端点 KV-cache 失效修复——子栈
     /// 与父同路由。万我扩展字段，dsh 无对应——dsh 经 agentOptions 承载，登记）。
     var modelSelection: SessionModelSelection?
+    /// Optional structured-output schema（QA-7 缝①：M7.2 缺口的正式落地——
+    /// 子末段文本按 schema 解析+校验（SubagentInProcessDriver.readResult），
+    /// 成功回填 SubagentResult.structured，失败 stopReason 降 error
+    /// （in-process-driver :231-236 语义）。子集校验经 WorkflowJsonSchema.validate。
+    var outputSchema: JSONValue?
 
     init(label: String? = nil, prompt: String, parentSessionId: String,
          parentCwd: String?, parentDepth: Int, maxDepth: Int? = nil,
          sandboxModeOverride: SandboxMode? = nil,
-         modelSelection: SessionModelSelection? = nil) {
+         modelSelection: SessionModelSelection? = nil,
+         outputSchema: JSONValue? = nil) {
         self.label = label
         self.prompt = prompt
         self.parentSessionId = parentSessionId
@@ -126,6 +132,7 @@ struct SubagentStartRequest: Sendable {
         self.maxDepth = maxDepth
         self.sandboxModeOverride = sandboxModeOverride
         self.modelSelection = modelSelection
+        self.outputSchema = outputSchema
     }
 }
 
@@ -133,7 +140,8 @@ struct SubagentStartRequest: Sendable {
 struct SubagentResult: Equatable, Sendable {
     /// The child's final assistant output（最终非空 assistant 消息的 text）。
     var output: String
-    /// Structured result（M7.2 无 outputSchema 缝——恒 nil，登记）。
+    /// Structured result（QA-7 缝①起有源：request.outputSchema 在场时由
+    /// readResult 按 schema 解析+校验回填；无 schema 恒 nil）。
     var structured: JSONValue?
     /// Provider-authored, non-assistant failure detail（≤4096 UTF-8 字节）。
     var diagnostic: String?

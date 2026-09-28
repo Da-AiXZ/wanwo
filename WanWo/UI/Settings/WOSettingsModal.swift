@@ -256,6 +256,8 @@ struct WOSettingsModal: View {
             PermissionDefaultsView(environment: environment)
         case .memory:
             MemorySettingsView(environment: environment)
+        case .team:
+            TeamBoardView(environment: environment)
         case .mounts:
             MountedFoldersSettingsView()
         case .diagnostics:

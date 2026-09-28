@@ -119,7 +119,8 @@ enum SubagentInProcessDriver {
                 await loop.whenIdle()
             }
             return readResult(Array(writer.events.dropFirst(boundary)),
-                              cancelled: flags.cancelled)
+                              cancelled: flags.cancelled,
+                              schema: request.request.outputSchema)
         }
 
         return SubagentRun(id: childId, result: resultTask) {
@@ -134,7 +135,13 @@ enum SubagentInProcessDriver {
     /// Read one settled child's result from its OWN events（index.ts:212-238
     /// 1:1；QA-3 P0-2 拆分为纯函数吃自有事件数组——boundary 语义 =
     /// "child.writer.events 自 boundary 起为自有事件"，单测可对拍栈序组合）。
-    static func readResult(_ own: [SessionEvent], cancelled: Bool) -> SubagentResult {
+    /// QA-7 缝③：outputSchema 在场时取子末段文本按 schema 解析+校验
+    /// （WorkflowJsonSchema.match 实例校验，子集关键词同八件；解析/校验失败
+    /// 按 dsh 语义 stopReason 降 error——in-process-driver :231-236 结构化
+    /// 承诺未兑现 = 子失败，绝不假 completed；diagnostic 携带失败原因供父侧
+    /// 呈现）。
+    static func readResult(_ own: [SessionEvent], cancelled: Bool,
+                           schema: JSONValue? = nil) -> SubagentResult {
         // 最后一条 turn/end 的 reason（foldConsumedWork().end 等价——折叠
         // 消费面的最后一个回合终因）。`droppedUnrun` 刻意不读：取消无会计
         // 回合经 toStopReason(nil) 归 error，绝不夸大成功（:221-224 注释）。
@@ -146,9 +153,34 @@ enum SubagentInProcessDriver {
         let recorded = toStopReason(lastEnd)
         // Disposal 可以先于常规 aborted 收尾拆掉 owner（:229-230）——取消旗标
         // 把非 completed 记录改写为 aborted。
-        let stopReason: SubagentStopReason =
+        var stopReason: SubagentStopReason =
             (cancelled && recorded != .completed) ? .aborted : recorded
-        return SubagentResult(output: output, structured: nil,
-                              diagnostic: nil, stopReason: stopReason)
+        var structured: JSONValue?
+        var diagnostic: String?
+        if let schema, stopReason == .completed {
+            if let parsed = Self.parseStructuredText(output) {
+                if let violation = WorkflowJsonSchema.match(parsed, against: schema,
+                                                            path: "structured") {
+                    stopReason = .error
+                    diagnostic = "structured output violates outputSchema: \(violation)"
+                } else {
+                    structured = parsed
+                }
+            } else {
+                stopReason = .error
+                diagnostic = "structured output was not valid JSON under outputSchema"
+            }
+        }
+        return SubagentResult(output: output, structured: structured,
+                              diagnostic: diagnostic, stopReason: stopReason)
+    }
+
+    /// 子末段文本 → JSONValue（QA-7 缝③解析半面：trim 后整段 JSONDecoder
+    /// ——不做 markdown 围栏剥离等启发式（未经裁定的自创面不加）；失败
+    /// nil = stopReason 降 error）。
+    private static func parseStructuredText(_ text: String) -> JSONValue? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: Data(trimmed.utf8))
     }
 }

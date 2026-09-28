@@ -34,6 +34,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
     case skills
     case permissions
     case memory
+    case team
     case mounts
     case diagnostics
 
@@ -47,6 +48,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .skills: return "Skills"
         case .permissions: return "权限"
         case .memory: return "记忆"
+        case .team: return "Teams"
         case .mounts: return "外挂载文件夹"
         case .diagnostics: return "诊断"
         }
@@ -60,6 +62,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .skills: return "square.stack.3d.up"
         case .permissions: return "lock.shield"
         case .memory: return "brain"
+        case .team: return "person.3"
         case .mounts: return "externaldrive.badge.plus"
         case .diagnostics: return "list.bullet.rectangle"
         }
@@ -73,6 +76,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .skills: return "技能启停与导入"
         case .permissions: return "新会话默认权限"
         case .memory: return "长期记忆沉淀与清空"
+        case .team: return "Agent Teams 花名册与任务板（只读）"
         case .mounts: return "外挂载文件夹管理"
         case .diagnostics: return "事件流（只读）"
         }
@@ -86,6 +90,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .skills: return "SkillsView"
         case .permissions: return "PermissionDefaultsView"
         case .memory: return "MemorySettingsView"
+        case .team: return "TeamBoardView"
         case .mounts: return "MountedFoldersSettingsView"
         case .diagnostics: return "EventStreamView"
         }
@@ -259,6 +264,8 @@ struct SettingsPanelView: View {
             PermissionDefaultsView(environment: environment)
         case .memory:
             MemorySettingsView(environment: environment)
+        case .team:
+            TeamBoardView(environment: environment)
         case .mounts:
             MountedFoldersSettingsView()
         case .diagnostics:
