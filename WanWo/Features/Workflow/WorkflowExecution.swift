@@ -805,7 +805,7 @@ final class WorkflowExecution: @unchecked Sendable {
         guard let api = context.evaluateScript(workflowHelperSource), !api.isUndefined else {
             let detail: String
             if let exception = context.exception {
-                let text = exception.toString()
+                let text = exception.toString() ?? ""
                 detail = text.isEmpty ? "unknown" : text
             } else {
                 detail = "evaluateScript yielded no completion value and no exception"
