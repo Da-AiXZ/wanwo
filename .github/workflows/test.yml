@@ -91,6 +91,7 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build \
+            -skipMacroValidation \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
