@@ -41,6 +41,20 @@ enum SECTION_ORDERS {
     static let toolJobs = 1600
     static let toolReadImage = 1610
     static let toolStrReplaceEditor = 1620
+    // M7 件 B（F006）：tool:goal 段（GoalTools.guidance）。dsh SECTION_ORDERS
+    // 原表 TOOL_GOAL 位未在本构建布局表内——本值 1630 为自拟槽位（紧随 jobs
+    // 族之后、PTY 保留位 1700 之前），登记待对拍 dsh 原值后归位。
+    // M7 件 C（F045）：subagent:delegation 纪律段（SubagentDelegation
+    // .promptSection——子会话专属）。dsh applyChildComposition 的 composition
+    // context 无独立布局位——-700 为自拟槽位（webSurface -800 与
+    // deploymentPersona 0 之间），登记。
+    static let subagentDelegation = -700
+    static let toolGoal = 1630
+    // M7 件 C（F045）：tool:fork 提示段（SubagentTools.registerAll）。dsh
+    // SECTION_ORDERS 原表 TOOL_SUBAGENT 位经 getSectionOrder('TOOL_SUBAGENT')
+    // 动态取值，本构建无对应布局项——1640 为自拟槽位（goal 1630 之后、PTY
+    // 1700 之前），登记待对拍 dsh 原值后归位。
+    static let toolSubagent = 1640
     static let toolWebSearch = 2000
     static let toolWebFetch = 2100
     static let toolsSDK = 5000

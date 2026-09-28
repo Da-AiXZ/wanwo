@@ -19,6 +19,26 @@
 
 import Foundation
 
+/// inbox 条目来源（M7 F006/F045：dsh MessageSource 的 WanWo 形态）。
+/// user/message 事件载荷冻结不可改——来源归属走进程内 InboxEntry + 伴随
+/// extensionEvent（goal 轮次 admitted = goal/round，见 AgentLoop claim 处）。
+enum InboxSource: Equatable, Sendable {
+    /// 用户/宿主直接输入（submit/steer/followup 缺省；dsh 缺省 source='user'
+    /// 同语义——authority 视为直接人类输入）。
+    case user
+    /// goal 自动续跑轮（goal-round-driver followup 保留）。
+    case goal(goalId: String, revision: Int, round: Int)
+    /// 子 agent 结算通知（F045 settle 通道预留；M7.2 经 jobs 完成纸条通道，
+    /// 本 case 供后续专用 notice 派发）。
+    case subagentSettled(childId: String, stopReason: String)
+    /// 宿主/系统注入（QA-2 P1-1：goal wrapup 收尾指令等——绝不计入
+    /// directHuman authority，dsh deferContext 来源语义）。
+    case system
+    /// 子 agent 消息回传（QA-2 P1-2 deliverFromSubagent——dsh agent-message
+    /// relay 等价：sender 是子 agent，绝不计入 directHuman authority）。
+    case subagentMessage(childId: String)
+}
+
 /// Agent 循环（F001）。actor：串行化状态机。
 actor AgentLoop {
     // MARK: - 词汇
@@ -113,6 +133,9 @@ actor AgentLoop {
         /// 单一事实源。nil = legacy 缺省语义（/var/wanwo/workspace 兜底）。
         /// 带默认值纪律同 skillRegistry/hookPoints：既有调用面/测试不受扰。
         var sessionCwd: String? = nil
+        /// 【M7 件 B · F006】goal 域服务（goal-round-driver 宿主；nil = 不
+        /// 启用——既有调用面/测试不受扰）。装配见 AppEnvironment.makeAgentStack。
+        var goalService: GoalService? = nil
     }
 
     // MARK: - 状态
@@ -121,10 +144,11 @@ actor AgentLoop {
     nonisolated let config: Config
     private var phase: Phase
     /// F042：inbox 条目（文本 + 可选图片引用——仅 submit 通道携带图片；
-    /// steer/inject/followup 纯文本）。
+    /// steer/inject/followup 纯文本）。M7：source = 条目来源（InboxSource）。
     struct InboxEntry: Sendable {
         var text: String
         var images: [ImageAttachmentRef] = []
+        var source: InboxSource = .user
     }
 
     private var nextStepInbox: [InboxEntry] = []    // steer/inject（本回合内消费）
@@ -141,6 +165,26 @@ actor AgentLoop {
     /// runtime context 快照投影状态（F038' ERR-024；dsh RuntimeContextProjection
     /// 语义移植，见 Core/Context/RuntimeContextProjection.swift）。
     private var runtimeProjection = RuntimeContextProjection()
+
+    // MARK: goal-round-driver 状态（M7 件 B；dsh DriverState 的 WanWo 承载）
+
+    /// goal 自动续跑保留（dsh RoundAttempt 1:1；actor 内串行化——dsh 进程级
+    /// 驱动器状态收进本 actor，登记）。
+    struct GoalRoundAttempt: Equatable {
+        enum Phase: Equatable { case queued, claimed, admitted }
+        var goalId: String
+        var revision: Int
+        var round: Int
+        var text: String
+        var phase: Phase
+        var cancelled: Bool
+        var stale: Bool
+    }
+
+    private var goalAttempt: GoalRoundAttempt?
+    /// 有竞争性 prompt 排队（真实用户输入等）时禁止自动续跑（dsh
+    /// competingQueued 1:1）。
+    private var goalCompetingQueued = false
 
     private static let logger = AppLogger(category: "AgentLoop")
 
@@ -255,25 +299,185 @@ actor AgentLoop {
     /// 随本条消息发送的已准入图片引用（AttachmentStore.saveImages 产物；
     /// AgentLoop 不做准入——准入归 composer 提交路径，loop 只落盘引用）。
     func submit(_ text: String, images: [ImageAttachmentRef] = []) {
-        nextTurnInbox.append(InboxEntry(text: text, images: images))
+        let entry = InboxEntry(text: text, images: images, source: .user)
+        nextTurnInbox.append(entry)
+        goalNoteNextTurnInsert(entry)
         wake()
     }
 
     /// steer：本回合下一步注入 + 唤醒（打断注入；dsh next-step + wakeup）。
-    func steer(_ text: String) {
-        nextStepInbox.append(InboxEntry(text: text))
+    func steer(_ text: String, source: InboxSource = .user) {
+        nextStepInbox.append(InboxEntry(text: text, source: source))
         wake()
     }
 
     /// inject：本回合下一步注入，不唤醒（dsh inject）。
-    func inject(_ text: String) {
-        nextStepInbox.append(InboxEntry(text: text))
+    func inject(_ text: String, source: InboxSource = .user) {
+        nextStepInbox.append(InboxEntry(text: text, source: source))
     }
 
     /// followup：排队独立回合 + 唤醒。
-    func followup(_ text: String) {
-        nextTurnInbox.append(InboxEntry(text: text))
+    func followup(_ text: String, source: InboxSource = .user) {
+        let entry = InboxEntry(text: text, source: source)
+        nextTurnInbox.append(entry)
+        goalNoteNextTurnInsert(entry)
         wake()
+    }
+
+    /// 子 agent 消息回传投递（QA-2 P1-2 deliverFromSubagent——dsh
+    /// createAgentMessage :62-73 逐字文案前缀 + sendWaking(parent,'steer')
+    /// 收敛排队形态；source=.subagentMessage 绝不计入 directHuman authority）。
+    func deliverFromSubagent(_ text: String, from childId: String) {
+        let entry = InboxEntry(
+            text: "Agent \(childId) sent a message: \(text)",
+            source: .subagentMessage(childId: childId))
+        nextStepInbox.append(entry)
+        wake()
+    }
+
+    // MARK: goal-round-driver（M7 件 B；dsh goal-round-driver/src/index.ts 语义）
+
+    /// next-turn 插入的竞争围栏（dsh agent/inbox/inserted 分支 1:1）：
+    /// 非本驱动器保留的插入 → competingQueued 置位；保留仍在 queued → stale。
+    private func goalNoteNextTurnInsert(_ entry: InboxEntry) {
+        if case .goal(let goalId, let revision, let round) = entry.source,
+           let attempt = goalAttempt,
+           attempt.goalId == goalId, attempt.revision == revision, attempt.round == round,
+           attempt.text == entry.text {
+            // 自驱保留（sameQueued 深相等）——不算竞争。
+            return
+        }
+        guard goalAttempt != nil else { return }
+        goalCompetingQueued = true
+        if goalAttempt?.phase == .queued {
+            goalAttempt?.stale = true
+        }
+    }
+
+    /// goal 保留是否仍有效（dsh validReservation :346-359 1:1——claimed 非瘦
+    /// stale + 排队内容深相等 + goal 当前 revision + armed + round ===
+    /// roundsStarted+1；WanWo 活性由本 actor 内联判定，登记）。
+    private func goalReservationValid(_ service: GoalService,
+                                      _ entry: InboxEntry,
+                                      _ source: GoalRef.Round) async -> Bool {
+        guard let attempt = goalAttempt, attempt.phase == .claimed, !attempt.stale,
+              attempt.goalId == source.goalId, attempt.revision == source.revision,
+              attempt.round == source.round, attempt.text == entry.text else {
+            return false
+        }
+        guard let goal = try? await service.get(), let goal else { return false }
+        return goal.id == source.goalId && goal.revision == source.revision
+            && goal.phase == .active && goal.activation == .armed
+            && source.round == goal.roundsStarted + 1
+    }
+
+    /// 条目是否 goal 自动续跑来源。
+    private static func isGoalSource(_ entry: InboxEntry) -> Bool {
+        if case .goal = entry.source { return true }
+        return false
+    }
+
+    /// claim 批内的 goal 保留判定（标记 claimed + 逐条 validReservation）。
+    private func validateGoalClaims(_ service: GoalService,
+                                    _ entries: [InboxEntry]) async -> Bool {
+        var valid = true
+        for entry in entries where Self.isGoalSource(entry) {
+            guard case .goal(let goalId, let revision, let round) = entry.source else { continue }
+            if let attempt = goalAttempt, attempt.phase == .queued,
+               attempt.goalId == goalId, attempt.revision == revision,
+               attempt.round == round, attempt.text == entry.text {
+                goalAttempt?.phase = .claimed
+            }
+            let source = GoalRef.Round(goalId: goalId, revision: revision, round: round)
+            if !(await goalReservationValid(service, entry, source)) {
+                valid = false
+            }
+        }
+        return valid
+    }
+
+    /// 消费已结算的 attempt 并驱动下一轮（dsh drive :138-205 + agent/status
+    /// idle 分支 :259-281 的合并 WanWo 形态：取消/未接纳的 attempt 收敛回
+    /// idle → 精确 ref 围栏内 pause 该 goal；attempt 结算消费 → armed+active
+    /// 才保留下一轮；roundsStarted ≥ max → block(code:"round-limit")）。
+    /// 仅在收敛 idle 后调用（readyToDrive 等价）。
+    private func goalDrive() async {
+        guard let service = deps.goalService else { return }
+        // dsh :264-279：cancelled/queued/claimed 的 attempt 收敛回 idle →
+        // pause（围栏到该 attempt 的精确 ref——resume 已 bump revision 的
+        // goal 不受误伤）。
+        if let attempt = goalAttempt,
+           attempt.phase == .queued || attempt.phase == .claimed || attempt.cancelled {
+            let current: GoalView? = (try? await service.get()) ?? nil
+            if let goal = current, goal.phase == .active, goal.activation == .armed,
+               attempt.goalId == goal.id, attempt.revision == goal.revision {
+                goalAttempt = nil
+                _ = try? await service.pause(ref: goal.ref, origin: .host)
+                return
+            }
+        }
+        // attempt 结算消费（dsh :156-162；checkpoint 语义：万我 append 即
+        // fsync，无独立 flush 缝——needsCheckpoint 略，登记）。
+        if goalAttempt != nil {
+            goalAttempt = nil
+        }
+        goalCompetingQueued = false
+        let current: GoalView? = (try? await service.get()) ?? nil
+        guard let goal = current else { return }
+        guard goal.phase == .active, goal.activation == .armed else { return }
+        if goal.roundsStarted >= goal.maxGoalRounds {
+            _ = try? await service.block(
+                ref: goal.ref,
+                reason: GoalBlockReason(
+                    code: "round-limit",
+                    message: "Goal reached its configured limit of \(goal.maxGoalRounds) rounds."),
+                origin: .host)
+            return
+        }
+        let round = goal.roundsStarted + 1
+        let text = GoalRoundPrompt.render(goal: goal, round: round)
+        goalAttempt = GoalRoundAttempt(goalId: goal.id, revision: goal.revision,
+                                       round: round, text: text, phase: .queued,
+                                       cancelled: false, stale: false)
+        followup(text, source: .goal(goalId: goal.id, revision: goal.revision, round: round))
+        // queue-failed block（dsh :193-204）不适用：WanWo followup 为内存
+        // append 无失败路径，登记。
+    }
+
+    /// goal/changed 通知入口（dsh 'goal/changed' 分支 :283-294 1:1）：
+    /// 宿主 pause 在运行中 → 取消当前回合（inbox 保留）；idle 即驱动。
+    func onGoalChanged(_ change: GoalChanged) async {
+        guard deps.goalService != nil else { return }
+        if change.operation == .pause, change.origin == .host, case .running = phase {
+            // dsh agent.cancel({kind:'user'}, {keepInbox:true})：WanWo cancel
+            // 不清 inbox（kick 收敛回放）——keepInbox 语义天然成立。
+            cancel(cause: .user)
+        }
+        if case .idle = phase {
+            await goalDrive()
+        }
+    }
+
+    /// 回合收尾 goal 围栏（dsh session/event 'turn/end' 分支 :329-339 1:1）。
+    private func goalTurnEndFence(_ reason: TurnEndReason) async {
+        guard let service = deps.goalService else { return }
+        await service.clearTurnProvenance()
+        switch reason {
+        case .maxTokens:
+            // max-tokens → disarm（dsh :330-333）。
+            goalAttempt = nil
+            _ = await service.disarm()
+        case .aborted:
+            if let attempt = goalAttempt,
+               attempt.phase == .claimed || attempt.phase == .admitted {
+                goalAttempt?.cancelled = true
+            } else {
+                goalAttempt = nil
+                _ = await service.disarm()
+            }
+        default:
+            break
+        }
     }
 
     /// 并行池上限热更（dsh maxParallelToolCalls 可热更）。
@@ -352,10 +556,35 @@ actor AgentLoop {
         deps.callbacks.onPhaseChange(phase)
         driverTask = nil
         cancelCause = nil
+        notifyIdle()
         // 收敛回放：队列仍有 followup → 再唤醒（dsh wakeRequested 回放）。
         if !nextTurnInbox.isEmpty || !nextStepInbox.isEmpty {
             wake()
+        } else {
+            // M7 件 B：idle 驱动（dsh agent/status idle → requestDrive）——
+            // armed+active 时保留下一轮；attempt 收敛 pause 围栏同位。
+            await goalDrive()
         }
+    }
+
+    // MARK: - whenIdle（dsh agent.whenIdle 等价——M7 件 C 子驱动器消费缝）
+
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// 等待收敛 idle：已在 idle 立即返回；否则挂起至驱动循环收敛。
+    /// 子 agent 驱动器（SubagentInProcessDriver）据此等待 one-shot 回合结束。
+    func whenIdle() async {
+        if case .idle = phase { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            idleWaiters.append(cont)
+        }
+    }
+
+    /// 收敛 idle 时唤醒全部等待者（kick 独占调用点）。
+    private func notifyIdle() {
+        let waiters = idleWaiters
+        idleWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     // MARK: - 回合（dsh turn()）
@@ -407,6 +636,24 @@ actor AgentLoop {
                     nextStepInbox.removeAll()
                 }
 
+                // M7 件 B：goal 轮 pre-step 权威门（dsh agent/pre-step
+                // validReservation :346-383 1:1）。失守 → reject：goal 条目丢弃、
+                // 其余 claimed 条目回队列（restoreOtherClaimed 等价）、balanced
+                // 收尾回合（此处 stepStart 未落盘——无 step 需闭合）。
+                if let service = deps.goalService, entries.contains(where: Self.isGoalSource) {
+                    let valid = await self.validateGoalClaims(service, entries)
+                    if !valid {
+                        if let attempt = goalAttempt, attempt.phase == .claimed {
+                            goalAttempt?.stale = true
+                        }
+                        goalAttempt = nil
+                        let retained = entries.filter { !Self.isGoalSource($0) }
+                        nextTurnInbox.insert(contentsOf: retained, at: 0)
+                        endReason = .aborted(cause: "goal round reservation invalid")
+                        break
+                    }
+                }
+
                 stepIndex += 1
                 let step = stepIndex
                 try await deps.writer.append(.stepStart(turn: turn, step: step))
@@ -429,6 +676,22 @@ actor AgentLoop {
                         // reject 语义=无 model-visible 消息落盘）。stepStart
                         // 已落盘 → 先闭合 step 再 break（turn/end 前不得有
                         // 开放 step——SessionInvariant）。
+                        // M7 件 B：goal 轮被下游 reject → block（dsh
+                        // prompt-rejected :400-410——仅当 goal 仍为该保留身份
+                        // 且 active+armed）。
+                        if let service = deps.goalService, goalAttempt?.phase == .claimed {
+                            let current: GoalView? = (try? await service.get()) ?? nil
+                            if let goal = current, goal.phase == .active, goal.activation == .armed,
+                               goalAttempt?.goalId == goal.id, goalAttempt?.revision == goal.revision {
+                                _ = try? await service.block(
+                                    ref: goal.ref,
+                                    reason: GoalBlockReason(
+                                        code: "prompt-rejected",
+                                        message: "Goal round was rejected before entering its step."),
+                                    origin: .host)
+                            }
+                        }
+                        goalAttempt = nil
                         try? await deps.writer.append(
                             .stepEnd(turn: turn, step: step))
                         endReason = .aborted(
@@ -437,6 +700,23 @@ actor AgentLoop {
                     }
                     // context-only 不否决：注入后照常 enter（delegate 语义）。
                     upsContexts = merged.additionalContext
+                }
+
+                // M7 件 B：post-decision 复核（dsh :412-424——UPS await 期间
+                // goal 状态可能变化；失守同 reject 路径，此时 stepStart 已落盘
+                // → 先闭合 step）。
+                if let service = deps.goalService,
+                   (entries + injected).contains(where: Self.isGoalSource) {
+                    let valid = await self.validateGoalClaims(
+                        service, injected.isEmpty ? entries : injected)
+                    if !valid {
+                        goalAttempt = nil
+                        let retained = injected.filter { !Self.isGoalSource($0) }
+                        nextTurnInbox.insert(contentsOf: retained, at: 0)
+                        try? await deps.writer.append(.stepEnd(turn: turn, step: step))
+                        endReason = .aborted(cause: "goal round reservation invalid")
+                        break
+                    }
                 }
 
                 for entry in injected where !entry.text.isEmpty {
@@ -450,10 +730,40 @@ actor AgentLoop {
                         _ = try await deps.writer.append(.extensionEvent(
                             kind: AttachmentStore.imagesEventKind, payload: payload))
                     }
+                    // M7 件 B：goal 轮 admitted 记录（dsh user/message
+                    // MessageSource 的伴随事件等价——载荷冻结定案；fold 据此
+                    // 推进 roundsStarted，GoalFold.applyGoalEvent）。
+                    if case .goal(let goalId, let revision, let round) = entry.source {
+                        _ = try await deps.writer.append(.extensionEvent(
+                            kind: GoalEvents.roundKind,
+                            payload: .object(["goalId": .string(goalId),
+                                              "revision": .int(revision),
+                                              "round": .int(round)])))
+                        if let attempt = goalAttempt,
+                           attempt.goalId == goalId, attempt.revision == revision,
+                           attempt.round == round, attempt.text == entry.text {
+                            goalAttempt?.phase = .admitted
+                        }
+                    }
                     // P2-⑪ 消息即时上屏（落盘即发射；UI 侧过滤标记消息）。
                     // T2.6 件6：引用事件已落盘后才发射（见上）——随行图片引用
                     // 供 live 乐观气泡带图上屏（用户 #22 前半）。
                     deps.callbacks.onUserMessageAppended(entry.text, entry.images)
+                }
+
+                // M7 件 B：authority provenance 登记（GoalService 工具面权威
+                // 判定的进程内证据——dsh open-turn 事件流判定的等价承载；
+                // claim 条目来源，工具侧按 ctx.turn 校验）。
+                if let service = deps.goalService {
+                    let directHuman = injected.contains { $0.source == .user }
+                    let goalRound: GoalRef.Round? = injected.compactMap { entry -> GoalRef.Round? in
+                        if case .goal(let goalId, let revision, let round) = entry.source {
+                            return GoalRef.Round(goalId: goalId, revision: revision, round: round)
+                        }
+                        return nil
+                    }.first
+                    await service.noteTurnProvenance(turn: turn, directHuman: directHuman,
+                                                     goalRound: goalRound)
                 }
 
                 // M4-E E5：UPS 上下文注入（CC index.ts:226-235——context-only
@@ -547,6 +857,11 @@ actor AgentLoop {
 
         try? await deps.writer.append(.turnEnd(turn: turn, reason: finalReason))
         deps.callbacks.onTurnEnd(finalReason)
+
+        // M7 件 B：回合收尾 goal 围栏（dsh session/event turn/end 分支——
+        // maxTokens→disarm；aborted→claimed/admitted 置 cancelled，否则 disarm；
+        // 并清 authority provenance）。
+        await goalTurnEndFence(finalReason)
 
         // dsh turn() 尾：队列仍 pending → 继续下一回合；aborted 则停（等待新输入）。
         return !nextTurnInbox.isEmpty && !Self.isAborted(finalReason)

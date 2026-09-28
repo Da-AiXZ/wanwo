@@ -127,12 +127,23 @@ struct SlashCommandRegistry {
                     + "\(String(describing: error))"
             }
         }
+        // /goal：goal 域人面命令（M7 件 B F006——dsh command-goal 1:1，
+        // GoalCommandHandler；变更以 origin .host 提交，运行中宿主 pause
+        // 触发回合取消——AgentLoop.onGoalChanged 消费）。
+        let goalCommand = Command(
+            name: "goal", summary: "set or view the goal for a long-running task") { [weak loop] args in
+            guard let loop, let service = loop.deps.goalService else {
+                return "goal system unavailable"
+            }
+            return await GoalCommandHandler.run(service: service, rawInput: args ?? "")
+        }
         var commands: [String: Command] = [
             "compact": compact,
             "new": new,
             "model": model,
             "permission": permissionCommand,
             "plan": planCommand,
+            "goal": goalCommand,
         ]
         let helpText = "Available commands:\n"
             + (commands.values.map { "/\($0.name) — \($0.summary)" }

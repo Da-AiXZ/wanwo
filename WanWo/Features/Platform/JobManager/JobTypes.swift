@@ -10,7 +10,8 @@
 //      :146-149）；WanWo 单宿主 agent → ownerSessionId: String?（围栏语义
 //      保留：owned job 仅 ownerSessionId 相同的 caller 可达，unowned 开放）
 //    - JobKindMap 声明合并（types.ts:23-26 bash/subagent）：Swift 无声明
-//      合并 → 封闭 enum；subagent 不移植（WanWo 无 subagent 生产者）
+//      合并 → 封闭 enum；M7 件 C 起 subagent 生产者落地
+//      （SubagentRuntime 驻留子 → job 语义承载），故补 `.subagent` case
 //    - done: Promise → async throws（"Must not reject; the runtime converts
 //      a rejection to `failed`" 语义由 J2 实现侧承接，types.ts:79-84）
 //
@@ -37,10 +38,12 @@ public enum JobStatus: String, Equatable, Sendable, CaseIterable {
 // MARK: - 作业种类（types.ts:23-29）
 
 /// 生产者定义的作业种类——注册表把它当不透明 id 命名空间（id 前缀同源）。
-/// dsh JobKindMap 经声明合并扩展（bash/subagent）；WanWo 单 agent 形态只做
-/// bash——subagent 不移植（简报裁定，登记）。
+/// dsh JobKindMap 经声明合并扩展（bash/subagent）；WanWo 封闭 enum 承载：
+/// `.bash`（J1）+ `.subagent`（M7 件 C：SubagentRuntime 驻留子作业，
+/// 撤销此前"subagent 不移植"裁定——简报 M7 明确要求补齐）。
 public enum JobKind: String, Equatable, Sendable, CaseIterable {
     case bash
+    case subagent
 }
 
 // MARK: - 终态结果（types.ts:32-39）

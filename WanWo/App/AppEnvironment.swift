@@ -67,6 +67,11 @@ final class AppEnvironment: ObservableObject {
     /// M5-A J2：后台作业注册表（App 级单例——dsh ctx.jobs 一 context 一份
     /// 对应）。J1 缝的本地实现；J3 三工具与完成通知将挂本实例。
     let jobRegistry = LocalJobRegistry()
+    /// M7 件 C：子 agent 运行时（providers 注册表 + activation 注册表——dsh
+    /// ctx.subagents 进程级服务对应；App 级单例同 jobRegistry 位）。
+    let subagentRuntime = SubagentRuntime()
+    /// M7 件 C：providers/物化器一次性装配旗标（@MainActor 域属性，免锁）。
+    private var subagentRuntimeWired = false
     /// M5-A J3：per-session 完成通知 listener 注销器（makeAgentStack 同会话
     /// 重建栈时先摘旧再挂新——dsh tool-jobs 插件单 listener 语义对应；
     /// MainActor 域属性，免锁）。
@@ -671,13 +676,20 @@ final class AppEnvironment: ObservableObject {
     /// - Parameters:
     ///   - interactionPresenter: 交互呈现缝（ChatViewModel；nil = 无 answerer，
     ///     审批 fail closed unavailable、提问 fail closed NO_PROVIDER）。
+    ///   - subagentDepth: 子 agent 委派深度（M7 件 C：nil=顶层会话；非 nil=
+    ///     子会话——goal isTopLevel=false + 委派纪律段注入）。
+    ///   - subagentSandboxOverride: 父委派的沙箱承载（QA-3 P1-5：非 nil 时
+    ///     子会话双旋钮初始值 = (override, .never)——dsh child-agent.ts:221-268
+    ///     子纪律；万我 knob 直传登记见报告）。
     /// - Returns: loop = nil 表示装配失败（无端点/凭据不可读），failureReason 带具体
     ///   原因（ERR-016：原 try? 吞错导致降级横幅只有泛化提示，无法定位）。
     func makeAgentStack(sessionId: String,
                         writer: SessionWriter,
                         callbacks: AgentLoop.Callbacks,
                         interactionPresenter: SessionInteractionPresenter? = nil,
-                        modelSelection: SessionModelSelection? = nil)
+                        modelSelection: SessionModelSelection? = nil,
+                        subagentDepth: Int? = nil,
+                        subagentSandboxOverride: SandboxMode? = nil)
         async -> (loop: AgentLoop?, failureReason: String?,
                   approvalCoordinator: ApprovalCoordinator?,
                   questionService: UserQuestionService?,
@@ -715,6 +727,11 @@ final class AppEnvironment: ObservableObject {
         // 禁触——不读 config/；独立 NetworkPolicy 配置，非 SandboxMode 维度）。
         let networkPolicy = NetworkPolicy.unrestricted
         let registry = ToolRegistry(presentationMode: .both)
+        // M7 件 A/B/C：extensionEvent 注册面（幂等；重名 fatal 由注册表门保
+        // 第一注册权威——装配期一次性，多会话复用注册结果）。
+        TodoEvents.register()
+        GoalEvents.register()
+        SubagentEvents.register()
         // 【工作区模型修正】会话 header cwd（创建时定格）——shell 前台/后台
         // 通道、hooks、技能 project 根与文件工具直读根的单一事实源。
         let sessionCwd = writer.header.cwd
@@ -725,6 +742,9 @@ final class AppEnvironment: ObservableObject {
         JobTools.registerAll(into: registry, sessionId: sessionId, jobs: jobRegistry)
         FsTools.registerAll(into: registry, sessionId: sessionId)
         WebTools.registerAll(into: registry, policy: networkPolicy)
+        // M7 件 A（F049）：todo_write 工具（dsh tool-todo apply 1:1——整表
+        // 替换 + allowParallelInProgress=false 万我拍板）。
+        registry.register(TodoTool(writer: writer))
         // M6.3 B2：browser_use 工具（F033——schema/执行分发语义源=OpenMinis
         // AIChatViewModel+ToolDefinitions:102-132 + ConcurrentTools:547-638，
         // 见 BrowserUseTool.swift 头注）。高风险面审批=提权呈现缝（OriginPolicy.
@@ -748,7 +768,13 @@ final class AppEnvironment: ObservableObject {
         let permission = PermissionCoordinator(
             writer: writer,
             newSessionDefaults: { [permissionDefaults] in
-                permissionDefaults.newSessionKnobs()
+                let defaults = permissionDefaults.newSessionKnobs()
+                // QA-3 P1-5（dsh child-agent.ts:221-268 子纪律）：子会话 approval
+                // 钉死 never + sandbox 承载父委派 override；顶层会话走 App 级
+                // 默认源不动。万我 PermissionCoordinator 无显式 override 与
+                // 部署缺省的区分缝——knob 直传（子恒收父当前值），登记。
+                guard subagentDepth != nil else { return defaults }
+                return (subagentSandboxOverride ?? defaults.sandbox, .never)
             })
         // 批12+归挡（2026-09-27）：预设切换 → offload 27 命令免问覆盖
         // （完全权限挡=全免问；低挡位按各命令自身档位。App 级最后写语义——
@@ -917,6 +943,21 @@ final class AppEnvironment: ObservableObject {
         // M5-A J3：tool:jobs 段（dsh tool-jobs index.ts:262-266 逐字；
         // order = SECTION_ORDERS.toolJobs = 1600，dsh TOOL_JOBS 位 1:1）。
         assembler.section(JobTools.promptSection())
+        // M7 件 B（F006）：goal 装配（dsh goal + tool-goal + /goal 斜杠命令
+        // ——命令面在 SlashCommandRegistry.makeDefault，经 loop.deps.goalService
+        // 解析）。子 agent 会话 isTopLevel=false（dsh roots() 检查等价——
+        // requireDirectHumanAuthority 据此拒绝子发起）。
+        let goalService = GoalService(writer: writer,
+                                      isTopLevel: subagentDepth == nil)
+        let goalAgentLink = GoalAgentLink()
+        registry.register(GetGoalTool(service: goalService))
+        registry.register(CreateGoalTool(service: goalService))
+        registry.register(UpdateGoalTool(service: goalService, agentLink: goalAgentLink))
+        assembler.section(GoalTools.promptSection())
+        // M7 件 C：子会话委派纪律段（child-agent.ts:171-175 子可见声明）。
+        if subagentDepth != nil {
+            assembler.section(SubagentDelegation.promptSection())
+        }
         // M3 T3 计划模式装配：plan/mode 折叠 + plan:policy 段落（order 500，
         // {{plan_policy}} 变量门控）+ /plan + 常驻 exit_plan_mode。
         let planMode = PlanModeController(writer: writer, assembler: assembler)
@@ -991,8 +1032,30 @@ final class AppEnvironment: ObservableObject {
             },
             // 【工作区模型修正】会话 header cwd——文件工具直读根 + workspacePath
             // 注入的单一事实源（nil = legacy 缺省语义）。
-            sessionCwd: sessionCwd)
+            sessionCwd: sessionCwd,
+            // M7 件 B：goal 服务（goal-round-driver 驱动面 + 工具权威面）。
+            goalService: goalService)
         let agentLoop = AgentLoop(deps: deps)
+
+        // M7 件 B：goal 接线（wrapup 注入缝回填 + 'goal/changed' 通知 →
+        // AgentLoop.onGoalChanged——dsh agentEvents emit 对应；weak 防环）。
+        goalAgentLink.set(agentLoop)
+        goalService.onChange = { [weak agentLoop] change in
+            Task { await agentLoop?.onGoalChanged(change) }
+        }
+
+        // M7 件 C：subagent 装配（providers/物化器一次性 + 本会话父 loop 登记
+        // + 工具面五件 + continuable 提示段）。sandboxOverride 供值缝 =
+        // 父 knobs.sandbox 实时读（QA-3 P1-5）；modelSelection 随链透传
+        // （QA-3 P1-6——子栈与父同路由）。
+        await setupSubagentRuntime(parentSessionId: sessionId, parentLoop: agentLoop)
+        SubagentTools.registerAll(into: registry, assembler: assembler,
+                                  runtime: subagentRuntime, jobs: jobRegistry,
+                                  writer: writer,
+                                  modelSelection: modelSelection,
+                                  sandboxOverride: { [permission] in
+                                      permission.knobs.sandbox
+                                  })
 
         // M5-A J3：完成纸条接线（dsh tool-jobs index.ts:278-299 的 owner 归一
         // 形态）。每会话一枚 listener：reported / owner nil → 跳过（dsh :279
@@ -1042,5 +1105,116 @@ final class AppEnvironment: ObservableObject {
 
         return (agentLoop, nil, coordinator, questionService, permission,
                 planMode, attachments)
+    }
+
+    // MARK: - Subagent 装配（M7 件 C · F045）
+
+    /// providers/物化器一次性装配 + 本会话父 loop 登记（dsh ctx.subagents
+    /// provider-added 与 activation 回传通道的进程内承载）。
+    /// QA-3 P1-7：同会话栈重建前先 drain 旧驻留子（cancel + close 幂等）——
+    /// 防父会话栈重建/关闭后驻留子孤儿化。
+    private func setupSubagentRuntime(parentSessionId: String,
+                                      parentLoop: AgentLoop) async {
+        await subagentRuntime.drainChildren(of: parentSessionId)
+        if !subagentRuntimeWired {
+            subagentRuntimeWired = true
+            // P2-8：与 childMaterializer 同款 [weak self]——providers 闭包
+            // 长期驻留 runtime，强捕获 self 形成 AppEnvironment↔SubagentRuntime
+            // 持环（App 单例实际无害，QA 建议统一）。
+            weak var weakEnvironment = self
+            await subagentRuntime.registerProvider(SpawnInProcessProvider(
+                name: "spawn",
+                childFactory: { resolved, seed in
+                    guard let environment = weakEnvironment else {
+                        throw LLMError(message: "environment released", code: "UNKNOWN")
+                    }
+                    return try await environment.makeSubagentChildRun(resolved: resolved, seed: seed)
+                }))
+            await subagentRuntime.registerProvider(ForkInProcessProvider(
+                name: "fork",
+                childFactory: { resolved, seed in
+                    guard let environment = weakEnvironment else {
+                        throw LLMError(message: "environment released", code: "UNKNOWN")
+                    }
+                    return try await environment.makeSubagentChildRun(resolved: resolved, seed: seed)
+                }))
+            await subagentRuntime.registerChildMaterializer { [weak self] resolved, seed, onTurnEnd in
+                guard let self else {
+                    throw LLMError(message: "environment released", code: "UNKNOWN")
+                }
+                return try await self.makeSubagentChildStack(
+                    resolved: resolved, seed: seed, onTurnEnd: onTurnEnd)
+            }
+        }
+        await subagentRuntime.registerParentLoop(sessionId: parentSessionId, loop: parentLoop)
+    }
+
+    /// in-process provider 共用工厂（spawn/fork 同栈，种子差异在 provider 层
+    /// ——SubagentInProcessDriver.startInProcessRun 1:1 入口）。
+    private func makeSubagentChildRun(resolved: SubagentResolvedRequest,
+                                      seed: [SessionEvent]?) async throws -> SubagentRun {
+        try await SubagentInProcessDriver.startInProcessRun(request: resolved, seed: seed) {
+            [weak self] resolved, seed in
+            guard let self else {
+                throw LLMError(message: "environment released", code: "UNKNOWN")
+            }
+            return try await self.makeSubagentChildStack(resolved: resolved, seed: seed,
+                                                         onTurnEnd: { _ in })
+        }
+    }
+
+    /// 子 agent 子栈物化（dsh agents.create 创建事务的 WanWo 承载）：建子会话
+    /// （childId 即 SessionId 1:1）→ lineage + descriptor 事件 → 种子批量写
+    /// （seq 从 0 连续；append 不发射实时 callbacks——派单缝要求天然满足）→
+    /// makeAgentStack 全栈复用（dsh child = full agent）。
+    private func makeSubagentChildStack(resolved: SubagentResolvedRequest,
+                                        seed: [SessionEvent]?,
+                                        onTurnEnd: @escaping @Sendable (TurnEndReason) -> Void)
+        async throws -> (loop: AgentLoop, writer: SessionWriter) {
+        let childId = resolved.childId
+        do {
+            _ = try await sessionStore.createSession(withID: childId,
+                                                     cwd: resolved.request.parentCwd)
+        } catch {
+            throw SubagentError(message: "child session creation failed: "
+                + "\(String(describing: error))", code: "SESSION_CREATE_FAILED")
+        }
+        let opened = try await sessionStore.openWriter(id: childId)
+        let childWriter = opened.writer
+        // lineage 事件（dsh childSessionMeta meta 的 extensionEvent 改案承载
+        // ——SubagentTypes 头注登记；delegationDepth 持久权威由此 fold）。
+        _ = try await childWriter.append(.extensionEvent(
+            kind: SubagentLineage.eventKind,
+            payload: SubagentLineage.payload(for: .init(
+                parentSession: resolved.request.parentSessionId,
+                delegationDepth: resolved.childDepth,
+                seeded: seed?.isEmpty == false))))
+        // descriptor 事件（创建窗口直写——dsh attachDescriptorAppend 为首个
+        // pre-step 落盘，万我创建窗口先于首个 turn，登记）。
+        _ = try await childWriter.append(.extensionEvent(
+            kind: SubagentDescriptor.eventKind,
+            payload: SubagentDescriptor.payload(for: resolved.descriptor)))
+        // 种子批量写（fork 前缀逐 payload 追加；shape 复用既有事件；ignorable
+        // 随行保真——assistantChunk 等非 model-visible 行不污染派生历史）。
+        for event in seed ?? [] {
+            _ = try await childWriter.append(event.payload, ignorable: event.ignorable)
+        }
+        // 全栈复用：子 = 完整 agent（dsh child-agent 同构）；模型选择随链
+        // 透传（QA-3 P1-6——fork 前缀 KV-cache 同端点复用）+ 沙箱/审批承载
+        // （QA-3 P1-5——子旋钮初始 (override, .never)）+ goal isTopLevel=false
+        // + 纪律段注入（subagentDepth）。
+        let stack = await makeAgentStack(
+            sessionId: childId,
+            writer: childWriter,
+            callbacks: AgentLoop.Callbacks(onTurnEnd: onTurnEnd),
+            interactionPresenter: nil,
+            modelSelection: resolved.request.modelSelection,
+            subagentDepth: resolved.childDepth,
+            subagentSandboxOverride: resolved.request.sandboxModeOverride)
+        guard let loop = stack.loop else {
+            throw SubagentError(message: "child agent stack assembly failed: "
+                + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")
+        }
+        return (loop, childWriter)
     }
 }

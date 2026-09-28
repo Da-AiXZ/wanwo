@@ -142,7 +142,12 @@ actor SessionStore {
     /// 创建新会话：立即物化头-only 日志（dsh flush 空会话语义）并登记索引
     /// （含文件基线，保证下次启动增量校验识别「已同步」）。
     func createSession(cwd: String?) throws -> SessionSummary {
-        let id = UUID().uuidString
+        try createSession(withID: UUID().uuidString, cwd: cwd)
+    }
+
+    /// 创建指定 id 的新会话（M7 件 C 子 agent 物化用——dsh childId 即
+    /// SessionId，id 由调用方生成后传入，管线与 createSession(cwd:) 同源）。
+    func createSession(withID id: String, cwd: String?) throws -> SessionSummary {
         let header = SessionHeader(id: id,
                                    createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
                                    cwd: cwd)
