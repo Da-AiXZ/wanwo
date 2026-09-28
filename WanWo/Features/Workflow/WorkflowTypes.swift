@@ -273,10 +273,12 @@ func validateWorkflowMeta(_ value: JSONValue) throws -> WorkflowMeta {
     for key in record.keys where !known.contains(key) {
         violations.append("meta.\(key) is not a recognized field (name/description/whenToUse/phases)")
     }
-    guard let name = record["name"]?.stringValue, !name.isEmpty else {
+    let name = record["name"]?.stringValue ?? ""
+    if name.isEmpty {
         violations.append("meta.name must be a non-empty string")
     }
-    guard let description = record["description"]?.stringValue, !description.isEmpty else {
+    let description = record["description"]?.stringValue ?? ""
+    if description.isEmpty {
         violations.append("meta.description must be a non-empty string")
     }
     if let whenToUse = record["whenToUse"], whenToUse.stringValue == nil {
@@ -324,8 +326,8 @@ func validateWorkflowMeta(_ value: JSONValue) throws -> WorkflowMeta {
                             code: .metaInvalid)
     }
     return WorkflowMeta(
-        name: name ?? "",
-        description: description ?? "",
+        name: name,
+        description: description,
         whenToUse: record["whenToUse"]?.stringValue,
         phases: record["phases"] != nil ? phases : nil)
 }
