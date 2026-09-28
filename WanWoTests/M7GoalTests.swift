@@ -204,7 +204,7 @@ final class M7GoalTests: XCTestCase {
         await service.noteTurnProvenance(turn: 0, directHuman: false, goalRound: nil)
         do {
             let authority = try await service.completionAuthority(turn: 0)
-            guard case .directHuman = authority else {
+            if case .directHuman = authority {} else {
                 XCTFail("step1 空 claim 后 directHuman 权威丢失（合并语义未生效）")
             }
         } catch {
@@ -216,7 +216,7 @@ final class M7GoalTests: XCTestCase {
                                              goalId: "g", revision: 1, round: 1))
         do {
             let authority = try await service.completionAuthority(turn: 0)
-            guard case .directHuman = authority else {
+            if case .directHuman = authority {} else {
                 XCTFail("goalRound 更新不应抹掉 directHuman")
             }
         } catch {
@@ -238,7 +238,7 @@ final class M7GoalTests: XCTestCase {
         await service.noteTurnProvenance(turn: 1, directHuman: true, goalRound: nil)
         do {
             let authority = try await service.completionAuthority(turn: 1)
-            guard case .directHuman = authority else {
+            if case .directHuman = authority {} else {
                 XCTFail("fence 清账后新回合登记应生效")
             }
         } catch {
