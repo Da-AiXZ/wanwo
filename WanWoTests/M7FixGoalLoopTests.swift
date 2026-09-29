@@ -406,7 +406,7 @@ final class M7FixGoalLoopTests: XCTestCase {
         XCTAssertEqual(untouched, blocks)
 
         // 恒等缝（返回原文）= 原样落盘（零扰动）。
-        let identity: @Sendable (String, String, Int, Int) async -> String = { $0 }
+        let identity: @Sendable (String, String, Int, Int) async -> String = { text, _, _, _ in text }
         let same = await AgentLoop.applyAssistantSeal(
             identity, blocks: blocks, sessionId: "s", turn: 3, step: 2)
         XCTAssertEqual(same, blocks)
