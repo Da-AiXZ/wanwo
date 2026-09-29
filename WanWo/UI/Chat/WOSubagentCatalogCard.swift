@@ -294,7 +294,7 @@ struct WOSubagentReplayView: View {
                 return .failed("子会话日志不可读")
             }
             do {
-                return .success(try SessionLogScanner.scan(data: data).events)
+                return .loaded(try SessionLogScanner.scan(data: data).events)
             } catch {
                 return .failed("子会话日志解析失败：\(error)")
             }
