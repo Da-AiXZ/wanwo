@@ -59,6 +59,50 @@ final class WorkspaceController: ObservableObject {
         try registry.delete(id)
     }
 
+    // MARK: - 级联删除（M8 批3 D 件）
+
+    /// 会话删除缝包（级联删除的 SessionStore 收口面）：生产 = AppEnvironment
+    /// 侧以 `SessionStore.deleteSessionWithDescendants` 装配；测试 = 内存桩。
+    struct WorkspaceSessionDeletionSeam: Sendable {
+        /// 删除会话（先关活写柄 → lineage 后代随删 → 自身删 jsonl+索引行）；
+        /// 返回实际删除的会话 id 集（含后代）。
+        let deleteWithDescendants: @Sendable (String) async throws -> [String]
+    }
+
+    /// 级联删除结果（dsh WorkspaceDeleteValue 的万我承载扩展——登记）。
+    struct WorkspaceDeleteOutcome: Equatable {
+        /// 注册记录是否实际删除（幂等 false 同 dsh 语义）。
+        var deleted: Bool
+        /// 级联删除的会话 id 集（含 lineage 后代；UI 清理选择态用）。
+        var removedSessionIds: [String]
+    }
+
+    /// deleteCascade（批12+ 删除 C 用户裁决的 D 件收口——2026-09-27 裁决
+    /// 「删工作区 = 连组内会话一起删」自此由 UI 循环上移到控制器单一缝）：
+    ///   1. 账本逐会话级联删（seam 内关活写柄 + lineage 后代随删 + jsonl/
+    ///      索引行走 SessionStore 删除缝——零裸删）；单个会话删除失败即中止
+    ///      （注册记录不动，用户可重试）；
+    ///   2. registry.delete 收口：groups 行删除 + 残留成员 groupId 回落
+    ///      Ungrouped（未分组成员清理——dsh delete 语义不变）。
+    /// 既有 `delete(id:)` 原样保留（孤儿清理等 registry-only 调用面）。
+    func deleteCascade(id: String,
+                       sessionDeletion: WorkspaceSessionDeletionSeam) async throws -> WorkspaceDeleteOutcome {
+        var removed: [String] = []
+        if let record = registry.get(id) {
+            for sid in record.sessionIds {
+                do {
+                    removed += try await sessionDeletion.deleteWithDescendants(sid)
+                } catch {
+                    logger.warning("deleteCascade: session \(sid) in \(id) "
+                        + "failed, aborting: \(String(describing: error))")
+                    throw error
+                }
+            }
+        }
+        let deleted = try registry.delete(id)
+        return WorkspaceDeleteOutcome(deleted: deleted, removedSessionIds: removed)
+    }
+
     /// insertBefore：注册表序内移动工作区。
     func insertBefore(id: String, beforeId: String?) throws -> [String] {
         try registry.insertBefore(id, before: beforeId)

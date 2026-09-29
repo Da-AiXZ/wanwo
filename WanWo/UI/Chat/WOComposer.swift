@@ -138,7 +138,7 @@ struct WOComposer: View {
             ModelSelectView(store: viewModel.endpointStore,
                             current: viewModel.currentModelEndpoint,
                             currentEffort: viewModel.sessionEffort,
-                            onSelect: { viewModel.selectModel($0) },
+                            onSelect: { viewModel.selectModel($0, modelID: $1) },
                             onEffort: { viewModel.selectEffort($0) })
                 .font(.system(size: 12))
 

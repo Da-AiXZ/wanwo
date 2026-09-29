@@ -181,6 +181,38 @@ actor SessionStore {
         sessionListCacheDirty = true
     }
 
+    // MARK: - 级联删除缝（M8 批3 D 件：工作区级联删除消费）
+
+    /// 会话级联删除（lineage 子会话随父）：threadSpawnEdges 全代后代随删。
+    /// 顺序（删除纪律：只走既有 deleteSession 缝，jsonl+索引行零裸删）：
+    ///   1. 关活写柄（自身 + 后代——deleteSession 拒绝写柄开放，先归还排他
+    ///      写所有权并走 interruptedTurnClosers 修复收尾）；
+    ///   2. 后代逐个 deleteSession（best-effort：单个失败跳过不阻断——
+    ///      孤儿后代不阻止父级联，登记）；
+    ///   3. 自身 deleteSession（失败抛出——调用方放弃级联保留现场）。
+    /// 返回实际删除的会话 id 集（后代 childThreadId 升序在前、自身最后）。
+    func deleteSessionWithDescendants(id: String) async throws -> [String] {
+        let descendants = (try? database.listThreadSpawnDescendants(
+            root: id, statusFilter: nil)) ?? []
+        for sid in descendants {
+            await closeWriter(id: sid)
+        }
+        await closeWriter(id: id)
+        var removed: [String] = []
+        for sid in descendants {
+            do {
+                try deleteSession(id: sid)
+                removed.append(sid)
+            } catch {
+                Self.logger.warning("cascade delete: descendant \(sid) of \(id) "
+                    + "failed: \(String(describing: error))")
+            }
+        }
+        try deleteSession(id: id)
+        removed.append(id)
+        return removed
+    }
+
     // MARK: - 打开 / 关闭写柄（dsh resume 语义）
 
     /// resume：open 排他写所有权 → replay → interruptedTurnClosers 修复。

@@ -47,7 +47,7 @@ actor MemoryPhase2 {
     /// 整合子会话运行缝（AppEnvironment 装配）：
     /// 输入渲染后的 consolidation prompt；返回 = agent 正常完成（codex
     /// AgentStatus::Completed 等价）；抛错 = spawn/运行失败。
-    typealias ConsolidationRunner = @Sendable (_ prompt: String) async throws -> Void
+    typealias ConsolidationRunner = @Sendable (_ prompt: String, _ cwd: String) async throws -> Void
 
     struct Configuration: Sendable {
         var storage: MemoryStorage
@@ -70,17 +70,30 @@ actor MemoryPhase2 {
 
     /// run() 十步（phase2.rs :49-212 逐语义）。供值 inputs 为空时按
     /// get_phase2_input_selection 语义自取（limit=256/maxUnusedDays=30 拍板档）。
+    /// - Parameters:
+    ///   - storage: 本轮存储面覆盖（批3 C1 项目化——触发器按当前项目桶传入；
+    ///     nil = Configuration.storage legacy 全局桶。既有 runOnce() 调用点
+    ///     编译兼容）。
+    ///   - memoryRootGuestPath: 本轮整合 prompt memory_root 覆盖（项目桶
+    ///     guest 路径 <cwd>/wanwo-memory——整合子会话 cwd 须同值，C2 装配缝；
+    ///     nil = legacy /var/wanwo/memory）。
+    ///   - projectKey: 本轮项目身份键（批3 C1——Phase2 输入选取与 selected
+    ///     重写按项目过滤；nil = legacy 全局池）。
     /// - Returns: 结果标签（诊断面；Skipped* 三臂照 codex metrics status 词汇）。
     @discardableResult
-    func runOnce() async -> String {
+    func runOnce(storage overrideStorage: MemoryStorage? = nil,
+                 memoryRootGuestPath: String? = nil,
+                 projectKey: String? = nil) async -> String {
         guard let configuration else { return "failed_not_configured" }
-        let storage = configuration.storage
+        let storage = overrideStorage ?? configuration.storage
 
-        // 1. 抢占全局锁（job::claim——Skipped* 静默退出）。
+        // 1. 抢占全局锁（job::claim——Skipped* 静默退出；批3 C1 任务键随
+        //    项目身份键，'global' = legacy 行）。
         let claimOutcome: MemoryPhase2ClaimOutcome
         do {
             claimOutcome = try database.tryClaimGlobalPhase2Job(
-                cooldownSeconds: MemoryConstants.phase2SuccessCooldownSeconds)
+                cooldownSeconds: MemoryConstants.phase2SuccessCooldownSeconds,
+                jobKey: MemoryDatabase.phase2JobKey(forProjectKey: projectKey))
         } catch {
             return "failed_claim"
         }
@@ -97,18 +110,20 @@ actor MemoryPhase2 {
             try storage.ensureLayout()
             storage.removeWorkspaceDiff()
         } catch {
-            await fail(configuration, reason: "failed_prepare_workspace")
+            await fail(configuration, reason: "failed_prepare_workspace", projectKey: projectKey)
             return "failed_prepare_workspace"
         }
 
-        // 4. 输入选取（get_phase2_input_selection——拍板档 256/30）。
+        // 4. 输入选取（get_phase2_input_selection——拍板档 256/30；批3 C1
+        //    按 projectKey 过滤，nil = legacy 全局池）。
         let rawMemories: [MemoryStage1Record]
         do {
             rawMemories = try database.getPhase2InputSelection(
                 limit: MemoryConstants.maxRawMemoriesForConsolidation,
-                maxUnusedDays: MemoryConstants.maxUnusedDays)
+                maxUnusedDays: MemoryConstants.maxUnusedDays,
+                projectKey: projectKey)
         } catch {
-            await fail(configuration, reason: "failed_load_stage1_outputs")
+            await fail(configuration, reason: "failed_load_stage1_outputs", projectKey: projectKey)
             return "failed_load_stage1_outputs"
         }
         // 10a. 新水位（get_watermark 逐字：max(source_updated_at) ∨ 抢占水位）。
@@ -127,7 +142,7 @@ actor MemoryPhase2 {
                 maxRawMemoriesForConsolidation: rawMemories.count,
                 cwdFor: { configuration.cwdFor($0.threadId) })
         } catch {
-            await fail(configuration, reason: "failed_sync_workspace_inputs")
+            await fail(configuration, reason: "failed_sync_workspace_inputs", projectKey: projectKey)
             return "failed_sync_workspace_inputs"
         }
 
@@ -140,10 +155,11 @@ actor MemoryPhase2 {
             do {
                 try database.markGlobalPhase2JobSucceeded(
                     completionWatermark: newWatermark,
-                    selectedThreadIds: rawMemories.map(\.threadId))
+                    selectedThreadIds: rawMemories.map(\.threadId),
+                    projectKey: projectKey)
                 try storage.saveManifest(storage.snapshotManifest())
             } catch {
-                await fail(configuration, reason: "failed_mark_succeeded")
+                await fail(configuration, reason: "failed_mark_succeeded", projectKey: projectKey)
                 return "failed_mark_succeeded"
             }
             return "succeeded_no_workspace_changes"
@@ -153,14 +169,15 @@ actor MemoryPhase2 {
         do {
             try storage.writeWorkspaceDiff(workspaceDiff)
         } catch {
-            await fail(configuration, reason: "failed_workspace_diff_file")
+            await fail(configuration, reason: "failed_workspace_diff_file", projectKey: projectKey)
             return "failed_workspace_diff_file"
         }
 
         // 8. 生成整合 agent（build_consolidation_prompt——extensions 两占位符
-        //    万我恒空串，prompts.rs :49-64 is_dir 分支语义）。
+        //    万我恒空串，prompts.rs :49-64 is_dir 分支语义；memory_root 随本轮
+        //    桶 guest 路径——批3 C1 项目化）。
         let prompt = MemoryTemplates.render(MemoryTemplates.consolidation, [
-            ("memory_root", MemoryConstants.memoryGuestPath),
+            ("memory_root", memoryRootGuestPath ?? MemoryConstants.memoryGuestPath),
             ("memory_extensions_folder_structure", ""),
             ("memory_extensions_primary_inputs", ""),
             ("phase2_workspace_diff_file", MemoryConstants.phase2WorkspaceDiffFilename),
@@ -170,7 +187,11 @@ actor MemoryPhase2 {
         //    单进程无所有权竞争，runner 返回即收口）。
         let agentCompleted: Bool
         do {
-            try await configuration.runner(prompt)
+            // M8 批3 C1 缝②（batch3-review 方案 B2）：透传本轮桶 guest 路径
+            // （与 prompt memory_root 渲染值 :180 严格同值）——整合子会话 cwd
+            // 随桶，项目桶 Phase2 整合读写一致。
+            try await configuration.runner(prompt,
+                memoryRootGuestPath ?? MemoryConstants.memoryGuestPath)
             agentCompleted = true
         } catch {
             agentCompleted = false
@@ -180,7 +201,7 @@ actor MemoryPhase2 {
 
         guard agentCompleted else {
             _ = try? storage.removeMemorySymlinks()
-            await fail(configuration, reason: "failed_agent")
+            await fail(configuration, reason: "failed_agent", projectKey: projectKey)
             return "failed_agent"
         }
 
@@ -188,7 +209,7 @@ actor MemoryPhase2 {
         do {
             try storage.validateConsolidationArtifacts()
         } catch {
-            await fail(configuration, reason: "failed_invalid_artifacts")
+            await fail(configuration, reason: "failed_invalid_artifacts", projectKey: projectKey)
             return "failed_invalid_artifacts"
         }
 
@@ -197,20 +218,23 @@ actor MemoryPhase2 {
             try storage.saveManifest(storage.snapshotManifest())
             try database.markGlobalPhase2JobSucceeded(
                 completionWatermark: newWatermark,
-                selectedThreadIds: rawMemories.map(\.threadId))
+                selectedThreadIds: rawMemories.map(\.threadId),
+                projectKey: projectKey)
         } catch {
-            await fail(configuration, reason: "failed_workspace_commit")
+            await fail(configuration, reason: "failed_workspace_commit", projectKey: projectKey)
             return "failed_workspace_commit"
         }
         return "succeeded"
     }
 
     /// job::failed 1:1（单进程无 ownership 复核面——mark_..._if_unowned 随
-    /// 适配②退役，账本头注登记）。
-    private func fail(_ configuration: Configuration, reason: String) async {
+    /// 适配②退役，账本头注登记；任务键随项目身份键）。
+    private func fail(_ configuration: Configuration, reason: String,
+                      projectKey: String?) async {
         try? database.markGlobalPhase2JobFailed(
             reason: reason,
-            retryDelaySeconds: MemoryConstants.jobRetryDelaySeconds)
+            retryDelaySeconds: MemoryConstants.jobRetryDelaySeconds,
+            jobKey: MemoryDatabase.phase2JobKey(forProjectKey: projectKey))
     }
 }
 

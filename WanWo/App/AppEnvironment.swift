@@ -587,11 +587,11 @@ final class AppEnvironment: ObservableObject {
             guard let self else { return }
             await self.memoryPhase2.configure(MemoryPhase2.Configuration(
                 storage: self.memoryStorage,
-                runner: { [weak self] prompt in
+                runner: { [weak self] prompt, cwd in
                     guard let self else {
                         throw LLMError(message: "environment released", code: "UNKNOWN")
                     }
-                    try await self.runMemoryConsolidationSession(prompt: prompt)
+                    try await self.runMemoryConsolidationSession(prompt: prompt, cwd: cwd)
                 },
                 cwdFor: { threadId in
                     guard let url = AppEnvironment.sessionFileURL(threadId),
@@ -635,7 +635,26 @@ final class AppEnvironment: ObservableObject {
                         return WanWoPaths.workspaceLinuxDir
                     }
                     return cwd
-                }))
+                },
+                // M8 批3 C1 缝需求①（batch3-review 方案 A）：当前选择工作区
+                // path 优先（项目权威——createSession cwd=ws.path 同源，
+                // projectKey 同真值）；无工作区选择回落当前会话 header cwd 探针
+                // （SessionSummary 无 cwd 列——轻量探针只读 header）。nil = 无
+                // 项目上下文 → 管线走 legacy 全局桶（缺省口径不变）。
+                activeWorkspaceCWD: { [weak self] in
+                    let workspacePath: String? = await MainActor.run { [weak self] in
+                        self?.selectedWorkspaceID.flatMap {
+                            self?.workspaceRegistry.get($0)?.path
+                        }
+                    }
+                    if let workspacePath { return workspacePath }
+                    guard let self,
+                          case .session(let sid) = await MainActor.run({ self.selection }),
+                          let url = AppEnvironment.sessionFileURL(sid),
+                          let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+                          !probe.header.cwd.isEmpty else { return nil }
+                    return probe.header.cwd
+                })
 
             // M7 件 L（F046）：Team 服务真缝绑定（AgentLoop/SubagentRuntime
             // 冻结件一律经公开缝调用；所需新缝清单见交付报告）。
@@ -782,10 +801,10 @@ final class AppEnvironment: ObservableObject {
     ///     （subagentSandboxOverride=.workspaceWrite × cwd=memoryGuestPath，
     ///     approval Never 随缝折叠）+ effort medium（会话级选择缝）；完整
     ///     per-stack 策略参数化（mcp_servers 空/Collab/Apps 面等）仍留 P2。
-    func runMemoryConsolidationSession(prompt: String) async throws {
+    func runMemoryConsolidationSession(prompt: String,
+                                       cwd: String = MemoryConstants.memoryGuestPath) async throws {
         let childId = UUID().uuidString
-        _ = try await sessionStore.createSession(
-            withID: childId, cwd: MemoryConstants.memoryGuestPath)
+        _ = try await sessionStore.createSession(withID: childId, cwd: cwd)
         do {
             let opened = try await sessionStore.openWriter(id: childId)
             let writer = opened.writer
@@ -1285,13 +1304,24 @@ final class AppEnvironment: ObservableObject {
             Self.logger.error("run_code tool registration failed: " +
                               "\(String(describing: error))")
         }
-        let compactor = Compactor(makeAdapter: { [weak self, modelSelection] in
+        // M8 批1 件A1：压缩窗口解析缝（65.5k 根因修复）——模型目录派生
+        // （EndpointCatalogSnapshot 线程安全快照；精确 id 匹配 + 端点缺省
+        // 窗口兜底，dsh modelInfoFor 语义）。快照宿主按 persist 面刷新 =
+        // 下一请求即最新目录（dsh per-request resolution 进程内映像）。
+        // 压缩阈值分母与模型解析窗口同源（pressure/compact 两处 contextWindow
+        // (for:) 同一解析缝）。
+        let catalogSnapshot = endpointStore.catalogSnapshot
+        let compactor = Compactor(
+            contextWindowResolver: { [modelSelection] model in
+                return catalogSnapshot.contextWindow(
+                    for: model, endpointID: modelSelection?.get()?.endpointID)
+            }) { [weak self, modelSelection] in
             guard let self else {
                 throw LLMError(message: "environment released", code: "UNKNOWN")
             }
             // T2.4 P1-3：会话级模型选择随缝传入（压缩摘要与会话主链同源）。
             return try await self.makeAgentAdapter(selection: modelSelection)
-        })
+        }
         let assembler = PromptAssembler()
         // ERR-025③：system prompt 内容注册（dsh 工具 sections + 基础文案
         // 逐字移植；dsh 环境特有段落见 PromptSections 头注报批单）。
@@ -1299,17 +1329,74 @@ final class AppEnvironment: ObservableObject {
         // M7 件 G（F043）：memory read-path 段（codex build_memory_tool_
         // developer_instructions 万我承载——summary 缺失/空 = 不注册段落，
         // prompts.rs :41-43 None 语义；槽位 920 登记见 SECTION_ORDERS）。
-        if let summaryData = try? Data(contentsOf: WanWoPaths.memoryPersistentDir
+        // M8 批3 件 C2（注入项目化）：summary 改读当前项目桶 memory_summary.md
+        // （MemoryBucketResolver→MemoryProjectLayout；cwd 无法解析项目 = nil
+        // 回落 legacy 全局桶只读兜底——批3 派单冻结口径，c2-report 登记）。
+        let memoryBucketRoot = MemoryBucketResolver.bucketRoot(forCwd: writer.header.cwd)
+        if let summaryData = try? Data(contentsOf: memoryBucketRoot
             .appendingPathComponent("memory_summary.md")),
            let summaryText = String(data: summaryData, encoding: .utf8),
-           let memorySection = MemoryPromptSection.summarySection(summaryText: summaryText) {
+           let memorySection = MemoryPromptSection.summarySection(
+            summaryText: summaryText,
+            guestBasePath: MemoryBucketResolver.guestBasePath(forCwd: writer.header.cwd)) {
             assembler.section(memorySection)
         }
+        // M8 批2 件B3（Cline Memory Bank 内核化·常驻笔记）：桶=项目根
+        // （projectsHostRoot(cwd)）/wanwo-notes，legacy 回落会话 workspace 桶
+        // （b3-report 登记偏差，第三批记忆项目级收编）。activeContext+
+        // progress 每请求确定性注入（DynamicPromptSection 槽 930，各截 2K+
+        // 尾注记；空文件零扰动）。brief/tech/system 不自动注入（@引用或
+        // 压缩时并入，登记）。
+        let sessionNotesStore = SessionNotesStore(sessionId: sessionId,
+                                                  workspaceCwd: writer.header.cwd)
+        sessionNotesStore.ensureBucket()
+        assembler.dynamicSection(SessionNotesInjection.dynamicSection(store: sessionNotesStore))
+        // M8 批2 件B2/B3 装配（主理人合并）：摘要兜底链=结构化 LLM 摘要
+        // 优先、nil 回落 basic（Cline compaction.ts:546-565 agentic→basic
+        // 语义的协议级承载）；摘要模型=会话当前模型（adapter.endpoint.model，
+        // A1 resolve 覆盖链现值——用户拍板「默认同会话模型」）。
+        compactor.setSummarizer(AnchorCarryingSummarizer(
+            base: ChainedSummarizer(
+                primary: StructuredSummarizer(
+                    llm: SessionSummaryLLM(makeAdapter: { [weak self, modelSelection] in
+                        guard let self else {
+                            throw LLMError(message: "environment released", code: "UNKNOWN")
+                        }
+                        return try await self.makeAgentAdapter(selection: modelSelection)
+                    }),
+                    // model 占位：SessionSummaryLLM 每次调用以 adapter.endpoint.model
+                    // 覆写（会话当前模型随请求解析）。
+                    config: SummaryCallConfig(model: "", maxOutputTokens: 20_000)),
+                fallback: BasicFallbackSummarizer()),
+            // 锚点承载（B1 偏差 #4：summarize 返回值携带续接锚点）。登记偏差：
+            // Claude Code 原语义仅 auto 场景追加 suffix；万我压缩器单 summarizer
+            // 槽无法按 auto/manual 分流，恒带 suffix（manual /compact 后同样
+            // 续跑——行为差异=多一句"继续"指令， cosmetic）。
+            includeContinuationDirective: true))
+        let notesRecorder = SessionNotesRecorder(store: sessionNotesStore)
+        compactor.onCondensation = { record in
+            // 件B3 缝②：压缩落地 → activeContext 全文重写为摘要（try? 不阻断）。
+            // batch2-review P2#5 收口：剥离锚点前缀/后缀（B2 终版 grammar 的
+            // summary 承载带锚点全文——笔记里只留正文）。
+            var summary = record.summary ?? ""
+            if summary.hasPrefix(ContextSummarizerAnchor.prefix) {
+                summary = String(summary.dropFirst(ContextSummarizerAnchor.prefix.count))
+            }
+            if summary.hasSuffix(ContextSummarizerAnchor.suffix) {
+                summary = String(summary.dropLast(ContextSummarizerAnchor.suffix.count))
+            }
+            summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !summary.isEmpty else { return }
+            try? notesRecorder.sessionNotesDidCompact(summary: summary)
+        }
         // M7 件 G（F043）：memory 四工具（codex memories 扩展四工具——原名 +
-        // schema 逐字；后端宿主直读 memoryPersistentDir，件头注裁定）。
+        // schema 逐字；后端宿主直读记忆桶，件头注裁定）。
         // QA-5 P1-1①：整合会话禁注册（codex :333 MemoryTool disable——防
         // 递归抽取；toolFilter 注册闸，探针裁决整族）。
-        let memoryBackend = MemoryBackend(rootURL: WanWoPaths.memoryPersistentDir)
+        // M8 批3 件 C2（四工具项目化）：rootURL=当前项目桶（与注入同一
+        // MemoryBucketResolver 回落口径；legacy 会话桶上 ad_hoc_note 可写——
+        // codex 语义不变，登记）。
+        let memoryBackend = MemoryBackend(rootURL: memoryBucketRoot)
         if Self.toolFamilyAllowed(toolFilter,
                                   MemoryListTool(backend: memoryBackend)) {
             MemoryTools.registerAll(into: registry, backend: memoryBackend)
@@ -1394,6 +1481,24 @@ final class AppEnvironment: ObservableObject {
             compactor: compactor,
             spill: spill,
             injector: injector,
+            onTurnSettled: { [weak sessionNotesStore, writer] observation in
+                // M8 批2 件B3 缝③：回合收尾小更新（digest=最近一条 assistant
+                // 文本回复前 400 字符；digest/files 双空时写入面自跳过）。
+                guard let sessionNotesStore else { return }
+                let digest = writer.events.reversed().compactMap { event -> String? in
+                    if case .assistantMessage(_, _, let message, _, _) = event.payload {
+                        return message.content.compactMap { block -> String? in
+                            if case .text(let text) = block { return text }
+                            return nil
+                        }.joined(separator: "\n")
+                    }
+                    return nil
+                }.first
+                try? SessionNotesRecorder(store: sessionNotesStore).sessionNotesOnTurnEnd(
+                    SessionNotesTurnObservation(
+                        assistantReplyDigest: digest.map { String($0.prefix(400)) },
+                        filesTouched: []))
+            },
             makeAdapter: { [weak self, modelSelection, attachments] in
                 guard let self else {
                     throw LLMError(message: "environment released", code: "UNKNOWN")
@@ -1758,5 +1863,44 @@ final class AppEnvironment: ObservableObject {
                 + (stack.failureReason ?? "unknown"), code: "CHILD_STACK_FAILED")
         }
         return (loop, childWriter)
+    }
+}
+
+// MARK: - M8 批2 摘要兜底链装配（主理人合并 2026-09-30）
+
+/// 结构化 LLM 摘要优先、nil 回落 basic（Cline compaction.ts:546-565
+/// agentic→basic 兜底语义的协议级承载——引擎单槽，链在装配侧合成）。
+private struct ChainedSummarizer: ContextSummarizer {
+    let primary: any ContextSummarizer
+    let fallback: any ContextSummarizer
+
+    func summarize(serializedEvents: [String],
+                   previousSummary: String?) async -> String? {
+        if let summary = await primary.summarize(serializedEvents: serializedEvents,
+                                                 previousSummary: previousSummary) {
+            return summary
+        }
+        return await fallback.summarize(serializedEvents: serializedEvents,
+                                        previousSummary: previousSummary)
+    }
+}
+
+/// 会话摘要 LLM 调用面：adapter 惰性获取（makeAgentAdapter 会话同源——
+/// 端点/密钥/模型选择覆盖链与主链一致）；模型每次调用取 adapter.endpoint.model
+/// （用户拍板「摘要模型默认同会话」——A1 resolve 覆盖链现值）。
+private struct SessionSummaryLLM: SummaryLLMInvoking, @unchecked Sendable {
+    let makeAdapter: @Sendable () async throws -> OpenAICompatAdapter
+
+    func complete(system: String,
+                  user: String,
+                  tools: [ToolSchemaEntry],
+                  toolChoiceName: String?,
+                  config: SummaryCallConfig) async throws -> SummaryLLMReply {
+        let adapter = try await makeAdapter()
+        let effective = SummaryCallConfig(model: adapter.endpoint.model,
+                                          maxOutputTokens: config.maxOutputTokens)
+        return try await OpenAICompatSummaryClient(adapter: adapter)
+            .complete(system: system, user: user, tools: tools,
+                      toolChoiceName: toolChoiceName, config: effective)
     }
 }

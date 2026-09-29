@@ -2,40 +2,49 @@
 //  Compactor.swift
 //  WanWo
 //
-//  【语义移植 · dsh】出处：dsh packages/compaction/compaction-basic（压力/溢出触发、
-//  阈值策略 thresholdRatio 0.8 / retainRatio 0.16、summarizeWithLlm、
-//  compactIfNeeded/compactNow）+ compaction-tool-result-pruner（8192/4096/1024
-//  字符预算 + PRUNE_MARKER）+ dsh packages/compaction/compaction/src/tool-pairing.ts
-//  （tool-pairing 平衡校验：压缩范围不得拆散 tool/call ↔ tool/result 对）
-//  + 10-design §5.7（Compactor F036）/ 附录 B #21/#22。
-//  落盘词汇：compaction/start → compaction/summary → compaction/end（锁三元组）+
-//  compaction/prune（prune 影子定价）。摘要经派生折叠取代影子范围（见
-//  SessionWriter.deriveMessages），append-only 永不删（§十三.3）。
+//  【语义移植 · dsh→OpenHands 迁移（M8 批2 件 B1）】本类自 M8 批2 起为压缩
+//  门面（facade）：
+//    · 计量/呈现面不变（T2.4 P0-2 / P1-5 / P2-⑦ 既有口径）：estimateText（M2
+//      估计器）、estimateSession（与 DeriveFold 同一折叠）、usageAnchor 投影、
+//      pressure → PressureInfo（ContextMeterView/ChatViewModel 数据源）、
+//      contextWindow(for:)（M8 批1 件A1 窗口解析缝——压缩分母同源，接续用）。
+//    · 压缩面迁移废弃旧两级雏形（prune 影子定价 + compaction/start→summary→end
+//      锁三元组，出处 dsh compaction-basic/tool-result-pruner/tool-pairing）——
+//      改走 OpenHands software-agent-sdk condenser 语义（CondensationEngine +
+//      CondensationWorkingSet，见 Core/Context/Compaction/）：
+//        - 压缩 = 追加 condensation/v1 tombstone（append-only 永不删）；
+//        - 触发三源（sdk llm_summarizing_condenser.py:136-203）：token 超限
+//          （预算 = contextWindow × 0.9）→HARD；事件数超 240→SOFT；
+//          condensation-request→HARD；多原因取最严遗忘集；
+//        - 掩码 condenser = 管线第一级零 LLM（投影内 View 变换，取代 prune）；
+//        - HARD 失败 → hard reset（×0.8 ×5）；连续 3 次失败熔断停自动压缩；
+//        - 摘要经冻结协议 ContextSummarizer（B2 提供 conformer，装配期注入）。
+//    · 旧日志兼容：DeriveFold 对旧 compaction/summary 的折叠保留不动，老会话
+//      照常重放（b1-report.md §1.2-5）。
 //
 
 import Foundation
 
-/// 上下文压力与压缩（F036）。
+/// 上下文压力与压缩（F036 → M8 批2 tombstone 地基）。
 final class Compactor: @unchecked Sendable {
     struct Policy: Sendable {
-        /// per-model 上下文窗（per-model policy；缺省 65536——DeepSeek chat 兼容底线）。
+        /// 上下文窗底线（无任何目录事实可解析时的最后兜底——DeepSeek chat
+        /// 兼容底线；正常路径由 contextWindowResolver 解析目录/端点缺省，
+        /// M8 批1 65.5k 根因修复后未配置窗口的模型不再落此值）。
         var defaultContextWindow = 65_536
-        var perModelContextWindows: [String: Int] = [:]
+        /// 呈现面阈值比率（ContextMeter 三档着色分母口径）——压缩触发面已改
+        /// 用 CondensationWorkingSet.Policy.tokenBudgetRatio（0.9），本字段仅
+        /// PressureInfo.thresholdTokens 呈现用，两口径分离（T2.4 P0-2 同款）。
         var thresholdRatio = 0.8
+        /// 【迁移废弃·仅存 API 兼容】旧 retainRatio / prune / summaryMaxTokens
+        /// 字段不再消费（旧两级雏形停写，b1-report.md §1.2-5）。
         var retainRatio = 0.16
-        // prune 字符预算（dsh DEFAULTS：8192/4096/1024）。
         var pruneThresholdChars = 8_192
         var pruneHeadChars = 4_096
         var pruneTailChars = 1_024
-        /// 摘要单次输出上限。
         var summaryMaxTokens = 1_024
 
         static let pruneMarker = "\n\n[... tool result middle pruned ...]\n\n"
-    }
-
-    enum Trigger: String, Sendable {
-        case pressure
-        case manual
     }
 
     // MARK: - P2-⑦ 上下文构成（dsh contextBreakdown 投影 1:1 形态）
@@ -62,12 +71,12 @@ final class Compactor: @unchecked Sendable {
         /// 表面 signed movement（dsh context-occupancy usedTokens =
         /// projectedTokens ?? pressureTokens；无 usage 锚点 → 退回表面估算）。
         var usedTokens: Int
-        /// 压缩触发口径：表面估算（M2 估算器；本批维持不动——dsh 触发面与
-        /// 呈现面在 WanWo 分属两口径，偏差呈报）。
+        /// 压缩触发口径：表面估算（M2 估算器；M8 批2 起为工作集口径——
+        /// 投影含 tombstone 过滤 + 掩码变换，与请求构造同一折叠）。
         var estimatedTokens: Int
         var thresholdTokens: Int
         /// 模型上下文窗（P1-5：dsh context-occupancy 占比分母——ContextMeter
-        /// 环与面板以窗口为分母，阈值仅供压缩触发面使用）。
+        /// 环与面板以窗口为分母，阈值仅供呈现面使用）。
         var contextWindow: Int
         /// 上下文构成（P2-⑦；缺省空值——压缩内部压力检查不需要）。
         var breakdown: Breakdown = Breakdown()
@@ -77,16 +86,53 @@ final class Compactor: @unchecked Sendable {
 
     let policy: Policy
     private let makeAdapter: @Sendable () async throws -> OpenAICompatAdapter
+    /// M8 批1 件A1：模型窗口解析缝（目录派生数据源，替代祖传
+    /// perModelContextWindows 前缀 contains 表）。语义 = dsh modelInfoFor
+    /// （llm-deepseek/adapter.ts:393-430）：精确 id 匹配 + 连接缺省窗口兜底。
+    /// 注入端（AppEnvironment）经 EndpointCatalogSnapshot 消费端点目录；
+    /// 返回 nil = 无任何目录事实 → policy 底线。
+    private let contextWindowResolver: (@Sendable (String) -> Int?)?
+    /// M8 批2 件 B2 消费缝：摘要器（冻结协议 ContextSummarizer——B2 提供
+    /// LLM 结构化摘要器与 basic 兜底 conformer，装配期注入；nil = 摘要不可用，
+    /// SOFT 推迟 / HARD 兜底链失败计熔断）。锁保护（@unchecked Sendable 纪律）。
+    private var summarizerStorage: (any ContextSummarizer)?
     private let lock = NSLock()
-    /// 压缩锁（dsh compaction/start~end 持久锁的进程内映像：同一会话不并发压缩）。
+    /// 压缩锁（旧 compaction/start~end 持久锁的进程内映像：同一会话不并发压缩）。
     private var compacting = false
+    /// M8 批2：压缩引擎（触发编排 / hard reset / 熔断 / 审计）。
+    private let engine = CondensationEngine()
+    /// 压缩落地观察缝（M8 批2 件B3 缝②承载——AppEnvironment 注入
+    /// SessionNotesRecorder 消费；记录已随 append 落盘后才发射）。
+    var onCondensation: ((CondensationRecord) -> Void)?
 
     private static let logger = AppLogger(category: "Compactor")
 
+    /// 摘要器注入缝（B2 装配期调用；幂等覆盖语义——后写胜）。
+    func setSummarizer(_ summarizer: (any ContextSummarizer)?) {
+        lock.lock()
+        summarizerStorage = summarizer
+        lock.unlock()
+    }
+
+    private var summarizer: (any ContextSummarizer)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return summarizerStorage
+    }
+
     init(policy: Policy = Policy(),
+         contextWindowResolver: (@Sendable (String) -> Int?)? = nil,
+         summarizer: (any ContextSummarizer)? = nil,
          makeAdapter: @escaping @Sendable () async throws -> OpenAICompatAdapter) {
         self.policy = policy
+        self.contextWindowResolver = contextWindowResolver
+        self.summarizerStorage = summarizer
         self.makeAdapter = makeAdapter
+        // M8 批2 件 B1：condensation 两 kind 注册（GoalEvents 同款幂等守卫；
+        // 重名 fatal 由注册表门保）。AppEnvironment 不可改的等价适配：Compactor
+        // 在 makeAgentStack 装配期构造，语义同为装配期注册——主理人合并后可在
+        // AppEnvironment.swift:1085 后补规范调用点（b1-report.md §1.2-2 / §5）。
+        CondensationEvents.register()
     }
 
     // MARK: - 估算（token 计量的 M2 估计器；实报 usage 随 M8 TokenMeter 六分格补齐）
@@ -96,7 +142,9 @@ final class Compactor: @unchecked Sendable {
         max(1, text.utf8.count / 3)
     }
 
-    /// 派生历史的整体估算（与 deriveMessages 同一折叠：影子范围不重复计价）。
+    /// 派生历史的整体估算（与 DeriveFold 同一折叠：影子范围不重复计价；
+    /// M8 批2 起经 DeriveFold 的工作集投影——tombstone 过滤 + 掩码变换后计价，
+    /// 即"工作集 token"，与请求构造同口径）。
     static func estimateSession(_ events: [SessionEvent]) -> Int {
         let fold = DeriveFold(events)
         var total = 0
@@ -138,8 +186,8 @@ final class Compactor: @unchecked Sendable {
     }
 
     /// 当前压力（threshold = 窗口 × thresholdRatio；contextWindow 随行——
-    /// P1-5 ContextMeter 占比口径）。header = 最新 request/header（P2-⑦
-    /// breakdown 的 system/tools 计价源；nil = 尚无请求，两段为 0）。
+    /// P1-5 ContextMeter 占比口径；呈现面口径不变）。header = 最新
+    /// request/header（P2-⑦ breakdown 的 system/tools 计价源；nil = 尚无请求）。
     func pressure(events: [SessionEvent], model: String?,
                   header: EpochHeader? = nil) -> PressureInfo {
         let estimated = Self.estimateSession(events)
@@ -174,41 +222,78 @@ final class Compactor: @unchecked Sendable {
                             breakdown: breakdown)
     }
 
-    /// per-model 上下文窗（dsh resolveTargetPolicy 的 M2 形态）。
+    /// per-model 上下文窗（dsh resolveTargetPolicy 的 M2 形态；M8 批1 件A1
+    /// 65.5k 根因修复）：解析缝（模型目录派生——精确 id 匹配 + 端点缺省窗口
+    /// 兜底）→ nil 回落 policy 底线。祖传前缀 contains 猜测已删。
     func contextWindow(for model: String?) -> Int {
-        guard let model else { return policy.defaultContextWindow }
-        for (key, window) in policy.perModelContextWindows where model.contains(key) {
-            return window
-        }
-        return policy.defaultContextWindow
+        guard let model, !model.isEmpty else { return policy.defaultContextWindow }
+        return contextWindowResolver?(model) ?? policy.defaultContextWindow
     }
 
-    // MARK: - 压力触发（pre-step 介入点）
+    /// HARD token 预算 = 窗口解析链同源分母 × 0.9（件3；Cline
+    /// COMPACTION_TRIGGER_RATIO 同源）。
+    func tokenBudget(for model: String?) -> Int {
+        Int(Double(contextWindow(for: model))
+            * CondensationWorkingSet.Policy.default.tokenBudgetRatio)
+    }
 
-    /// 步前压力检查：超阈值 → 先 prune 再摘要（事件全部落盘后返回 true）。
-    /// 失败不抛穿 loop（调用方 catch 后继续回合，dsh「压缩失败继续 turn」语义）。
-    /// 触发口径 = estimatedTokens（表面估算；T2.4 P0-2——呈现面锚真实 usage，
-    /// 触发面维持 M2 估算不动，偏差呈报）。
+    // MARK: - 压缩触发（M8 批2：三源 + 分级 + 熔断）
+
+    /// 步前压缩检查（pre-step 介入点）。触发三源评估（件3）：
+    /// token 超限→HARD / 事件数超 240→SOFT / 未处理 condensation-request→HARD。
+    /// 熔断（连续 3 次失败）停自动压缩；失败不抛穿 loop（dsh「压缩失败继续
+    /// turn」语义）。触发口径 = 工作集 token 估算（同请求构造折叠）。
     func compactIfNeeded(events: [SessionEvent], model: String?,
                          append: (SessionEvent.Payload, Bool) async throws -> Void) async -> Bool {
-        let info = pressure(events: events, model: model)
-        guard info.estimatedTokens >= info.thresholdTokens else { return false }
-        Self.logger.info("compaction pressure: \(info.estimatedTokens) >= \(info.thresholdTokens)")
-        return (try? await compact(events: events, model: model,
-                                   forceThreshold: false, append: append)) ?? false
+        // 熔断：连续失败停自动压缩（手动/溢出恢复不受限）。
+        guard !engine.autoCompactionDisabled else {
+            Self.logger.warning("auto compaction disabled by breaker "
+                + "(\(CondensationEngine.maxConsecutiveFailures) consecutive failures)")
+            return false
+        }
+        let tokens = Self.estimateSession(events)
+        let decision = CondensationWorkingSet.evaluateTrigger(
+            events: events, workingSetTokens: tokens,
+            tokenBudget: tokenBudget(for: model))
+        guard !decision.reasons.isEmpty else { return false }
+        Self.logger.info("condensation trigger: \(decision.reasons) "
+            + "requirement=\(decision.requirement) tokens=\(tokens) "
+            + "budget=\(tokenBudget(for: model))")
+        return await runCondensation(events: events, decision: decision, append: append)
     }
 
-    /// 手动 /compact（forceThreshold = true：低于阈值也强制做一次有效压缩）。
+    /// 手动 /compact（forceThreshold 语义迁移 = CondensationRequest(manual)：
+    /// 落请求事件 + 无条件 HARD 压缩，低于阈值也做一次有效压缩；熔断不受限）。
     /// 需经 AgentLoop.runMaintenance 串行化（idle 才可执行）。
     func compactNow(events: [SessionEvent], model: String?,
                     append: (SessionEvent.Payload, Bool) async throws -> Void) async throws -> Bool {
-        try await compact(events: events, model: model, forceThreshold: true, append: append)
+        let request = CondensationRequestMeta(
+            reason: .manual, requestedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+        try await append(.extensionEvent(kind: CondensationEvents.requestKind,
+                                         payload: request.payload), false)
+        // 触发评估需见请求事件——闭包外以合成事件补齐（seq 顺延；投影按
+        // seq 序判 unhandled 即 HARD；logOnly 事件零 token 影响，登记简化）。
+        let synthetic = SessionEvent(
+            seq: (events.last?.seq ?? -1) + 1, timeMs: request.requestedAtMs,
+            payload: .extensionEvent(kind: CondensationEvents.requestKind,
+                                     payload: request.payload))
+        return await runCondensation(events: events + [synthetic], decision: nil,
+                                     model: model, append: append)
     }
 
-    // MARK: - 核心流程
+    /// 溢出恢复消费面（件4 catch-condense-retry）：condensation-request(overflow)
+    /// 已由调用方落流（unhandled）→ 立即执行一次 HARD 压缩。熔断不受限。
+    /// - Returns: tombstone 是否落地。
+    func condensePendingRequest(events: [SessionEvent], model: String?,
+                                append: (SessionEvent.Payload, Bool) async throws -> Void) async -> Bool {
+        await runCondensation(events: events, decision: nil, model: model, append: append)
+    }
 
-    private func compact(events: [SessionEvent], model: String?, forceThreshold: Bool,
-                         append: (SessionEvent.Payload, Bool) async throws -> Void) async throws -> Bool {
+    /// 引擎编排（互斥同旧 compact：同一会话不并发压缩）。
+    private func runCondensation(events: [SessionEvent],
+                                 decision: CondensationWorkingSet.TriggerDecision?,
+                                 model: String?,
+                                 append: (SessionEvent.Payload, Bool) async throws -> Void) async -> Bool {
         lock.lock()
         if compacting {
             lock.unlock()
@@ -221,234 +306,29 @@ final class Compactor: @unchecked Sendable {
             compacting = false
             lock.unlock()
         }
-
-        // 1. 模型无关 prune（dsh：prune 先落，重估后再决定是否摘要）。
-        let prunedChars = try await pruneToolResults(events: events, append: append)
-        if prunedChars > 0 {
-            Self.logger.info("pruned \(prunedChars) chars from tool results")
+        let resolvedDecision: CondensationWorkingSet.TriggerDecision
+        if let decision {
+            resolvedDecision = decision
+        } else {
+            // compactNow / condensePendingRequest：请求事件已在流中——
+            // 重估触发（unhandled request → HARD）。
+            resolvedDecision = CondensationWorkingSet.evaluateTrigger(
+                events: events, workingSetTokens: Self.estimateSession(events),
+                tokenBudget: tokenBudget(for: model))
         }
-
-        // 2. 重估：仍超阈值（或手动强制）才做摘要。
-        let fold = DeriveFold(events)
-        var used = Self.estimateSession(events)
-        let threshold = Int(Double(contextWindow(for: model)) * policy.thresholdRatio)
-        if !forceThreshold && used < threshold { return prunedChars > 0 }
-
-        // 3. 选择可压缩范围（含 tool-pairing 平衡）。
-        let range = Self.selectCompactableRange(events, retainTokens: max(0, used - Int(Double(contextWindow(for: model)) * policy.retainRatio)))
-        guard let range else { return prunedChars > 0 }
-
-        // 4. LLM 摘要（dsh summarizeWithLlm：一次性直调，复用当前路由；复用 KV
-        //    cache 的前缀复用策略随 M8 补齐——M2 直接构造独立请求）。
-        let transcript = Self.transcript(for: events, range: range)
-        let summaryText = try await summarize(transcript: transcript)
-
-        // 5. 落盘压缩锁三元组（dsh compaction/start → summary → end）。
-        let compactionId = "cmp-\(UUID().uuidString)"
-        try await append(.compactionStart(compactionId: compactionId, turn: nil), false)
-        let shadowedTokens = range.seqList.reduce(0) { acc, seq in
-            acc + Self.estimateNode(events: events, seq: seq)
+        guard !resolvedDecision.reasons.isEmpty else { return false }
+        let record = try? await engine.condense(
+            events: events, decision: resolvedDecision,
+            tokenBudget: tokenBudget(for: model),
+            policy: CondensationWorkingSet.Policy.default,
+            summarizer: summarizer,
+            estimate: { Self.estimateSession($0) },
+            append: append)
+        if let record {
+            // M8 批2 件B3 缝②（主理人合并）：压缩落地 → 常驻笔记联动
+            // （activeContext 全文重写为摘要；消费方 try? 不阻断压缩）。
+            onCondensation?(record)
         }
-        try await append(
-            .compactionSummary(compactionId: compactionId, summary: summaryText,
-                               shadowedRangeStart: range.seqList.first ?? 0,
-                               shadowedRangeEnd: range.seqList.last ?? 0,
-                               shadowedSeqs: range.seqList,
-                               shadowedTokenCount: shadowedTokens),
-            false)
-        try await append(.compactionEnd(compactionId: compactionId, turn: nil, error: nil), false)
-        used = 0 // 供后续断言；实际重估由调用方做
-        Self.logger.info("compaction done: shadowed \(range.seqList.count) nodes, ~\(shadowedTokens) tokens")
-        return true
-    }
-
-    // MARK: - prune（模型无关；dsh ToolResultPruner 语义）
-
-    /// 对超预算 tool/result 做确定性头/中/尾剪枝：compaction/prune 影子定价 +
-    /// tool/result 替换节点同步相邻落盘（dsh shadow-price 协议）。
-    private func pruneToolResults(events: [SessionEvent],
-                                  append: (SessionEvent.Payload, Bool) async throws -> Void) async throws -> Int {
-        var charsRemoved = 0
-        for event in events {
-            guard case .toolResult(let turn, let step, let callId, let content,
-                                   let isError, let errorName, let errorCode, _) = event.payload
-            else { continue }
-            guard content.count > policy.pruneThresholdChars else { continue }
-
-            // 头/中/尾剪枝（Unicode 码点切分；dsh pruneContent 语义）。
-            let removedStart = policy.pruneHeadChars
-            let removedEnd = content.count - policy.pruneTailChars
-            let head = String(content.prefix(removedStart))
-            let tail = String(content.suffix(max(0, content.count - removedEnd)))
-            let pruned = head + Policy.pruneMarker + tail
-
-            // 影子定价 + 替换（同步相邻——协议要求 replacement 紧随定价事件）。
-            try await append(
-                .compactionPrune(shadowedSeqs: [event.seq],
-                                 shadowedTokenCount: Self.estimateText(content)),
-                false)
-            try await append(
-                .toolResult(turn: turn, step: step, callId: callId, content: pruned,
-                            isError: isError, errorName: errorName, errorCode: errorCode,
-                            meta: nil),
-                false)
-            charsRemoved += content.count - pruned.count
-        }
-        return charsRemoved
-    }
-
-    // MARK: - 范围选择 + tool-pairing 平衡（dsh selectCompactableRange / tool-pairing）
-
-    /// 选择可压缩范围：模型可见节点按 seq 升序，保留尾部 ≤ retainTokens；
-    /// tool-pairing 平衡（dsh tool-pairing.ts）：派生历史的 tool 对 =
-    /// assistantMessage（含 toolCalls blocks）↔ toolResult——边界不得把这对拆散，
-    /// 否则保留区出现孤立 tool 消息 → OpenAI 兼容端点 400
-    /// "Messages with role 'tool' must be a response to a preceding message with
-    /// 'tool_calls'"（ERR-017 真机实证）。原"M2 简化"注释的错误推理已删。
-    static func selectCompactableRange(_ events: [SessionEvent],
-                                       retainTokens: Int) -> (seqList: [Int], first: Int, last: Int)? {
-        var visible: [(seq: Int, tokens: Int)] = []
-        // callId → 承载该 call 的 assistantMessage 事件 seq（配对锚点的正确层级）。
-        var assistantSeqByCallId: [String: Int] = [:]
-        for event in events {
-            switch event.payload {
-            case .userMessage:
-                visible.append((event.seq, estimateNode(events: events, seq: event.seq)))
-            case .assistantMessage(_, _, let message, _, _):
-                for case .toolCall(let callId, _, _) in message.content {
-                    assistantSeqByCallId[callId] = event.seq
-                }
-                visible.append((event.seq, estimateNode(events: events, seq: event.seq)))
-            case .toolResult(_, _, let callId, let content, _, _, _, _):
-                visible.append((event.seq, estimateText(content) + 4))
-                // 结果的配对 assistant 一定在它之前落盘（不变量），向前就近找。
-                if assistantSeqByCallId[callId] == nil {
-                    for previous in events.reversed() where previous.seq < event.seq {
-                        if case .assistantMessage(_, _, let message, _, _) = previous.payload,
-                           message.content.contains(where: { if case .toolCall(let id, _, _) = $0 { return id == callId }; return false }) {
-                            assistantSeqByCallId[callId] = previous.seq
-                            break
-                        }
-                    }
-                }
-            default:
-                break
-            }
-        }
-        guard !visible.isEmpty else { return nil }
-
-        // 尾部保留 ≤ retainTokens。
-        var tailTokens = 0
-        var headEnd = visible.count
-        while headEnd > 0 {
-            let node = visible[headEnd - 1]
-            if tailTokens + node.tokens > retainTokens && tailTokens > 0 { break }
-            tailTokens += node.tokens
-            headEnd -= 1
-        }
-        guard headEnd > 0 else { return nil }
-
-        // tool-pairing 平衡：影子区 = visible.prefix(head)。若保留区中某
-        // toolResult 的配对 assistantMessage 已被影子化，边界向前收缩（把该
-        // assistant 挤回保留区），直至保留区不存在孤立 tool 消息。
-        var head = headEnd
-        while head > 0 {
-            let shadowSeqs = Set(visible.prefix(head).map { $0.seq })
-            var balanced = true
-            for node in visible[head...] {
-                guard case .toolResult(_, _, let callId, _, _, _, _, _) = events[node.seq].payload,
-                      let assistantSeq = assistantSeqByCallId[callId],
-                      shadowSeqs.contains(assistantSeq) else { continue }
-                balanced = false
-                break
-            }
-            if balanced { break }
-            head -= 1
-        }
-        guard head > 0 else { return nil }
-        let seqList = visible.prefix(head).map { $0.seq }
-        return (seqList, seqList.first ?? 0, seqList.last ?? 0)
-    }
-
-    /// 单节点估算（影子定价用）。
-    static func estimateNode(events: [SessionEvent], seq: Int) -> Int {
-        guard seq >= 0, seq < events.count else { return 0 }
-        switch events[seq].payload {
-        case .userMessage(let text): return 4 + estimateText(text)
-        case .assistantMessage(_, _, let message, _, _):
-            let text = message.content.compactMap { block -> String? in
-                if case .text(let t) = block { return t }
-                if case .reasoning(let t) = block { return t }
-                return nil
-            }.joined()
-            var total = 4 + estimateText(text)
-            for case .toolCall(_, _, let arguments) in message.content {
-                total += estimateText(arguments) + 8
-            }
-            return total
-        case .toolResult(_, _, _, let content, _, _, _, _): return 4 + estimateText(content)
-        default: return 0
-        }
-    }
-
-    /// 摘要输入转录（范围内模型可见内容；单节点截断 2000 字符防爆输入）。
-    static func transcript(for events: [SessionEvent], range: (seqList: [Int], first: Int, last: Int)) -> String {
-        var lines: [String] = []
-        for seq in range.seqList {
-            guard seq < events.count else { continue }
-            switch events[seq].payload {
-            case .userMessage(let text):
-                lines.append("[user] \(String(text.prefix(2000)))")
-            case .assistantMessage(_, _, let message, _, _):
-                let text = message.content.compactMap { block -> String? in
-                    if case .text(let t) = block { return t }
-                    return nil
-                }.joined()
-                let calls = message.content.compactMap { block -> String? in
-                    if case .toolCall(let id, let name, _) = block { return "\(name)(\(id))" }
-                    return nil
-                }
-                lines.append("[assistant] \(String(text.prefix(2000)))"
-                    + (calls.isEmpty ? "" : " [tool calls: \(calls.joined(separator: ", "))]"))
-            case .toolResult(_, _, let callId, let content, _, _, _, _):
-                lines.append("[tool result \(callId)] \(String(content.prefix(2000)))")
-            default:
-                break
-            }
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    /// LLM 摘要（dsh summarizeWithLlm 的 M2 形态：一次性直调，maxTokens 上限）。
-    private func summarize(transcript: String) async throws -> String {
-        let adapter = try await makeAdapter()
-        let system = """
-        You are a conversation summarizer. Condense the following agent conversation \
-        transcript into a compact summary that preserves: the user's goals and constraints, \
-        key decisions made, important file paths and commands, current progress, and \
-        outstanding next steps. Write in the same language as the conversation. \
-        Output ONLY the summary text.
-        """
-        let request = LLMRequest(
-            baseURL: adapter.endpoint.baseURL,
-            apiKey: adapter.apiKey,
-            model: adapter.endpoint.model,
-            system: system,
-            messages: [ChatMessage(role: .user, content: transcript)],
-            maxTokens: policy.summaryMaxTokens,
-            thinking: "disabled",
-            purpose: "compaction")
-        var summary = ""
-        let stream = adapter.stream(request)
-        for try await chunk in stream {
-            if case .textDelta(_, let text) = chunk {
-                summary += text
-            }
-        }
-        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            throw LLMError(message: "compaction summary was empty", code: "EMPTY_SUMMARY")
-        }
-        return trimmed
+        return record != nil
     }
 }

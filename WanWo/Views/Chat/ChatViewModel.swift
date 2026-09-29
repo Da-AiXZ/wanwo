@@ -517,8 +517,11 @@ final class ChatViewModel: ObservableObject {
     /// 不写全局 activeEndpoint；选择模型时 effort 回 provider default
     /// （dsh :171-178 selection 不带旧 effort，WanWo 无 defaultEffort
     /// 元数据 → nil））。下一请求即生效（makeAdapter 按调用时选择取用）。
-    func selectModel(_ endpoint: EndpointConfig) {
-        modelSelection.set(.init(endpointID: endpoint.id, reasoningEffort: nil))
+    /// M8 批1 件A4：两级选择（endpoint → 模型；modelID = 会话级覆盖，
+    /// EndpointStore.resolve 应用——目录为空传 endpoint.model 即现状行为）。
+    func selectModel(_ endpoint: EndpointConfig, modelID: String) {
+        modelSelection.set(.init(endpointID: endpoint.id, reasoningEffort: nil,
+                                 modelID: modelID))
         currentModelEndpoint = environment.endpointStore.resolve(selection: modelSelection.get())
         sessionEffort = nil
     }

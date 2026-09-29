@@ -694,7 +694,7 @@ struct ChatView: View {
                         viewModel.runCommandLine(line, confirmed: confirmed)
                     },
                     onPlanOff: { viewModel.runCommandLine("/plan off") },
-                    onSelectModel: { viewModel.selectModel($0) },
+                    onSelectModel: { viewModel.selectModel($0, modelID: $1) },
                     onSelectEffort: { viewModel.selectEffort($0) },
                     onPrimary: {
                         if primaryStops {
@@ -785,7 +785,8 @@ private struct ComposerToolBar: View, Equatable {
     let endpointStore: EndpointStore
     let onPermissionCommand: (String, Bool) -> Void
     let onPlanOff: () -> Void
-    let onSelectModel: (EndpointConfig) -> Void
+    /// M8 件A4：模型两级选择（endpoint → 模型 id）。
+    let onSelectModel: (EndpointConfig, String) -> Void
     let onSelectEffort: (String?) -> Void
     let onPrimary: () -> Void
 

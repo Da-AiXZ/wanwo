@@ -22,21 +22,49 @@
 
 import Foundation
 
+// MARK: - 项目桶解析（M8 批3 件 C2）
+
+/// 项目记忆桶解析（消费 MemoryProjectLayout 冻结契约——C1 并行交付：
+/// Features/Memory/MemoryProjectLayout.swift，本文件按契约引用，类型落地前
+/// 全工程暂不编译，c2-report 已登记）。回落口径（批3 派单冻结）：
+/// cwd 无法解析项目 → nil 回落 legacy 全局桶 WanWoPaths.memoryPersistentDir
+/// （/var/wanwo/memory 宿主树——存量数据只读保留，登记）。
+enum MemoryBucketResolver {
+    /// 会话 cwd → 记忆桶宿主根（项目桶 projectsHostRoot(cwd)/wanwo-memory/
+    /// 或 legacy 全局桶）。
+    static func bucketRoot(forCwd cwd: String?) -> URL {
+        MemoryProjectLayout.memoryBucketURL(forCwd: cwd)
+            ?? WanWoPaths.memoryPersistentDir
+    }
+
+    /// 记忆桶 guest 基路径（PromptSection read-path 模板 base_path 位——
+    /// 项目桶 = <cwd>/wanwo-memory（fakefs 同真映射）；legacy = 全局 guest 根。
+    /// nil cwd（legacy 会话）回落全局 guest 根，登记）。
+    static func guestBasePath(forCwd cwd: String?) -> String {
+        guard let cwd else { return MemoryConstants.memoryGuestPath }
+        return MemoryProjectLayout.memoryBucketURL(forCwd: cwd) != nil
+            ? cwd + "/wanwo-memory"
+            : MemoryConstants.memoryGuestPath
+    }
+}
+
 // MARK: - 注册面
 
 /// memory read-path 系统段（codex build_memory_tool_developer_instructions 万我
 /// 承载——prompts.rs :27-51 逐语义：memory_summary.md 读取 + trim + 2500 token
 /// 截断 + read_path 模板 render(base_path, memory_summary)；空 summary = None →
 /// 万我 nil = 不注册段落——assemble 空段落丢弃同语义）。万我 base_path =
-/// memory guest 根（FsContextRouter 全局桶——模型可见路径体系）。
+/// 记忆桶 guest 基路径（M8 批3 项目化：项目桶 = <cwd>/wanwo-memory，legacy
+/// = FsContextRouter 全局桶——模型可见路径体系，随桶解析口径同源）。
 enum MemoryPromptSection {
-    static func summarySection(summaryText: String) -> PromptSection? {
+    static func summarySection(summaryText: String,
+                               guestBasePath: String = MemoryConstants.memoryGuestPath) -> PromptSection? {
         let summary = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !summary.isEmpty else { return nil }
         let truncated = MemoryRollout.truncateToTokenEstimate(
             summary, MemoryConstants.memorySummaryTokenLimit)
         let rendered = MemoryTemplates.render(MemoryTemplates.readPath, [
-            ("base_path", MemoryConstants.memoryGuestPath),
+            ("base_path", guestBasePath),
             ("memory_summary", truncated),
         ])
         return PromptSection(name: "memory:read-path",

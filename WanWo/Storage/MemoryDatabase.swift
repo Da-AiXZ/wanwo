@@ -132,6 +132,13 @@ final class MemoryDatabase: @unchecked Sendable {
                 on: "jobs",
                 columns: ["kind", "status", "retry_at"])
         }
+        // 批3 C1（记忆项目化）：候选/整合/设置面带 project 维度——最小扩展
+        // （新列 nullable，NULL = legacy 全局池；既有行零改动，登记）。
+        migrator.registerMigration("wanwo.memory.v2") { db in
+            try db.alter(table: "stage1_outputs") { t in
+                t.add(column: "project_key", .text)
+            }
+        }
         try migrator.migrate(dbQueue)
         // QA-5 P1-2：崩溃回收——打开账本时残留 status=="running" 的
         // phase2/global 行必然是上进程残骸（单进程 + 内存单飞闸），复位
@@ -180,10 +187,12 @@ final class MemoryDatabase: @unchecked Sendable {
     // MARK: - Phase1 结果落账（mark_stage1_job_* 三态）
 
     /// mark_stage1_job_succeeded 1:1：upsert stage1_outputs + jobs 置 done +
-    /// last_success_watermark 推进 + retry 余量重置。
+    /// last_success_watermark 推进 + retry 余量重置。批3 C1：projectKey 落账
+    /// （nil = legacy 全局池）。
     func markStage1JobSucceeded(threadId: String, sourceUpdatedAt: Int,
                                 rawMemory: String, rolloutSummary: String,
-                                rolloutSlug: String?) throws {
+                                rolloutSlug: String?,
+                                projectKey: String? = nil) throws {
         let now = nowSeconds()
         try dbQueue.write { db in
             try db.execute(
@@ -191,17 +200,18 @@ final class MemoryDatabase: @unchecked Sendable {
                 INSERT INTO stage1_outputs
                     (thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug,
                      generated_at, usage_count, last_usage, selected_for_phase2,
-                     selected_for_phase2_source_updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL)
+                     selected_for_phase2_source_updated_at, project_key)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?)
                 ON CONFLICT(thread_id) DO UPDATE SET
                     source_updated_at = excluded.source_updated_at,
                     raw_memory = excluded.raw_memory,
                     rollout_summary = excluded.rollout_summary,
                     rollout_slug = excluded.rollout_slug,
-                    generated_at = excluded.generated_at
+                    generated_at = excluded.generated_at,
+                    project_key = excluded.project_key
                 """,
                 arguments: [threadId, sourceUpdatedAt, rawMemory, rolloutSummary,
-                            rolloutSlug, now])
+                            rolloutSlug, now, projectKey])
             try Self.upsertJob(db, kind: "stage1", jobKey: threadId, status: "done",
                                startedAt: nil, finishedAt: now, retryAt: nil,
                                retryRemaining: Self.defaultRetryRemaining,
@@ -254,38 +264,50 @@ final class MemoryDatabase: @unchecked Sendable {
     /// QA-5 P1-2：崩溃回收（init 尾单次调用）。残留 running 行复位 error：
     /// retry_at = now + 重试窗、retry_remaining -1（mark_global_phase2_job_
     /// failed 同语义——中断计一次失败）、last_error 记中断；无残行 no-op
-    /// （不落首行）。
+    /// （不落首行）。批3 C1：回收面扩到全部项目任务键（每项目一行 phase2
+    /// 任务——崩溃残留可能跨多项目，逐行复位）。
     func recoverInterruptedPhase2Job(retryDelaySeconds: Int) throws {
         let now = nowSeconds()
         try dbQueue.write { db in
-            let row = try Row.fetchOne(
+            let rows = try Row.fetchAll(
                 db, sql: """
-                SELECT retry_remaining FROM jobs
-                WHERE kind = 'phase2' AND job_key = 'global' AND status = 'running'
+                SELECT job_key, retry_remaining FROM jobs
+                WHERE kind = 'phase2' AND status = 'running'
                 """)
-            guard row != nil else { return }
-            let remaining = row?["retry_remaining"] as Int?
-                ?? Self.defaultRetryRemaining
-            try Self.upsertJob(db, kind: "phase2", jobKey: "global", status: "error",
-                               startedAt: nil, finishedAt: nil,
-                               retryAt: now + retryDelaySeconds,
-                               retryRemaining: max(0, remaining - 1),
-                               lastError: "recovered: interrupted by process exit",
-                               inputWatermark: nil, lastSuccessWatermark: nil)
+            for row in rows {
+                guard let jobKey: String = row["job_key"] else { continue }
+                let remaining = row["retry_remaining"] as Int?
+                    ?? Self.defaultRetryRemaining
+                try Self.upsertJob(db, kind: "phase2", jobKey: jobKey, status: "error",
+                                   startedAt: nil, finishedAt: nil,
+                                   retryAt: now + retryDelaySeconds,
+                                   retryRemaining: max(0, remaining - 1),
+                                   lastError: "recovered: interrupted by process exit",
+                                   inputWatermark: nil, lastSuccessWatermark: nil)
+            }
         }
+    }
+
+    /// Phase2 任务键（批3 C1 项目化：projectKey → 项目自身；nil → 'global'
+    /// legacy 行。jobs 表主键 (kind, job_key) 天然按项目分行，零 schema 改动）。
+    static func phase2JobKey(forProjectKey projectKey: String?) -> String {
+        projectKey ?? "global"
     }
 
     /// try_claim_global_phase2_job 万我单进程形态（actor 串行 + NSLock 双保险）：
     /// running → SkippedRunning；done 且在成功冷却窗（6h）→ SkippedCooldown；
     /// error 且重试未到点 → SkippedRetryUnavailable；否则置 running 并交出
-    /// input_watermark（= last_success_watermark，幂等基线）。
-    func tryClaimGlobalPhase2Job(cooldownSeconds: Int) throws -> MemoryPhase2ClaimOutcome {
+    /// input_watermark（= last_success_watermark，幂等基线）。批3 C1：任务键
+    /// 随项目（缺省 'global' = legacy，既有调用点编译兼容）。
+    func tryClaimGlobalPhase2Job(cooldownSeconds: Int,
+                                 jobKey: String = "global") throws -> MemoryPhase2ClaimOutcome {
         lock.lock()
         defer { lock.unlock() }
         let now = nowSeconds()
         return try dbQueue.write { db in
             let row = try Row.fetchOne(
-                db, sql: "SELECT * FROM jobs WHERE kind = 'phase2' AND job_key = 'global'")
+                db, sql: "SELECT * FROM jobs WHERE kind = 'phase2' AND job_key = ?",
+                arguments: [jobKey])
             let status = row?["status"] as String?
             let finishedAt = row?["finished_at"] as Int?
             let retryAt = row?["retry_at"] as Int?
@@ -304,7 +326,7 @@ final class MemoryDatabase: @unchecked Sendable {
             default:
                 break
             }
-            try Self.upsertJob(db, kind: "phase2", jobKey: "global", status: "running",
+            try Self.upsertJob(db, kind: "phase2", jobKey: jobKey, status: "running",
                                startedAt: now, finishedAt: nil, retryAt: nil,
                                retryRemaining: Self.defaultRetryRemaining,
                                lastError: nil,
@@ -315,12 +337,14 @@ final class MemoryDatabase: @unchecked Sendable {
     }
 
     /// mark_global_phase2_job_failed 1:1（单进程无 ownership 校验面——
-    /// mark_global_phase2_job_failed_if_unowned 的双保险随租约一并退役，登记）。
-    func markGlobalPhase2JobFailed(reason: String, retryDelaySeconds: Int) throws {
+    /// mark_global_phase2_job_failed_if_unowned 的双保险随租约一并退役，登记；
+    /// 批3 C1：任务键随项目，缺省 'global'）。
+    func markGlobalPhase2JobFailed(reason: String, retryDelaySeconds: Int,
+                                   jobKey: String = "global") throws {
         let now = nowSeconds()
         try dbQueue.write { db in
-            let remaining = try Self.retryRemaining(db, kind: "phase2", jobKey: "global")
-            try Self.upsertJob(db, kind: "phase2", jobKey: "global", status: "error",
+            let remaining = try Self.retryRemaining(db, kind: "phase2", jobKey: jobKey)
+            try Self.upsertJob(db, kind: "phase2", jobKey: jobKey, status: "error",
                                startedAt: nil, finishedAt: nil,
                                retryAt: now + retryDelaySeconds,
                                retryRemaining: max(0, remaining - 1),
@@ -332,19 +356,25 @@ final class MemoryDatabase: @unchecked Sendable {
 
     /// mark_global_phase2_job_succeeded 1:1：置 done + finished_at（冷却起点）+
     /// last_success_watermark = 完成水位；selected_for_phase2 重写（选中集=1
-    /// 并随行 selected_for_phase2_source_updated_at，其余=0）。
+    /// 并随行 selected_for_phase2_source_updated_at，其余=0）。批3 C1：任务键
+    /// 与 selected 重写面均按项目收窄（projectKey 维度过滤——其余项目/legacy
+    /// 行零扰动），缺省 'global'/NULL = legacy。
     func markGlobalPhase2JobSucceeded(completionWatermark: Int,
-                                      selectedThreadIds: [String]) throws {
+                                      selectedThreadIds: [String],
+                                      projectKey: String? = nil) throws {
+        let jobKey = Self.phase2JobKey(forProjectKey: projectKey)
         let now = nowSeconds()
         try dbQueue.write { db in
-            try Self.upsertJob(db, kind: "phase2", jobKey: "global", status: "done",
+            try Self.upsertJob(db, kind: "phase2", jobKey: jobKey, status: "done",
                                startedAt: nil, finishedAt: now, retryAt: nil,
                                retryRemaining: Self.defaultRetryRemaining,
                                lastError: nil,
                                inputWatermark: completionWatermark,
                                lastSuccessWatermark: completionWatermark)
             let selected = Set(selectedThreadIds)
-            let rows = try Row.fetchAll(db, sql: "SELECT thread_id FROM stage1_outputs")
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT thread_id FROM stage1_outputs WHERE project_key IS ?",
+                arguments: [projectKey])
             for row in rows {
                 guard let threadId: String = row["thread_id"] else { continue }
                 if selected.contains(threadId) {
@@ -377,7 +407,9 @@ final class MemoryDatabase: @unchecked Sendable {
     /// 排序 usage_count DESC → COALESCE(last_usage, source_updated_at) DESC →
     /// source_updated_at DESC → thread_id DESC 取 top-N；返回前按 thread_id ASC
     /// 稳定排序（raw_memories.md 机械重建序——thread_id 稳定升序）。
-    func getPhase2InputSelection(limit: Int, maxUnusedDays: Int) throws -> [MemoryStage1Record] {
+    /// 批3 C1：projectKey 维度过滤（`IS ?` 兼容 NULL——nil = legacy 全局池）。
+    func getPhase2InputSelection(limit: Int, maxUnusedDays: Int,
+                                 projectKey: String? = nil) throws -> [MemoryStage1Record] {
         let cutoff = nowSeconds() - maxUnusedDays * 86_400
         let rows = try dbQueue.read { db in
             try Row.fetchAll(
@@ -385,21 +417,26 @@ final class MemoryDatabase: @unchecked Sendable {
                 sql: """
                 SELECT * FROM stage1_outputs
                 WHERE COALESCE(last_usage, source_updated_at) >= ?
+                  AND project_key IS ?
                 ORDER BY COALESCE(usage_count, 0) DESC,
                          COALESCE(last_usage, source_updated_at) DESC,
                          source_updated_at DESC,
                          thread_id DESC
                 LIMIT ?
                 """,
-                arguments: [cutoff, limit])
+                arguments: [cutoff, projectKey, limit])
         }
         return rows.map(Self.record(from:)).sorted { $0.threadId < $1.threadId }
     }
 
-    /// 全量账本（thread_id ASC——raw_memories.md 机械重建读面）。
-    func allStage1Outputs() throws -> [MemoryStage1Record] {
+    /// 全量账本（thread_id ASC——raw_memories.md 机械重建读面）。批3 C1：
+    /// projectKey 过滤（nil = legacy 池；`IS ?` 语义）。
+    func allStage1Outputs(projectKey: String? = nil) throws -> [MemoryStage1Record] {
         let rows = try dbQueue.read { db in
-            try Row.fetchAll(db, sql: "SELECT * FROM stage1_outputs ORDER BY thread_id ASC")
+            try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM stage1_outputs WHERE project_key IS ? ORDER BY thread_id ASC",
+                arguments: [projectKey])
         }
         return rows.map(Self.record(from:))
     }
@@ -452,8 +489,10 @@ final class MemoryDatabase: @unchecked Sendable {
     // MARK: - 设置页（一键清空 + 条目可溯）
 
     /// 条目列表（来源会话 + turn 可溯——raw_memory 正文内含 turn 级任务块）。
-    func listEntries() throws -> [MemoryStage1Record] {
-        try allStage1Outputs()
+    /// 批3 C1：projectKey 过滤（设置页按当前项目桶列举——C2 消费点；nil =
+    /// legacy 池）。
+    func listEntries(projectKey: String? = nil) throws -> [MemoryStage1Record] {
+        try allStage1Outputs(projectKey: projectKey)
     }
 
     /// 一键清空：两表清（memory/ 目录删除由 MemoryStorage.clearAll 承担）。
@@ -464,14 +503,16 @@ final class MemoryDatabase: @unchecked Sendable {
         }
     }
 
-    /// 上次成功整合时刻（jobs 表 phase2/global 行 finished_at；设置页状态行）。
-    func lastPhase2SuccessDate() throws -> Date? {
+    /// 上次成功整合时刻（jobs 表 phase2 行 finished_at；设置页状态行）。
+    /// 批3 C1：任务键随项目（缺省 'global' = legacy）。
+    func lastPhase2SuccessDate(jobKey: String = "global") throws -> Date? {
         try dbQueue.read { db in
             let row = try Row.fetchOne(
                 db, sql: """
                 SELECT finished_at FROM jobs
-                WHERE kind = 'phase2' AND job_key = 'global' AND status = 'done'
-                """)
+                WHERE kind = 'phase2' AND job_key = ? AND status = 'done'
+                """,
+                arguments: [jobKey])
             guard let seconds: Int = row?["finished_at"] else { return nil }
             return Date(timeIntervalSince1970: TimeInterval(seconds))
         }

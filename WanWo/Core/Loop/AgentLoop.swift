@@ -39,6 +39,15 @@ enum InboxSource: Equatable, Sendable {
     case subagentMessage(childId: String)
 }
 
+/// 回合收尾观察缝载荷（M8 批2 件8；B3 常驻笔记的消费输入——turnEnd 事实 +
+/// 会话身份；不含正文转录，笔记侧按需经 writer 自取，缝保持窄面）。
+struct TurnObservation: Sendable {
+    let sessionId: String
+    let turn: Int
+    let reason: TurnEndReason
+    let endedAtMs: Int64
+}
+
 /// Agent 循环（F001）。actor：串行化状态机。
 actor AgentLoop {
     // MARK: - 词汇
@@ -146,6 +155,12 @@ actor AgentLoop {
         /// 测试不受扰）。
         var onAssistantMessageSealed:
             (@Sendable (String, String, Int, Int) async -> String)? = nil
+        /// 【M8 批2 · B1 件8 · 回合收尾观察缝】turnEnd 落盘后发射（常驻笔记
+        /// B3 消费——只缝不接线，接线由主理人在 AppEnvironment 合并）。
+        /// 缝签名：TurnObservation{sessionId, turn, reason, endedAtMs}；
+        /// nil 缝 = 零开销跳过（citation 缝同款默认值纪律，既有调用面/测试
+        /// 不受扰）。
+        var onTurnSettled: (@Sendable (TurnObservation) async -> Void)? = nil
     }
 
     // MARK: - 状态
@@ -172,6 +187,9 @@ actor AgentLoop {
     /// 真机转圈批 A：合成 result 必须落在正确的 turn/step 才保配对不变量）。
     private var activeToolBatch: (turn: Int, step: Int)?
     private var maxParallelToolCalls: Int
+    /// 【M8 批2 · B1 件4】本轮是否已做过溢出恢复（catch-condense-retry 每
+    /// 回合一次——Cline overflowRecoveryAttempted 语义）；runTurn 开头复位。
+    private var overflowRecoveryAttempted = false
     /// runtime context 快照投影状态（F038' ERR-024；dsh RuntimeContextProjection
     /// 语义移植，见 Core/Context/RuntimeContextProjection.swift）。
     private var runtimeProjection = RuntimeContextProjection()
@@ -691,6 +709,7 @@ actor AgentLoop {
     /// 执行一个回合。- Returns: 队列仍有待处理工作时 true（继续下一回合）。
     private func runTurn() async throws -> Bool {
         let turn = deps.writer.nextTurn
+        overflowRecoveryAttempted = false
         try await deps.writer.append(.turnStart(turn: turn))
         var endReason: TurnEndReason? = nil
         var sawMaxTokens = false
@@ -880,8 +899,20 @@ actor AgentLoop {
                 // 压力检查（dsh pre-step 压缩介入点；失败继续回合）。
                 await self.checkCompactionPressure()
 
-                // 一步（模型请求 + 工具调度）。
-                let outcome = try await runStep(turn: turn, step: step)
+                // 一步（模型请求 + 工具调度）+ LLM 超限 catch-condense-retry
+                //（M8 批2 件4：CONTEXT_WINDOW_EXCEEDED / 历史畸形 → 落
+                // condensation-request(overflow) + 立即 HARD 压缩 + 重试一次；
+                // 重试请求必须确实变小否则终态报错）。
+                let outcome: StepOutcome
+                do {
+                    outcome = try await runStep(turn: turn, step: step)
+                } catch {
+                    guard !overflowRecoveryAttempted,
+                          Self.isContextOverflowLike(error) else { throw error }
+                    overflowRecoveryAttempted = true
+                    outcome = try await recoverFromContextOverflow(
+                        turn: turn, step: step)
+                }
                 // step 收尾配对校验（ERR-021 防御②）：step/end 落盘前补齐缺失
                 // 的 tool/result，结构性保证派生历史的 tool_calls↔tool 配对完整。
                 await ensureStepToolResultsPaired(turn: turn, step: step)
@@ -956,6 +987,15 @@ actor AgentLoop {
 
         try? await deps.writer.append(.turnEnd(turn: turn, reason: finalReason))
         deps.callbacks.onTurnEnd(finalReason)
+
+        // M8 批2 件8：回合收尾观察缝（turnEnd 落盘后发射；B3 常驻笔记消费
+        // ——只缝不接线，接线由主理人在 AppEnvironment 合并；nil 缝零开销）。
+        if let seam = deps.onTurnSettled {
+            let observation = TurnObservation(
+                sessionId: deps.sessionId, turn: turn, reason: finalReason,
+                endedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+            await seam(observation)
+        }
 
         // M7 件 B：回合收尾 goal 围栏（dsh session/event turn/end 分支——
         // maxTokens→disarm；aborted→claimed/admitted 置 cancelled，否则 disarm；
@@ -1082,9 +1122,11 @@ actor AgentLoop {
         let model = header?.config.model
         let info = deps.compactor.pressure(events: events, model: model, header: header)
         deps.callbacks.onTokenPressure(info)
-        // T2.4 P0-2：触发口径 = estimatedTokens（表面估算）；usedTokens 已是
-        // usage 锚点投影（呈现面），不进触发判定——两口径分离（Compactor 头注）。
-        guard info.estimatedTokens >= info.thresholdTokens else { return }
+        // M8 批2 件3：触发三源评估在 Compactor.compactIfNeeded 内完成（token
+        // 超限→HARD 预算=窗口解析分母×0.9 / 事件数超 240→SOFT / 未处理
+        // condensation-request→HARD；多原因取最严遗忘集）+ 熔断停自动压缩。
+        // T2.4 P0-2：触发口径 = 工作集 token 估算（M8 批2 起含 tombstone 过滤
+        // 与掩码变换，与请求构造同一折叠）；呈现面 usedTokens 分离不变。
         // 压缩失败不抛穿（dsh：继续回合）。
         let appendClosure: (SessionEvent.Payload, Bool) async throws -> Void = {
             [writer = deps.writer] payload, ignorable in
@@ -1095,6 +1137,63 @@ actor AgentLoop {
         let after = deps.compactor.pressure(events: deps.writer.events, model: model,
                                             header: header)
         deps.callbacks.onTokenPressure(after)
+    }
+
+    // MARK: - LLM 超限 catch-condense-retry（M8 批2 件4）
+
+    /// 溢出恢复（sdk agent/agent.py:813-854 的 WanWo 回合内等价 + Cline
+    /// overflow_recovery 同形态，登记 b1-report.md §1.2-3）：
+    /// ① 重建工作集（投影纯函数即时重算——万我无增量 view 缓存态可坏，
+    ///   rebuild_view 语义等价）；
+    /// ② 落 condensation-request/v1(overflow)（HARD 触发载体 + 审计）；
+    /// ③ 立即执行一次 HARD 压缩；
+    /// ④ 重试请求必须确实变小（Cline agent-runtime.ts:2205-2228），否则终态
+    ///   报错不空转（CONTEXT_OVERFLOW_NOTHING_TO_COMPACT）；
+    /// ⑤ 同 step 重试一次（assistantChunk 不进派生历史——DeriveFold 忽略
+    ///   chunk，重放安全）。
+    private func recoverFromContextOverflow(turn: Int, step: Int) async throws -> StepOutcome {
+        Self.logger.warning("turn \(turn) step \(step): context overflow detected, "
+            + "starting catch-condense-retry")
+        let tokensBefore = Compactor.estimateSession(deps.writer.events)
+        let request = CondensationRequestMeta(
+            reason: .overflow, requestedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+        try? await deps.writer.append(.extensionEvent(
+            kind: CondensationEvents.requestKind, payload: request.payload))
+        let appendClosure: (SessionEvent.Payload, Bool) async throws -> Void = {
+            [writer = deps.writer] payload, ignorable in
+            try await writer.append(payload, ignorable: ignorable)
+        }
+        let condensed = await deps.compactor.condensePendingRequest(
+            events: deps.writer.events,
+            model: deps.writer.recordedRequestHeader?.config.model,
+            append: appendClosure)
+        let tokensAfter = Compactor.estimateSession(deps.writer.events)
+        guard condensed, tokensAfter < tokensBefore else {
+            throw LLMError(
+                message: "context overflow recovery failed: working set did not shrink "
+                    + "(before \(tokensBefore), after \(tokensAfter), condensed=\(condensed))",
+                code: "CONTEXT_OVERFLOW_NOTHING_TO_COMPACT")
+        }
+        Self.logger.info("catch-condense-retry: working set \(tokensBefore)→\(tokensAfter), "
+            + "retrying step once")
+        return try await runStep(turn: turn, step: step)
+    }
+
+    /// 溢出/历史畸形判定（sdk LLMContextWindowExceedError +
+    /// LLMMalformedConversationHistoryError 的 WanWo 等价——WanWo 错误码面：
+    /// CONTEXT_WINDOW_EXCEEDED 直判；历史畸形 = provider 400 的 tool 配对类
+    /// 抱怨，保守白名单匹配，登记）。
+    nonisolated static func isContextOverflowLike(_ error: Error) -> Bool {
+        guard let llmError = error as? LLMError else { return false }
+        if llmError.code == "CONTEXT_WINDOW_EXCEEDED" { return true }
+        if llmError.code == "INVALID_REQUEST" {
+            let message = llmError.message.lowercased()
+            let historyPatterns = ["messages with role 'tool'", "tool_calls",
+                                   "tool call id", "preceding message",
+                                   "tool message must follow"]
+            return historyPatterns.contains { message.contains($0) }
+        }
+        return false
     }
 
     // MARK: - 一步（dsh step()：模型请求 + 工具执行）

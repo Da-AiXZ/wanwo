@@ -6,10 +6,11 @@
 //  digest-H §3：居中模态 800×min(720,100vh-48)、圆角 32、遮罩 rgba(0,0,0,.24)
 //  +blur(2px)、左 nav 188px cell 40px 高 active #EBEEF2、右上角 X 关闭）。
 //
-//  内容区直接承载既有旧设置页（真功能零重写——ProvidersView/MCPServersView/
-//  SkillsView/PermissionDefaultsView/MountedFoldersSettingsView/EventStreamView
-//  原样挂入，路由方式与旧 SettingsPanelView contentBody 一致；旧 Views 目录
-//  只读未动）。分区文案沿用旧页原文（SettingsPane.title）。
+//  内容区直接承载既有旧设置页（真功能零重写——MCPServersView/SkillsView/
+//  PermissionDefaultsView/MountedFoldersSettingsView/EventStreamView 原样挂入，
+//  路由方式与旧 SettingsPanelView contentBody 一致；Providers 分区自 m8 批1
+//  起挂新 ProvidersSectionView（dsh ui-settings-models 语义翻译件））。分区
+//  文案沿用旧页原文（SettingsPane.title）。
 //
 //  与 AppEnvironment 既有状态的接缝：
 //    · 内容页均直持 environment 的各 store（真功能）；
@@ -247,7 +248,19 @@ struct WOSettingsModal: View {
     private func paneContent(_ pane: SettingsPane) -> some View {
         switch pane {
         case .providers:
-            ProvidersView(environment: environment)
+            // 【m8 批1 A2】dsh ui-settings-models 语义翻译件整块替换旧
+            // ProvidersView（旧页薄壳化为挂点名转发，Views/Settings/ 原文件保留）。
+            // 探测缝接 A1 ModelDiscovery（静态后端，表单当前值语义）。
+            ProvidersSectionView(
+                store: environment.endpointStore,
+                discoverModels: { baseURL, apiKey in
+                    do {
+                        .success(try await ModelDiscovery.discoverModels(
+                            baseURL: baseURL, apiKey: apiKey))
+                    } catch {
+                        .failure(error)
+                    }
+                })
         case .mcpServers:
             MCPServersView(environment: environment)
         case .skills:

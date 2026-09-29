@@ -60,6 +60,13 @@ enum SECTION_ORDERS {
     // （wanwoLinkGuide 910 之后、toolBash 1000 之前——同为"模型可见路径体系"
     // 主题族），登记待对拍后归位。
     static let memorySummary = 920
+    // M8 批2 件 B3：session:notes 段（常驻笔记确定性注入——activeContext +
+    // progress 每请求动态段，DynamicPromptSection 形态）。Cline Memory Bank
+    // 内核零注入（cline-deepread.md §1.3），万我内核化为万我增强（登记）；
+    // 930 为自拟槽位（memorySummary 920 之后、toolBash 1000 之前——与
+    // memory:read-path / wanwoLinkGuide 同属"模型可见持久上下文/路径体系"
+    // 主题族），登记待对拍后归位。
+    static let sessionNotes = 930
     // M7 件 L（F046）：team:policy 段（tool-agent-team install :164-171——
     // dsh getSectionOrder('TEAM_POLICY') 动态取值，本构建无对应布局项——
     // 1650 为自拟槽位（toolSubagent 1640 之后、PTY 1700 之前——同属 agent

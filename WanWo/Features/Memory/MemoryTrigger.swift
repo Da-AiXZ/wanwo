@@ -62,6 +62,10 @@ final class MemoryTrigger: @unchecked Sendable {
         var contextWindowTokens: @Sendable () -> Int?
         /// 供值缝：会话 cwd（header cwd 探针——整合会话防回流判定用）。
         var sessionCWD: @Sendable (String) async -> String?
+        /// 供值缝：当前工作区 cwd（活动工作区/最近会话 header cwd——批3 C1
+        /// 项目化新增，C2 装配接线；nil = 无项目上下文 → legacy 全局桶口径）。
+        /// 带缺省值且居结构体末位——C2 接线前既有 attach 调用点编译兼容。
+        var activeWorkspaceCWD: @Sendable () async -> String? = { nil }
     }
 
     private let database: MemoryDatabase
@@ -118,27 +122,41 @@ final class MemoryTrigger: @unchecked Sendable {
         guard await seams.isForeground() else { return }
         guard await seams.activeRunSessionIDs().isEmpty else { return }
 
+        // 批3 C1 桶化：当前工作区 cwd → 项目桶（冻结契约）；解析失败 →
+        // legacy 全局桶（init 注入 storage——AppEnvironment 装配段同源，
+        // 只读保留口径）。本轮管线全部读写面（布局/raw_memories/rollout_
+        // summaries/清单/整合工件）均落该桶。
+        let currentCWD = await seams.activeWorkspaceCWD()
+        let runStorage = MemoryProjectLayout.storage(forCwd: currentCWD)
+
         do {
-            try storage.ensureLayout()
+            try runStorage.ensureLayout()
         } catch {
             Self.logger.warning("memory ensureLayout failed: \(String(describing: error))")
             return
         }
 
-        // prune（phase1::prune——账本保留期淘汰，零 token 消耗先做）。
+        // prune（phase1::prune——账本保留期淘汰，零 token 消耗先做；跨项目
+        // 统一保留期清账——账本行 thread_id 全局唯一，保留期口径与项目无关，
+        // 登记）。
         _ = try? database.pruneStage1OutputsForRetention(
             maxUnusedDays: MemoryConstants.maxUnusedDays,
             batchSize: MemoryConstants.pruneBatchSize)
         // codex rate_limits_ok 守卫万我无配额面，不移植（登记）。
 
-        // Phase1（claim → 抽取）。
-        await runPhase1(seams: seams)
-        // Phase2（整合）。
-        _ = await seams.phase2.runOnce()
+        // Phase1（claim → 抽取；候选只扫本项目会话）。
+        await runPhase1(seams: seams, currentCWD: currentCWD)
+        // Phase2（整合——同一项目桶；整合 prompt memory_root / 子会话 cwd
+        // 随桶 guest 路径；选取与落账按项目身份键）。
+        _ = await seams.phase2.runOnce(
+            storage: runStorage,
+            memoryRootGuestPath: MemoryProjectLayout.memoryBucketGuestPath(forCwd: currentCWD),
+            projectKey: MemoryProjectLayout.projectKey(forCwd: currentCWD))
     }
 
-    /// Phase1：候选枚举（age/idle/子代理过滤 + 水位判定 + 拍板限量）→ 抽取。
-    private func runPhase1(seams: HostSeams) async {
+    /// Phase1：候选枚举（项目范围 + age/idle/子代理过滤 + 水位判定 + 拍板
+    /// 限量）→ 抽取。
+    private func runPhase1(seams: HostSeams, currentCWD: String?) async {
         let sessions = await seams.listSessions()
         let now = Date()
         var candidates: [(threadId: String, sourceUpdatedAt: Int, cwd: String)] = []
@@ -148,6 +166,11 @@ final class MemoryTrigger: @unchecked Sendable {
             // ——get_config generate_memories=false 的结构性等价承载）。
             guard let cwd = await seams.sessionCWD(summary.id) else { continue }
             if cwd == MemoryConstants.memoryGuestPath { continue }
+            // 批3 C1 候选范围收窄（派单拍板）：只扫本项目会话——会话 cwd 与
+            // 当前工作区 cwd 同 projectKey（同为 nil = legacy 池；口径见
+            // MemoryProjectLayout 头注登记）。
+            guard MemoryProjectLayout.isCandidate(sessionCwd: cwd,
+                                                  currentCwd: currentCWD) else { continue }
             // max_rollout_age_days（更新时刻距 now ≤ 10 天）。
             guard now.timeIntervalSince(summary.updatedAt)
                 <= TimeInterval(MemoryConstants.maxRolloutAgeDays * 86_400) else { continue }
@@ -199,7 +222,8 @@ final class MemoryTrigger: @unchecked Sendable {
                 rolloutPath: "sessions/\(claim.threadId).jsonl",
                 rolloutCwd: candidates.first(where: { $0.threadId == claim.threadId })?.cwd
                     ?? WanWoPaths.workspaceLinuxDir,
-                contextWindowTokens: seams.contextWindowTokens()))
+                contextWindowTokens: seams.contextWindowTokens(),
+                projectKey: MemoryProjectLayout.projectKey(forCwd: currentCWD)))
         }
         guard !inputs.isEmpty else { return }
         _ = await seams.phase1.run(inputs: inputs)

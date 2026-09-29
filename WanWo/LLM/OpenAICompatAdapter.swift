@@ -320,7 +320,11 @@ struct OpenAICompatAdapter {
             reasoning_effort: wireEffort,
             temperature: request.temperature,
             max_tokens: request.maxTokens,
-            tools: wireTools)
+            tools: wireTools,
+            tool_choice: request.toolChoice.map {
+                WireToolChoice(type: $0.type,
+                               function: .init(name: $0.function.name))
+            })
 
         var url = URL(string: endpoint.baseURL) ?? URL(string: "https://localhost")!
         if endpoint.baseURL.hasSuffix("/") {
@@ -660,6 +664,16 @@ struct WireStreamOptions: Codable {
     var include_usage: Bool
 }
 
+/// tool_choice 硬指定 wire 形态（M8 批2 件B2 合并：OpenHands
+/// structured_summary_condenser.py:255-262 语义 1:1）。
+struct WireToolChoice: Encodable {
+    struct WireToolChoiceFunction: Encodable {
+        var name: String
+    }
+    var type: String
+    var function: WireToolChoiceFunction
+}
+
 struct WireRequest: Encodable {
     var model: String
     var messages: [WireMessage]
@@ -670,6 +684,7 @@ struct WireRequest: Encodable {
     var temperature: Double?
     var max_tokens: Int?
     var tools: [WireTool]?
+    var tool_choice: WireToolChoice?
 }
 
 /// 非 2xx 错误体（dsh WireError：{error: {message, code, type}}）。

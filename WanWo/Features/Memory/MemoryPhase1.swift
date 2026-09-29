@@ -43,6 +43,9 @@ actor MemoryPhase1 {
         var rolloutCwd: String
         /// 模型上下文窗（nil = 无元数据 → DEFAULT_ROLLOUT_TOKEN_LIMIT）。
         var contextWindowTokens: Int?
+        /// 项目身份键（批3 C1 项目化——stage1_outputs.project_key 落账维度；
+        /// nil = legacy 全局池。缺省居末位，既有构造点编译兼容）。
+        var projectKey: String? = nil
     }
 
     private let database: MemoryDatabase
@@ -117,7 +120,8 @@ actor MemoryPhase1 {
                 sourceUpdatedAt: input.claim.sourceUpdatedAt,
                 rawMemory: rawMemory,
                 rolloutSummary: rolloutSummary,
-                rolloutSlug: rolloutSlug)
+                rolloutSlug: rolloutSlug,
+                projectKey: input.projectKey)
             return .succeededWithOutput
         } catch {
             try? database.markStage1JobFailed(

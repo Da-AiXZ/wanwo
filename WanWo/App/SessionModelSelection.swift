@@ -8,7 +8,8 @@
 //    ——选择随会话（切会话各归各），不落盘、不落事件（dsh 为 per-session host
 //    状态）；effectiveEffort = current?.reasoningEffort ?? defaultEffort（:83）。
 //  WanWo 形态：
-//    · 选择 = 端点 id + 会话 effort（provider/model 由端点配置承载）；
+//    · 选择 = 端点 id + 会话 effort + 模型覆盖（M8 批1 件A4：modelID nil =
+//      endpoint.model；provider/model 基座由端点配置承载）；
 //    · nil = 未选择（App 级缺省 = 活动端点，新会话初始化）；
 //    · NSLock 保护的 @unchecked Sendable 值宿主——makeAdapter 是 @Sendable 缝
 //      （AgentLoop 后台线程按请求调用），UI 写侧在 MainActor，需线程安全。
@@ -19,11 +20,21 @@
 import Foundation
 
 final class SessionModelSelection: @unchecked Sendable {
-    /// 选择值（dsh ModelSelection 的 WanWo 形态：端点 + 会话 effort）。
+    /// 选择值（dsh ModelSelection 的 WanWo 形态：端点 + 会话 effort + 模型覆盖）。
     struct Value: Equatable, Sendable {
         var endpointID: UUID
         /// nil = provider default 不透传（dsh defaultEffort 缺席语义）。
         var reasoningEffort: String?
+        /// M8 批1 件A4：会话级模型覆盖（nil = endpoint.model；dsh ui-model-
+        /// selection「选择下一请求生效」语义——EndpointStore.resolve 应用后
+        /// 经 adapter.endpoint.model 到达 LlmCallConfig 两构造点）。
+        var modelID: String?
+
+        init(endpointID: UUID, reasoningEffort: String? = nil, modelID: String? = nil) {
+            self.endpointID = endpointID
+            self.reasoningEffort = reasoningEffort
+            self.modelID = modelID
+        }
     }
 
     private let lock = NSLock()

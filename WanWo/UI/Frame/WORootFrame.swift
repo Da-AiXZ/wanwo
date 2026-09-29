@@ -37,12 +37,14 @@ struct WORootFrame: View {
     }
 
     /// R3a 行操作目标（重命名/删除确认；归档无对话框=dsh 语义）。
+    /// M8 批3 D 件：workspace 案带账本会话数（删除确认弹窗「将同时删除
+    /// N 个对话」——N=账本实数，进弹窗时定格）。
     private enum R3Target: Equatable {
         case session(id: String, title: String)
-        case workspace(id: String, title: String)
+        case workspace(id: String, title: String, sessionCount: Int)
         var title: String {
             switch self {
-            case .session(_, let title), .workspace(_, let title): return title
+            case .session(_, let title), .workspace(_, let title, _): return title
             }
         }
     }
@@ -278,7 +280,8 @@ struct WORootFrame: View {
                         },
                         onDeleteWorkspace: { id in
                             let t = snapshot.workspaces.first { $0.id == id }
-                            deleteTarget = .workspace(id: id, title: t?.title ?? "")
+                            deleteTarget = .workspace(id: id, title: t?.title ?? "",
+                                                      sessionCount: t?.sessionIds.count ?? 0)
                         }
                     )
                 } else {
@@ -395,8 +398,45 @@ struct WORootFrame: View {
             appState.sessionRemoved(id)
             appState.purgeDraft(for: id) // 草稿持久键随会话清除（防 UserDefaults 孤儿）
             Task { await environment.deleteSession(id: id) }
-        case .workspace(let id, _):
-            _ = try? environment.workspaceRegistry.delete(id)
+        case .workspace(let id, _, _):
+            // M8 批3 D 件：级联删除收口 WorkspaceController.deleteCascade
+            // （关活写柄 → 账本逐会话删（lineage 后代随删，jsonl+索引行走
+            // SessionStore 删除缝）→ 注册记录删除）。旧 `registry.delete`
+            // 直呼（记录保留语义）退役——与 SessionsSidebarView 同一缝。
+            let record = environment.workspaceRegistry.get(id)
+            let seam = WorkspaceController.WorkspaceSessionDeletionSeam(
+                deleteWithDescendants: { [sessionStore = environment.sessionStore] sid in
+                    try await sessionStore.deleteSessionWithDescendants(id: sid)
+                })
+            Task { @MainActor in
+                do {
+                    let outcome = try await environment.workspaceController.deleteCascade(
+                        id: id, sessionDeletion: seam)
+                    // 清理选择态/草稿（D 件：选中会话随工作区删除）。
+                    for sid in outcome.removedSessionIds { appState.purgeDraft(for: sid) }
+                    if case .session(let selectedID) = environment.selection,
+                       outcome.removedSessionIds.contains(selectedID) {
+                        environment.selection = .none
+                    }
+                    environment.sessionsRevision += 1
+                    // 项目目录删除段（批12+ 删除 C 语义——仅 App 管控 projects
+                    // 内路径；外选真实目录绝不触碰）。项目桶 wanwo-memory/
+                    // wanwo-notes 随目录级联（预期内，c2-report 登记）。
+                    if let record,
+                       WanWoPaths.isProjectsGuestPath(record.path),
+                       record.path != WanWoPaths.projectsLinuxDir,
+                       let hostDir = WanWoPaths.projectsHostRoot(forGuestPath: record.path) {
+                        try? FileManager.default.removeItem(at: hostDir)
+                        IshExecutorBridge.setProjectDirectories(
+                            environment.workspaceRegistry.list().map(\.path)
+                                .filter { WanWoPaths.isProjectsGuestPath($0)
+                                    && $0 != WanWoPaths.projectsLinuxDir })
+                    }
+                } catch {
+                    environment.sessionActionError =
+                        "删除工作区失败：\(String(describing: error))"
+                }
+            }
         }
         deleteTarget = nil
     }
@@ -473,8 +513,11 @@ struct WORootFrame: View {
                 switch t {
                 case .session(_, let title):
                     return "将删除会话「\(title)」及其全部记录。该操作不可撤销。"
-                case .workspace(_, let title):
-                    return "将把「\(title)」从工作区列表中移除。文件夹与此工作区下会话的记录会保留在数据库中。"
+                case .workspace(_, let title, let count):
+                    // M8 批3 D 件：N=账本实数（进弹窗时定格）。
+                    return count > 0
+                        ? "将删除工作区「\(title)」，将同时删除 \(count) 个对话及其全部记录。该操作不可撤销。"
+                        : "将删除工作区「\(title)」。该操作不可撤销。"
                 }
             }
         ) {

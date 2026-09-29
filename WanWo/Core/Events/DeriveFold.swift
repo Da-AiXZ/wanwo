@@ -19,6 +19,12 @@ struct DeriveFold {
     let messages: [ChatMessage]
 
     init(_ events: [SessionEvent]) {
+        // 【M8 批2 · B1】工作集投影接线（tombstone 应用 + 掩码 View 变换）——
+        // 语义等价适配登记见 analysis/m8-fix/b1-report.md §1.2-1：投影先行
+        // （过滤 forgottenSeqs + summaryOffset 插入派生摘要条目 + 窗口外工具
+        // 结果掩码），其后既有折叠规则原样作用于工作集。无 tombstone 且未越
+        // 掩码窗口时投影恒等返回，零扰动。
+        let events = CondensationWorkingSet.projected(events)
         // 1. 影子范围（压缩摘要取代的历史节点）。
         var shadowed = Set<Int>()
         for event in events {

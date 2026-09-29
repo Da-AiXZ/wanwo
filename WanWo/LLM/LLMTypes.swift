@@ -375,6 +375,20 @@ extension StreamChunk: Codable {
     }
 }
 
+// MARK: - ResolvedModelInfo（M8 批1 件A1：解析产物形态）
+
+/// 模型解析产物（dsh LlmResolvedModelInfo 子集，对拍 adapter.ts:401-429
+/// modelInfoFor 返回形态——万我消费面仅窗口/输出上限/模态三事实；reasoning
+/// 档位表属新能力，派单注明另批登记）。构造唯一入口 = ModelCatalog.resolvedInfo。
+struct ResolvedModelInfo: Equatable, Sendable {
+    /// 解析后上下文窗（entry ?? endpoint 缺省 ?? 1_000_000）。
+    var contextWindow: Int
+    /// 解析后单次输出上限（entry ?? endpoint 缺省 ?? 256_000）。
+    var defaultMaxTokens: Int
+    /// 请求模态（缺省 ["text"]——dsh 未登记即 text-only 的 fail-closed 口径）。
+    var inputModalities: [String]
+}
+
 // MARK: - LlmCallConfig / EpochHeader
 
 /// 会话级调用配置（dsh LlmCallConfig 子集）。
@@ -410,6 +424,22 @@ struct EpochHeader: Codable, Equatable, Sendable {
 // MARK: - LLMRequest / LLMError
 
 /// 一次模型调用请求（adapter 层输入；内容由派生历史组装，见 SessionWriter.deriveMessages）。
+/// OpenAI tool_choice 硬指定（M8 批2 件B2 合并：OpenHands StructuredSummaryCondenser
+/// :255-262 语义——tools+tool_choice={"type":"function","function":{"name":…}}，
+/// 强制模型按 schema 结构化输出）。
+struct ToolChoice: Equatable, Sendable {
+    var type: String
+    var function: Function
+
+    struct Function: Equatable, Sendable {
+        var name: String
+    }
+
+    static func function(named name: String) -> ToolChoice {
+        ToolChoice(type: "function", function: Function(name: name))
+    }
+}
+
 struct LLMRequest: Sendable {
     var baseURL: String
     var apiKey: String
@@ -426,6 +456,8 @@ struct LLMRequest: Sendable {
     var purpose: String?
     /// M2：随请求暴露的工具 schema（无工具请求缺省不发 tools 字段）。
     var tools: [ToolSchemaEntry]?
+    /// M8 批2：tool_choice 硬指定（结构化摘要强制面；nil = 不发字段）。
+    var toolChoice: ToolChoice?
 
     init(baseURL: String,
          apiKey: String,
@@ -437,7 +469,8 @@ struct LLMRequest: Sendable {
          thinking: String? = nil,
          reasoningEffort: String? = nil,
          purpose: String? = nil,
-         tools: [ToolSchemaEntry]? = nil) {
+         tools: [ToolSchemaEntry]? = nil,
+         toolChoice: ToolChoice? = nil) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
@@ -449,6 +482,7 @@ struct LLMRequest: Sendable {
         self.reasoningEffort = reasoningEffort
         self.purpose = purpose
         self.tools = tools
+        self.toolChoice = toolChoice
     }
 }
 

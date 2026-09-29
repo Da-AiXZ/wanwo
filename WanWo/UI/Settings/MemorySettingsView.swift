@@ -19,6 +19,10 @@
 import SwiftUI
 
 /// 设置 · 记忆（SettingsPane.memory 路由落点）。
+/// M8 批3 件 C2（项目化）：条目列举/编辑/删除按当前项目桶
+/// （MemoryProjectLayout 消费；cwd 无法解析项目 = nil 回落 legacy 全局桶
+/// ——批3 派单冻结口径）。账本计数（已沉淀条目）仍为全局 MemoryDatabase
+/// 面（C1 账本参数化后接续，登记）。
 struct MemorySettingsView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var isEnabled: Bool = MemorySettings.isEnabled
@@ -28,6 +32,10 @@ struct MemorySettingsView: View {
     @State private var clearError: String?
     @State private var entries: [MemoryStorage.MemoryEntry] = []
     @State private var selectedEntry: MemoryStorage.MemoryEntry?
+    /// 当前项目桶存储（refresh 时按当前选择重算；编辑/删除同桶）。
+    @State private var bucketStorage: MemoryStorage?
+    /// 当前记忆范围标签（设置页可读性——项目路径尾段或「全局」）。
+    @State private var scopeLabel: String = ""
 
     var body: some View {
         List {
@@ -38,6 +46,9 @@ struct MemorySettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("状态") {
+                if !scopeLabel.isEmpty {
+                    LabeledContent("记忆范围", value: scopeLabel)
+                }
                 LabeledContent("已沉淀条目", value: "\(entryCount)")
                 if let last = lastConsolidated {
                     LabeledContent("上次整合",
@@ -79,7 +90,7 @@ struct MemorySettingsView: View {
         }
         .sheet(item: $selectedEntry) { entry in
             MemoryEntryDetailSheet(entry: entry,
-                                   storage: environment.memoryStorage) {
+                                   storage: bucketStorage ?? environment.memoryStorage) {
                 refresh()
             }
         }
@@ -146,12 +157,49 @@ struct MemorySettingsView: View {
 
     // MARK: - 状态刷新 / 清空
 
+    /// 当前会话 cwd 探针（.session 选择 → header cwd；轻量探针只读 header，
+    /// 禁全量读流——AppEnvironment sessionNavProbe 同思路）。
+    private static func sessionCwd(_ sessionID: String) -> String? {
+        guard !sessionID.isEmpty,
+              sessionID.allSatisfy({ $0.isLetter || $0.isNumber
+                    || $0 == "-" || $0 == "_" }) else { return nil }
+        let url = GroupStore.groupSessionsRoot(
+            base: WanWoPaths.persistentBase, groupID: GroupStore.defaultGroupID)
+            .appendingPathComponent("\(sessionID).jsonl")
+        guard let probe = try? SessionLogScanner.probeLightweight(fileURL: url) else {
+            return nil
+        }
+        return probe.header.cwd
+    }
+
+    /// 当前项目 cwd（当前会话 header cwd 投影——RootSelection 无 workspace
+    /// 案，会话为中心导航；无当前会话 = nil → legacy 全局桶，登记）。
+    private var currentProjectCwd: String? {
+        guard let id = environment.appState.currentSessionId else { return nil }
+        return Self.sessionCwd(id)
+    }
+
     private func refresh() {
         do {
             let entries = try environment.memoryDatabase.listEntries()
             entryCount = entries.count
             lastConsolidated = try environment.memoryDatabase.lastPhase2SuccessDate()
-            self.entries = try environment.memoryStorage.listSettingEntries()
+            // M8 批3 件 C2：条目数据源 = 当前项目桶 MemoryStorage（桶根传入
+            // 既有 listSettingEntries/updateSettingEntry/deleteSettingEntry 面
+            // ——零 API 改动）。
+            let cwd = currentProjectCwd
+            // batch2/3-review P2-1 收口：清单 manifest 用桶内隐藏文件
+            // （MemoryProjectLayout.storage(forCwd:)），不再误用全局
+            // config/memory-snapshot.json；nil = legacy 全局桶原样。
+            let storage = cwd.flatMap { MemoryProjectLayout.storage(forCwd: $0) }
+                ?? MemoryProjectLayout.legacyStorage
+            bucketStorage = storage
+            scopeLabel = cwd.map { path in
+                MemoryProjectLayout.memoryBucketURL(forCwd: path) != nil
+                    ? String(path.split(separator: "/").last.map(String.init) ?? path)
+                    : "全局（legacy）"
+            } ?? "全局（legacy）"
+            self.entries = try storage.listSettingEntries()
             clearError = nil
         } catch {
             clearError = "读取记忆状态失败：\(String(describing: error))"
