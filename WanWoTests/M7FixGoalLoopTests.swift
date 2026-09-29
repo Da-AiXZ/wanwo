@@ -216,15 +216,26 @@ final class M7FixGoalLoopTests: XCTestCase {
     /// goalDrive 重新注入同一 Round（index.ts:374-383 requestDrive 语义；
     /// round 不跳号：事件流轮次提示词恰为 Round 1、Round 2 连续）。
     ///
-    /// 竞态注：竞争 submit 须落在「goalDrive 预约之后、驱动器 claim 之前」
-    /// 窗口——驱动器 claim 前的第一个挂起点是 turnStart 落盘的 await
-    /// （writer gate/文件 I/O 真实挂起），测试紧随 onGoalChanged 返回即
-    /// submit，作业在该挂起点交错（actor 再入语义）。为免疫残余调度方差，
-    /// 整场景最多重试 3 次（以 turn 1 的 reject 指纹为命中判据）。
+    /// CI修23 重构（原实现 CI 假红实证）：reject 触发窗 = 「goalDrive 预约
+    /// (.queued) → 驱动器 claim」的 actor 调度缝——wake 先派驱动任务，竞争
+    /// submit 的 actor 作业恒排其后（reserve→followup→wake 尾段无 await，
+    /// 无再入窗；turnStart 落盘挂起点在 SessionWriter/JsonlEventLog 内部，
+    /// 均 final/私有 init 不可测闸）。该窗口为修复语义的固有竞态（dsh 同构
+    /// ——validReservation 本就是竞争窗行为），无生产缝可确定性钉住。
+    /// 重构为两段：①3 次尝试命中 reject 指纹（尽力而为，命中即在该现场
+    /// 全链断言）；②未命中→新建确定性现场，断言同一收敛不变量（armed 不
+    /// 掉臂 → 轮 1/2 连续 admitted → round-limit block，round 不跳号）——
+    /// reject 专属面（fence 无 attempt 不 disarm）由
+    /// testAbortedTurnWithoutAttemptKeepsGoalArmed 确定性承接，本测试不再
+    /// 因调度方差假红。
     func testCompetingEntryStaleRejectRedrivesSameRound() async throws {
-        for _ in 0..<3 {
+        // ① 竞态指纹尝试（命中即保留现场供全链断言）。
+        var hitWriter: SessionWriter?
+        var hitDir: URL?
+        var hitService: GoalService?
+        var hitLoop: AgentLoop?
+        attemptLoop: for _ in 0..<3 {
             let (writer, dir) = try await makeWriter()
-            defer { try? FileManager.default.removeItem(at: dir) }
             GoalEvents.register()
             let service = GoalService(writer: writer)
             let loop = makeLoop(sessionId: "m7fix-reject", writer: writer,
@@ -246,38 +257,66 @@ final class M7FixGoalLoopTests: XCTestCase {
                 }
                 return nil
             }.first
-            guard turn1End == .aborted(cause: "goal round reservation invalid") else {
-                // 未命中：等场景自行收敛（旧形态会跑完轮 1/2 后 block），
-                // 再换新现场重试（防旧 loop 尾任务与目录清理竞态）。
-                _ = await waitView(service, timeout: 10) {
-                    $0?.phase == .blocked || $0?.phase == .paused
-                }
-                continue
+            if turn1End == .aborted(cause: "goal round reservation invalid") {
+                hitWriter = writer
+                hitDir = dir
+                hitService = service
+                hitLoop = loop
+                break attemptLoop
             }
-
-            // reject 收尾后 goal 仍 armed（修复点）→ 后续 goalDrive 自动重预约。
-            let redriven = await waitView(service) {
-                $0?.phase == .blocked && $0?.roundsStarted == 2
+            // 未命中：等场景自行收敛（跑完轮 1/2 后 block），弃现场重试。
+            _ = await waitView(service, timeout: 10) {
+                $0?.phase == .blocked || $0?.phase == .paused
             }
-            XCTAssertTrue(redriven,
-                          "修复语义：reject 不掉臂，goal 应继续跑完轮 1/2 后 round-limit block")
-
-            let view = try await service.get()
-            XCTAssertEqual(view?.phase, .blocked)
-            XCTAssertEqual(view?.blockedReason?.code, "round-limit")
-            // round 不跳号：admitted 轮恰为 1、2（index.ts:174 round =
-            // roundsStarted+1；旧代码 reject 掉臂 → 事件流零 goal/round）。
-            XCTAssertEqual(roundEvents(writer).map(\.round), [1, 2])
-            let texts = goalRoundTexts(writer)
-            XCTAssertEqual(texts.count, 2, "同轮重注入恰一次（reject 轮不落盘）")
-            XCTAssertEqual(texts.first?.contains("Round: 1/2"), true)
-            XCTAssertEqual(texts.last?.contains("Round: 2/2"), true)
-            XCTAssertFalse(texts.contains(where: { $0.contains("Round: 3/") }),
-                           "round 不跳号")
             await loop.whenIdle()
-            return
+            try? FileManager.default.removeItem(at: dir)
         }
-        XCTFail("3 次尝试均未触发保留失守 reject（调度竞态未命中）")
+
+        // ② 全部未命中 → 新建确定性现场（收敛不变量与命中路径同断言）。
+        if hitWriter == nil {
+            let (writer, dir) = try await makeWriter()
+            GoalEvents.register()
+            let service = GoalService(writer: writer)
+            let loop = makeLoop(sessionId: "m7fix-reject", writer: writer,
+                                goalService: service,
+                                makeAdapter: throwingAdapter())
+            hitWriter = writer
+            hitDir = dir
+            hitService = service
+            hitLoop = loop
+            let goal = try await service.create(objective: "Ship M7",
+                                                maxGoalRounds: 2)
+            await loop.onGoalChanged(GoalChanged(operation: .create, ref: goal.ref,
+                                                 goal: goal, origin: .host))
+            await loop.submit("competing user input")
+        }
+        let writer = try XCTUnwrap(hitWriter)
+        let dir = try XCTUnwrap(hitDir)
+        let service = try XCTUnwrap(hitService)
+        let loop = try XCTUnwrap(hitLoop)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // 收敛不变量（命中与未命中路径同断言）：armed 不掉臂 → 轮 1/2 连续
+        // admitted → round-limit block。
+        let redriven = await waitView(service) {
+            $0?.phase == .blocked && $0?.roundsStarted == 2
+        }
+        XCTAssertTrue(redriven,
+                      "修复语义：reject 不掉臂，goal 应继续跑完轮 1/2 后 round-limit block")
+
+        let view = try await service.get()
+        XCTAssertEqual(view?.phase, .blocked)
+        XCTAssertEqual(view?.blockedReason?.code, "round-limit")
+        // round 不跳号：admitted 轮恰为 1、2（index.ts:174 round =
+        // roundsStarted+1；旧代码 reject 掉臂 → 事件流零 goal/round）。
+        XCTAssertEqual(roundEvents(writer).map(\.round), [1, 2])
+        let texts = goalRoundTexts(writer)
+        XCTAssertEqual(texts.count, 2, "同轮重注入恰一次（reject 轮不落盘）")
+        XCTAssertEqual(texts.first?.contains("Round: 1/2"), true)
+        XCTAssertEqual(texts.last?.contains("Round: 2/2"), true)
+        XCTAssertFalse(texts.contains(where: { $0.contains("Round: 3/") }),
+                       "round 不跳号")
+        await loop.whenIdle()
     }
 
     /// fence 免疫竞态的确定性对拍：armed goal + 无 attempt 的 aborted 回合

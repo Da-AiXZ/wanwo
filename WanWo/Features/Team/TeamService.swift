@@ -457,6 +457,10 @@ actor TeamService {
             failed.error = "initial prompt acceptance timed out"
             do {
                 try await settleProvisioning(rootId: rootId, terminal: failed)
+                // CI修23（单测实证 bug）：返回视图必须反映 failed——原实现
+                // settled 仍为 provisioning 副本，spawnTeammate 恒报
+                // "provisioning"（journal 正确、视图谎报）。
+                settled = failed
             } catch {
                 // 落账失败不掩盖清理——先 drain 再上抛（dsh recordError 面等价）。
                 try? await seams.drainChild(childId, rootId)

@@ -191,6 +191,13 @@ final class M7FixMemorySettingsTests: XCTestCase {
             .write(to: storage.rootURL
                 .appendingPathComponent("rollout_summaries/20260901T020304-abcd.md"),
                 atomically: true, encoding: .utf8)
+        // CI修23：ensureLayout 只建 root+rollout_summaries（codex ensure_layout
+        // 1:1）；生产便签写入经 MemoryBackend.createDirectory 自建目录——测试
+        // 直写文件绕开了它，须自建中间目录。
+        try FileManager.default.createDirectory(
+            at: storage.rootURL.appendingPathComponent("extensions/ad_hoc/notes",
+                                                       isDirectory: true),
+            withIntermediateDirectories: true)
         try "note body\n".write(to: storage.rootURL
             .appendingPathComponent("extensions/ad_hoc/notes/20260901T020304-note.md"),
             atomically: true, encoding: .utf8)
@@ -219,6 +226,11 @@ final class M7FixMemorySettingsTests: XCTestCase {
         try Self.memoryMD.write(
             to: storage.rootURL.appendingPathComponent("MEMORY.md"),
             atomically: true, encoding: .utf8)
+        // CI修23：同 testListEntriesAcrossFourKinds——中间目录自建。
+        try FileManager.default.createDirectory(
+            at: storage.rootURL.appendingPathComponent("extensions/ad_hoc/notes",
+                                                       isDirectory: true),
+            withIntermediateDirectories: true)
         try "old note\n".write(to: storage.rootURL
             .appendingPathComponent("extensions/ad_hoc/notes/n.md"),
             atomically: true, encoding: .utf8)

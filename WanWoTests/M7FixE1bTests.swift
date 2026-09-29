@@ -369,9 +369,21 @@ final class M7FixE1bTests: XCTestCase {
         let outcome = await childLoop.waitForInboxActivity(timeoutMs: 5_000)
         XCTAssertEqual(outcome, .steer, "运行中 = nextStepInbox（steer 词汇）")
 
-        // 放行后收敛：steer 文本经新回合落盘（投递必达）。
+        // 放行后收敛：steer 文本经新回合落盘（投递必达）。CI修23：whenIdle
+        // 在驱动器首次收敛 idle 即返回（kick 收敛回放 wake 随后再起新回合，
+        // 落盘是异步后续）——一次性检查是竞态断言，改轮询（与 idle followup
+        // 用例同口径）；新回合卡 gated 适配器前 userMessage 已落盘（落盘序
+        // 先于 adapter 构造），轮询必达。
         gate.open()
         await childLoop.whenIdle()
+        await waitUntil {
+            childWriter.events.contains {
+                if case .userMessage(let text) = $0.payload {
+                    return text == "mid-turn steer"
+                }
+                return false
+            }
+        }
         let delivered = childWriter.events.contains {
             if case .userMessage(let text) = $0.payload {
                 return text == "mid-turn steer"
@@ -379,6 +391,7 @@ final class M7FixE1bTests: XCTestCase {
             return false
         }
         XCTAssertTrue(delivered, "steer 文本必须最终落盘子日志")
+        gate.open()  // 新回合若已卡闸——放行收敛，防测试进程残留挂起任务
     }
 
     func testSendMessageToIdleChildStartsTurn() async throws {

@@ -506,8 +506,21 @@ final class M7TeamTests: XCTestCase {
 
         // 崩溃窗留守行（直接 seed）+ 持久面补齐：初始 prompt userMessage
         // 事后落账（子日志已含 lineage+descriptor dossier）→ reconcile 判活。
+        // CI修23：dossier 必须真种（原测试只落 userMessage——reconcile 四要件
+        // lineage.parentSession==rootId + continuable descriptor + provider 匹配
+        // + prompt 前缀缺前三件，恒判 failed 与注释自相矛盾）。
         let memberId = "child-stuck"
         seedProvisioningMember(harness, rootId: rootId, memberId: memberId, name: "worker")
+        harness.journal.append(memberId, payload: .extensionEvent(
+            kind: SubagentLineage.eventKind,
+            payload: SubagentLineage.payload(for: SubagentLineage.Record(
+                parentSession: rootId, delegationDepth: 0, seeded: false, agentPath: nil))))
+        harness.journal.append(memberId, payload: .extensionEvent(
+            kind: SubagentDescriptor.eventKind,
+            payload: SubagentDescriptor.payload(for: SubagentDescriptor.Record(
+                mode: .continuable, provider: "spawn", label: "team-worker",
+                agentProvider: nil, agentModel: nil, agentReasoningEffort: nil,
+                persona: nil, toolFilter: nil))))
         harness.journal.append(memberId,
                                payload: .userMessage(text: "initial prompt for worker"))
         await service.recoverAll()
