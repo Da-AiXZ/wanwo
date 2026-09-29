@@ -275,7 +275,8 @@ struct WORootFrame: View {
                         },
                         onRenameWorkspace: { id in
                             let t = snapshot.workspaces.first { $0.id == id }
-                            renameTarget = .workspace(id: id, title: t?.title ?? "")
+                            renameTarget = .workspace(id: id, title: t?.title ?? "",
+                                                      sessionCount: t?.sessionIds.count ?? 0)
                             renameField = t?.title ?? ""
                         },
                         onDeleteWorkspace: { id in
@@ -381,7 +382,7 @@ struct WORootFrame: View {
         switch target {
         case .session(let id, _):
             environment.database.setTitle(id: id, title: name)
-        case .workspace(let id, _):
+        case .workspace(let id, _, _):
             _ = try? environment.workspaceRegistry.renameTitle(id: id, title: name)
         }
         renameTarget = nil

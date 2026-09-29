@@ -84,7 +84,7 @@ final class SessionNotesStore: @unchecked Sendable {
     /// 测试/注入构造（目录与 guest 路径直给；registrar 可换 no-op）。
     init(notesDirectory: URL, guestNotesPath: String?,
          isProjectMode: Bool = false,
-         fakefsRegistrar: @Sendable (URL) -> Void = { _ in }) {
+         fakefsRegistrar: @escaping @Sendable (URL) -> Void = { _ in }) {
         self.notesDirectory = notesDirectory
         self.guestNotesPath = guestNotesPath
         self.isProjectMode = isProjectMode

@@ -643,13 +643,16 @@ final class AppEnvironment: ObservableObject {
                 // 项目上下文 → 管线走 legacy 全局桶（缺省口径不变）。
                 activeWorkspaceCWD: { [weak self] in
                     let workspacePath: String? = await MainActor.run { [weak self] in
-                        self?.selectedWorkspaceID.flatMap {
-                            self?.workspaceRegistry.get($0)?.path
-                        }
+                        guard let id = self?.selectedWorkspaceID else { return nil }
+                        return self?.workspaceRegistry.get(id)?.path
                     }
                     if let workspacePath { return workspacePath }
-                    guard let self,
-                          case .session(let sid) = await MainActor.run({ self.selection }),
+                    guard let self else { return nil }
+                    let sid: String? = await MainActor.run {
+                        guard case .session(let id) = self.selection else { return nil }
+                        return id
+                    }
+                    guard let sid,
                           let url = AppEnvironment.sessionFileURL(sid),
                           let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
                           !probe.header.cwd.isEmpty else { return nil }
@@ -1481,24 +1484,6 @@ final class AppEnvironment: ObservableObject {
             compactor: compactor,
             spill: spill,
             injector: injector,
-            onTurnSettled: { [weak sessionNotesStore, writer] observation in
-                // M8 批2 件B3 缝③：回合收尾小更新（digest=最近一条 assistant
-                // 文本回复前 400 字符；digest/files 双空时写入面自跳过）。
-                guard let sessionNotesStore else { return }
-                let digest = writer.events.reversed().compactMap { event -> String? in
-                    if case .assistantMessage(_, _, let message, _, _) = event.payload {
-                        return message.content.compactMap { block -> String? in
-                            if case .text(let text) = block { return text }
-                            return nil
-                        }.joined(separator: "\n")
-                    }
-                    return nil
-                }.first
-                try? SessionNotesRecorder(store: sessionNotesStore).sessionNotesOnTurnEnd(
-                    SessionNotesTurnObservation(
-                        assistantReplyDigest: digest.map { String($0.prefix(400)) },
-                        filesTouched: []))
-            },
             makeAdapter: { [weak self, modelSelection, attachments] in
                 guard let self else {
                     throw LLMError(message: "environment released", code: "UNKNOWN")
@@ -1546,6 +1531,25 @@ final class AppEnvironment: ObservableObject {
                     }
                 }
                 return MemoryCitations.splitCitations(from: text).visible
+            },
+            // M8 批2 件B3 缝③（主理人合并；参数序依 Dependencies 声明序居末）：
+            // 回合收尾小更新（digest=最近一条 assistant 文本回复前 400 字符；
+            // digest/files 双空时写入面自跳过）。
+            onTurnSettled: { [weak sessionNotesStore, writer] observation in
+                guard let sessionNotesStore else { return }
+                let digest = writer.events.reversed().compactMap { event -> String? in
+                    if case .assistantMessage(_, _, let message, _, _) = event.payload {
+                        return message.content.compactMap { block -> String? in
+                            if case .text(let text) = block { return text }
+                            return nil
+                        }.joined(separator: "\n")
+                    }
+                    return nil
+                }.first
+                try? SessionNotesRecorder(store: sessionNotesStore).sessionNotesOnTurnEnd(
+                    SessionNotesTurnObservation(
+                        assistantReplyDigest: digest.map { String($0.prefix(400)) },
+                        filesTouched: []))
             })
         let agentLoop = AgentLoop(deps: deps)
         // M7 件 L：loop 目录登记（TeamSeams.leadStatus/leadSteer 供值——

@@ -259,7 +259,8 @@ final class Compactor: @unchecked Sendable {
         Self.logger.info("condensation trigger: \(decision.reasons) "
             + "requirement=\(decision.requirement) tokens=\(tokens) "
             + "budget=\(tokenBudget(for: model))")
-        return await runCondensation(events: events, decision: decision, append: append)
+        return await runCondensation(events: events, decision: decision,
+                                     model: model, append: append)
     }
 
     /// 手动 /compact（forceThreshold 语义迁移 = CondensationRequest(manual)：

@@ -116,6 +116,18 @@ struct CustomProviderCardView: View {
 
     // MARK: - Body
 
+    /// 表单字段壳（label + content 纵排——ProviderEditorView.field 同款；
+    /// 本文件独立私有副本，private 不跨文件共享）。
+    private func field<Content: View>(label: String,
+                                      @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            content()
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("自定义提供方")

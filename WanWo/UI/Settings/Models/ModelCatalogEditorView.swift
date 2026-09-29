@@ -177,7 +177,6 @@ struct ModelCatalogEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("容量 \(index + 1)")
-                .accessibilityAddTraits(expanded.contains(index) ? [.isExpanded] : [])
                 // 行删除（dsh :330-339；缓冲与展开态索引同步 re-key）。
                 Button(role: .destructive) {
                     withAnimation(WOMotion.standardSpring) { remove(index) }
@@ -211,7 +210,11 @@ struct ModelCatalogEditorView: View {
     private func idBinding(_ index: Int) -> Binding<String> {
         Binding(
             get: { models[index].id },
-            set: { models[index].id = $0; emit() })
+            set: {
+                var next = models
+                next[index].id = $0
+                onChange(next)
+            })
     }
 
     /// 行 name 绑定：空串落 nil（dsh :316-318 清空=字段离场语义）。
@@ -219,8 +222,9 @@ struct ModelCatalogEditorView: View {
         Binding(
             get: { models[index].name ?? "" },
             set: {
-                models[index].name = $0.isEmpty ? nil : $0
-                emit()
+                var next = models
+                next[index].name = $0.isEmpty ? nil : $0
+                onChange(next)
             })
     }
 
@@ -228,8 +232,9 @@ struct ModelCatalogEditorView: View {
     private func settleID(_ index: Int) {
         let trimmed = models[index].id.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed != models[index].id {
-            models[index].id = trimmed
-            emit()
+            var next = models
+            next[index].id = trimmed
+            onChange(next)
         }
     }
 
@@ -242,9 +247,9 @@ struct ModelCatalogEditorView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             TextField(label, text: bufferBinding(index, field: field),
-                      prompt: Text(fallback.map { CapacityFormatting.formatCapacity($0) }
+                          prompt: Text(fallback.map { CapacityFormatting.formatCapacity($0) }
                                    ?? "使用提供方缺省值")
-                          .foregroundStyle(.tertiary))
+                          .foregroundColor(.secondary))
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numberPad)
                 .accessibilityLabel("\(label) \(index + 1)")
@@ -269,12 +274,13 @@ struct ModelCatalogEditorView: View {
                 capacityBuffers["\(index):\(field)"] = text
                 let parsed = CapacityFormatting.parseCapacity(text)
                 let value = parsed.flatMap { $0.isNaN ? nil : Int($0) }
+                var next = models
                 if field == Self.bufferK {
-                    models[index].contextWindow = value
+                    next[index].contextWindow = value
                 } else {
-                    models[index].maxTokens = value
+                    next[index].maxTokens = value
                 }
-                emit()
+                onChange(next)
             })
     }
 

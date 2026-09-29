@@ -253,12 +253,12 @@ struct WOSettingsModal: View {
             // 探测缝接 A1 ModelDiscovery（静态后端，表单当前值语义）。
             ProvidersSectionView(
                 store: environment.endpointStore,
-                discoverModels: { baseURL, apiKey in
+                discoverModels: { baseURL, apiKey -> Result<[DiscoveredModel], Error> in
                     do {
-                        .success(try await ModelDiscovery.discoverModels(
+                        return .success(try await ModelDiscovery.discoverModels(
                             baseURL: baseURL, apiKey: apiKey))
                     } catch {
-                        .failure(error)
+                        return .failure(error)
                     }
                 })
         case .mcpServers:
