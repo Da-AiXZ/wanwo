@@ -334,6 +334,16 @@ struct WOChatView: View {
                 // 批12+联动B（2026-09-27 用户令+参考件动画）：轻提示胶囊——
                 // AI 自主干活时 dock 上方一行（不展开不弹卡不打断输入）；
                 // 点击=展开右栏+AI 页签落点。回调真值在 WORootFrame。
+                // 件 I 宿主接线：todo 状态卡（dsh TodoPanel dock 常驻语义
+                // "empty renders nothing"——当前计划非历史消息，座位组最上；
+                // goal 卡挂载另行评估，本件只挂 todo）。
+                if !viewModel.todoItems.isEmpty {
+                    WOTodoChecklistCard(todos: viewModel.todoItems)
+                        .frame(maxWidth: 620)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, heroMode ? 0 : 14)
+                        .transition(.opacity)
+                }
                 if let hint = agentHint {
                     WOAgentHintPill(title: "AI 正在浏览", domain: hint.domain)
                         .frame(maxWidth: 620)

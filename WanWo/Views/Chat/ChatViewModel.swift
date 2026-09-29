@@ -44,6 +44,9 @@ final class ChatViewModel: ObservableObject {
     typealias Bubble = ConversationProjector.Bubble
 
     @Published private(set) var bubbles: [Bubble] = []
+    /// 当前计划卡数据源（dsh todo/write "Log-only UI state" 的 dock 常驻
+    /// 语义——整表替换，非历史消息；空=不渲染。件 I 宿主接线补挂载）。
+    @Published private(set) var todoItems: [TodoItem] = []
     @Published private(set) var streamingText = ""
     @Published private(set) var streamingReasoning = ""
     @Published private(set) var phase: Phase = .loading
@@ -756,6 +759,12 @@ final class ChatViewModel: ObservableObject {
                         // 侧 0.8s 节流合并——cc-haha 120ms 合并窗口的万我等价）。
                         WOWorkspaceStore.shared.noteFileActivity(
                             sessionID: self.sessionID)
+                        // 件 I 宿主接线：工具结果落定后 todo/write 的
+                        // extensionEvent 已落盘（execute 内 append 先于
+                        // finished 发射）——重 fold 刷新状态卡（todo/write=
+                        // 整表替换语义，fold 幂等便宜）。
+                        self.todoItems = TodoProjection.fold(
+                            events: self.writer?.events ?? []) ?? []
                     } else {
                         // 卡不在场兜底（理论不发生：started 已重投影；防御
                         // 回调乱序/漏发——直接按事件流重建）。
@@ -890,6 +899,9 @@ final class ChatViewModel: ObservableObject {
             callArgs: &callArgsSnapshot, previousCards: carried)
         callArgs = callArgsSnapshot
         bubbles = projected
+        // 件 I 宿主接线：todo 投影随重投影全量 fold（todo/write log-only
+        // 不进 Bubble 流——dsh "never derived history" 语义，状态卡独立槽）。
+        todoItems = TodoProjection.fold(events: writer.events) ?? []
         streamingText = ""
         streamingReasoning = ""
         // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
