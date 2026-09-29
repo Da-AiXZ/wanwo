@@ -134,7 +134,7 @@ struct CustomProviderCardView: View {
                 .font(.subheadline.weight(.semibold))
             field(label: "提供方 ID") {
                 TextField("acme-gateway", text: $routeID,
-                          prompt: Text("acme-gateway").foregroundStyle(.tertiary))
+                          prompt: Text("acme-gateway").foregroundColor(.secondary))
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -146,22 +146,22 @@ struct CustomProviderCardView: View {
                      ? "以小写字母开头；其后为小写字母、数字和连字符。"
                      : "已有提供方使用此 ID。")
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundColor(.red)
             } else {
                 Text("小写标识符，以字母开头；在请求中唯一命名此提供方，并作为其凭据名。")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(.secondary)
             }
             field(label: "显示名") {
                 TextField(displayNamePlaceholder, text: $displayName,
-                          prompt: Text(displayNamePlaceholder).foregroundStyle(.tertiary))
+                          prompt: Text(displayNamePlaceholder).foregroundColor(.secondary))
                     .textFieldStyle(.roundedBorder)
                     .disabled(profileDisabled)
                     .accessibilityLabel("显示名")
             }
             field(label: "Base URL") {
                 TextField("https://gateway.example/v1", text: $baseURL,
-                          prompt: Text("https://gateway.example/v1").foregroundStyle(.tertiary))
+                          prompt: Text("https://gateway.example/v1").foregroundColor(.secondary))
                     .textFieldStyle(.roundedBorder)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
@@ -172,7 +172,7 @@ struct CustomProviderCardView: View {
             if baseURLInvalid {
                 Text("Base URL 须以 http:// 或 https:// 开头。")
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundColor(.red)
             }
             field(label: "API Key") {
                 SecureField("输入 API Key", text: $keyDraft)
@@ -185,11 +185,11 @@ struct CustomProviderCardView: View {
             if let keyFailure {
                 Text(keyFailure)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundColor(.red)
             } else {
                 Text("留空则此提供方以其他方式鉴权。")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(.secondary)
             }
             ModelCatalogEditorView(
                 models: models,
@@ -206,12 +206,12 @@ struct CustomProviderCardView: View {
             if let failure {
                 Text(failure)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundColor(.red)
             }
             if let hint {
                 Text(hint)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             }
             footer
         }

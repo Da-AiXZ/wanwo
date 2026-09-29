@@ -655,8 +655,8 @@ final class AppEnvironment: ObservableObject {
                     guard let sid,
                           let url = AppEnvironment.sessionFileURL(sid),
                           let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
-                          !probe.header.cwd.isEmpty else { return nil }
-                    return probe.header.cwd
+                          let cwd = probe.header.cwd, !cwd.isEmpty else { return nil }
+                    return cwd
                 })
 
             // M7 件 L（F046）：Team 服务真缝绑定（AgentLoop/SubagentRuntime

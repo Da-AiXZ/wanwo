@@ -83,7 +83,7 @@ struct ModelCatalogEditorView: View {
             if models.isEmpty {
                 Text("选择器中将不显示任何模型；未列出的模型 ID 仍可直接发送。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             } else {
                 ForEach(models.indices, id: \.self) { index in
                     modelRow(index)
@@ -93,7 +93,7 @@ struct ModelCatalogEditorView: View {
             if let probeFailure {
                 Text(probeFailure)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundColor(.red)
             }
         }
         .accessibilityElement(children: .contain)
@@ -114,7 +114,7 @@ struct ModelCatalogEditorView: View {
             // 「继承/已自定义」徽标（dsh modelCatalogMeta :270-272）。
             Text(overridden ? "已自定义目录" : "使用适配器缺省")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
             Spacer(minLength: 0)
             if overridden {
                 Button("恢复缺省") { reset() }
@@ -153,7 +153,7 @@ struct ModelCatalogEditorView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 TextField("模型 ID", text: idBinding(index),
-                          prompt: Text("模型 ID").foregroundStyle(.tertiary))
+                          prompt: Text("模型 ID").foregroundColor(.secondary))
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -187,7 +187,7 @@ struct ModelCatalogEditorView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.red)
+                .foregroundColor(.red)
                 .accessibilityLabel("删除模型 \(index + 1)")
                 .disabled(disabled)
             }
@@ -245,7 +245,7 @@ struct ModelCatalogEditorView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
             TextField(label, text: bufferBinding(index, field: field),
                           prompt: Text(fallback.map { CapacityFormatting.formatCapacity($0) }
                                    ?? "使用提供方缺省值")
@@ -409,12 +409,12 @@ struct ModelCatalogEditorView: View {
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(candidate.id)
                                         .font(.callout.monospaced())
-                                        .foregroundStyle(.primary)
+                                        .foregroundColor(.primary)
                                     // 容量副行：采纳时随行进目录（dsh adopt 语义）。
                                     if candidate.contextWindow != nil || candidate.maxTokens != nil {
                                         Text(capacitySummary(candidate))
                                             .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundColor(.secondary)
                                     }
                                 }
                                 Spacer()
@@ -428,7 +428,7 @@ struct ModelCatalogEditorView: View {
                     }
                     if visibleCandidates.isEmpty {
                         Text("无匹配模型。")
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                     }
                 } footer: {
                     Text("这些是提供方当前可用的模型，勾选需要加入目录的项。")
