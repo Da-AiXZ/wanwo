@@ -554,10 +554,10 @@ struct WOSlotPlaceholder: View {
 ///     【QA P1-1 修正 2026-09-28】补齐漏移植）。
 /// 已拍板适配（派单简报件 D"用户拍板交互"，勿再议）：
 ///   ① 单击=关闭（onSingleTap→onClose；原件单击=chrome 切换）；✕ 按钮保留。
-///   ② 复制/存相册/分享三功能经 contextMenu（长按触发，挂在图片视图上，
-///     非常驻按钮排）——contextMenu 为 SwiftUI 修饰符叠加在
-///     UIViewRepresentable 上，与 UIScrollView 手势共存需真机验证；若冲突，
-///     改 UILongPressGestureRecognizer + UIMenu 自实现（报告登记）。
+///   ② 复制/存相册/分享三功能：【真机实证 2026-09-29】contextMenu 叠
+///     UIViewRepresentable 黑屏+锚点错乱 → 预案落地：UIKit
+///     UILongPressGestureRecognizer（began 取锚点）+ 自绘浮层菜单
+///     （菜单开着时单击=收菜单；✕ 关闭钮 zIndex 压过菜单层）。
 ///   ③ 存相册结果经既有 WOToast 呈现（菜单形态无原件顶栏按钮位承载
 ///     saveStatus；PHPhotoLibrary 授权/写入语义不变，saved 2s 复位同原件）。
 struct ImageFullScreenPreview: View {
@@ -571,6 +571,9 @@ struct ImageFullScreenPreview: View {
     @State private var saveToast: String?
     /// 分享面板（sheet 呈现 WOShareSheet，原件 :392 showShareSheet 同语义）。
     @State private var showShareSheet = false
+    /// 长按菜单锚点（视图坐标；nil = 收起。拍板②预案：contextMenu 叠
+    /// UIViewRepresentable 真机实证黑屏+锚点错乱 → UIKit 长按+自绘浮层）。
+    @State private var menuPoint: CGPoint?
 
     private enum SaveStatus {
         case idle, saving, saved, failed
@@ -586,29 +589,13 @@ struct ImageFullScreenPreview: View {
                     image: image,
                     onDismiss: { onClose() },
                     // 拍板①：单击=关闭（原件 onSingleTap=chrome 切换）。
-                    onSingleTap: { onClose() }
+                    onSingleTap: { onClose() },
+                    // 拍板②预案落地：UIKit 长按锚点 → 自绘浮层菜单。
+                    onLongPress: { point in
+                        withAnimation(.easeOut(duration: 0.15)) { menuPoint = point }
+                    }
                 )
                 .ignoresSafeArea()
-                // 拍板②：长按菜单挂在图片视图上（非常驻按钮排）。
-                .contextMenu {
-                    Button {
-                        UIPasteboard.general.image = image
-                    } label: {
-                        Label("复制图片", systemImage: "doc.on.doc")
-                    }
-                    Button {
-                        saveImageToPhotos(image)
-                    } label: {
-                        Label(saveStatus == .saving ? "正在存入相册…" : "存入相册",
-                              systemImage: "square.and.arrow.down")
-                    }
-                    .disabled(saveStatus == .saving)
-                    Button {
-                        showShareSheet = true
-                    } label: {
-                        Label("分享…", systemImage: "square.and.arrow.up")
-                    }
-                }
             } else {
                 // 图片不可用兜底（旧宿主形态保留；无缩放面可挂——点按关闭）。
                 VStack(spacing: 8) {
@@ -620,6 +607,44 @@ struct ImageFullScreenPreview: View {
                         .foregroundStyle(.white.opacity(0.6))
                 }
                 .onTapGesture { onClose() }
+            }
+            // 长按浮层菜单（锚点=长按点上方偏移+边缘钳制；预案②）。
+            if let image, let mp = menuPoint {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.15)) { menuPoint = nil }
+                    }
+                    .zIndex(5)
+                VStack(spacing: 0) {
+                    lightboxMenuButton("复制图片", "doc.on.doc") {
+                        UIPasteboard.general.image = image
+                        menuPoint = nil
+                    }
+                    Divider().overlay(Color.white.opacity(0.15))
+                    lightboxMenuButton(
+                        saveStatus == .saving ? "正在存入相册…" : "存入相册",
+                        "square.and.arrow.down",
+                        disabled: saveStatus == .saving
+                    ) {
+                        saveImageToPhotos(image)
+                        menuPoint = nil
+                    }
+                    Divider().overlay(Color.white.opacity(0.15))
+                    lightboxMenuButton("分享…", "square.and.arrow.up") {
+                        showShareSheet = true
+                        menuPoint = nil
+                    }
+                }
+                .background(.thinMaterial,
+                            in: RoundedRectangle(cornerRadius: 13))
+                .frame(width: 210)
+                .position(
+                    x: min(max(mp.x, 115), UIScreen.main.bounds.width - 115),
+                    y: min(max(mp.y - 140, 95), UIScreen.main.bounds.height - 180))
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
+                .zIndex(6)
             }
             // ✕ 按钮保留（拍板①）；zIndex 压过手势层
             //（原件 :415-416 注释同语义——iPad 上按钮在手势层之上）。
@@ -669,6 +694,24 @@ struct ImageFullScreenPreview: View {
 
     /// 存相册（原件 :514-534 逐行移植——授权档/limited 放行/performChanges/
     /// 成功 2s 复位全同；终态呈现由按钮状态改 toast，拍板③）。
+    private func lightboxMenuButton(_ title: String, _ icon: String,
+                                    disabled: Bool = false,
+                                    action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 15))
+                .foregroundStyle(disabled ? .white.opacity(0.4) : .white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
     private func saveImageToPhotos(_ image: UIImage) {
         saveStatus = .saving
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
@@ -731,6 +774,8 @@ struct ImagePreviewContent: UIViewRepresentable {
     let onDismiss: () -> Void
     var horizontalDragLocked: Bool = false
     var onSingleTap: (() -> Void)? = nil
+    /// 长按菜单锚点透传（视图坐标）。
+    var onLongPress: ((CGPoint) -> Void)? = nil
     /// Downward-pull distance (in pt) past which release triggers dismiss.
     var dismissThreshold: CGFloat = 80
     /// Maximum zoom scale for pinch / double-tap.
@@ -740,6 +785,7 @@ struct ImagePreviewContent: UIViewRepresentable {
         let view = ImagePreviewContentView(image: image)
         view.onDismiss = onDismiss
         view.onSingleTap = onSingleTap
+        view.onLongPress = onLongPress
         view.horizontalDragLocked = horizontalDragLocked
         view.dismissThreshold = dismissThreshold
         view.maximumScale = maximumScale
@@ -749,6 +795,7 @@ struct ImagePreviewContent: UIViewRepresentable {
     func updateUIView(_ view: ImagePreviewContentView, context: Context) {
         view.onDismiss = onDismiss
         view.onSingleTap = onSingleTap
+        view.onLongPress = onLongPress
         view.horizontalDragLocked = horizontalDragLocked
         view.dismissThreshold = dismissThreshold
         view.maximumScale = maximumScale
@@ -761,6 +808,9 @@ struct ImagePreviewContent: UIViewRepresentable {
 final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var onDismiss: (() -> Void)?
     var onSingleTap: (() -> Void)?
+    /// 长按菜单锚点回调（视图坐标；拍板②预案落地：contextMenu 叠
+    /// UIViewRepresentable 真机实证黑屏+锚点错乱，改 UIKit 长按+自绘浮层）。
+    var onLongPress: ((CGPoint) -> Void)?
     var horizontalDragLocked: Bool = false
     var dismissThreshold: CGFloat = 80
     var maximumScale: CGFloat = 3.0 {
@@ -838,6 +888,13 @@ final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureReco
         addGestureRecognizer(pan)
 
         let double = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        // 长按菜单（拍板②预案：UILongPressGestureRecognizer 承载——
+        // contextMenu 修饰符与 UIScrollView 缩放视图叠用真机黑屏）。
+        let longPress = UILongPressGestureRecognizer(target: self,
+                                                     action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        longPress.delegate = self
+        addGestureRecognizer(longPress)
         double.numberOfTapsRequired = 2
         double.numberOfTouchesRequired = 1
         addGestureRecognizer(double)
@@ -979,6 +1036,11 @@ final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureReco
 
     @objc private func handleSingleTap(_ gr: UITapGestureRecognizer) {
         onSingleTap?()
+    }
+
+    @objc private func handleLongPress(_ gr: UILongPressGestureRecognizer) {
+        guard gr.state == .began else { return }
+        onLongPress?(gr.location(in: self))
     }
 
     // MARK: UIGestureRecognizerDelegate
