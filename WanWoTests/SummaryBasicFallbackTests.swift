@@ -102,7 +102,8 @@ final class SummaryBasicFallbackTests: XCTestCase {
         let dropped = BasicFallbackSummarizer.summarizeToolActivity(toolCallLines: [
             "[seq=1] [assistant] [tool calls: run_command(c1) {\"cmd\":\"git status\"}]",
             // 解析失败（2000 cap 截断切尾，B1 序列化仍补收尾 `]`）→ 同样回落原文
-            "[seq=2] [assistant] [tool calls: shell(c2) {\"command\":\"ls -la\"]",
+            // （工具名 = ShellTool wire 名 "bash"——万我无 "shell" 工具）。
+            "[seq=2] [assistant] [tool calls: bash(c2) {\"command\":\"ls -la\"]",
         ])
         XCTAssertEqual(dropped.commands, ["{\"cmd\":\"git status\"}",
                                           "{\"command\":\"ls -la"])

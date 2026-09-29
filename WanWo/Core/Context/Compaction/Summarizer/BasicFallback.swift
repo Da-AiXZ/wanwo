@@ -72,8 +72,11 @@ struct BasicFallbackSummarizer: ContextSummarizer {
         let notice = systemNotice(dropped: dropped, assistantReplies: preservedReplies)
 
         var sections: [String] = []
-        // 上轮压缩产物冻结：previousSummary 参数与事件流旧摘要行原样置顶（:395-421）。
-        if let previousSummary, !previousSummary.isEmpty {
+        // 上轮压缩产物冻结：previousSummary 参数与事件流旧摘要行原样置顶
+        // （:395-421）；空白（全空格/换行）视同无摘要（skipped 语义——
+        // 空白置顶只会产出纯空白产物，违背「无内容不压」）。
+        if let previousSummary,
+           !previousSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             sections.append(previousSummary)
         }
         sections.append(contentsOf: frozenSummaries)

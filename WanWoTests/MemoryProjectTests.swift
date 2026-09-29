@@ -61,7 +61,11 @@ final class MemoryProjectTests: XCTestCase {
                           MemoryProjectLayout.projectKey(forCwd: "/var/wanwo/projects/p2"))
         // 不可解析 → nil。
         XCTAssertNil(MemoryProjectLayout.projectKey(forCwd: nil))
-        XCTAssertNil(MemoryProjectLayout.projectKey(forCwd: WanWoPaths.workspaceLinuxDir))
+        // workspaceLinuxDir 是普通可归一化路径（非空非 /）→ 键 = 路径本身
+        // （实现口径：projectKey = 归一化 cwd；"projects 根外"的回落判定在
+        // memoryBucketURL/projectsHostRoot 层，不在键层）。
+        XCTAssertEqual(MemoryProjectLayout.projectKey(forCwd: WanWoPaths.workspaceLinuxDir),
+                       "/var/wanwo/workspace")
     }
 
     // MARK: - 候选匹配口径
@@ -75,12 +79,15 @@ final class MemoryProjectTests: XCTestCase {
                                                       currentCwd: p1 + "/sub"))
         // 异项目 → 排除。
         XCTAssertFalse(MemoryProjectLayout.isCandidate(sessionCwd: p2, currentCwd: p1))
-        // legacy 池（双 nil）→ 候选。
+        // legacy 池（双方均无项目键）→ 候选。
+        XCTAssertTrue(MemoryProjectLayout.isCandidate(sessionCwd: nil, currentCwd: nil))
+        // 同为 legacy 工作区（同键）→ 候选。
         XCTAssertTrue(MemoryProjectLayout.isCandidate(
-            sessionCwd: WanWoPaths.workspaceLinuxDir, currentCwd: nil))
-        // legacy 会话 vs 项目上下文 → 排除。
+            sessionCwd: WanWoPaths.workspaceLinuxDir, currentCwd: WanWoPaths.workspaceLinuxDir))
+        // legacy 工作区 vs 项目上下文 → 键异 → 排除。
         XCTAssertFalse(MemoryProjectLayout.isCandidate(
             sessionCwd: WanWoPaths.workspaceLinuxDir, currentCwd: p1))
+        // 项目会话 vs 无键上下文 → 排除。
         XCTAssertFalse(MemoryProjectLayout.isCandidate(sessionCwd: p1, currentCwd: nil))
     }
 
@@ -208,13 +215,17 @@ final class MemoryProjectTests: XCTestCase {
         let (db, _) = try makeDatabase()
         let p1 = "/var/wanwo/projects/p1"
         let p2 = "/var/wanwo/projects/p2"
-        try db.markStage1JobSucceeded(threadId: "p1-t", sourceUpdatedAt: 100,
+        // sourceUpdatedAt 必须取当前附近（getPhase2InputSelection 带
+        // max_unused_days 淘汰：COALESCE(last_usage, source_updated_at) >= now-30d
+        // ——1970 时间戳会被当作"30 天未使用"淘汰，与生产候选口径一致）。
+        let fresh = Int(Date().timeIntervalSince1970)
+        try db.markStage1JobSucceeded(threadId: "p1-t", sourceUpdatedAt: fresh,
                                       rawMemory: "r", rolloutSummary: "s",
                                       rolloutSlug: nil, projectKey: p1)
-        try db.markStage1JobSucceeded(threadId: "p2-t", sourceUpdatedAt: 100,
+        try db.markStage1JobSucceeded(threadId: "p2-t", sourceUpdatedAt: fresh,
                                       rawMemory: "r", rolloutSummary: "s",
                                       rolloutSlug: nil, projectKey: p2)
-        try db.markStage1JobSucceeded(threadId: "legacy-t", sourceUpdatedAt: 100,
+        try db.markStage1JobSucceeded(threadId: "legacy-t", sourceUpdatedAt: fresh,
                                       rawMemory: "r", rolloutSummary: "s",
                                       rolloutSlug: nil)
 

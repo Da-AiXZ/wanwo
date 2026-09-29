@@ -47,7 +47,8 @@ final class SessionNotesTests: XCTestCase {
         let hostRoot = try XCTUnwrap(
             WanWoPaths.projectsHostRoot(forGuestPath: "/var/wanwo/projects/demo"))
         XCTAssertEqual(store.notesDirectory,
-                       hostRoot.appendingPathComponent("wanwo-notes"))
+                       hostRoot.appendingPathComponent("wanwo-notes",
+                                                       isDirectory: true))
         XCTAssertEqual(store.guestNotesPath, "/var/wanwo/projects/demo/wanwo-notes")
         XCTAssertTrue(store.isProjectMode)
     }
@@ -59,7 +60,7 @@ final class SessionNotesTests: XCTestCase {
         XCTAssertEqual(
             store.notesDirectory,
             WanWoPaths.sessionPersistentDir(for: "s2", bucket: "workspace")
-                .appendingPathComponent("wanwo-notes"))
+                .appendingPathComponent("wanwo-notes", isDirectory: true))
         XCTAssertEqual(store.guestNotesPath,
                        "/var/wanwo/workspace/wanwo-notes")
         XCTAssertFalse(store.isProjectMode)

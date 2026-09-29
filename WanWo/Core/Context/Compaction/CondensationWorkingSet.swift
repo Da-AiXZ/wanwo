@@ -102,6 +102,13 @@ enum CondensationWorkingSet {
                 }
                 // 原始事件永不删——遗忘只在投影过滤（tombstone 语义）。
                 if forgotten.contains(event.seq) { continue }
+                // tombstone 元事件本身不进模型可见面（View = 事件流的模型
+                // 投影；Condensation 事件是宿主审计元数据——OpenHands view
+                // 语义：tombstone 只在事件流作审计，模型只见合成摘要）。
+                if case .extensionEvent(let eventKind, _) = event.payload,
+                   eventKind == CondensationEvents.condensationKind {
+                    continue
+                }
                 workingSet.append(event)
             }
             while insertionIndex < insertions.count {

@@ -197,13 +197,15 @@ final class CondensationEngine: @unchecked Sendable {
             tokensBefore: tokensBefore,
             tokensAfter: 0,
             createdAtMs: Int64(Date().timeIntervalSince1970 * 1000))
-        // tokensAfter = 落 tombstone 后的工作集估算（模拟落盘——投影应用
-        // tombstone 后与真实 append 后同口径）。
+        // tokensAfter = 投影后工作集估算（口径：模型实际可见面——遗忘过滤+
+        // 合成摘要+tombstone 元事件排除后的 DeriveFold 估算；原实现误用
+        // 全量原始事件+tombstone 估算，压缩后必大于 before，指标失真）。
         let simulated = SessionEvent(seq: -1, timeMs: record.createdAtMs,
                                      payload: .extensionEvent(
                                         kind: CondensationEvents.condensationKind,
                                         payload: record.payload))
-        record.tokensAfter = estimate(events + [simulated])
+        record.tokensAfter = estimate(
+            CondensationWorkingSet.projected(events + [simulated]))
         try await append(.extensionEvent(kind: CondensationEvents.condensationKind,
                                          payload: record.payload), false)
         recordSuccess()

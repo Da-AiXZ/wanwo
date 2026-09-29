@@ -476,7 +476,13 @@ final class CondensationTests: XCTestCase {
         minimumProgress: 0.1, tokenBudgetRatio: 0.9)
 
     private func makeEngineEvents() -> [SessionEvent] {
-        (0..<5).map { user($0, "u\($0)") } + [requestEvent(5)]
+        // 被折叠事件（seq 2-4，keepFirst=2 窗外）内容远重于合成摘要——
+        // tokensAfter < tokensBefore 断言的真实场景前提：摘要是压缩
+        // 大量内容的产物（夹具太轻时 after>before 属数据失真非实现错）。
+        let heavy = String(repeating: "负荷文本片段。", count: 80)
+        return [user(0, "u0"), user(1, "u1"),
+                user(2, heavy), user(3, heavy), user(4, heavy),
+                requestEvent(5)]
     }
 
     private func makeDecision() -> CondensationWorkingSet.TriggerDecision {

@@ -29,6 +29,9 @@ final class M8C2CascadeDeleteTests: XCTestCase {
     override func setUp() async throws {
         tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("m8-c2-cascade-\(UUID().uuidString)", isDirectory: true)
+        // SQLite error 14 防线：临时父目录必须先建（SessionDatabase 不自建）。
+        try FileManager.default.createDirectory(at: tempRoot,
+                                                withIntermediateDirectories: true)
         sessionsRoot = tempRoot.appendingPathComponent("sessions", isDirectory: true)
         database = try SessionDatabase(
             path: tempRoot.appendingPathComponent("idx.sqlite3").path)

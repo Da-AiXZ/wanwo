@@ -80,6 +80,23 @@ struct StateSummary: Codable, Equatable, Sendable {
         securityConstraints = try c.decodeIfPresent(String.self, forKey: .securityConstraints) ?? ""
         otherContext = try c.decodeIfPresent(String.self, forKey: .otherContext) ?? ""
     }
+
+    /// encode 与 decode 对称（snake_case 键——tool_call arguments 直解码契约；
+    /// 合成 encode 在自定义 init(from:) 在场时键名行为不保证，显式写死）。
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(userIntent, forKey: .userIntent)
+        try c.encode(techContext, forKey: .techContext)
+        try c.encode(filesAndCode, forKey: .filesAndCode)
+        try c.encode(errorsAndFixes, forKey: .errorsAndFixes)
+        try c.encode(problemSolving, forKey: .problemSolving)
+        try c.encode(userMessages, forKey: .userMessages)
+        try c.encode(pendingTasks, forKey: .pendingTasks)
+        try c.encode(currentWork, forKey: .currentWork)
+        try c.encode(nextStep, forKey: .nextStep)
+        try c.encode(securityConstraints, forKey: .securityConstraints)
+        try c.encode(otherContext, forKey: .otherContext)
+    }
 }
 
 // MARK: - 工具 schema（SSS:101-126 语义）

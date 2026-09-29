@@ -59,7 +59,9 @@ final class CapacityFormattingTests: XCTestCase {
             (131_072, "131072"),   // 非千整倍数写全
             (8_192, "8192"),
             (650_000, "650K"),
-            (2_300_000, "2.3M"),
+            // dsh formatCapacity 逐字语义：整除 K 用 K（2_300_000 → "2300K"，
+            // 非"最短形式"——dsh 注释名不符实，以实现为准）。
+            (2_300_000, "2300K"),
         ]
         for (value, text) in cases {
             XCTAssertEqual(CapacityFormatting.formatCapacity(value), text)
