@@ -145,7 +145,7 @@ actor AgentLoop {
         /// 原样落盘（skillRegistry/hookPoints 同款默认值纪律，既有调用面/
         /// 测试不受扰）。
         var onAssistantMessageSealed:
-            (@Sendable (text: String, sessionId: String, turn: Int, step: Int) async -> String)? = nil
+            (@Sendable (String, String, Int, Int) async -> String)? = nil
     }
 
     // MARK: - 状态
@@ -1360,7 +1360,7 @@ actor AgentLoop {
     /// 块原样保留（citation 只作用于可见正文——codex citations.rs 语义）。
     /// 缝为 nil 或返回原文 → blocks 原样返回（零扰动）。
     nonisolated static func applyAssistantSeal(
-        _ seal: (@Sendable (text: String, sessionId: String, turn: Int, step: Int) async -> String)?,
+        _ seal: (@Sendable (String, String, Int, Int) async -> String)?,
         blocks: [ContentBlock],
         sessionId: String, turn: Int, step: Int) async -> [ContentBlock] {
         guard let seal else { return blocks }
