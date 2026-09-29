@@ -41,7 +41,7 @@ final class M8C2CascadeDeleteTests: XCTestCase {
             directoryExists: { [weak self] path in
                 self?.directories.contains(path) ?? false },
             realpath: { WorkspacePathNormalizer.lexicalNormalize($0) })
-        controller = WorkspaceController(registry: registry)
+        controller = await WorkspaceController(registry: registry)
     }
 
     override func tearDown() async throws {
@@ -52,14 +52,15 @@ final class M8C2CascadeDeleteTests: XCTestCase {
     private var seam: WorkspaceController.WorkspaceSessionDeletionSeam {
         WorkspaceController.WorkspaceSessionDeletionSeam(
             deleteWithDescendants: { [store] sid in
-                try await store.deleteSessionWithDescendants(id: sid)
+                // [store] 捕获 IUO 退化为 Optional——setUp 恒赋值，测试内强解包安全。
+                try await store!.deleteSessionWithDescendants(id: sid)
             })
     }
 
     /// 建会话（jsonl + 索引行 + header 表登记）。
     @discardableResult
     private func makeSession(id: String, cwd: String?) async throws -> String {
-        _ = try store.createSession(withID: id, cwd: cwd)
+        _ = try await store.createSession(withID: id, cwd: cwd)
         headers[id] = SessionHeader(
             id: id,
             createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
@@ -96,7 +97,8 @@ final class M8C2CascadeDeleteTests: XCTestCase {
         XCTAssertEqual(Set(outcome.removedSessionIds), ["session-a", "session-b"])
         XCTAssertFalse(jsonlExists("session-a"))
         XCTAssertFalse(jsonlExists("session-b"))
-        XCTAssertTrue(await store.listSessions().isEmpty, "索引行必须随删（单一删除缝）")
+        let summaries = await store.listSessions()
+        XCTAssertTrue(summaries.isEmpty, "索引行必须随删（单一删除缝）")
         // 残余成员回落 Ungrouped（未分组成员清理——此处账本已空，校验无悬挂）。
         XCTAssertEqual(registry.list().count, 0)
     }
@@ -118,7 +120,8 @@ final class M8C2CascadeDeleteTests: XCTestCase {
         XCTAssertFalse(jsonlExists("parent"))
         XCTAssertFalse(jsonlExists("child"))
         XCTAssertFalse(jsonlExists("grandchild"))
-        XCTAssertTrue(await store.listSessions().isEmpty)
+        let remaining = await store.listSessions()
+        XCTAssertTrue(remaining.isEmpty)
     }
 
     /// 活写柄关闭：open writer 下级联删除不 sessionOpenCannotDelete。
@@ -133,7 +136,8 @@ final class M8C2CascadeDeleteTests: XCTestCase {
         XCTAssertEqual(outcome.removedSessionIds, [a])
         XCTAssertFalse(jsonlExists(a))
         // 写柄登记表已释放（活写柄关闭）。
-        XCTAssertNil(await store.liveWriter(id: a))
+        let live = await store.liveWriter(id: a)
+        XCTAssertNil(live)
     }
 
     // MARK: - 失败纪律
@@ -145,8 +149,13 @@ final class M8C2CascadeDeleteTests: XCTestCase {
         let failing = WorkspaceController.WorkspaceSessionDeletionSeam(
             deleteWithDescendants: { _ in throw SessionStore.StoreError.sessionNotFound("x") })
 
-        XCTAssertThrowsError(try await controller.deleteCascade(
-            id: wsID, sessionDeletion: failing))
+        // XCTAssertThrowsError 自动闭包不支持 await——do/catch 承载。
+        do {
+            _ = try await controller.deleteCascade(id: wsID, sessionDeletion: failing)
+            XCTFail("会话删除失败必须中止级联并抛错")
+        } catch {
+            // 预期路径。
+        }
         XCTAssertNotNil(registry.get(wsID), "会话删除失败时注册记录必须保留")
         XCTAssertTrue(jsonlExists(a))
     }
@@ -155,7 +164,7 @@ final class M8C2CascadeDeleteTests: XCTestCase {
     func testLegacyDeleteKeepsSessions() async throws {
         let a = try await makeSession(id: "session-a", cwd: "/projects/alpha")
         let wsID = try makeWorkspace(path: "/projects/alpha", sessions: [a])
-        let deleted = try controller.delete(id: wsID)
+        let deleted = try await controller.delete(id: wsID)
         XCTAssertTrue(deleted)
         XCTAssertTrue(jsonlExists(a), "registry-only 删除不碰会话（孤儿清理路径零改动）")
         let summaries = await store.listSessions()
