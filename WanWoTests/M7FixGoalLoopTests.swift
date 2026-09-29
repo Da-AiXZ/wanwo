@@ -181,7 +181,8 @@ final class M7FixGoalLoopTests: XCTestCase {
                                              goal: goal, origin: .host))
 
         // 轮 1：claim → injectContexts → goal/round(1) 落盘 → 卡在 adapter 闸。
-        XCTAssertTrue(await waitUntil { gate.held }, "轮 1 必须推进到 adapter 闸")
+        let round1Held = await waitUntil { gate.held }
+        XCTAssertTrue(round1Held, "轮 1 必须推进到 adapter 闸")
         XCTAssertEqual(roundEvents(writer).map(\.round), [1],
                        "source 过 injectContexts 不丢——goal/round admitted 落盘")
         XCTAssertTrue(goalRoundTexts(writer).first?.contains("Round: 1/2") == true)
@@ -189,14 +190,15 @@ final class M7FixGoalLoopTests: XCTestCase {
         // 放行 → adapter 抛错 → 轮 1 error 收尾（fence 不动 admitted attempt）
         // → goalDrive 结算消费 → 预约轮 2（round 不跳号）。
         gate.open()
-        XCTAssertTrue(await waitUntil { gate.held }, "轮 2 必须再次推进到 adapter 闸")
+        let round2Held = await waitUntil { gate.held }
+        XCTAssertTrue(round2Held, "轮 2 必须再次推进到 adapter 闸")
         XCTAssertEqual(roundEvents(writer).map(\.round), [1, 2], "同轮序续跑")
 
         // 放行 → 轮 2 error → roundsStarted(2) ≥ max(2) → block(round-limit)
         // + 大白话 .system 注记。
         gate.open()
-        XCTAssertTrue(await waitView(service) { $0?.phase == .blocked },
-                      "轮次耗尽必须 block")
+        let blockedSeen = await waitView(service) { $0?.phase == .blocked }
+        XCTAssertTrue(blockedSeen, "轮次耗尽必须 block")
         let view = try await service.get()
         XCTAssertEqual(view?.phase, .blocked)
         XCTAssertEqual(view?.blockedReason?.code, "round-limit")
@@ -254,9 +256,11 @@ final class M7FixGoalLoopTests: XCTestCase {
             }
 
             // reject 收尾后 goal 仍 armed（修复点）→ 后续 goalDrive 自动重预约。
-            XCTAssertTrue(await waitView(service) {
+            let redriven = await waitView(service) {
                 $0?.phase == .blocked && $0?.roundsStarted == 2
-            }, "修复语义：reject 不掉臂，goal 应继续跑完轮 1/2 后 round-limit block")
+            }
+            XCTAssertTrue(redriven,
+                          "修复语义：reject 不掉臂，goal 应继续跑完轮 1/2 后 round-limit block")
 
             let view = try await service.get()
             XCTAssertEqual(view?.phase, .blocked)
@@ -291,7 +295,8 @@ final class M7FixGoalLoopTests: XCTestCase {
 
         // 先起一个普通用户回合并卡在 adapter 闸（attempt 尚不存在）。
         await loop.submit("hello")
-        XCTAssertTrue(await waitUntil { gate.held })
+        let firstHeld = await waitUntil { gate.held }
+        XCTAssertTrue(firstHeld)
 
         // 运行中建 goal（armed；onChange 未接线 → 不触发驱动）。
         let goal = try await service.create(objective: "Ship M7", maxGoalRounds: 1)
@@ -301,7 +306,8 @@ final class M7FixGoalLoopTests: XCTestCase {
         gate.open()
 
         // 修复语义：goal 仍 armed → idle→goalDrive 预约轮 1 → 注入 + 卡闸。
-        XCTAssertTrue(await waitUntil { gate.held },
+        let rearmedHeld = await waitUntil { gate.held }
+        XCTAssertTrue(rearmedHeld,
                       "aborted 不掉臂：goalDrive 必须预约并推进轮 1（旧代码 disarm 后无此轮）")
         XCTAssertEqual(roundEvents(writer).map(\.round), [1])
         let view = try await service.get()
@@ -310,7 +316,8 @@ final class M7FixGoalLoopTests: XCTestCase {
 
         // 收尾：轮 1 error → roundsStarted(1) ≥ max(1) → block 收敛（可终止）。
         gate.open()
-        XCTAssertTrue(await waitView(service) { $0?.phase == .blocked })
+        let fenceBlocked = await waitView(service) { $0?.phase == .blocked }
+        XCTAssertTrue(fenceBlocked)
         await loop.whenIdle()
     }
 
@@ -332,15 +339,16 @@ final class M7FixGoalLoopTests: XCTestCase {
         let goal = try await service.create(objective: "Ship M7", maxGoalRounds: 5)
         await loop.onGoalChanged(GoalChanged(operation: .create, ref: goal.ref,
                                              goal: goal, origin: .host))
-        XCTAssertTrue(await waitUntil { gate.held }, "轮 1 admitted 后卡闸")
+        let pauseRoundHeld = await waitUntil { gate.held }
+        XCTAssertTrue(pauseRoundHeld, "轮 1 admitted 后卡闸")
         XCTAssertEqual(roundEvents(writer).map(\.round), [1])
 
         // 用户取消 + 放行 → aborted(user) → fence cancelled → goalDrive pause。
         await loop.cancel(cause: .user)
         gate.open()
 
-        XCTAssertTrue(await waitView(service) { $0?.phase == .paused },
-                      "围栏必须收敛为 pause（dsh agent/status idle fence）")
+        let pausedSeen = await waitView(service) { $0?.phase == .paused }
+        XCTAssertTrue(pausedSeen, "围栏必须收敛为 pause（dsh agent/status idle fence）")
         let view = try await service.get()
         XCTAssertEqual(view?.phase, .paused)
         XCTAssertEqual(view?.activation, .disarmed)
@@ -365,8 +373,7 @@ final class M7FixGoalLoopTests: XCTestCase {
         ]
 
         // 剥离闭包 = 接线侧用法示例：先消费载荷（条目持久保留），再返回可见文本。
-        let seal: @Sendable (text: String, sessionId: String, turn: Int, step: Int)
-            async -> String = { text, _, _, _ in
+        let seal: @Sendable (String, String, Int, Int) async -> String = { text, _, _, _ in
                 let payload = MemoryCitations.extractCitations(from: text)
                 XCTAssertNotNil(payload, "接线侧必须拿得到 citation 载荷")
                 return MemoryCitations.splitCitations(from: text).visible
@@ -399,8 +406,7 @@ final class M7FixGoalLoopTests: XCTestCase {
         XCTAssertEqual(untouched, blocks)
 
         // 恒等缝（返回原文）= 原样落盘（零扰动）。
-        let identity: @Sendable (text: String, sessionId: String, turn: Int,
-                                 step: Int) async -> String = { $0 }
+        let identity: @Sendable (String, String, Int, Int) async -> String = { $0 }
         let same = await AgentLoop.applyAssistantSeal(
             identity, blocks: blocks, sessionId: "s", turn: 3, step: 2)
         XCTAssertEqual(same, blocks)

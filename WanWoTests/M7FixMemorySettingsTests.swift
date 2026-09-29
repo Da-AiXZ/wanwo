@@ -168,6 +168,16 @@ final class M7FixMemorySettingsTests: XCTestCase {
             manifestURL: dir.appendingPathComponent("config/memory-snapshot.json"))
     }
 
+    /// 账本测试库（原 M7MemoryTests.makeDatabase 同款；private 不跨文件故本文件自持）。
+    private func makeDatabase() throws -> (MemoryDatabase, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wanwo-m7fixmem-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let db = try MemoryDatabase(
+            path: dir.appendingPathComponent("memory-index.sqlite3").path)
+        return (db, dir)
+    }
+
     func testListEntriesAcrossFourKinds() throws {
         let storage = try makeStorage()
         try storage.ensureLayout()
