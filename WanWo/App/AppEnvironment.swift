@@ -1425,11 +1425,14 @@ final class AppEnvironment: ObservableObject {
             // 【工作区模型修正】会话 header cwd——文件工具直读根 + workspacePath
             // 注入的单一事实源（nil = legacy 缺省语义）。
             sessionCwd: sessionCwd,
+            // M7 件 B：goal 服务（goal-round-driver 驱动面 + 工具权威面）。
+            goalService: goalService,
             // M7 件G 落点⑧接线（主理人合并 2026-09-29，codex citations.rs 语义）：
             // assistant 正文落盘前剥离 <oai-mem-citation> 可见标记（回复不再
             // 直显英文标记块），同时提取 threadIds 回写 usage_count/last_usage
             // （错误不阻断=try?，codex `let _ =` 同口径；空载荷零扰动）。
             // 载荷本体不进正文——usage 账本即持久化面（E2 缝需求①）。
+            // 参数序依 Dependencies 声明序（goalService :138 先于 seal :147）。
             onAssistantMessageSealed: { [memoryDatabase] text, _, _, _ in
                 if let payload = MemoryCitations.extractCitations(from: text) {
                     let ids = MemoryCitations.threadIds(in: payload)
@@ -1438,9 +1441,7 @@ final class AppEnvironment: ObservableObject {
                     }
                 }
                 return MemoryCitations.splitCitations(from: text).visible
-            },
-            // M7 件 B：goal 服务（goal-round-driver 驱动面 + 工具权威面）。
-            goalService: goalService)
+            })
         let agentLoop = AgentLoop(deps: deps)
         // M7 件 L：loop 目录登记（TeamSeams.leadStatus/leadSteer 供值——
         // TeamLoopDirectory NSLock 自保护）。

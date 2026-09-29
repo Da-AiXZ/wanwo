@@ -683,8 +683,8 @@ struct ImageFullScreenPreview: View {
                                 .shadow(color: .black.opacity(0.35),
                                         radius: 12, y: 4)
                         )
-                        .position(menuPosition(anchor: mp, container: geo.size,
-                                               menuHeight: menuHeight))
+                        .position(Self.menuPosition(anchor: mp, container: geo.size,
+                                                    menuHeight: menuHeight))
                         .transition(.scale(scale: 0.92).combined(with: .opacity))
                     }
                 }

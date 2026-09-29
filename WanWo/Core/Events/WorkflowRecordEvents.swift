@@ -101,6 +101,7 @@ enum WorkflowRecordEvents {
                 ],
                 projection: .logOnly,
                 pairing: .none))
+        }
     }
 }
 

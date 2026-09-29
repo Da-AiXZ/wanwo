@@ -274,31 +274,37 @@ struct WOSubagentReplayView: View {
         .task { await load() }
     }
 
+    /// 回放装载结果（String 不满足 Result 的 Error 关联值约束——CI修19）。
+    private enum ReplayLoadOutcome {
+        case loaded([SessionEvent])
+        case failed(String)
+    }
+
     private func load() async {
         let childId = child.id
         // 只读 replay（TrajectoryTabView :464 同款纪律：detached 只回事件，
         // 投影在调用方——ConversationProjector.project 纯函数直接喂子会话事件）。
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<[SessionEvent], String> in
+        let result = await Task.detached(priority: .userInitiated) { () -> ReplayLoadOutcome in
             let url = GroupStore.groupSessionsRoot(
                 base: WanWoPaths.persistentBase,
                 groupID: GroupStore.defaultGroupID)
                 .appendingPathComponent("\(childId).jsonl")
             guard FileManager.default.fileExists(atPath: url.path),
                   let data = try? Data(contentsOf: url) else {
-                return .failure("子会话日志不可读")
+                return .failed("子会话日志不可读")
             }
             do {
                 return .success(try SessionLogScanner.scan(data: data).events)
             } catch {
-                return .failure("子会话日志解析失败：\(error)")
+                return .failed("子会话日志解析失败：\(error)")
             }
         }.value
         switch result {
-        case .success(let events):
+        case .loaded(let events):
             var callArgs: [String: (name: String, args: JSONValue)] = [:]
             bubbles = ConversationProjector.project(
                 events: events, registry: nil, callArgs: &callArgs)
-        case .failure(let message):
+        case .failed(let message):
             loadError = message
         }
     }

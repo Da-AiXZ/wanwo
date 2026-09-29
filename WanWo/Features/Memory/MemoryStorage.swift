@@ -541,8 +541,8 @@ struct MemoryStorage {
         }
         for url in Self.sortedMarkdownFiles(at: adHocNotesURL) {
             let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            let modified = (try? Self.fm.attributesOfItem(atPath: url.path))?
-                [.modificationDate] as? Date
+            let attrs = try? Self.fm.attributesOfItem(atPath: url.path)
+            let modified = attrs?[.modificationDate] as? Date
             entries.append(MemoryEntry(
                 kind: .adHocNote,
                 relPath: "\(MemoryConstants.adHocNotesSubdir)/\(url.lastPathComponent)",
