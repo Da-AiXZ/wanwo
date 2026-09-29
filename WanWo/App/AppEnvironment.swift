@@ -650,7 +650,7 @@ final class AppEnvironment: ObservableObject {
                           let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
                           let cwd = probe.header.cwd, !cwd.isEmpty else { return nil }
                     return cwd
-                })
+                }))
 
             // M7 件 L（F046）：Team 服务真缝绑定（AgentLoop/SubagentRuntime
             // 冻结件一律经公开缝调用；所需新缝清单见交付报告）。
