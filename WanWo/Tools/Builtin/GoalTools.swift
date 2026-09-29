@@ -153,7 +153,6 @@ struct CreateGoalTool: AgentTool {
         properties: [
             "objective": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The concrete completion objective inferred from the direct human request."),
             ]),
             "max_goal_rounds": .object([
@@ -205,17 +204,14 @@ struct UpdateGoalTool: AgentTool {
         properties: [
             "goal_id": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("Exact id returned by get_goal."),
             ]),
             "revision": .object([
                 "type": .string("number"),
-                "required": .bool(true),
                 "description": .string("Exact positive revision returned by get_goal."),
             ]),
             "action": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "enum": .array(["edit", "pause", "resume", "complete", "blocked"].map { .string($0) }),
                 "description": .string("edit | pause | resume | complete | blocked"),
             ]),

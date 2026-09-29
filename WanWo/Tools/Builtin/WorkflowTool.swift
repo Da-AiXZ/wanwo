@@ -91,22 +91,18 @@ struct WorkflowTool: AgentTool {
         "properties": .object([
             "script": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The plain-JS workflow script body (top-level await allowed; NO `export const meta` statement; end with `return <json-value>`)."),
             ]),
             "meta": .object([
                 "type": .string("object"),
-                "required": .bool(true),
                 "description": .string("The workflow identity block (plain JSON — never code)."),
                 "properties": .object([
                     "name": .object([
                         "type": .string("string"),
-                        "required": .bool(true),
                         "description": .string("Short kebab-case workflow name."),
                     ]),
                     "description": .object([
                         "type": .string("string"),
-                        "required": .bool(true),
                         "description": .string("One-line description of what the workflow does."),
                     ]),
                     "whenToUse": .object([
@@ -121,7 +117,6 @@ struct WorkflowTool: AgentTool {
                             "properties": .object([
                                 "title": .object([
                                     "type": .string("string"),
-                                    "required": .bool(true),
                                     "description": .string("The phase title phase() calls match by exact string."),
                                 ]),
                                 "detail": .object([

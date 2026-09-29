@@ -88,12 +88,10 @@ struct SubagentTool: AgentTool {
             properties: [
                 "description": .object([
                     "type": .string("string"),
-                    "required": .bool(true),
                     "description": .string("A short (3-5 word) description of the delegated task, for display."),
                 ]),
                 "prompt": .object([
                     "type": .string("string"),
-                    "required": .bool(true),
                     "description": .string(wording.promptDescription),
                 ]),
                 "run_in_background": .object([
@@ -277,12 +275,10 @@ struct SendMessageAgentTool: AgentTool {
         properties: [
             "agent_id": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The agent id of your direct continuable child, or your direct parent when you are a resident continuable child."),
             ]),
             "message": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The message to deliver to the agent."),
             ]),
         ],
@@ -327,7 +323,6 @@ struct InterruptAgentTool: AgentTool {
         properties: [
             "agent_id": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The agent id of the running agent to interrupt."),
             ]),
         ],

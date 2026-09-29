@@ -136,7 +136,6 @@ struct RalphTool: AgentTool {
         "properties": .object([
             "objective": .object([
                 "type": .string("string"),
-                "required": .bool(true),
                 "description": .string("The immutable completion objective for every fresh Ralph round."),
             ]),
             "maxRounds": .object([

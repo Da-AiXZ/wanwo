@@ -243,12 +243,10 @@ struct TodoTool: AgentTool {
                         "properties": .object([
                             "content": .object([
                                 "type": .string("string"),
-                                "required": .bool(true),
                                 "description": .string("What the task is — a short imperative line."),
                             ]),
                             "status": .object([
                                 "type": .string("string"),
-                                "required": .bool(true),
                                 "enum": .array(TodoStatus.allCases.map { .string($0.rawValue) }),
                                 "description": .string("pending (not started) | in_progress (now) | completed (done)."),
                             ]),

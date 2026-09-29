@@ -151,7 +151,6 @@ struct MemoryReadTool: AgentTool {
             "path": .object([
                 "type": .string("string"),
                 "description": .string("Relative path within the memories store."),
-                "required": .bool(true),
             ]),
             "line_offset": .object([
                 "type": .string("integer"),
@@ -208,7 +207,6 @@ struct MemorySearchTool: AgentTool {
                 "type": .string("array"),
                 "items": .object(["type": .string("string")]),
                 "description": .string("Substring queries; every query must be non-empty."),
-                "required": .bool(true),
             ]),
             "match_mode": .object([
                 "type": .string("object"),
@@ -350,12 +348,10 @@ struct MemoryAddAdHocNoteTool: AgentTool {
                     "Name of the note file to create, in "
                         + "YYYY-MM-DDTHH-MM-SS-<slug>.md format. The slug must use only lowercase "
                         + "ASCII letters, digits, and hyphens."),
-                "required": .bool(true),
             ]),
             "note": .object([
                 "type": .string("string"),
                 "description": .string("Verbatim Markdown note to append to the ad-hoc memory notes."),
-                "required": .bool(true),
             ]),
         ],
         required: ["filename", "note"])
