@@ -34,7 +34,7 @@ final class CondensationTests: XCTestCase {
                            arguments: String = "{}") -> SessionEvent {
         var content: [ContentBlock] = [.text("a\(seq)")]
         if let callId {
-            content.append(.toolCall(callId, "read_file", arguments))
+            content.append(.toolCall(id: callId, name: "read_file", arguments: arguments))
         }
         let message = AssistantMessage(id: "m\(seq)", provider: "test",
                                        model: "test", content: content)
@@ -392,8 +392,8 @@ final class CondensationTests: XCTestCase {
         let message = AssistantMessage(
             id: "m1", provider: "test", model: "test",
             content: [
-                .toolCall("c1", "read_file", "{\n  \"path\": \"a.swift\"\n}"),
-                .toolCall("c2", "shell", longArgs),
+                .toolCall(id: "c1", name: "read_file", arguments: "{\n  \"path\": \"a.swift\"\n}"),
+                .toolCall(id: "c2", name: "shell", arguments: longArgs),
             ])
         let events = [event(0, .assistantMessage(turn: 1, step: 1, message: message,
                                                  usage: nil, interrupted: false))]
@@ -498,8 +498,9 @@ final class CondensationTests: XCTestCase {
         XCTAssertEqual(record.forgottenSeqs, [2, 3, 4])
         XCTAssertEqual(record.summary, "MANUAL-SUM")
         XCTAssertEqual(record.summaryOffset, 2)
-        XCTAssertGreaterThanOrEqual(record.tokensBefore, 0)
-        XCTAssertLessThan(record.tokensAfter, record.tokensBefore, "压缩后工作集必须变小")
+        XCTAssertGreaterThanOrEqual(record.tokensBefore ?? 0, 0)
+        XCTAssertLessThan(record.tokensAfter ?? Int.max, record.tokensBefore ?? 0,
+                          "压缩后工作集必须变小")
         // 增量折叠：首轮无旧摘要
         if let firstPrevious = summarizer.previousSummaries.first {
             XCTAssertNil(firstPrevious)
