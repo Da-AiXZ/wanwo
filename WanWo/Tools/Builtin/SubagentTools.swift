@@ -310,7 +310,7 @@ struct SendMessageAgentTool: AgentTool {
 }
 
 /// interrupt_agent：请求取消一个后台 agent 的当前回合（祖先授权校验在
-/// runtime——M7.2 直接父校验，transitive 登记未实现）。
+/// runtime——transitive 活祖链校验已实现，dsh control :255-289 语义）。
 struct InterruptAgentTool: AgentTool {
     let name = "interrupt_agent"
     let description = "Request cancellation of a background agent's current turn by its agent id. The target may be your "
@@ -391,16 +391,29 @@ struct ListAgentsTool: AgentTool {
         if entries.isEmpty {
             return .success("(no subagents)", meta: .array([]))
         }
+        // dsh list-agents.ts:145-163 render 对拍：child → `${id} [${status}]${at}
+        // — ${label}`；diagnostic → `${id} [diagnostic: ${reason}]${at}`；at
+        // （parent/depth）仅 descendants 渲染，parent= 条目**真实持久父**
+        //（非调用方——M7-Fix E1b 修正）。
         let lines = entries.map { entry -> String in
-            // M7.3：status 三档（runtime phase 查询——running/idle/ready）。
             let at = scope == "descendants"
-                ? " parent=\(ctx.sessionId) depth=\(entry.depth)"
+                ? " parent=\(entry.parentSessionId) depth=\(entry.depth)"
                 : ""
+            if let reason = entry.diagnosticReason {
+                return "\(entry.subagentId) [diagnostic: \(reason)]\(at)"
+            }
             return "\(entry.subagentId) [\(entry.status)]\(at) — \(entry.label)"
         }
         return .success(lines.joined(separator: "\n"), meta: .array(
-            entries.map { entry in
-                .object([
+            entries.map { entry -> JSONValue in
+                if let reason = entry.diagnosticReason {
+                    return .object([
+                        "kind": .string("diagnostic"),
+                        "id": .string(entry.subagentId),
+                        "reason": .string(reason),
+                    ])
+                }
+                return .object([
                     "kind": .string("child"),
                     "id": .string(entry.subagentId),
                     "label": .string(entry.label),

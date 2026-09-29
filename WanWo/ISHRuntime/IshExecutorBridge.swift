@@ -841,14 +841,18 @@ actor IshExecutorBridge {
         // routed dynamically by FsContextRouter's path-translate hook based on
         // the calling task's fs_context, so they don't need a static mount and
         // don't need to be swapped on session change.
-        let subdirs: [(persistDir: URL, linuxDir: String)] = [
-            (WanWoPaths.memoryPersistentDir, WanWoPaths.memoryLinuxDir),
-            (WanWoPaths.skillsPersistentDir, WanWoPaths.skillsLinuxDir),
-            (WanWoPaths.sharedPersistentDir, WanWoPaths.sharedLinuxDir),
-            (WanWoPaths.mcpServersPersistentDir, WanWoPaths.mcpServersLinuxDir),
+        // readOnly（M7 件G 落点⑪主理人合并 2026-09-29）：memory 目录对 guest shell
+        // 只读——AI 对记忆的读写必须走宿主工具面（MemoryTools 四工具宿主直读 /
+        // Phase2 整合 agent FileManager 写），封死 shell 越权篡改通道。
+        // 其余三个全局桶维持读写（skills/shared/mcpServers 无只读要求）。
+        let subdirs: [(persistDir: URL, linuxDir: String, readOnly: Bool)] = [
+            (WanWoPaths.memoryPersistentDir, WanWoPaths.memoryLinuxDir, true),
+            (WanWoPaths.skillsPersistentDir, WanWoPaths.skillsLinuxDir, false),
+            (WanWoPaths.sharedPersistentDir, WanWoPaths.sharedLinuxDir, false),
+            (WanWoPaths.mcpServersPersistentDir, WanWoPaths.mcpServersLinuxDir, false),
         ]
 
-        for (idx, (persistDir, linuxDir)) in subdirs.enumerated() {
+        for (idx, (persistDir, linuxDir, readOnly)) in subdirs.enumerated() {
             logger.info("MOUNT [\(idx)] === Mounting subdir ===")
             logger.info("MOUNT [\(idx)] linuxDir        = \"\(linuxDir)\"")
             logger.info("MOUNT [\(idx)] linuxDir.count  = \(linuxDir.count)")
@@ -921,8 +925,8 @@ actor IshExecutorBridge {
             let persistContents = (try? fm.contentsOfDirectory(atPath: persistDir.path)) ?? []
             logger.info("MOUNT [\(idx)] persistDir has \(persistContents.count) items: \(persistContents.joined(separator: ", "))")
 
-            logger.info("MOUNT [\(idx)] calling bindMountPath(\"\(linuxDir)\", toHostPath: \"\(persistDir.path)\")")
-            let err = ISHKernel.shared.bindMountPath(linuxDir, toHostPath: persistDir.path)
+            logger.info("MOUNT [\(idx)] calling bindMountPath(\"\(linuxDir)\", toHostPath: \"\(persistDir.path)\", readOnly: \(readOnly))")
+            let err = ISHKernel.shared.bindMountPath(linuxDir, toHostPath: persistDir.path, readOnly: readOnly)
             if err < 0 {
                 logger.error("MOUNT [\(idx)] bind mount FAILED: \(linuxDir) -> \(persistDir.path) err=\(err)")
             } else {

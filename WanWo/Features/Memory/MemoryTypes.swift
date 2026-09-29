@@ -94,7 +94,9 @@ enum MemoryConstants {
     static let phase2WorkspaceDiffFilename = "phase2_workspace_diff.md"
     /// diff 文件字节上限（workspace_diff::MAX_BYTES = 4MiB）。
     static let workspaceDiffMaxBytes = 4 * 1024 * 1024
-    /// 记忆根 guest 路径（FsContextRouter 全局桶——iSH 只读 mount 挂点）。
+    /// 记忆根 guest 路径（全局桶静态 bind mount：memoryPersistentDir ↔ 本路径，
+    /// IshExecutorBridge.swift:845——只读化按落点⑪缝交付，见 analysis/m7-fix/
+    /// e2-report.md 缝需求②；切换前 guest shell 侧为读写 mount）。
     static let memoryGuestPath = "/var/wanwo/memory"
 }
 

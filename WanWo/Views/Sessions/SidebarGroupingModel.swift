@@ -52,8 +52,11 @@ enum SidebarGroupingModel {
     /// 平铺模式分组键（M3 既有单层列表的保留形态）。
     static let flatKey = "flat"
 
-    /// blank 占位判定（title nil 或空白 → 「新会话」临时行）。
+    /// blank 占位判定（title nil/空白 → 「新会话」临时行；dsh 事件语义修正
+    /// 2026-09-29 主理人合并：**且** eventCount==0 才算占位——有事件无标题
+    /// 的会话（如回合被中断未生成标题）恒非 blank，绝不从列表消失）。
     nonisolated static func isBlank(_ summary: SessionSummary) -> Bool {
+        if summary.eventCount > 0 { return false }
         guard let title = summary.title else { return true }
         return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

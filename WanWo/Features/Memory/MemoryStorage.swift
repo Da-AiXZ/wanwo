@@ -360,7 +360,275 @@ struct MemoryStorage {
         try ensureLayout()
     }
 
+    // MARK: - 设置页条目列举（落点⑩：只读枚举 + 单条编辑/删除承载）
+
+    /// 条目类别（memoryBlock=MEMORY.md 区块 / rawMemory=raw_memories.md 条目 /
+    /// rolloutSummary=rollout_summaries/*.md / adHocNote=extensions/ad_hoc/notes/*.md）。
+    enum MemoryEntryKind: String, Equatable, Sendable, CaseIterable {
+        case memoryBlock
+        case rawMemory
+        case rolloutSummary
+        case adHocNote
+
+        /// 设置列表分组标签。
+        var label: String {
+            switch self {
+            case .memoryBlock: return "记忆区块"
+            case .rawMemory: return "原始记忆"
+            case .rolloutSummary: return "会话摘要"
+            case .adHocNote: return "便签"
+            }
+        }
+    }
+
+    /// 设置列表条目（relPath 相对 memory 根；文档型条目以 blockIndex 定位，
+    /// 文件型条目 blockIndex=nil。仅由 listSettingEntries 构造）。
+    struct MemoryEntry: Identifiable, Equatable, Sendable {
+        let kind: MemoryEntryKind
+        let relPath: String
+        let blockIndex: Int?
+        let title: String
+        let sourceSession: String?
+        let date: Date?
+        let fullText: String
+
+        var id: String {
+            "\(kind.rawValue)|\(relPath)|\(blockIndex.map(String.init) ?? "-")"
+        }
+    }
+
+    /// 文档区块定位（纯函数——列表数据源与编辑拼接共用；range = 头行行首 →
+    /// 下一同层头行行首（或文末），splice 往返零损耗）。
+    struct MemoryDocumentBlock: Equatable {
+        let headerLine: String
+        let range: Range<String.Index>
+    }
+
+    /// MEMORY.md 区块头（Phase2 STRICT 格式："# Task Group: …" 逐字——
+    /// MemoryTemplates Phase2 `MEMORY.md` FORMAT 节）。
+    static let memoryBlockHeaderPrefix = "# Task Group:"
+    /// raw_memories.md 条目头（storage.rs rebuild_raw_memories_file 逐字）。
+    static let rawMemoryHeaderPrefix = "## Thread `"
+
+    /// 逐行扫描定位同层区块（纯函数；空文档/无头行 = 空数组）。
+    static func findDocumentBlocks(in text: String,
+                                   headerPrefix: String) -> [MemoryDocumentBlock] {
+        var blocks: [MemoryDocumentBlock] = []
+        var pending: (header: String, start: String.Index)?
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            let lineEnd = text.range(of: "\n", range: cursor..<text.endIndex)?
+                .lowerBound ?? text.endIndex
+            let line = String(text[cursor..<lineEnd])
+            if line.hasPrefix(headerPrefix) {
+                if let open = pending {
+                    blocks.append(MemoryDocumentBlock(headerLine: open.header,
+                                                      range: open.start..<cursor))
+                }
+                pending = (line, cursor)
+            }
+            cursor = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+        }
+        if let open = pending {
+            blocks.append(MemoryDocumentBlock(headerLine: open.header,
+                                              range: open.start..<text.endIndex))
+        }
+        return blocks
+    }
+
+    /// 区块替换（纯函数；新文归一为块尾空行结尾——与下一块保持 markdown
+    /// 空行分隔，原文往返零损耗；文末块会补出尾空行，无害）。
+    static func replacingBlock(in text: String, block: MemoryDocumentBlock,
+                               with newBlock: String) -> String {
+        var normalized = newBlock
+        if !normalized.hasSuffix("\n") { normalized += "\n" }
+        if !normalized.hasSuffix("\n\n") { normalized += "\n" }
+        return text.replacingCharacters(in: block.range, with: normalized)
+    }
+
+    /// 区块删除（纯函数）。
+    static func removingBlock(in text: String, block: MemoryDocumentBlock) -> String {
+        text.replacingCharacters(in: block.range, with: "")
+    }
+
+    /// "key: value" 元数据行解析（raw_memories/rollout_summaries 头行——
+    /// storage.rs write 头行同形）。
+    static func metadataFieldValue(_ blockText: String, field: String) -> String? {
+        for line in blockText.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(field):") else { continue }
+            let value = trimmed.dropFirst(field.count + 1)
+                .trimmingCharacters(in: .whitespaces)
+            if !value.isEmpty { return String(value) }
+        }
+        return nil
+    }
+
+    /// 内联 "key=<value>" 字段解析（MEMORY.md 区块 rollout_summary_files
+    /// 列行——Phase2 模板 `(cwd=…, updated_at=…, thread_id=…)` 同形）。
+    static func metadataFieldInline(_ blockText: String, field: String) -> String? {
+        guard let range = blockText.range(of: "\(field)=") else { return nil }
+        let rest = blockText[range.upperBound...]
+        let end = rest.rangeOfCharacter(
+            from: CharacterSet(charactersIn: " ,)\n>"))?.lowerBound ?? rest.endIndex
+        let value = String(rest[..<end]).trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+
+    /// 记忆时间戳解析：RFC3339 优先（storage.rs 头行），UTC
+    /// "%Y-%m-%dT%H-%M-%S" 文件名段次之（utcFormat 同构）。
+    static func parseMemoryTimestamp(_ raw: String) -> Date? {
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+        let dashed = DateFormatter()
+        dashed.locale = Locale(identifier: "en_US_POSIX")
+        dashed.timeZone = TimeZone(identifier: "UTC")
+        dashed.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        return dashed.date(from: raw)
+    }
+
+    /// 设置条目列举（只读枚举既有目录面；文件/区块缺席逐类跳过，无副作用）。
+    func listSettingEntries() throws -> [MemoryEntry] {
+        var entries: [MemoryEntry] = []
+        if let doc = try? String(contentsOf: memoryMDURL, encoding: .utf8) {
+            let blocks = Self.findDocumentBlocks(in: doc,
+                                                 headerPrefix: Self.memoryBlockHeaderPrefix)
+            for (index, block) in blocks.enumerated() {
+                let text = String(doc[block.range])
+                let title = block.headerLine
+                    .dropFirst(Self.memoryBlockHeaderPrefix.count)
+                    .trimmingCharacters(in: .whitespaces)
+                entries.append(MemoryEntry(
+                    kind: .memoryBlock,
+                    relPath: "MEMORY.md",
+                    blockIndex: index,
+                    title: title.isEmpty ? block.headerLine : title,
+                    sourceSession: Self.metadataFieldInline(text, field: "thread_id"),
+                    date: Self.metadataFieldInline(text, field: "updated_at")
+                        .flatMap(Self.parseMemoryTimestamp),
+                    fullText: text))
+            }
+        }
+        if let doc = try? String(contentsOf: rawMemoriesURL, encoding: .utf8) {
+            let blocks = Self.findDocumentBlocks(in: doc,
+                                                 headerPrefix: Self.rawMemoryHeaderPrefix)
+            for (index, block) in blocks.enumerated() {
+                let text = String(doc[block.range])
+                let id = String(block.headerLine
+                    .dropFirst(Self.rawMemoryHeaderPrefix.count)
+                    .prefix(while: { $0 != "`" }))
+                entries.append(MemoryEntry(
+                    kind: .rawMemory,
+                    relPath: MemoryConstants.rawMemoriesFilename,
+                    blockIndex: index,
+                    title: "原始记忆 · \(id)",
+                    sourceSession: id.isEmpty ? nil : id,
+                    date: Self.metadataFieldValue(text, field: "updated_at")
+                        .flatMap(Self.parseMemoryTimestamp),
+                    fullText: text))
+            }
+        }
+        for url in Self.sortedMarkdownFiles(at: rolloutSummariesURL) {
+            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            entries.append(MemoryEntry(
+                kind: .rolloutSummary,
+                relPath: "\(MemoryConstants.rolloutSummariesSubdir)/\(url.lastPathComponent)",
+                blockIndex: nil,
+                title: url.lastPathComponent,
+                sourceSession: Self.metadataFieldValue(text, field: "thread_id"),
+                date: Self.metadataFieldValue(text, field: "updated_at")
+                    .flatMap(Self.parseMemoryTimestamp),
+                fullText: text))
+        }
+        for url in Self.sortedMarkdownFiles(at: adHocNotesURL) {
+            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            let modified = (try? Self.fm.attributesOfItem(atPath: url.path))?
+                [.modificationDate] as? Date
+            entries.append(MemoryEntry(
+                kind: .adHocNote,
+                relPath: "\(MemoryConstants.adHocNotesSubdir)/\(url.lastPathComponent)",
+                blockIndex: nil,
+                title: url.deletingPathExtension().lastPathComponent,
+                sourceSession: nil,
+                date: modified,
+                fullText: text))
+        }
+        return entries
+    }
+
+    /// 单条编辑：文档型 = 区块拼接回写（MEMORY.md 区块编辑后回写同径）；
+    /// 文件型 = 整文重写。relPath 防御（仅内部构造，双保险穿越防护）。
+    func updateSettingEntry(_ entry: MemoryEntry, newText: String) throws {
+        switch entry.kind {
+        case .memoryBlock, .rawMemory:
+            let url = entry.kind == .memoryBlock ? memoryMDURL : rawMemoriesURL
+            let prefix = entry.kind == .memoryBlock
+                ? Self.memoryBlockHeaderPrefix : Self.rawMemoryHeaderPrefix
+            var doc = try String(contentsOf: url, encoding: .utf8)
+            let blocks = Self.findDocumentBlocks(in: doc, headerPrefix: prefix)
+            guard let index = entry.blockIndex, blocks.indices.contains(index) else {
+                throw MemoryError(message:
+                    "memory entry no longer exists: \(entry.relPath)#\(entry.blockIndex ?? -1)")
+            }
+            doc = Self.replacingBlock(in: doc, block: blocks[index], with: newText)
+            try write(doc, to: url)
+        case .rolloutSummary, .adHocNote:
+            try validateEntryRelPath(entry.relPath)
+            try write(newText, to: rootURL.appendingPathComponent(entry.relPath))
+        }
+    }
+
+    /// 单条删除：文档型 = 拼出区块后回写；文件型 = 删文件。
+    func deleteSettingEntry(_ entry: MemoryEntry) throws {
+        switch entry.kind {
+        case .memoryBlock, .rawMemory:
+            let url = entry.kind == .memoryBlock ? memoryMDURL : rawMemoriesURL
+            let prefix = entry.kind == .memoryBlock
+                ? Self.memoryBlockHeaderPrefix : Self.rawMemoryHeaderPrefix
+            var doc = try String(contentsOf: url, encoding: .utf8)
+            let blocks = Self.findDocumentBlocks(in: doc, headerPrefix: prefix)
+            guard let index = entry.blockIndex, blocks.indices.contains(index) else {
+                throw MemoryError(message:
+                    "memory entry no longer exists: \(entry.relPath)#\(entry.blockIndex ?? -1)")
+            }
+            doc = Self.removingBlock(in: doc, block: blocks[index])
+            try write(doc, to: url)
+        case .rolloutSummary, .adHocNote:
+            try validateEntryRelPath(entry.relPath)
+            try Self.fm.removeItem(at: rootURL.appendingPathComponent(entry.relPath))
+        }
+    }
+
     // MARK: - 私有
+
+    private var memoryMDURL: URL {
+        rootURL.appendingPathComponent("MEMORY.md")
+    }
+
+    private var rolloutSummariesURL: URL {
+        rootURL.appendingPathComponent(MemoryConstants.rolloutSummariesSubdir)
+    }
+
+    private var adHocNotesURL: URL {
+        var url = rootURL
+        for component in MemoryConstants.adHocNotesSubdir.split(separator: "/") {
+            url.appendPathComponent(String(component))
+        }
+        return url
+    }
+
+    /// 文件型条目 relPath 防御（目录穿越/扩展名）。
+    private func validateEntryRelPath(_ relPath: String) throws {
+        guard !relPath.contains(".."), relPath.hasSuffix(".md") else {
+            throw MemoryError(message: "invalid memory entry path: \(relPath)")
+        }
+    }
+
+    /// 目录 .md 枚举（字典序；目录缺席 = 空集）。
+    private static func sortedMarkdownFiles(at dir: URL) -> [URL] {
+        guard let names = try? Self.fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return names.filter { $0.hasSuffix(".md") }.sorted()
+            .map { dir.appendingPathComponent($0) }
+    }
 
     private func write(_ text: String, to url: URL) throws {
         guard let data = text.data(using: .utf8) else {

@@ -1516,6 +1516,7 @@ enum MemoryTemplates {
     - Include a minimal usage example in SKILL.md.
 
     Supporting files (use sparingly; only when they add value):
+
     - templates/: a fill-in skeleton for the skill's output (plans, reports, checklists).
     - examples/: one or two small, high-quality example outputs showing the expected format.
 

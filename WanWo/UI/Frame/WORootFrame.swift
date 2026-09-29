@@ -571,12 +571,39 @@ struct ImageFullScreenPreview: View {
     @State private var saveToast: String?
     /// 分享面板（sheet 呈现 WOShareSheet，原件 :392 showShareSheet 同语义）。
     @State private var showShareSheet = false
-    /// 长按菜单锚点（视图坐标；nil = 收起。拍板②预案：contextMenu 叠
-    /// UIViewRepresentable 真机实证黑屏+锚点错乱 → UIKit 长按+自绘浮层）。
+    /// 长按菜单锚点（window 坐标=全屏 overlay 坐标；nil = 收起。拍板②预案：
+    /// contextMenu 叠 UIViewRepresentable 真机实证黑屏+锚点错乱 → UIKit 长按
+    /// +自绘浮层；M7-E3：换算链改 gr.location(in: self) → window.convert）。
     @State private var menuPoint: CGPoint?
+    /// 菜单实测高度（.onAppear/.onChange 从背景 GeometryReader 回填——
+    /// 四边钳制按实际尺寸，不用魔法数；M7-E3）。
+    @State private var menuHeight: CGFloat = 0
 
     private enum SaveStatus {
         case idle, saving, saved, failed
+    }
+
+    /// 菜单实底色（iOS 系统编辑菜单深色风格≈#262629——深色实底白字，
+    /// 任意图片底色可读；M7-E3，平台差异自定方案：dsh/OpenMinis 原件
+    /// 均无自绘长按菜单先例，登记 analysis/m7-fix/e3-report.md）。
+    private static let menuBackdropColor = Color(red: 0x26 / 255.0,
+                                                 green: 0x26 / 255.0,
+                                                 blue: 0x29 / 255.0)
+
+    /// 菜单落位算式（纯函数，M7-E3）：默认在长按点上方（底边距锚点 8pt）；
+    /// 顶边放不下 → 翻转到长按点下方；再按容器四边+菜单实测尺寸钳制。
+    /// 单测缝：锚点钳制逻辑可抽测（算式 1:1 承载处在此）。
+    static func menuPosition(anchor: CGPoint, container: CGSize,
+                             menuWidth: CGFloat = 210,
+                             menuHeight: CGFloat) -> CGPoint {
+        let gap: CGFloat = 8
+        let halfW = menuWidth / 2
+        let halfH = menuHeight / 2
+        var top = anchor.y - gap - menuHeight
+        if top < 0 { top = anchor.y + gap } // 上方放不下 → 翻转到下方
+        top = min(max(top, 0), max(container.height - menuHeight, 0))
+        let x = min(max(anchor.x, halfW), max(container.width - halfW, halfW))
+        return CGPoint(x: x, y: top + halfH)
     }
 
     var body: some View {
@@ -608,43 +635,61 @@ struct ImageFullScreenPreview: View {
                 }
                 .onTapGesture { onClose() }
             }
-            // 长按浮层菜单（锚点=长按点上方偏移+边缘钳制；预案②）。
+            // 长按浮层菜单（【M7-E3 修 2026-09-29】a) 背景改系统编辑菜单风格
+            // 实底（深色实底白字，任意图片底色可读——.thinMaterial 叠深色图
+            // 几乎隐形，真机实证）；b) 锚点修正：window 坐标 + 菜单在长按点
+            // 上方弹出、越界自动翻转下方、四边按菜单实测尺寸钳制（原固定
+            // -140 偏移 + UIScreen.main.bounds 魔法数退役）。
             if let image, let mp = menuPoint {
-                Color.black.opacity(0.001)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.15)) { menuPoint = nil }
-                    }
-                    .zIndex(5)
-                VStack(spacing: 0) {
-                    lightboxMenuButton("复制图片", "doc.on.doc") {
-                        UIPasteboard.general.image = image
-                        menuPoint = nil
-                    }
-                    Divider().overlay(Color.white.opacity(0.15))
-                    lightboxMenuButton(
-                        saveStatus == .saving ? "正在存入相册…" : "存入相册",
-                        "square.and.arrow.down",
-                        disabled: saveStatus == .saving
-                    ) {
-                        saveImageToPhotos(image)
-                        menuPoint = nil
-                    }
-                    Divider().overlay(Color.white.opacity(0.15))
-                    lightboxMenuButton("分享…", "square.and.arrow.up") {
-                        showShareSheet = true
-                        menuPoint = nil
+                GeometryReader { geo in
+                    ZStack {
+                        Color.black.opacity(0.001)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeOut(duration: 0.15)) { menuPoint = nil }
+                            }
+                        VStack(spacing: 0) {
+                            lightboxMenuButton("复制图片", "doc.on.doc") {
+                                UIPasteboard.general.image = image
+                                menuPoint = nil
+                            }
+                            Divider().overlay(Color.white.opacity(0.15))
+                            lightboxMenuButton(
+                                saveStatus == .saving ? "正在存入相册…" : "存入相册",
+                                "square.and.arrow.down",
+                                disabled: saveStatus == .saving
+                            ) {
+                                saveImageToPhotos(image)
+                                menuPoint = nil
+                            }
+                            Divider().overlay(Color.white.opacity(0.15))
+                            lightboxMenuButton("分享…", "square.and.arrow.up") {
+                                showShareSheet = true
+                                menuPoint = nil
+                            }
+                        }
+                        .frame(width: 210)
+                        // 实底（iOS 系统编辑菜单深色风格）+ 实测高度（钳制用）。
+                        .background(
+                            GeometryReader { m in
+                                Color.clear
+                                    .onAppear { menuHeight = m.size.height }
+                                    .onChange(of: m.size.height) { menuHeight = $0 }
+                            }
+                        )
+                        .background(
+                            RoundedRectangle(cornerRadius: 13)
+                                .fill(Self.menuBackdropColor)
+                                .shadow(color: .black.opacity(0.35),
+                                        radius: 12, y: 4)
+                        )
+                        .position(menuPosition(anchor: mp, container: geo.size,
+                                               menuHeight: menuHeight))
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
                     }
                 }
-                .background(.thinMaterial,
-                            in: RoundedRectangle(cornerRadius: 13))
-                .frame(width: 210)
-                .position(
-                    x: min(max(mp.x, 115), UIScreen.main.bounds.width - 115),
-                    y: min(max(mp.y - 140, 95), UIScreen.main.bounds.height - 180))
-                .transition(.scale(scale: 0.92).combined(with: .opacity))
-                .zIndex(6)
+                .ignoresSafeArea()
+                .zIndex(5)
             }
             // ✕ 按钮保留（拍板①）；zIndex 压过手势层
             //（原件 :415-416 注释同语义——iPad 上按钮在手势层之上）。
@@ -705,7 +750,9 @@ struct ImageFullScreenPreview: View {
                 .foregroundStyle(disabled ? .white.opacity(0.4) : .white)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
-                .padding(.vertical, 11)
+                // M7-E3：11→12（20pt 行高 + 24 = 44pt 触屏点击门禁）。
+                .padding(.vertical, 12)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1040,7 +1087,12 @@ final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureReco
 
     @objc private func handleLongPress(_ gr: UILongPressGestureRecognizer) {
         guard gr.state == .began else { return }
-        onLongPress?(gr.location(in: self))
+        let local = gr.location(in: self)
+        // M7-E3：换算到 window 坐标再透传——本 UIView 在 fullScreenCover 内
+        // ignoresSafeArea 铺满全屏，window 空间与宿主 ZStack 坐标空间一致；
+        // 旧实现直接回传 self 坐标，宿主按屏幕空间钳制时锚点偏差（真机实证）。
+        let windowPoint = window.map { $0.convert(local, from: self) } ?? local
+        onLongPress?(windowPoint)
     }
 
     // MARK: UIGestureRecognizerDelegate

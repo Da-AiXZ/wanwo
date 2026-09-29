@@ -344,6 +344,13 @@ struct WOChatView: View {
                         .padding(.horizontal, heroMode ? 0 : 14)
                         .transition(.opacity)
                 }
+                // 【M7-E3】子代理记录卡（dsh ui-subagent 目录语义最小面——
+                // 空目录不渲染；行点击 → 子会话只读回放，见卡片文件头注）。
+                WOSubagentCatalogCard(environment: environment, sessionId: sessionId)
+                    .frame(maxWidth: 620)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, heroMode ? 0 : 14)
+                    .transition(.opacity)
                 if let hint = agentHint {
                     WOAgentHintPill(title: "AI 正在浏览", domain: hint.domain)
                         .frame(maxWidth: 620)
@@ -1132,42 +1139,17 @@ struct WOChatView: View {
     private func bubbleView(_ bubble: ConversationProjector.Bubble) -> some View {
         switch bubble.kind {
         case .user(let text, let images):
-            HStack(alignment: .bottom, spacing: 0) {
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 6) {
-                    if !images.isEmpty {
-                        // 消息内图片（复用 MessageImagesView；单图 80pt=
-                        // 用户既定裁定 T2.6 件7，不改）。
-                        MessageImagesView(images: images,
-                                          store: viewModel.attachmentStore,
-                                          onPreview: { messagePreview = $0 })
-                    }
-                    if !text.isEmpty {
-                        // 纯图片消息不画气泡（dsh MessageItem 语义）。
-                        // 批C5（原型 :180 .user-bubble）：去 textSelection 改
-                        // contextMenu 拷贝；padding 10/16（宽度随字数，蓝底
-                        // 贴字细条根治）；lineSpacing 4（22px 行高目标）；
-                        // 圆角 22 + 蓝软底（WOSpecific.bubble）+ max-width 508
-                        // （620 列的 82%）保持。
-                        Text(text)
-                            .font(.system(size: 14))
-                            .foregroundColor(WOAlias.labelPrimary)
-                            .multilineTextAlignment(.trailing)
-                            .lineSpacing(4)
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                            .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
-                            .frame(maxWidth: 508, alignment: .trailing)
-                            .contextMenu {
-                                Button {
-                                    UIPasteboard.general.string = text
-                                } label: {
-                                    Label("拷贝", systemImage: "doc.on.doc")
-                                }
-                            }
-                    }
+            // 【M7-E3】goal_round 注入拦截（识别=GoalRoundPrompt.render 模板头
+            // 前缀判定）：引擎自动续轮指令不渲染成巨大用户气泡，改收起系统卡
+            // （dsh web 聊天流无此渲染语义→自定方案，见 WOGoalRoundCard 头注）。
+            if text.hasPrefix(WOGoalRoundCard.injectionPrefix) {
+                HStack(alignment: .center, spacing: 0) {
+                    WOGoalRoundCard(text: text)
+                        .frame(maxWidth: 620, alignment: .leading)
+                    Spacer(minLength: 0)
                 }
-                .frame(maxWidth: 620, alignment: .trailing)
+            } else {
+                userBubble(text: text, images: images)
             }
 
         case .assistant(let text):
@@ -1243,6 +1225,48 @@ struct WOChatView: View {
                 Divider().opacity(0.5)
             }
             .padding(.vertical, 2)
+        }
+    }
+
+    /// 用户气泡（原 case .user 主体原样抽出——goal_round 拦截分流的另一支；
+    /// 行内注释与形态逐项保持）。
+    private func userBubble(text: String, images: [ImageAttachmentRef]) -> some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 6) {
+                if !images.isEmpty {
+                    // 消息内图片（复用 MessageImagesView；单图 80pt=
+                    // 用户既定裁定 T2.6 件7，不改）。
+                    MessageImagesView(images: images,
+                                      store: viewModel.attachmentStore,
+                                      onPreview: { messagePreview = $0 })
+                }
+                if !text.isEmpty {
+                    // 纯图片消息不画气泡（dsh MessageItem 语义）。
+                    // 批C5（原型 :180 .user-bubble）：去 textSelection 改
+                    // contextMenu 拷贝；padding 10/16（宽度随字数，蓝底
+                    // 贴字细条根治）；lineSpacing 4（22px 行高目标）；
+                    // 圆角 22 + 蓝软底（WOSpecific.bubble）+ max-width 508
+                    // （620 列的 82%）保持。
+                    Text(text)
+                        .font(.system(size: 14))
+                        .foregroundColor(WOAlias.labelPrimary)
+                        .multilineTextAlignment(.trailing)
+                        .lineSpacing(4)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+                        .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
+                        .frame(maxWidth: 508, alignment: .trailing)
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = text
+                            } label: {
+                                Label("拷贝", systemImage: "doc.on.doc")
+                            }
+                        }
+                }
+            }
+            .frame(maxWidth: 620, alignment: .trailing)
         }
     }
 

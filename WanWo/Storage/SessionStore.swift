@@ -214,6 +214,14 @@ actor SessionStore {
         await release(writer)
     }
 
+    /// 只读查询缝（M7-Fix E1b）：该会话当前是否有活写柄——不 open、不 close、
+    /// 不触发任何修复收尾，纯登记表查窥。TeamSeams.appendEvent 复用活写柄
+    /// 用（dsh JsonlBackendTracker.writers 同源语义：append 经既有 writer，
+    /// 绝不挤占正在运行的回合的排他写所有权）。
+    func liveWriter(id: String) -> SessionWriter? {
+        writers[id]
+    }
+
     /// 按 writer 实例身份关闭（会话视图释放自身写柄用）：仅当该 writer 仍是当前
     /// 登记的活跃写柄时才释放——过期视图（会话已被快速切走又切回、写柄已被
     /// openWriter 换新）的迟到 close 是 no-op，绝不误关新写柄。

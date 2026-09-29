@@ -501,6 +501,13 @@ actor SubagentRuntime {
     func sendMessage(from senderSessionId: String, to targetId: String,
                      text: String,
                      source: InboxSource = .user) async throws -> String {
+        // dsh continuation.ts:213-219：目标 == sender 的直接父 → sendToParent
+        // 路由（驻留子回传；sender 非驻留则不进此分支，落入下方 NOT_RESUMABLE
+        // ——dsh :218-221 UNAUTHORIZED 的 WanMo 词汇等价）。
+        if let senderActivation = activations[senderSessionId],
+           senderActivation.parentSessionId == targetId {
+            return try await sendToParent(from: senderSessionId, text: text)
+        }
         let resolvedTarget = resolveAgentTarget(senderSessionId, targetId)
         if let candidate = resolvedTarget, activations[candidate] == nil {
             // 恢复登记子先重挂（重挂失败原样上抛——投递未发生）；非登记
@@ -521,29 +528,69 @@ actor SubagentRuntime {
             throw SubagentError(message: "subagent activation is being disposed; the message was not delivered",
                                 code: "ACTIVATION_CLOSING")
         }
-        // WanMo loop 无运行态查询缝（actor 相位私有）——统一 followup 新回合
-        // 排队（steer 运行中最近步边界需 phase 查询，登记）。
-        // source 缺省 .user 保批1 零回归；Team 邮箱投递透传 .subagentMessage
-        // （QA-6 P1-5：teammate 收 team 消息不得计入 directHuman authority——
-        // goal 轮次判定面误判防线；主理人合并 2026-09-28）。
-        await loop.followup(text, source: source)
+        // dsh continuation.ts sendMessage 语义（delivery:'steer' 透传 →
+        // inbox.deliver :53 steer→agent.steer / queue→agent.followup）：目标
+        // 运行中 → steer 最近步边界；空闲 → followup 新 turn（dsh agent-loop
+        // tests/agent.spec.ts:103 "steer() while idle becomes a woken prompt
+        // turn" 在 WanMo loop 相位机上的等价映射——空闲经 followup 新回合，
+        // 运行中经 steer 步边界，二者投递面等价）。phase 查询缝：
+        // AgentLoop.currentPhase()（AgentLoop.swift:597）。
+        // source 透传保批1 零回归：缺省 .user（工具直呼）不计 teammate 权；
+        // Team 邮箱投递透传 .subagentMessage（QA-6 P1-5：teammate 收 team
+        // 消息不得计入 directHuman authority——goal 轮次判定面误判防线；
+        // 主理人合并 2026-09-28）。
+        if await loopPhaseIsRunning(loop) {
+            await loop.steer(text, source: source)
+        } else {
+            await loop.followup(text, source: source)
+        }
         return UUID().uuidString
     }
 
-    /// 目标解析（M7.3）：dsh agent_id 直命中（驻留或恢复登记）优先；否则按
-    /// codex resolve_agent_reference（control.rs:444-463）path 寻址——相对
-    /// 引用按发送方 path 拼接，发送方无注册 path = 顶层 = /root。
+    /// 运行态判定（M7-Fix E1b）：currentPhase 的 running 携带 turn/step 关联值，
+    /// 不能直接与字面量相等——按 case 判定（maintenance 同 dsh AgentStatus
+    /// 'running'，agent.ts:126 status getter）。
+    private func loopPhaseIsRunning(_ loop: AgentLoop) async -> Bool {
+        switch await loop.currentPhase() {
+        case .running: return true
+        case .idle, .maintenance: return false
+        }
+    }
+
+    /// 目标解析（M7.3 + M7-Fix E1b 收敛）：dsh send_message 仅允许"直接
+    /// continuable 子或父"（continuation.ts:202-232——父走 sendToParent，
+    /// 子走 deliverToChild → authorizeLineage parentSession === parent.id，
+    /// 无跨代寻址）。id 直命中与 path 寻址均只接受**发送方直接子**——
+    /// 跨代命中不再解析、不再触发无关重挂（此前 path 任意深度后代可解析，
+    /// 靠下游 guard 兜底拒绝，且先 remount 后拒绝属副作用外溢）。
     private func resolveAgentTarget(_ senderSessionId: String,
                                     _ reference: String) -> String? {
-        if activations[reference] != nil || pendingRecovery[reference] != nil {
+        // id 直命中：仅发送方直接子（驻留或恢复登记）。
+        if let activation = activations[reference],
+           activation.parentSessionId == senderSessionId {
+            return reference
+        }
+        if let meta = pendingRecovery[reference],
+           meta.parentSessionId == senderSessionId {
             return reference
         }
         // 纯 id（无 "/"）不走 path 解析（万我 childId 为 UUID 形态）。
         guard reference.contains("/") else { return nil }
+        // path 寻址：相对引用按发送方 path 拼接，发送方无注册 path = 顶层
+        // = /root；解析命中后仍要求确为发送方直接子。
         let senderPath = childPaths[senderSessionId].flatMap { try? AgentPath(from: $0) }
             ?? AgentPath.root()
-        guard let resolved = try? senderPath.resolve(reference) else { return nil }
-        return pathIndex[resolved.value]
+        guard let resolved = try? senderPath.resolve(reference),
+              let childId = pathIndex[resolved.value] else { return nil }
+        if let activation = activations[childId],
+           activation.parentSessionId == senderSessionId {
+            return childId
+        }
+        if let meta = pendingRecovery[childId],
+           meta.parentSessionId == senderSessionId {
+            return childId
+        }
+        return nil
     }
 
     /// 驻留子向直接父回传（dsh sendToParent :337-360 等价；QA-2 P1-2：经
@@ -572,8 +619,17 @@ actor SubagentRuntime {
             // 已完成/未知目标 = accepted no-op。
             return true
         }
-        // 祖先授权：M7.2 校验直接父（transitive lineage 校验登记 M7.3）。
-        guard activation.parentSessionId == callerSessionId else {
+        // 祖先授权：dsh control（continuation-activation.ts:255-289）语义——
+        // ancestor authority 要求 target 的活祖链包含 caller（:279
+        // `activation.ancestry.has(authority.agent)`，ancestry 由活父激活
+        // 逐级构成，transitive）；caller == target 自打断显式拒绝（:270-274）。
+        // WanWo 等价：沿 activations 的 parentSessionId 链逐级上溯，链断
+        // （某级父非驻留 = 根会话/未挂中间代）仍未命中 → UNAUTHORIZED。
+        guard callerSessionId != childId else {
+            throw SubagentError(message: "interrupt requires ancestor authority",
+                                code: "UNAUTHORIZED")
+        }
+        guard isLiveAncestor(of: childId, callerSessionId: callerSessionId) else {
             throw SubagentError(message: "interrupt requires ancestor authority",
                                 code: "UNAUTHORIZED")
         }
@@ -582,18 +638,41 @@ actor SubagentRuntime {
         return true
     }
 
+    /// 活祖链判定（M7-Fix E1b）：child 的驻留父链上是否出现 caller——
+    /// dsh activation.ancestry（仅由活父激活逐级构成）的 has() 等价：
+    /// 沿 activations[parentSessionId] 上溯，直接父命中或任一驻留祖先
+    /// 命中即 true；链断（父非驻留）即 false。
+    private func isLiveAncestor(of childId: String, callerSessionId: String) -> Bool {
+        var current = activations[childId]?.parentSessionId
+        while let parentId = current {
+            if parentId == callerSessionId { return true }
+            current = activations[parentId]?.parentSessionId
+        }
+        return false
+    }
+
     // MARK: listing（tool-subagent-control list-agents 语义）
 
-    /// 列出驻留 continuable 子（dsh list-agents：仅列 continuable；scope
+    /// 列出 continuable 子（dsh list-agents：仅列 continuable；scope
     /// children|descendants）。M7.3：status 三档（list-agents.ts:59-63）——
     /// running=子 loop 处于 running/maintenance（phase 查询缝在场）、
     /// idle=驻留但回合间、ready=仅存于持久层（恢复登记，未重挂）。
+    /// M7-Fix E1b（dsh list-agents.ts:30-45 对拍）：条目带持久直接父 id
+    /// （parent）；不可读子 → diagnostic 条目形态（:72-74/:102"reported as
+    /// diagnostics instead of being silently dropped"），绝不静默跳过。
     struct AgentListing: Sendable, Equatable {
         var subagentId: String
         var label: String
         var provider: String
         var depth: Int
         var status: String
+        /// 持久直接父 id（dsh :36 `parent?: SessionId`——descendants 渲染
+        /// parent= 条目的真实父，非调用方）。
+        var parentSessionId: String
+        /// 诊断形态（dsh :40-45）：nil = 正常 child 条目；非 nil = diagnostic
+        /// reason（'corrupt' | 'unsupported' | 'unavailable'——万我用前两类：
+        /// 元数据 fold 抛错=日志损坏；元数据缝未装配=暂时不可读）。
+        var diagnosticReason: String?
     }
 
     /// 激活状态判定（M7.3：phase 查询缝——批1 两档登记的升级承载）。
@@ -605,19 +684,93 @@ actor SubagentRuntime {
         }
     }
 
+    /// 列出 continuable 子：持久边表为枚举权威（dsh listChildren/listDescendants
+    /// = continuable projection——边表仅 continuable 落边，spawn 处 :371-383
+    /// 既有裁定）；边表缺席（治理退化为内存态）→ 内存过滤 fallback。
     func listAgents(callerSessionId: String, includeDescendants: Bool) async -> [AgentListing] {
+        guard let edgeStore else {
+            return await listAgentsFromMemory(callerSessionId,
+                                              includeDescendants: includeDescendants)
+        }
+        // 广度逐层（边表稳定排序契约：层内按 child id 升序——local.rs:248-343
+        // 对拍基准）；children scope 只走第一层。
+        var out: [AgentListing] = []
+        var frontier = [callerSessionId]
+        var depth = 1
+        while !frontier.isEmpty {
+            var next: [String] = []
+            for parentId in frontier {
+                let childIds = (try? edgeStore.listThreadSpawnChildren(
+                    parent: parentId, statusFilter: .open)) ?? []
+                for childId in childIds {
+                    next.append(childId)
+                    out.append(await listing(
+                        for: childId, parentId: parentId, depth: depth))
+                }
+            }
+            guard includeDescendants else { break }
+            next.sort()
+            frontier = next
+            depth += 1
+        }
+        return out
+    }
+
+    /// 单条目投影（dsh list-agents.ts:66-85 project 语义）：驻留 → phase
+    /// status；恢复登记/持久可读 → ready；不可读 → diagnostic（绝不静默丢弃）。
+    private func listing(for childId: String, parentId: String,
+                         depth: Int) async -> AgentListing {
+        if let activation = activations[childId] {
+            return AgentListing(subagentId: childId, label: activation.label,
+                                provider: activation.provider, depth: depth,
+                                status: await statusOf(activation),
+                                parentSessionId: parentId, diagnosticReason: nil)
+        }
+        if let meta = pendingRecovery[childId] {
+            return AgentListing(subagentId: childId, label: meta.label,
+                                provider: "recovered", depth: depth, status: "ready",
+                                parentSessionId: parentId, diagnosticReason: nil)
+        }
+        // 驻留/恢复登记双缺席：经元数据缝判读（ready 或 diagnostic）。
+        guard let reader = childMetadataReader else {
+            return AgentListing(subagentId: childId, label: "", provider: "",
+                                depth: depth, status: "",
+                                parentSessionId: parentId,
+                                diagnosticReason: "unavailable")
+        }
+        do {
+            let metadata = try await reader(childId)
+            return AgentListing(subagentId: childId,
+                                label: metadata.descriptor?.label ?? "",
+                                provider: "recovered", depth: depth, status: "ready",
+                                parentSessionId: parentId, diagnosticReason: nil)
+        } catch {
+            return AgentListing(subagentId: childId, label: "", provider: "",
+                                depth: depth, status: "",
+                                parentSessionId: parentId,
+                                diagnosticReason: "corrupt")
+        }
+    }
+
+    /// 内存态 fallback（边表缺席时；既有实现保留 + 新字段补齐）。
+    private func listAgentsFromMemory(_ callerSessionId: String,
+                                      includeDescendants: Bool) async -> [AgentListing] {
         var out: [AgentListing] = []
         for (childId, activation) in activations
         where activation.parentSessionId == callerSessionId {
             out.append(AgentListing(subagentId: childId, label: activation.label,
                                     provider: activation.provider, depth: 1,
-                                    status: await statusOf(activation)))
+                                    status: await statusOf(activation),
+                                    parentSessionId: callerSessionId,
+                                    diagnosticReason: nil))
         }
         // 恢复登记子（仅存持久层）= ready——ListAgentsTool 文案承诺的第三档。
         for (childId, meta) in pendingRecovery
         where meta.parentSessionId == callerSessionId {
             out.append(AgentListing(subagentId: childId, label: meta.label,
-                                    provider: "recovered", depth: 1, status: "ready"))
+                                    provider: "recovered", depth: 1, status: "ready",
+                                    parentSessionId: callerSessionId,
+                                    diagnosticReason: nil))
         }
         if includeDescendants {
             // descendants：广度展开（按 lineage 链逐层收集；驻留与恢复登记
@@ -631,13 +784,17 @@ actor SubagentRuntime {
                     next.append(AgentListing(
                         subagentId: childId, label: activation.label,
                         provider: activation.provider, depth: depth,
-                        status: await statusOf(activation)))
+                        status: await statusOf(activation),
+                        parentSessionId: activation.parentSessionId,
+                        diagnosticReason: nil))
                 }
                 for (childId, meta) in pendingRecovery
                 where frontier.contains(meta.parentSessionId) {
                     next.append(AgentListing(
                         subagentId: childId, label: meta.label,
-                        provider: "recovered", depth: depth, status: "ready"))
+                        provider: "recovered", depth: depth, status: "ready",
+                        parentSessionId: meta.parentSessionId,
+                        diagnosticReason: nil))
                 }
                 out.append(contentsOf: next)
                 frontier = next.map(\.subagentId)

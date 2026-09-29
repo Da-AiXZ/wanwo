@@ -486,21 +486,29 @@ final class M7TeamTests: XCTestCase {
 
     // MARK: - 重启 reconcile（roster.ts reconcileProvisioning :392-434 1:1）
 
+    /// 直接 seed 一行 provisioning 成员（M7-Fix E1b 后 spawn 确认超时即时
+    /// failed 落账——留守行只可能来自进程崩溃窗，即 reconcile 的对象形态）。
+    private func seedProvisioningMember(_ harness: TeamHarness, rootId: String,
+                                        memberId: String, name: String) {
+        harness.journal.append(rootId, payload: .extensionEvent(
+            kind: TeamEvents.memberKind,
+            payload: TeamEvents.memberPayload(teamId: rootId, member: TeamMemberSnapshot(
+                id: memberId, name: name, description: "worker \(name)",
+                provider: "spawn", context: "fresh", phase: .provisioning,
+                error: nil, prompt: nil))))
+    }
+
     func testReconcileResolvesProvisioningMember() async throws {
         let harness = TeamHarness()
         let service = harness.makeService()
         let rootId = "root-1"
         harness.journal.append(rootId, payload: .system(note: "seed"))
 
-        // 初始 prompt 未确认（超时窗口外的进程重启形态）→ provisioning 留守。
-        harness.acceptPrompt = false
-        let view = try await spawnActive(service, rootId: rootId, name: "worker")
-        XCTAssertEqual(view.status, "provisioning")
-        XCTAssertEqual(harness.journal.projection(rootId).members.first?.phase, .provisioning)
-
-        // 持久面补齐：初始 prompt userMessage 事后落账（子日志已含
-        // lineage+descriptor dossier）→ reconcile 判活。
-        harness.journal.append(view.id,
+        // 崩溃窗留守行（直接 seed）+ 持久面补齐：初始 prompt userMessage
+        // 事后落账（子日志已含 lineage+descriptor dossier）→ reconcile 判活。
+        let memberId = "child-stuck"
+        seedProvisioningMember(harness, rootId: rootId, memberId: memberId, name: "worker")
+        harness.journal.append(memberId,
                                payload: .userMessage(text: "initial prompt for worker"))
         await service.recoverAll()
         XCTAssertEqual(harness.journal.projection(rootId).members.first?.phase, .active)
@@ -512,18 +520,39 @@ final class M7TeamTests: XCTestCase {
         let rootId = "root-1"
         harness.journal.append(rootId, payload: .system(note: "seed"))
 
-        // 子日志无 lineage/descriptor dossier → 持久判活失败 → failed 快照。
-        harness.acceptPrompt = false
-        harness.seedDossier = false
-        let view = try await spawnActive(service, rootId: rootId, name: "worker")
-        XCTAssertEqual(view.status, "provisioning")
-
-        harness.journal.append(view.id,
+        // 崩溃窗留守行（直接 seed）；子日志无 lineage/descriptor dossier
+        // → 持久判活失败 → failed 快照。
+        let memberId = "child-bare"
+        seedProvisioningMember(harness, rootId: rootId, memberId: memberId, name: "worker")
+        harness.journal.append(memberId,
                                payload: .userMessage(text: "initial prompt for worker"))
         await service.recoverAll()
         let member = harness.journal.projection(rootId).members.first
         XCTAssertEqual(member?.phase, .failed)
         XCTAssertNotNil(member?.error)
+        let roster = try await service.listMembers(rootId)
+        XCTAssertEqual(roster.last?.status, "failed")
+        XCTAssertEqual(roster.last?.diagnostics.isEmpty, false)
+    }
+
+    // MARK: - M7-Fix E1b：spawn 确认超时即时 failed 快照（roster.ts:289-313）
+
+    func testSpawnPromptTimeoutJournalsFailedImmediately() async throws {
+        let harness = TeamHarness()
+        let service = harness.makeService()
+        let rootId = "root-1"
+        harness.journal.append(rootId, payload: .system(note: "seed"))
+
+        // 确认超时窗（stub 不落初始 prompt）→ 立即 failed，不靠重启 reconcile。
+        harness.acceptPrompt = false
+        let view = try await spawnActive(service, rootId: rootId, name: "worker")
+        XCTAssertEqual(view.status, "failed")
+        let member = harness.journal.projection(rootId).members.first
+        XCTAssertEqual(member?.phase, .failed)
+        XCTAssertNotNil(member?.error)
+        // dsh stopTeammates 等价：失败快照后 drain 活子。
+        XCTAssertEqual(harness.drainCalls, [view.id])
+        // 花名册渲染 failed + 诊断。
         let roster = try await service.listMembers(rootId)
         XCTAssertEqual(roster.last?.status, "failed")
         XCTAssertEqual(roster.last?.diagnostics.isEmpty, false)
@@ -1036,6 +1065,49 @@ final class M7TeamTests: XCTestCase {
             "spawn_teammate", "send_message", "list_agents", "interrupt_agent",
             "team_task_create", "team_task_list", "team_task_get", "team_task_update",
         ])
+    }
+
+    // MARK: - M7-Fix E1b：schema 枚举补齐（tool-agent-team index.ts 对拍逐字）
+
+    func testToolSchemaEnums() {
+        let harness = TeamHarness()
+        let service = harness.makeService()
+
+        // spawn_teammate.context enum ['fresh','fork']（index.ts:180-183）。
+        let contextEnum = TeamSpawnTeammateTool(service: service)
+            .parameters.field("properties")?.field("context")?
+            .field("enum")?.arrayItems?.compactMap(\.stringValue)
+        XCTAssertEqual(contextEnum, ["fresh", "fork"])
+
+        // team_task_list.status enum（index.ts:306-309——无 deleted）。
+        let statusEnum = TeamTaskListTool(service: service)
+            .parameters.field("properties")?.field("status")?
+            .field("enum")?.arrayItems?.compactMap(\.stringValue)
+        XCTAssertEqual(statusEnum, ["pending", "in_progress", "completed"])
+
+        // team_task_update.action enum 八值逐字（index.ts:355-359）。
+        let actionEnum = TeamTaskUpdateTool(service: service)
+            .parameters.field("properties")?.field("action")?
+            .field("enum")?.arrayItems?.compactMap(\.stringValue)
+        XCTAssertEqual(actionEnum, [
+            "claim", "release", "edit", "set_dependencies",
+            "complete", "reopen", "reassign", "delete",
+        ])
+    }
+
+    func testSpawnRejectsUnknownContext() async throws {
+        // M7-Fix E1b：context 静默收敛 fresh → 显式拒绝（dsh schema 校验层
+        // 等价拒绝语义）；拒绝发生在 start 之前——无孤儿活子。
+        let harness = TeamHarness()
+        let service = harness.makeService()
+        let rootId = "root-1"
+        harness.journal.append(rootId, payload: .system(note: "seed"))
+        await expectTeamError(code: TeamError.invalidArgument) {
+            _ = try await service.spawnTeammate(
+                callerSessionId: rootId, name: "worker",
+                description: "worker", prompt: "p", context: "clone")
+        }
+        XCTAssertEqual(harness.childCount, 0, "拒绝必须发生在 start 之前")
     }
 
     func testViewEncodersAndConstants() throws {

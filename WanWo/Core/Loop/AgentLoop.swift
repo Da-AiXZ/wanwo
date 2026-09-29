@@ -136,6 +136,16 @@ actor AgentLoop {
         /// 【M7 件 B · F006】goal 域服务（goal-round-driver 宿主；nil = 不
         /// 启用——既有调用面/测试不受扰）。装配见 AppEnvironment.makeAgentStack。
         var goalService: GoalService? = nil
+        /// 【M7Fix · citation 缝】assistant 消息落盘收尾缝（MemoryCitations
+        /// 生产接线的公开缝——只缝不接线，接线由主理人在 AppEnvironment
+        /// 合并）。入参 = 落盘前正文（text 块按 \n 合并）+ 会话 id + turn/step；
+        /// 返回 = 剥离 citation 标记后的文本；返回与原文不同则用剥离后文本
+        /// 落盘（codex citations.rs 语义：可见文本剥离、citation 条目持久
+        /// 保留——载荷提取/usage 回写由接线侧在闭包内自行消费）。nil 缝 =
+        /// 原样落盘（skillRegistry/hookPoints 同款默认值纪律，既有调用面/
+        /// 测试不受扰）。
+        var onAssistantMessageSealed:
+            (@Sendable (text: String, sessionId: String, turn: Int, step: Int) async -> String)? = nil
     }
 
     // MARK: - 状态
@@ -418,6 +428,12 @@ actor AgentLoop {
                attempt.goalId == goal.id, attempt.revision == goal.revision {
                 goalAttempt = nil
                 _ = try? await service.pause(ref: goal.ref, origin: .host)
+                // M7Fix 呈现：自动 pause 落大白话注记（照 :683「步数上限」
+                // 先例——ignorable .system，投影器渲染；用户实测"对话突然
+                // 暂停无解释"病根）。
+                try? await deps.writer.append(
+                    .system(note: "目标已自动暂停（续轮条件在回合结束时未满足），回复「继续」可恢复"),
+                    ignorable: true)
                 return
             }
         }
@@ -437,6 +453,10 @@ actor AgentLoop {
                     code: "round-limit",
                     message: "Goal reached its configured limit of \(goal.maxGoalRounds) rounds."),
                 origin: .host)
+            // M7Fix 呈现：round-limit block 落大白话注记（同 pause 分支先例）。
+            try? await deps.writer.append(
+                .system(note: "目标已到轮次上限（\(goal.maxGoalRounds) 轮），已自动标记为 blocked"),
+                ignorable: true)
             return
         }
         let round = goal.roundsStarted + 1
@@ -473,12 +493,21 @@ actor AgentLoop {
             goalAttempt = nil
             _ = await service.disarm()
         case .aborted:
+            // M7Fix（dsh 对齐 · goal-round-driver index.ts:374-383）：本 fence
+            // 收窄为只处理 attempt 存在（claimed/admitted）场景——置 cancelled，
+            // 交 goalDrive 的精确围栏收敛。无 attempt 的 aborted（保留失守
+            // reject 收尾：pre-step/post-decision reject 已置 goalAttempt=nil）
+            // 不再 disarm——goal 保持 armed，回合收尾后由既有 idle→goalDrive()
+            // 自动重新预约同一轮（dsh reject 后 restoreOtherClaimed +
+            // requestDrive，goal 不掉臂）。
+            // 登记偏差：dsh index.ts:329-339 的 aborted→disarm 原文覆盖
+            // 「无保留的纯取消」场景；WanWo reject 收尾复用 .aborted 词汇，
+            // 无法在该 fence 区分两源，故按派单一律不 disarm——纯取消时
+            // armed goal 由 goalDrive 的 revision 围栏与 competingQueued
+            // 竞争位承接（误续跑面 = goalDrive 只在无竞争时预约同一轮）。
             if let attempt = goalAttempt,
                attempt.phase == .claimed || attempt.phase == .admitted {
                 goalAttempt?.cancelled = true
-            } else {
-                goalAttempt = nil
-                _ = await service.disarm()
             }
         default:
             break
@@ -1034,8 +1063,15 @@ actor AgentLoop {
                     text = refs.cleaned
                 }
             }
+            // M7Fix（根因修复 · 真机+事件流实证）：source 必须原样带入——
+            // 旧实现缺 source 参数（memberwise 缺省 .user），goal 轮次注入
+            // 消息落盘后 source 退化为 .user → 下游 goal/round admitted
+            // extensionEvent 永不写入（:806 判定）→ roundsStarted 恒 0 →
+            // goalAttempt 卡 .claimed → goalDrive 误 pause + directHuman
+            // authority 污染（:828 恒真）。
             expanded.append(InboxEntry(text: text,
-                                       images: index == 0 ? entry.images : []))
+                                       images: index == 0 ? entry.images : [],
+                                       source: entry.source))
         }
         return expanded
     }
@@ -1154,10 +1190,16 @@ actor AgentLoop {
         // ERR-023：空 blocks（无任何 content/toolCall）的 assistant/message 不落盘。
         let persistable = blocks.persistableBlocks
         if !persistable.isEmpty {
+            // M7Fix：citation 剥离缝应用（MemoryCitations 生产接线缝——只缝
+            // 不接线）。缝返回与原文不同 = 剥离后文本落盘；nil 缝 = 原样
+            // （见 Dependencies.onAssistantMessageSealed 注）。
+            let sealed = await Self.applyAssistantSeal(
+                deps.onAssistantMessageSealed, blocks: persistable,
+                sessionId: deps.sessionId, turn: turn, step: step)
             let message = AssistantMessage(id: UUID().uuidString,
                                            provider: adapter.providerName,
                                            model: adapter.endpoint.model,
-                                           content: persistable)
+                                           content: sealed)
             try await deps.writer.append(.assistantMessage(
                 turn: turn, step: step, message: message, usage: usage, interrupted: false))
         }
@@ -1308,6 +1350,40 @@ actor AgentLoop {
                                        content: persistable)
         try? await writer.append(.assistantMessage(
             turn: turn, step: step, message: message, usage: usage, interrupted: true))
+    }
+
+    // MARK: - assistant 落盘 citation 剥离缝（M7Fix · 只缝不接线）
+
+    /// 应用 onAssistantMessageSealed 缝（runStep 落盘前唯一调用点 + 单测面）。
+    /// 变换规则：text 块按 \n 合并为"落盘前正文"过缝；返回与原文不同 → 以
+    /// 单一 text 块（剥离后文本）原位替换全部 text 块；reasoning/toolCall
+    /// 块原样保留（citation 只作用于可见正文——codex citations.rs 语义）。
+    /// 缝为 nil 或返回原文 → blocks 原样返回（零扰动）。
+    nonisolated static func applyAssistantSeal(
+        _ seal: (@Sendable (text: String, sessionId: String, turn: Int, step: Int) async -> String)?,
+        blocks: [ContentBlock],
+        sessionId: String, turn: Int, step: Int) async -> [ContentBlock] {
+        guard let seal else { return blocks }
+        let joined = blocks.compactMap { block -> String? in
+            if case .text(let text) = block { return text }
+            return nil
+        }.joined(separator: "\n")
+        guard !joined.isEmpty else { return blocks }
+        let stripped = await seal(joined, sessionId, turn, step)
+        guard stripped != joined else { return blocks }
+        var sealed: [ContentBlock] = []
+        var replaced = false
+        for block in blocks {
+            if case .text = block {
+                if !replaced {
+                    sealed.append(.text(stripped))
+                    replaced = true
+                }
+            } else {
+                sealed.append(block)
+            }
+        }
+        return sealed
     }
 
     // MARK: - 请求构造（内容完全来自已落盘事件）

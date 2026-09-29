@@ -369,7 +369,15 @@ actor TeamService {
         }
         let cleanDescription = try TeamValidation.requiredText(
             description, field: "description", maxLength: TeamConstants.taskSubjectMaxLength)
-        // dsh config freshProvider 'spawn' / forkProvider 'fork'（tool-agent-team :25-28 1:1）。
+        // dsh config freshProvider 'spawn' / forkProvider 'fork'（tool-agent-team
+        // :25-28 + :181-182 schema enum ['fresh','fork'] 1:1）。M7-Fix E1b：
+        // schema 枚举在 WanMo 工具面不保证强校验——未知 context 显式拒绝
+        //（原静默收敛 fresh 属语义偷渡，dsh 校验层等价拒绝）。
+        guard context == "fresh" || context == "fork" else {
+            throw TeamError(
+                "context must be \"fresh\" or \"fork\"",
+                code: TeamError.invalidArgument)
+        }
         let provider = context == "fork" ? "fork" : "spawn"
         let rootId = membership.rootId
 
@@ -432,21 +440,38 @@ actor TeamService {
         }
 
         // 3. checkpoint 初始 prompt（checkpointInitialPrompt :340-389 语义——
-        // 万我 prompt 前缀口径轮询（QA-6 P0-1），有界 10s；超时留守 provisioning）。
+        //    万我 prompt 前缀口径轮询（QA-6 P0-1），有界 10s）。
+        //    M7-Fix E1b（dsh roster.ts:289-313 catch 语义）：确认超时 = 创建方
+        //    观测到的故障窗——立即 journal member failed 快照 + drain 活子，
+        //    不再留守 provisioning 等重启 reconcile（dsh checkpointInitialPrompt
+        //    抛错走同一 failed 落账 + stopTeammates 路径）。
         let accepted = await waitForPromptAccepted(
             childId: childId, prompt: prompt, timeoutMs: promptAcceptTimeoutMs)
         var settled = member
         if accepted {
             settled.phase = .active
             try await settleProvisioning(rootId: rootId, terminal: settled)
+        } else {
+            var failed = member
+            failed.phase = .failed
+            failed.error = "initial prompt acceptance timed out"
+            do {
+                try await settleProvisioning(rootId: rootId, terminal: failed)
+            } catch {
+                // 落账失败不掩盖清理——先 drain 再上抛（dsh recordError 面等价）。
+                try? await seams.drainChild(childId, rootId)
+                throw error
+            }
+            try? await seams.drainChild(childId, rootId)
         }
-        // 未 accepted：provisioning 留守——重启 reconcileProvisioning 持久判活。
         let statusMap = await seams.memberStatuses(rootId)
         return TeamMemberView(
             id: settled.id, name: settled.name, role: "teammate",
-            status: settled.phase == .provisioning
-                ? "provisioning"
-                : Self.normalizeStatus(statusMap[settled.id] ?? "inactive"),
+            status: settled.phase == .failed
+                ? "failed"
+                : settled.phase == .provisioning
+                    ? "provisioning"
+                    : Self.normalizeStatus(statusMap[settled.id] ?? "inactive"),
             description: settled.description, provider: settled.provider,
             context: settled.context, model: nil, diagnostics: [])
     }

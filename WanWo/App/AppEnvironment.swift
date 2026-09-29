@@ -475,6 +475,13 @@ final class AppEnvironment: ObservableObject {
         JscoreTraceEvents.registerEventSchemas()
         DiagTraceEvents.registerEventSchemas()
 
+        // M7-Fix E1b（任务8）报批登记：tool-workflow/run-start / agent-start /
+        // agent-end / run-end 扩展事件 schema（E1 通道——dsh tool-workflow
+        // index.ts:72-130 createWorkflowRecorder + known-event-types.ts:67-70
+        // 事件原词；"all four ... log-only" index.ts:86-88；requiredFields 对照
+        // payload-validation.ts:233-250；装配期注册，重名 fatal）。
+        WorkflowRecordEvents.registerEventSchemas()
+
         // 【批3 编译五】noops 占位创建：Seams 真闭包捕获 self，而逃逸闭包
         // 捕获 self 须待全部存储属性完成阶段一（Swift 两阶段初始化）——
         // 真缝在 init 尾 bind（见 workspaceNavigator.attach 前）。
@@ -639,9 +646,20 @@ final class AppEnvironment: ObservableObject {
                     }
                     // journal appendAndFlush 的 append+落盘半边（append 返回即
                     // 持久——SessionWriter.append 落盘语义，flush 等价承载）。
-                    let opened = try await self.sessionStore.openWriter(id: rootId)
-                    _ = try await opened.writer.append(
-                        .extensionEvent(kind: kind, payload: payload))
+                    // M7-Fix E1b P0：先查该会话是否已有活写柄——openWriter 是
+                    // 排他所有权（内部先 closeWriter），若 Lead 回合正在运行，
+                    // 会把其写柄释放并触发 InterruptedTurnClosers 合成 interrupted
+                    // 收尾（真机实证：teams 回合死亡 + 会话被合成"被中断"）。
+                    // 命中活写柄→直接经该 writer append；未命中（Lead 无活跃
+                    // 回合）→才 openWriter fallback。
+                    if let live = await self.sessionStore.liveWriter(id: rootId) {
+                        _ = try await live.append(
+                            .extensionEvent(kind: kind, payload: payload))
+                    } else {
+                        let opened = try await self.sessionStore.openWriter(id: rootId)
+                        _ = try await opened.writer.append(
+                            .extensionEvent(kind: kind, payload: payload))
+                    }
                 },
                 readEvents: { sessionId in
                     guard let url = AppEnvironment.sessionFileURL(sessionId) else {
@@ -1407,6 +1425,20 @@ final class AppEnvironment: ObservableObject {
             // 【工作区模型修正】会话 header cwd——文件工具直读根 + workspacePath
             // 注入的单一事实源（nil = legacy 缺省语义）。
             sessionCwd: sessionCwd,
+            // M7 件G 落点⑧接线（主理人合并 2026-09-29，codex citations.rs 语义）：
+            // assistant 正文落盘前剥离 <oai-mem-citation> 可见标记（回复不再
+            // 直显英文标记块），同时提取 threadIds 回写 usage_count/last_usage
+            // （错误不阻断=try?，codex `let _ =` 同口径；空载荷零扰动）。
+            // 载荷本体不进正文——usage 账本即持久化面（E2 缝需求①）。
+            onAssistantMessageSealed: { [memoryDatabase] text, _, _, _ in
+                if let payload = MemoryCitations.extractCitations(from: text) {
+                    let ids = MemoryCitations.threadIds(in: payload)
+                    if !ids.isEmpty {
+                        try? memoryDatabase.recordMemoryUsage(threadIds: ids)
+                    }
+                }
+                return MemoryCitations.splitCitations(from: text).visible
+            },
             // M7 件 B：goal 服务（goal-round-driver 驱动面 + 工具权威面）。
             goalService: goalService)
         let agentLoop = AgentLoop(deps: deps)
@@ -1453,6 +1485,16 @@ final class AppEnvironment: ObservableObject {
                                       runtime: subagentRuntime),
                                       parentWriter: writer)) {
             let workflowEngine = WorkflowEngine(runtime: subagentRuntime)
+            // M7-Fix E1b（任务8）：recorder 四事件落日志——经既有
+            // addWorkflowListener 缝接 writer.append（dsh createWorkflowRecorder
+            // 父会话 session.append 承载；追加失败 warn + 本 run 停用）。
+            // 原"extensionEvent 冻结期不新增 kind，API 在场待启用"自此启用。
+            // listener 强持有 recorder（生命周期 = 引擎 = 会话栈，与
+            // per-stack 归档面闭合裁定一致）。
+            let workflowRecorder = WorkflowEventRecorder(writer: writer)
+            _ = workflowEngine.addWorkflowListener { name, detail in
+                workflowRecorder.handle(name, detail)
+            }
             WorkflowTools.registerAll(into: registry, assembler: assembler,
                                       engine: workflowEngine, parentWriter: writer)
             RalphTools.registerAll(into: registry, assembler: assembler,

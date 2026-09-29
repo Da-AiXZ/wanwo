@@ -101,8 +101,14 @@ enum WOWorkspaceTreeDeriver {
         return true
     }
 
-    /// blank 判定：旧数据语义 = title 为 nil（占位会话）
-    static func isBlank(_ s: SessionSummary) -> Bool { s.title == nil }
+    /// blank 判定（dsh 事件语义修正 2026-09-29，主理人合并 E1b 上报）：
+    /// 无标题 **且** 零事件才是占位会话——dsh blank=「未发过消息」的事件语义，
+    /// 非标题语义。此前 title==nil 单条件误伤"回合被中断未生成标题"的会话
+    /// （真机实证：teams 报错会话文件有事件却在侧栏消失）；eventCount>0 即有
+    /// 实质内容，恒可见。
+    static func isBlank(_ s: SessionSummary) -> Bool {
+        s.title == nil && s.eventCount == 0
+    }
 
     /// 分组树：workspace 序分组（成员按 sessionIds 账本序）。
     /// 「未分组」桶移除（2026-09-21 用户令）：dsh 语义里游离会话不应存在——

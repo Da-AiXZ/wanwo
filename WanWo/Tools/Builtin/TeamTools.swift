@@ -166,6 +166,7 @@ struct TeamSpawnTeammateTool: AgentTool {
             ]),
             "context": .object([
                 "type": .string("string"),
+                "enum": .array([.string("fresh"), .string("fork")]),
                 "description": .string("fresh starts without Lead history; fork inherits "
                     + "completed Lead turns. Defaults to fresh."),
             ]),
@@ -393,6 +394,8 @@ struct TeamTaskListTool: AgentTool {
         properties: [
             "status": .object([
                 "type": .string("string"),
+                "enum": .array([.string("pending"), .string("in_progress"),
+                                .string("completed")]),
                 "description": .string("Optional exact status filter."),
             ]),
             "owner": .object([
@@ -525,6 +528,11 @@ struct TeamTaskUpdateTool: AgentTool {
             ]),
             "action": .object([
                 "type": .string("string"),
+                "enum": .array([
+                    .string("claim"), .string("release"), .string("edit"),
+                    .string("set_dependencies"), .string("complete"),
+                    .string("reopen"), .string("reassign"), .string("delete"),
+                ]),
                 "description": .string("Task transition to apply."),
             ]),
             "subject": .object([
