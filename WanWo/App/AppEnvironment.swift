@@ -642,18 +642,11 @@ final class AppEnvironment: ObservableObject {
                 // （SessionSummary 无 cwd 列——轻量探针只读 header）。nil = 无
                 // 项目上下文 → 管线走 legacy 全局桶（缺省口径不变）。
                 activeWorkspaceCWD: { [weak self] in
-                    let workspacePath: String? = await MainActor.run { [weak self] in
-                        guard let id = self?.selectedWorkspaceID else { return nil }
-                        return self?.workspaceRegistry.get(id)?.path
-                    }
-                    if let workspacePath { return workspacePath }
                     guard let self else { return nil }
-                    let sid: String? = await MainActor.run {
-                        guard case .session(let id) = self.selection else { return nil }
-                        return id
-                    }
-                    guard let sid,
-                          let url = AppEnvironment.sessionFileURL(sid),
+                    let (workspacePath, sessionId) = await self.activeWorkspaceContext()
+                    if let workspacePath { return workspacePath }
+                    guard let sessionId,
+                          let url = AppEnvironment.sessionFileURL(sessionId),
                           let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
                           let cwd = probe.header.cwd, !cwd.isEmpty else { return nil }
                     return cwd
@@ -1050,6 +1043,17 @@ final class AppEnvironment: ObservableObject {
                                           _ probe: AgentTool) -> Bool {
         guard let filter else { return true }
         return filter(probe)
+    }
+
+    /// M8 批3（batch3-review 方案 A 承载）：当前选择工作区 path / 当前会话 id
+    /// 的 @MainActor 读取面（@Published 访问纪律同 activeRunSessionIDs 缝——
+    /// 多语句读取提升为隔离方法，规避 MainActor.run 表达式位推断陷阱）。
+    @MainActor
+    private func activeWorkspaceContext() -> (workspacePath: String?, sessionId: String?) {
+        let workspacePath = selectedWorkspaceID.flatMap { workspaceRegistry.get($0)?.path }
+        let sessionId: String?
+        if case .session(let id) = selection { sessionId = id } else { sessionId = nil }
+        return (workspacePath, sessionId)
     }
 
     func makeAgentStack(sessionId: String,
