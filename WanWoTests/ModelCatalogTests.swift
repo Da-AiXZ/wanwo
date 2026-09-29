@@ -133,6 +133,7 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(endpoint.catalogEntries().map(\.id), ["deepseek-v4-flash"])
     }
 
+    @MainActor
     func testResolveSelectionAppliesModelOverride() {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("m8catalog-\(UUID().uuidString)", isDirectory: true)

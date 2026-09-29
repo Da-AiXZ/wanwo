@@ -248,7 +248,7 @@ final class MemoryProjectTests: XCTestCase {
                                             selectedThreadIds: ["p1-t"],
                                             projectKey: p1)
         let rows = try db.allStage1Outputs(projectKey: p1)
-            + try db.allStage1Outputs(projectKey: p2)
+            + (try db.allStage1Outputs(projectKey: p2))
         let selectedByID = Dictionary(uniqueKeysWithValues: rows.map {
             ($0.threadId, $0.selectedForPhase2) })
         XCTAssertEqual(selectedByID["p1-t"], true)
