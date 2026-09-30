@@ -105,8 +105,10 @@ final class SummaryBasicFallbackTests: XCTestCase {
             // （工具名 = ShellTool wire 名 "bash"——万我无 "shell" 工具）。
             "[seq=2] [assistant] [tool calls: bash(c2) {\"command\":\"ls -la\"]",
         ])
+        // 期望=回落 arguments 原文（残骸形态：值收尾引号在、对象 } 被段收尾
+        // 吃掉——期望必须忠实于输入残骸，不得脑补裁剪）。
         XCTAssertEqual(dropped.commands, ["{\"cmd\":\"git status\"}",
-                                          "{\"command\":\"ls -la"])
+                                          "{\"command\":\"ls -la\""])
     }
 
     func testCommandTextExtraction() {

@@ -203,9 +203,15 @@ final class M7FixGoalLoopTests: XCTestCase {
         XCTAssertEqual(view?.phase, .blocked)
         XCTAssertEqual(view?.blockedReason?.code, "round-limit")
         XCTAssertEqual(view?.roundsStarted, 2)
-        XCTAssertTrue(systemNotes(writer).contains(
-            "目标已到轮次上限（2 轮），已自动标记为 blocked"),
-            "round-limit block 必须落用户可见注记")
+        // 注记 append 排在 service.block 之后（同函数两 await）——waitView
+        // 醒来时注记可能尚在落盘，立即读 events 是竞态断言（CI 实证假红）。
+        // 改轮询收敛（与 gate/attempt 用例同口径）。
+        let noteSeen = await waitUntil {
+            systemNotes(writer).contains(
+                "目标已到轮次上限（2 轮），已自动标记为 blocked")
+        }
+        XCTAssertTrue(noteSeen,
+                      "round-limit block 必须落用户可见注记")
         await loop.whenIdle()
     }
 
