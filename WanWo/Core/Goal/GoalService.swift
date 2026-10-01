@@ -42,7 +42,15 @@ private final class OnChangeBox: @unchecked Sendable {
 actor GoalService {
     /// 进程本地 activation 状态（index.ts:183-190 GoalRuntimeState 1:1）。
     private var activation: GoalActivation = .disarmed
-    private var pendingActivation: (expectedSeq: Int, activation: GoalActivation)?
+    /// commit 在途激活值（index.ts:587/:593 pendingActivation{offset} 形状 +
+    /// token 生命周期守卫——actor 重入多 commit 交错时 defer 只清自己条目；
+    /// 消费方 = effectiveActivation 读侧补齐，CI修40）。
+    private struct PendingActivation {
+        let expectedSeq: Int
+        let activation: GoalActivation
+        let token: UUID
+    }
+    private var pendingActivation: PendingActivation?
 
     /// 工具面 authority 供给（authority.ts open-turn 事件判定的进程内等价）。
     struct TurnProvenance: Equatable, Sendable {
@@ -115,7 +123,23 @@ actor GoalService {
                         roundsStarted: projection.roundsStarted,
                         createdAt: projection.createdAt,
                         updatedAt: projection.updatedAt,
-                        activation: activation)
+                        activation: effectiveActivation())
+    }
+
+    /// 读侧在途补齐（CI修40：commit 挂起窗的原子可观察性）。
+    ///
+    /// dsh commit（index.ts:585-602）读取→append→activation 赋值是同步代码
+    /// 一气呵成，读者永远看不到「持久事件已落、activation 未动」的中间态。
+    /// 万我 async 化后该中间态跨 writer gate 释放→GoalService actor 恢复的
+    /// 调度跳：phase 由 writer.events 折叠即时可见（事件落点在 gate 内），
+    /// activation 却要等本 actor 恢复才赋值——并发轮询读者（测试 waitView、
+    /// UI GoalBar 刷新）可观测 paused+armed 瞬时不一致（run 36894750180
+    /// :399 实证）。补齐判定：pending.expectedSeq 之后 eventCount 前进 =
+    /// 本 commit 的持久事件已可见，读侧返回在途激活值；未前进 = 事件未落，
+    /// phase 仍旧值，维持旧 activation——两侧恒一致。
+    private func effectiveActivation() -> GoalActivation {
+        guard let pending = pendingActivation else { return activation }
+        return writer.eventCount > pending.expectedSeq ? pending.activation : activation
     }
 
     /// Read the current goal（index.ts:275-278 get 1:1）；无 goal 返回 nil。
@@ -427,11 +451,16 @@ actor GoalService {
                         activation newActivation: GoalActivation,
                         origin: GoalMutationOrigin) async throws {
         let ref = GoalCodec.ref(of: change)
-        // pendingActivation = dsh runtime 词汇承载（进程内簿记；WanWo 栅栏
-        // 判定由 appendFenced 的 fenced 返回值完成，本字段不再消费——保留
-        // 形状对拍 dsh index.ts:587/:593，登记）。
-        pendingActivation = (writer.eventCount, newActivation)
-        defer { pendingActivation = nil }
+        // pendingActivation = dsh runtime 词汇承载（进程内簿记；expectedSeq
+        // 供 effectiveActivation 读侧在途补齐——CI修40。token 守卫：actor
+        // 重入多 commit 交错时 defer 只清自己条目，不误删后来者）。
+        let pendingToken = UUID()
+        pendingActivation = PendingActivation(
+            expectedSeq: writer.eventCount, activation: newActivation,
+            token: pendingToken)
+        defer {
+            if pendingActivation?.token == pendingToken { pendingActivation = nil }
+        }
         let (event, fenced) = try await writer.appendFenced(.extensionEvent(
             kind: GoalEvents.changeKind, payload: GoalCodec.encode(change)))
         _ = event
