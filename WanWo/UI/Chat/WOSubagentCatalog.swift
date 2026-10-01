@@ -155,7 +155,7 @@ enum WOSubagentCatalog {
     /// 对残行 JSON 解码失败即跳过（既有兜底）。
     static func headLines(url: URL, limit: Int) -> [String] {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
-        defer { handle.close() }
+        defer { try? handle.close() }
         let data = handle.readData(ofLength: limit)
         var text = String(decoding: data, as: UTF8.self)
         if data.count >= limit, let lastNewline = text.lastIndex(of: "\n") {

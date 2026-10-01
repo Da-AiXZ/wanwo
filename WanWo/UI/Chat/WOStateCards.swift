@@ -199,7 +199,7 @@ struct WOTodoChecklistCard: View {
             .frame(maxWidth: .infinity, minHeight: 24, alignment: .center)
             // 命中区外扩：竖向 24+6+6+4+4=44pt、横向覆盖卡 padding（批3 T1）。
             .contentShape(Rectangle().inset(by: EdgeInsets(
-                top: -4, left: -8, bottom: -4, right: -8)))
+                top: -4, leading: -8, bottom: -4, trailing: -8)))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(open ? "收起任务清单" : "展开任务清单")

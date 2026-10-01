@@ -203,17 +203,16 @@ struct WOGoalBar: View {
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(WOAlias.bgLayer1)
+                        // focus 边框 business——SwiftUI .plain 样式
+                        // 无 focus 态边框钩子，恒以 1px business
+                        // 描边对齐（placeholder 语义由占位文本承
+                        // 担；平台适配登记）。
+                        // 【CI修39】原嵌套 strokeBorder 把内层 `some View`
+                        // 当 ShapeStyle 实参传外层=类型错；单层描边即语义。
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(
-                                    // focus 边框 business——SwiftUI .plain 样式
-                                    // 无 focus 态边框钩子，恒以 1px business
-                                    // 描边对齐（placeholder 语义由占位文本承
-                                    // 担；平台适配登记）。
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .strokeBorder(WOAlias.stateBusinessPrimary,
-                                                      lineWidth: 1)
-                                )
+                                .strokeBorder(WOAlias.stateBusinessPrimary,
+                                              lineWidth: 1)
                         )
                 )
                 .accessibilityLabel("目标内容")

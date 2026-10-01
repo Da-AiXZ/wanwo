@@ -774,8 +774,11 @@ final class ChatViewModel: ObservableObject {
                             events: self.writer?.events ?? []) ?? []
                         // 【批3 A2】goal 快照同位刷新（goal/change 落盘先于
                         // finished 发射——与 todoItems 同一刷新时钟）。
-                        self.goalView = (try? GoalFold.foldGoal(
-                            events: self.writer?.events ?? []))?.goal
+                        // 【CI修39】foldGoal 无外部标签（`_ events:`），原
+                        // `events:` 标签无匹配重载=整链歧义；且 FoldedGoal.goal
+                        // 是 GoalSnapshot?，直接 `?.goal` 得双可选且类型不符
+                        // （GoalView≠GoalSnapshot）——统一走 foldGoalView 重建。
+                        self.goalView = Self.foldGoalView(self.writer?.events ?? [])
                     } else {
                         // 卡不在场兜底（理论不发生：started 已重投影；防御
                         // 回调乱序/漏发——直接按事件流重建）。
@@ -934,7 +937,7 @@ final class ChatViewModel: ObservableObject {
         // 【批3 A2】goal 快照同位重 fold（goal/* extensionEvent log-only，
         // 除 goalRound 专卡外不进 Bubble 流；dsh 'goal' projection
         // whole-value 语义——快照整体替换）。
-        goalView = (try? GoalFold.foldGoal(events: writer.events))?.goal
+        goalView = Self.foldGoalView(writer.events)
         streamingText = ""
         streamingReasoning = ""
         // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
@@ -1029,7 +1032,23 @@ final class ChatViewModel: ObservableObject {
     /// 失效回读（事件流 = 权威日志；fold 幂等便宜——todoItems 同款纪律）。
     private func refreshGoalSnapshot() {
         guard let writer else { return }
-        goalView = (try? GoalFold.foldGoal(events: writer.events))?.goal
+        goalView = Self.foldGoalView(writer.events)
+    }
+
+    /// 事件流 → GoalView 重建（GoalService.view(:109-119) 同构映射；【CI修39】
+    /// activation 是进程本地面、事件流无载——恒 .disarmed 初值，权威激活态随
+    /// GoalService 动作回调刷新；WOGoalBar 不消费 activation，UI 零影响）。
+    private static func foldGoalView(_ events: [SessionEvent]) -> GoalView? {
+        guard let folded = try? GoalFold.foldGoal(events), let snap = folded.goal else {
+            return nil
+        }
+        return GoalView(id: snap.id, revision: snap.revision, objective: snap.objective,
+                        phase: snap.phase, blockedReason: snap.blockedReason,
+                        maxGoalRounds: snap.maxGoalRounds,
+                        roundsStarted: folded.roundsStarted,
+                        createdAt: folded.createdAt ?? 0,
+                        updatedAt: folded.updatedAt ?? 0,
+                        activation: .disarmed)
     }
 
     /// 错误文案（dsh GoalBar.tsx:61 `message (code)` 形态；错误码透出，
