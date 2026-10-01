@@ -450,8 +450,12 @@ final class RunCodeToolTests: XCTestCase {
         let settles = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.dispatchKind)
         XCTAssertEqual(starts.map { $0.subCallId }, ["call-1:ptc:1"])
         XCTAssertEqual(settles.map { $0.subCallId }, ["call-1:ptc:1"])
+        // 【CI修37 防回归】先验条数再下标——drain 泵干收敛是 execute 返回的
+        // 前置承诺；若回归，此处失败（可定位）而非 settles[0] 越界（进程崩溃
+        // 无栈，CI 36812442298 实证）。
+        let settle = try XCTUnwrap(settles.first, "settle 事件必须在 execute 返回前落盘")
         // 放闸后在飞 body 正常完成（取消检查点在闸前）→ isError=false。
-        XCTAssertEqual(settles[0].fields["isError"], .bool(false))
+        XCTAssertEqual(settle.fields["isError"], .bool(false))
         // 事件流零 tool/call、tool/result（子派发不进模型历史）。
         for event in stack.writer.events {
             guard case .extensionEvent = event.payload else {

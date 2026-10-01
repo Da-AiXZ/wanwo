@@ -147,18 +147,31 @@ final class CredentialStoreTests: XCTestCase {
             .appendingPathComponent("m8unset-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
+        // 【CI修37】凭据文件兜底腿注入临时目录——本测试曾是全测试面唯一
+        // 向真实容器 Application Support/credentials 写/删 .key 的路径
+        // （credentialFallbackDir 缺省派生不随 fileURL 注入），跨测试 260
+        // 读错误实证污染源头（CI 36812442298 / 36815196974）。
+        let credentialsDir = dir.appendingPathComponent("credentials")
         let store = EndpointStore(fileURL: dir.appendingPathComponent("endpoints.json"),
-                                  credentialStore: CredentialStore(backend: fake))
+                                  credentialStore: CredentialStore(backend: fake),
+                                  credentialDirectory: credentialsDir)
         let endpoint = store.endpoints[0]
         let ref = CredentialStore.routeApiKeyRef(endpoint.id.uuidString)
+        let keyFile = credentialsDir
+            .appendingPathComponent("endpoint-\(endpoint.id.uuidString).key")
 
         try store.setApiKey("sk-test", for: endpoint)
         XCTAssertTrue(store.credentialConfigured(for: endpoint))
         XCTAssertEqual(fake.readValue(ref), "sk-test")
+        // 文件兜底腿落点 = 注入目录（真实容器零写）。
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keyFile.path),
+                      "文件兜底 .key 必须落在注入目录内")
 
         store.unsetCredential(for: endpoint)
         XCTAssertNil(fake.readValue(ref))
         XCTAssertFalse(store.credentialConfigured(for: endpoint))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyFile.path),
+                       "三清必须同时删除文件兜底腿")
         // 二次调用幂等（dsh removeCredential unset 幂等语义）。
         store.unsetCredential(for: endpoint)
         XCTAssertFalse(store.credentialConfigured(for: endpoint))

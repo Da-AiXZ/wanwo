@@ -113,10 +113,18 @@ final class EndpointStore: ObservableObject {
     private let fileURL: URL
     private static let logger = AppLogger(category: "endpoints")
     private static let activeIDKey = "wanwo.activeEndpointID"
+    /// 凭据文件兜底目录注入缝（CI修37；nil = 生产缺省派生不变——
+    /// Application Support/credentials，存量文件兜底 key 位置不动）。
+    /// 测试注入临时目录：单测不再向真实容器写/删 .key（testUnsetCredential-
+    /// ClearsRouteRefAccount 曾是全测试面唯一触碰真实容器凭据文件的路径，
+    /// CI 36812442298/36815196974 跨测试 Cocoa 260 读错误实证污染源头）。
+    private let credentialDirectory: URL?
 
-    init(fileURL: URL, credentialStore: CredentialStore = CredentialStore()) {
+    init(fileURL: URL, credentialStore: CredentialStore = CredentialStore(),
+         credentialDirectory: URL? = nil) {
         self.fileURL = fileURL
         self.credentials = credentialStore
+        self.credentialDirectory = credentialDirectory
         if let data = try? Data(contentsOf: fileURL),
            let loaded = try? JSONDecoder().decode([EndpointConfig].self, from: data),
            !loaded.isEmpty {
@@ -234,6 +242,7 @@ final class EndpointStore: ObservableObject {
     // （routeApiKeyRef(endpoint.id)，dsh store.ts:113-115 deriveKeyRef 语义）；
     // 旧 uuid 账目（KeychainStore 直存时代）读兜底保留——存量用户 key 不失。
     private var credentialFallbackDir: URL {
+        if let credentialDirectory { return credentialDirectory }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return support.appendingPathComponent("credentials", isDirectory: true)

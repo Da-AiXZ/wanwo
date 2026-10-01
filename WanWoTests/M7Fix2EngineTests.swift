@@ -373,8 +373,13 @@ final class M7Fix2EngineTests: XCTestCase {
         // complete 后无 current 可 pause——这里验证 blocked 链：新建 → block
         // → resume，确认 armed 恢复（同一 commit 通道）。
         // （complete 墓碑不可复用，直接开第二个目标前须 clear。）
-        let tombstone = try await service.clear(ref: created.ref)
-        XCTAssertEqual(tombstone.revision, created.revision + 1)
+        // 【CI修37 · 确定性修复（run 36810811300 :376 goalStaleRevision 实证）】
+        // clear 须持当前 revision 的 ref：complete 已把 current 推进到
+        // revision+1，沿用 created.ref（revision 1）必被 expectCurrent 拒
+        // （stale goal ref revision 1; current is revision 2）——改持
+        // completed.ref（complete 返回视图的 ref，即当前 revision）。
+        let tombstone = try await service.clear(ref: completed.ref)
+        XCTAssertEqual(tombstone.revision, completed.revision + 1)
         let second = try await service.create(objective: "第二目标", maxGoalRounds: 3)
         XCTAssertEqual(second.activation, .armed)
         let blocked = try await service.block(

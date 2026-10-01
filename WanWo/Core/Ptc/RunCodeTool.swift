@@ -491,13 +491,22 @@ actor PtcDispatchLane {
 
     /// 就地泵干：反复 stepOnce 至无可推进。actor 串行化保证与服务循环
     /// 互斥，removeFirst 先于 commit 的同步段防止双 commit。
-    /// 在飞 commit（已 removeFirst、appendSettle 挂起中）泵干不可见——
-    /// CI 实证：单子派发测试读事件 count=1，settle 稍后才落盘（迟到），
-    /// testAbandoned settles[0] 越界崩溃同根因——yield 等其在飞落盘。
+    /// 在飞 commit（已 removeFirst、appendSettle 挂起中）与在飞 body
+    /// （已启动、settled 尚未翻转）都在泵干等待面内。
+    /// 【CI修37 · testAbandoned settles[0] 越界崩溃根因（CI 36812442298
+    /// ContiguousArrayBuffer.swift:691 实证）】旧判定
+    /// `!progressed && commitsInFlight == 0` 漏掉后者：中止路径下
+    /// runtime.run 提前返回（弃单 binding 拒绝 → 程序 error 落定），此刻
+    /// 在飞 body 仍持闸未落定，旧 drain 立即返回 → execute 返回时 settle
+    /// 事件未落盘（types.ts:52-54「settle 恒在 run_code 开放回合内落盘」
+    /// 不变量被打破，消费方读到事件流缺 settle）。泵干必须等在飞 body
+    /// 落定 → commit → settle 落盘全部收敛，与 runProgram 侧注释承诺一致
+    /// （dsh ptc.ts:448-451 "drains the ordered commit lane" 的 WanWo 全集）。
     func drain() async {
         while true {
             let progressed = await stepOnce()
-            if !progressed && commitsInFlight == 0 { return }
+            let hasInFlightBody = commitQueue.contains { !$0.settled }
+            if !progressed && commitsInFlight == 0 && !hasInFlightBody { return }
             if !progressed { await Task.yield() }
         }
     }
