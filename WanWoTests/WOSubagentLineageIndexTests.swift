@@ -68,13 +68,22 @@ final class WOSubagentLineageIndexTests: XCTestCase {
     }
 
     /// 环（a→b→a）：seen 集断环，不死循环、计数有界。
+    /// 【dsh 环语义裁决（subagent-lineage.ts :24-45 逐行推演，禁拍脑袋）】：
+    /// 环上节点会计入自己祖先桶——后代 a 先给父 b +1、上溯到 b 再给 a +1；
+    /// 后代 b 对称地给 a、b 各 +1 → 真实输出 {a:2, b:2}（环上每个节点被
+    /// 自己与对方各计一次；各后代独立 seen 集，第二次命中自己即断环）。
+    /// 初版期望 {a:1, b:1} 系测试侧误判，实现与 dsh 1:1 不动（报告
+    /// §复审修·P1-1 后新增节有完整推演）。
     func testCycleGuardTerminates() {
         let map = WOSubagentLineageIndex.index([
             entry("a", parent: "b"),
             entry("b", parent: "a"),
         ])
-        XCTAssertEqual(map["b"]?.count, 1)
-        XCTAssertEqual(map["a"]?.count, 1)
+        XCTAssertEqual(map["a"]?.count, 2, "dsh 环语义：a 桶 = a、b 两后代各上溯计入")
+        XCTAssertEqual(map["b"]?.count, 2, "dsh 环语义：b 桶 = a、b 两后代各上溯计入")
+        XCTAssertEqual(map["a"]?.runningCount, 0)
+        XCTAssertEqual(map["b"]?.runningCount, 0)
+        XCTAssertEqual(map.count, 2, "断环有界：只为环上两父建桶，不死循环")
     }
 
     /// 空输入 = 空索引。
