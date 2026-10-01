@@ -147,7 +147,7 @@ final class M7Fix2EngineTests: XCTestCase {
                             callbacks: callbacks)
 
         let ref = makeRef("a1")
-        loop.submit("", images: [ref])
+        await loop.submit("", images: [ref])
         // 回合收敛（adapter 恒抛 → error 收尾）后再断言落盘面。
         let settled = await waitUntil { !self.turnEnds(writer).isEmpty }
         XCTAssertTrue(settled, "回合必须收敛（adapter 抛错收尾）")
@@ -187,7 +187,7 @@ final class M7Fix2EngineTests: XCTestCase {
         let loop = makeLoop(sessionId: "m7fix2-empty", writer: writer,
                             callbacks: callbacks)
 
-        loop.submit("")
+        await loop.submit("")
         let settled = await waitUntil { !self.turnEnds(writer).isEmpty }
         XCTAssertTrue(settled, "回合必须收敛")
 
@@ -213,7 +213,7 @@ final class M7Fix2EngineTests: XCTestCase {
                             callbacks: callbacks)
 
         let ref = makeRef("a1b")
-        loop.submit("看这张图", images: [ref])
+        await loop.submit("看这张图", images: [ref])
         let settled = await waitUntil { !self.turnEnds(writer).isEmpty }
         XCTAssertTrue(settled)
 
@@ -359,13 +359,15 @@ final class M7Fix2EngineTests: XCTestCase {
                                                maxGoalRounds: 3)
         XCTAssertEqual(created.activation, .armed)
         // get() 复读 = 进程内 armed 态稳定承载（dsh view activation 语义）。
-        XCTAssertEqual(try await service.get()?.activation, .armed)
+        let armedView = try await service.get()
+        XCTAssertEqual(armedView?.activation, .armed)
 
         let completed = try await service.complete(ref: created.ref)
         XCTAssertEqual(completed.activation, .disarmed)
         XCTAssertEqual(completed.phase, .complete)
-        XCTAssertEqual(try await service.get()?.activation, .disarmed)
-        XCTAssertEqual(try await service.get()?.phase, .complete)
+        let disarmedView = try await service.get()
+        XCTAssertEqual(disarmedView?.activation, .disarmed)
+        XCTAssertEqual(disarmedView?.phase, .complete)
 
         // pause/resume 同链抽验：resume（complete 不可恢复，走 blocked→resume）。
         // complete 后无 current 可 pause——这里验证 blocked 链：新建 → block
