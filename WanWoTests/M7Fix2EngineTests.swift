@@ -387,7 +387,10 @@ final class M7Fix2EngineTests: XCTestCase {
             reason: GoalBlockReason(code: "test-block", message: "单测阻断"),
             origin: .host)
         XCTAssertEqual(blocked.activation, .disarmed)
-        let resumed = try await service.resume(ref: second.ref)
+        // 【CI修38】resume 同族修正：block 已推进 revision，须持 blocked.ref
+        //（当前 revision）——沿用 second.ref（rev1）必被 expectCurrent 拒
+        //（run 36819025661 :390 goalStaleRevision 实证，与 clear 同族）。
+        let resumed = try await service.resume(ref: blocked.ref)
         XCTAssertEqual(resumed.activation, .armed,
                        "block→resume 经同一 commit，armed 必须恢复")
     }
