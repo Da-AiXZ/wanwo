@@ -22,6 +22,10 @@ on:
 jobs:
   test:
     runs-on: macos-15
+    # 【CI修41 基建】正常 8-15 分钟；run 36898416182 实证编译阶段可僵死
+    # （静默 44 分钟，device 目标同代码 20 分钟过=代码无罪）——60 分钟
+    # 硬护栏防默认 6 小时挂死。
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
