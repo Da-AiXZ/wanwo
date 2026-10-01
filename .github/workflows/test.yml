@@ -98,10 +98,38 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             test | tee test.log
 
+      - name: Extract xcresult summary + collect crash reports (always)
+        if: always()
+        run: |
+          # 排障基建（2026-10-01）：红跑时 stdout 只有断言文本无栈帧——
+          # ①xcresult 转 JSON（含失败用例完整栈/attachments 索引）
+          XCR=$(find build/Logs/Test -name "*.xcresult" -type d | head -1)
+          if [ -n "$XCR" ]; then
+            xcrun xcresulttool get --legacy --format json --path "$XCR" > xcresult.json || echo "xcresulttool failed"
+            ls -lh xcresult.json || true
+          fi
+          # ②模拟器进程崩溃报告（Fatal error 类走 DiagnosticReports，stdout 永无栈）
+          CRASH_DIR="$HOME/Library/Logs/DiagnosticReports"
+          if [ -d "$CRASH_DIR" ] && [ -n "$(ls -A "$CRASH_DIR" 2>/dev/null)" ]; then
+            tar -czf crash-reports.tar.gz -C "$CRASH_DIR" . 2>/dev/null || true
+            ls -lh crash-reports.tar.gz || true
+          fi
+
       - name: Upload test log (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-log
           path: test.log
+          retention-days: 14
+
+      - name: Upload xcresult json + crash reports (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-debug-artifacts
+          path: |
+            xcresult.json
+            crash-reports.tar.gz
+          if-no-files-found: ignore
           retention-days: 14
