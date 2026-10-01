@@ -197,9 +197,11 @@ struct WOTodoChecklistCard: View {
                     .animation(WOTodoMotion.curve(0.55), value: open)
             }
             .frame(maxWidth: .infinity, minHeight: 24, alignment: .center)
-            // 命中区外扩：竖向 24+6+6+4+4=44pt、横向覆盖卡 padding（批3 T1）。
-            .contentShape(Rectangle().inset(by: EdgeInsets(
-                top: -4, leading: -8, bottom: -4, trailing: -8)))
+            // 命中区外扩（批3 T1 44pt 调和）。【CI修39 二刀】InsettableShape
+            // 的 inset(by:) 只有 CGFloat 重载（无 EdgeInsets 版——首刀误判
+            // 为标签错）；统一 -10：竖向 24+10+10=44pt 精确达标，横向 +10
+            // 仍在卡 12px 水平 padding 内不出界。
+            .contentShape(Rectangle().inset(by: -10))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(open ? "收起任务清单" : "展开任务清单")
