@@ -166,7 +166,11 @@ struct ModelCatalogEditorView: View {
         .padding(.top, 10)
         .modifier(WORemoveFold(removing: removingIndices.contains(index) || resetting))
         // entering 入场（原型 modelRowIn .5s：opacity 0 + 上移 8 + scale .985）。
-        .transition(.opacity.combined(with: .offset(y: -8)).combined(with: .scale(0.985)))
+        // 显式 AnyTransition（iOS13+）——裸 `.opacity` 链在 transition 上下文
+        // 会命中 iOS17 Transition 协议成员（CI 红线）。
+        .transition(AnyTransition.opacity
+            .combined(with: .offset(y: -8))
+            .combined(with: .scale(scale: 0.985)))
     }
 
     /// 行头：ID（等宽）+ 显示名两输入 + 展开/删除钮（原型 :607-654）。

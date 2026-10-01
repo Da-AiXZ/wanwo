@@ -194,8 +194,10 @@ struct ProvidersSectionView: View {
                         if changed { announceSaved() }
                     })
                 // 行卡入场（原型 .provider-item：opacity 0 + 上移 8 + scale .99）。
-                .transition(.opacity.combined(with: .offset(y: -8))
-                    .combined(with: .scale(0.99)))
+                // 显式 AnyTransition（iOS13+）——避免命中 iOS17 Transition 协议。
+                .transition(AnyTransition.opacity
+                    .combined(with: .offset(y: -8))
+                    .combined(with: .scale(scale: 0.99)))
             }
         }
         .animation(WOMP.ease(WOMP.durCardIn), value: store.endpoints)
@@ -208,7 +210,8 @@ struct ProvidersSectionView: View {
         if let credentialNotice, !credentialNotice.isEmpty {
             // 凭据存储描述并入轻提示（Keychain/文件兜底透出——ERR-016 语义）。
             text += " \(credentialNotice)"
-            credentialNotice = nil
+            // self. 限定：if-let 解包的同名局部常量遮蔽了 @State 成员。
+            self.credentialNotice = nil
         }
         toast = text
     }

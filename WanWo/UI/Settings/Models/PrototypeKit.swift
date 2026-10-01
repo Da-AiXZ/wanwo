@@ -375,21 +375,33 @@ struct WODashedAddButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 13.5))
-                .foregroundColor(hovering ? WOMP.text : Color(red: 0x4a, green: 0x4a, blue: 0x55))
+                .foregroundColor(foreground)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
                 .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(hovering ? Color.black.opacity(0.022) : Color.clear))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(hovering ? Color.black.opacity(0.34) : Color.black.opacity(0.18),
-                                  lineWidth: 1,
-                                  dash: [5, 4]))
+                .background(backgroundFill)
+                // strokeBorder 无 dash 参数——虚线改走 .stroke(_:style:)。
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(dashColor,
+                                style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(WOProtoPressStyle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.25), value: hovering)
         .accessibilityLabel(title)
+    }
+
+    // 子表达式拆分（CI 超时教训：大三元链导致 type-check 超时）。
+    private var foreground: Color {
+        hovering ? WOMP.text : Color(red: 0x4a, green: 0x4a, blue: 0x55)
+    }
+    private var backgroundFill: Color {
+        hovering ? Color.black.opacity(0.022) : Color.clear
+    }
+    private var dashColor: Color {
+        hovering ? Color.black.opacity(0.34) : Color.black.opacity(0.18)
     }
 }
 
@@ -439,8 +451,12 @@ struct WOEmptyBox: View {
             .padding(.vertical, 17)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.clear))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.17), lineWidth: 1, dash: [5, 4]))
+            // strokeBorder 无 dash 参数——虚线改走 .stroke(_:style:)。
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.black.opacity(0.17),
+                            style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+            )
     }
 }
 
@@ -562,8 +578,12 @@ struct WOSelect: View {
             button
             if open {
                 popup
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .offset(y: -8)).combined(with: .scale(0.98, anchor: .top)),
+                    // 显式 AnyTransition（iOS13+）——裸 `.asymmetric/.opacity`
+                    // 链在 transition 上下文会命中 iOS17 Transition 协议成员。
+                    .transition(AnyTransition.asymmetric(
+                        insertion: AnyTransition.opacity
+                            .combined(with: .offset(y: -8))
+                            .combined(with: .scale(scale: 0.98, anchor: .top)),
                         removal: .opacity))
             }
         }

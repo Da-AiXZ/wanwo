@@ -363,7 +363,7 @@ struct AddProviderFormView: View {
         // 目录校验（activeTab 同源重查）。
         let models = activeTab == .preset ? presetModels : customModels
         if let failure = ModelCatalogValidation.validate(models) {
-            self.failure = "模型 \(failure.index + 1)：\(Self.validationText(failure.key))"
+            self.failure = "模型 \(failure.index + 1)：\(validationText(failure.key))"
             return
         }
 
