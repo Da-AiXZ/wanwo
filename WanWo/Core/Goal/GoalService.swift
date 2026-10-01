@@ -412,18 +412,33 @@ actor GoalService {
 
     /// Commit one mutation into the goal log and live event stream
     ///（index.ts:585-602 commit 1:1——activation 原子栅栏）。
+    ///
+    /// M7Fix2-A3（真机反馈2 三症状一因）：dsh 的 `session.seq` 读取→append→
+    /// seq 比较是同步代码一气呵成，插队不可能（防御栅栏恒过）；万我 async 化
+    /// 后旧实现在 gate 外读 `writer.eventCount`（:419），自家 diag/trace
+    /// 面包屑（AppEnvironment 引擎面包屑等独立 Task 的 writer.append）从
+    /// async 缝插队 → `event.seq != expectedSeq` → create/resume 的 .armed
+    /// 被误杀回 .disarmed → goalDrive（要求 armed+active）永不续轮。修法 =
+    /// 方案甲：改走 SessionWriter.appendFenced——seq 快照在 gate 临界区内
+    /// 读取，读取→append 之间无插队窗口；防御性比较保留（fenced=false 仍
+    /// 回 disarmed），删栅栏被禁、修的是原子性。pause/resume/complete/
+    /// block/clear 全走本 commit，自动同修。
     private func commit(_ change: GoalChangeMeta,
                         activation newActivation: GoalActivation,
                         origin: GoalMutationOrigin) async throws {
         let ref = GoalCodec.ref(of: change)
-        let expectedSeq = writer.eventCount
-        pendingActivation = (expectedSeq, newActivation)
+        // pendingActivation = dsh runtime 词汇承载（进程内簿记；WanWo 栅栏
+        // 判定由 appendFenced 的 fenced 返回值完成，本字段不再消费——保留
+        // 形状对拍 dsh index.ts:587/:593，登记）。
+        pendingActivation = (writer.eventCount, newActivation)
         defer { pendingActivation = nil }
-        let event = try await writer.append(.extensionEvent(
+        let (event, fenced) = try await writer.appendFenced(.extensionEvent(
             kind: GoalEvents.changeKind, payload: GoalCodec.encode(change)))
-        // 栅栏：append 返回 seq == 预期 offset 才落 activation，否则回 disarmed
-        //（并发写入插队的保守兜底——index.ts:591 同语义）。
-        if event.seq == expectedSeq {
+        _ = event
+        // 栅栏：append 落点 seq == 临界区内预期 seq（appendFenced 内原子
+        // 判定）才落 activation，否则回 disarmed（并发写入插队的保守兜底
+        // ——index.ts:591 同语义）。
+        if fenced {
             activation = newActivation
         } else {
             activation = .disarmed

@@ -220,17 +220,24 @@ struct ChatMessage: Equatable, Sendable {
     /// F042：user 消息携带的图片附件引用（DeriveFold 从 E1 attachment/images
     /// 事件挂接；assistant/tool 恒 nil——wire 端仅 user 消息展开 image_url parts）。
     var images: [ImageAttachmentRef]?
+    /// M7Fix2-A2：assistant 消息携带的思考链（DeriveFold 从 assistant/message
+    /// 事件的 reasoning 块按序拼接——dsh serialize.ts:205-208 join('') 同口径；
+    /// user/tool 恒 nil。wire 端仅 assistant 消息展开 reasoning_content 字段，
+    /// 空串视为缺席——dsh `reasoning.length > 0 ? {...} : {}` 1:1）。
+    var reasoning: String?
 
     init(role: Role,
          content: String,
          toolCalls: [ToolCallSpec]? = nil,
          toolCallID: String? = nil,
-         images: [ImageAttachmentRef]? = nil) {
+         images: [ImageAttachmentRef]? = nil,
+         reasoning: String? = nil) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
         self.images = images
+        self.reasoning = reasoning
     }
 }
 

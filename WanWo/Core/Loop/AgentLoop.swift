@@ -278,6 +278,12 @@ actor AgentLoop {
                     .map { "\($0.id)\u{2}\($0.name)\u{2}\($0.arguments)" }
                     .joined(separator: "\u{3}")
             }
+            // M7Fix2-A2：reasoning_content 已上 wire——取证指纹必须覆盖，
+            // 否则该字段引发的前缀发散对本工具不可见（历史轮 reasoning 来自
+            // 已落盘事件、逐请求稳定 → 正常恒为纯尾部追加）。
+            if let reasoning = message.reasoning, !reasoning.isEmpty {
+                text += "\u{4}" + reasoning
+            }
             items.append(fingerprint("m\(index):\(message.role.rawValue)", text))
         }
 
@@ -837,7 +843,21 @@ actor AgentLoop {
                     }
                 }
 
-                for entry in injected where !entry.text.isEmpty {
+                // M7Fix2-A1（真机 bug1 前半）：纯图消息不得整条被吞——dsh
+                // InputBar 允许 image-only（F042 同源），text 为空但 images
+                // 非空的条目必须照常落盘（userMessage + E1 attachment/images
+                // + onUserMessageAppended），否则 UI 无泡、模型收空轮次。
+                // 空文本落盘安全：SessionInvariant 对 user/message 无约束；
+                // DeriveFold 折叠为 content:"" + images 的 ChatMessage，
+                // OpenAICompatAdapter 序列化为仅 image_url parts（合法 OpenAI
+                // vision 形态）。同函数内其余 text-only 假设核对（登记）：
+                //   · goal admitted 记录（下方 if case .goal）——goal 来源
+                //     条目恒无图，行为不变；
+                //   · authority directHuman（noteTurnProvenance 处）——按
+                //     source 判定、与文本无关，纯图用户消息正确计入；
+                //   · UPS 挂点（upsPrompt）——纯图轮 prompt 为空不挂 hook
+                //     （dsh messages.length===0 → next() 同语义，登记）。
+                for entry in injected where !entry.text.isEmpty || !entry.images.isEmpty {
                     let event = try await deps.writer.append(.userMessage(text: entry.text))
                     // F042：附件引用随归属 userMessage 紧随落 E1 通道
                     // （SessionEvent 专用 case 冻结——E1 纪律；载荷声明归属

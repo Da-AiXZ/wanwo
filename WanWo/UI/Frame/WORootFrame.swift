@@ -281,8 +281,15 @@ struct WORootFrame: View {
                         },
                         onDeleteWorkspace: { id in
                             let t = snapshot.workspaces.first { $0.id == id }
+                            // 【M7-Fix2 批2 B3·反馈24】N=侧栏可见口径
+                            // （WOVisibleSessionCount 同源过滤，隐藏 blank
+                            // 草稿不计）；删除范围仍=账本实数（commitDelete
+                            // 一字不动——清单25 真机验收红线）。
                             deleteTarget = .workspace(id: id, title: t?.title ?? "",
-                                                      sessionCount: t?.sessionIds.count ?? 0)
+                                                      sessionCount: WOVisibleSessionCount.count(
+                                                        inLedger: t?.sessionIds ?? [],
+                                                        sessions: snapshot.sessions,
+                                                        currentSessionID: appState.currentSessionId))
                         }
                     )
                 } else {

@@ -2,38 +2,45 @@
 //  ProvidersSectionView.swift
 //  WanWo
 //
-//  【m8 批1 A2 · 照 dsh 语义翻译】模型/提供方分区主视图。
-//  语义源：dsh ui-settings-models/src/client/ModelsSection.tsx:195-588
-//  ——provider 行卡列表；一次只开一张编辑卡（开卡时关添加/声明卡
-//  :388-401）；行头=displayName+custom 标签+key 状态实心点（configured→绿/
-//  缺→灰 :363-386）；删除=确认弹窗→先 unset 凭据再删端点、两步幂等
-//  （removeProviderProfile :113-130）；保存成功 reload+saved 轻提示
-//  （announceSaved :216-221）；无任何已配置端点时首启引导卡（可 dismiss，
-//  needsSetup :141-145 + closeSetup :237-240）。
+//  【m7-fix2 · E2 · 按用户 HTML 原型 1:1 重做】设置·模型分区主视图
+//  （原型右主区 .main + .provider-list）。
+//  原型锚点（设置模型配置原型（带动画）.html）：
+//    · main-top：右对齐「打开配置文件」ghost 钮 + 关闭钮（:932-940）；
+//      关闭钮由 WOSettingsModal 壳承载（多分区共用，报告登记）。
+//    · 滚动区（pad 6/44/44）：页标题「模型」+副标「填入各提供商的 API 密钥
+//      即可使用其模型。」+ provider 行卡列表 +「＋ 添加模型提供商」虚线钮
+//      + 展开的添加表单（:942-962）。
+//    · provider 行卡（:177-236）：圆角14 边框卡 = 名称 + key 状态点
+//      （绿=已配/灰=未配，#22c55e+光晕 0 0 0 3px rgba(34,197,94,.15)）
+//      + 行尾操作钮（编辑 / 删除 danger）；hover 边框加深+阴影；
+//      **同时只能展开一张编辑卡**（点第二张第一张自动收起——清单9）；
+//      removing 出场态（opacity 0 / 上移 6px / scale .97，:195-199）。
+//    · 行卡入场 opacity 0 + translateY(-8) scale(.99) → none（.45/.55s）。
 //
+//  数据面（只消费不改）：EndpointStore / CredentialStore 语义（经
+//  ProviderCredentialSeam）/ ModelDiscovery（经探测缝）。
 //  平台适配（报告登记）：
-//    · dsh 双添加路（adopt 目录可选 + 手声明）→ 万我无 provider 目录面，
-//      仅保留手声明一路（CustomProviderCardView）；adopt select 不做。
-//    · store 为 ObservableObject：保存后 @Published 驱动重渲染，dsh 的
-//      controller.load() reload 步骤不需要；saved 轻提示在 onClose(true)
-//      时设置，下次任意开卡/删除时清除（savedTarget 生命周期等价）。
-//    · 删除=先 unset 凭据（幂等）再 store.remove（内部亦删 Keychain——
-//      双删幂等无害，语义与 dsh 两步幂等一致）；删除失败显示为提示行。
-//    · custom 标签判定近似：万我端点均为 BYOK 自建，非出厂默认形态
-//      （baseURL/name/model 与出厂三元组逐值比对）即视作手声明显示标签。
-//    · 凭据缺省缝直绑 EndpointStore 现有 Keychain+文件兜底面（A1
-//      CredentialStore 落地后换实现——CredentialInfo 永不含值语义保留）。
+//    · 「打开配置文件」= 分享 providers.json（文件 App 导出/查看）——
+//      App 沙箱目录无「打开所在目录」的 iOS 等价，用既有 ShareLink 面；
+//      路径自 WanWoPaths.persistentBase/config/providers.json 重建（与
+//      AppEnvironment :363 同约定，零 App/ 改动）。
+//    · dsh 首启引导卡（needsSetup setup 卡）退役——原型无此形态，行卡编辑
+//      面板即配置路径；「未配置」语义由灰状态点透出（清单13 重建后一致）。
+//    · 删除 = 二次确认（confirmationDialog）→ 先 unset 凭据（幂等）→
+//      removing 出场折叠 → 450ms 后 store.remove（双删幂等，清单13）。
+//
+//  iOS 16.6 红线自查：无 foregroundStyle、无双参 onChange、无 iOS17+ API。
 //
 
 import SwiftUI
 
-/// 提供方分区主视图（dsh ModelsSection.tsx:195-588 交互骨架 1:1）。
+/// 提供方分区主视图（原型右主区 1:1）。
 struct ProvidersSectionView: View {
 
     // MARK: - 输入
 
     @ObservedObject private var store: EndpointStore
-    /// 探测缝（下传编辑卡与声明卡；nil=探测入口不渲染）。
+    /// 探测缝（下传编辑卡与添加表单；nil=探测入口不渲染）。
     var discoverModels: ((String, String?) async -> Result<[DiscoveredModel], Error>)?
 
     init(store: EndpointStore,
@@ -42,86 +49,89 @@ struct ProvidersSectionView: View {
         self.discoverModels = discoverModels
     }
 
-    // MARK: - 状态（dsh :207-214 一组）
+    // MARK: - 状态
 
-    /// 当前展开的编辑卡（一次只开一张；nil=全部收起）。
+    /// 当前展开的编辑卡（一次只开一张；nil=全部收起——清单9 单展开）。
     @State private var editingID: UUID?
-    /// 手声明卡展开中（与编辑卡互斥——:388-401）。
-    @State private var declaring = false
-    /// 删除确认目标。
+    /// 添加表单展开中（原型与编辑卡互不排斥——:1767-1770 独立 toggle）。
+    @State private var formOpen = false
+    /// 出场折叠中的卡（removing 态；450ms 后真正移除）。
+    @State private var removingID: UUID?
+    /// 删除确认目标（清单13 二次确认）。
     @State private var deleteTarget: EndpointConfig?
     @State private var deleteInFlight = false
-    @State private var deleteFailure: String?
-    /// saved 轻提示（保存成功后设；下次开卡/删除清除——savedTarget 语义）。
-    @State private var savedNotice: String?
-    /// 首启引导卡已关闭集合（dsh dismissedSetup :214）。
-    @State private var dismissedSetup: Set<UUID> = []
+    /// 凭据存储描述（编辑卡保存透出；随 saved 轻提示合并）。
+    @State private var credentialNotice: String?
+    /// 顶部轻提示（saved / 错误；WOToast 自计时）。
+    @State private var toast: String?
 
-    // MARK: - 凭据缝（缺省=EndpointStore 现有面；A1 CredentialStore 换实现）
+    // MARK: - 凭据缝（缺省=EndpointStore 现有面；CredentialInfo 永不含值）
 
     private var credentialSeam: ProviderCredentialSeam {
         let store = self.store
         return ProviderCredentialSeam(
-            // 读视图直呼（dsh describe configured 布尔——值永不进 UI 缝，
-            // A1 协调：apiKey(for:) 读值判空为不必要的缝）。
             describe: { CredentialInfo(configured: store.credentialConfigured(for: $0),
                                        source: nil, writable: true) },
             set: { try store.setApiKey($1, for: $0) },
-            // 凭据清除走 store 三清缝（route ref + 旧 uuid 账目 + 文件兜底，
-            // 幂等——直删 KeychainStore 旧账目清不到 route ref，A1 协调修正）。
             unset: { store.unsetCredential(for: $0) })
+    }
+
+    /// providers.json（打开配置文件面——AppEnvironment :363 同约定重建）。
+    private static var providersFileURL: URL {
+        WanWoPaths.persistentBase
+            .appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent("providers.json")
     }
 
     // MARK: - Body
 
     var body: some View {
-        List {
-            Section {
-                Text("填入各提供方的 API 密钥即可使用其模型。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if let savedNotice {
-                    Text(savedNotice)
-                        .font(.footnote)
-                        .foregroundStyle(.green)
-                }
-            }
-            Section {
-                ForEach(store.endpoints) { endpoint in
-                    row(endpoint)
-                }
-            } footer: {
-                Text("OpenAI 兼容格式接入（base URL + API Key + 模型目录）。API Key 存 Keychain，"
-                     + "侧载环境 Keychain 不可用时自动以沙箱文件兜底；均不写入配置文件。")
-            }
-            Section {
-                if declaring {
-                    CustomProviderCardView(
-                        store: store,
-                        taken: store.endpoints.map(\.name),
-                        credentialSeam: credentialSeam,
-                        discoverModels: discoverModels,
-                        onClose: { changed in
-                            declaring = false
-                            if changed { announceSaved() }
-                        },
-                        onCredentialNotice: { appendCredentialNotice($0) })
-                } else {
-                    // 添加入口（dsh addActions :501-539 的万我单路形态：
-                    // 无 provider 目录面，仅手声明一路——报告登记）。
-                    Button {
-                        savedNotice = nil
-                        editingID = nil
-                        declaring = true
-                    } label: {
-                        Label("添加自定义提供方", systemImage: "plus")
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    topBar
+                    Text("模型")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(WOMP.text)
+                        .padding(.top, 6)
+                        .padding(.bottom, 8)
+                    Text("填入各提供商的 API 密钥即可使用其模型。")
+                        .font(.system(size: 13))
+                        .foregroundColor(WOMP.text3)
+                        .lineSpacing(4)
+                        .padding(.bottom, 20)
+
+                    providerList
+
+                    WODashedAddButton(title: "＋ 添加模型提供商") {
+                        formOpen.toggle()
+                    }
+                    .padding(.top, 4)
+
+                    WOCollapsible(open: formOpen) {
+                        AddProviderFormView(
+                            store: store,
+                            credentialSeam: credentialSeam,
+                            discoverModels: discoverModels,
+                            onClose: { changed in
+                                formOpen = false
+                                if changed { announceSaved() }
+                            },
+                            onCredentialNotice: { credentialNotice = $0 })
                     }
                 }
+                .padding(.horizontal, 44)
+                .padding(.top, 6)
+                .padding(.bottom, 44)
+            }
+
+            // 顶部轻提示（saved / 凭据透出 / 删除失败）。
+            if let toast {
+                WOToast(text: toast, onDone: { self.toast = nil })
+                    .padding(.top, 8)
             }
         }
-        // 删除确认弹窗（dsh Modal :542-575 的 confirmationDialog 等价——
-        // 批3 B3 既有形态；失败文本于分区提示行显示）。
+        // 删除确认弹窗（清单13；确认后先 unset 凭据再出场折叠移除）。
         .confirmationDialog("删除端点", isPresented: Binding(
             get: { deleteTarget != nil },
             set: { if !$0 { closeDelete() } }),
@@ -137,176 +147,207 @@ struct ProvidersSectionView: View {
         }
     }
 
-    // MARK: - 行卡（dsh :352-436）
+    // MARK: - main-top（打开配置文件 ghost 钮；关闭钮归设置壳）
 
-    @ViewBuilder
-    private func row(_ endpoint: EndpointConfig) -> some View {
-        // 首启引导：无任何已配置端点且本行未 dismiss → setup 卡即其存在
-        // （needsSetup :141-145；dsh 只渲染 setup 卡而非行）。
-        if needsSetup(endpoint) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("添加一个 API Key 开始使用。")
-                    .font(.subheadline)
-                ProviderEditorView(
-                    store: store,
+    private var topBar: some View {
+        HStack {
+            Spacer(minLength: 0)
+            ShareLink(item: Self.providersFileURL) {
+                Text("打开配置文件")
+                    .font(.system(size: 13))
+                    .foregroundColor(WOMP.text)
+                    .padding(.horizontal, 14)
+                    .frame(minWidth: 44, minHeight: 36)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(WOMP.line, lineWidth: 1))
+                    .contentShape(Rectangle())
+            }
+            .frame(minHeight: 44) // 触屏命中区
+            .accessibilityLabel("打开配置文件")
+        }
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - provider 行卡列表
+
+    private var providerList: some View {
+        VStack(spacing: 0) {
+            ForEach(store.endpoints) { endpoint in
+                ProviderRowCardView(
                     endpoint: endpoint,
-                    credentialOnly: true,
-                    credentialRequired: true,
-                    autoFocusKey: true,
-                    cancelLabel: "稍后配置",
-                    submitLabel: "保存",
-                    credentialSeam: credentialSeam,
+                    store: store,
+                    isEditing: editingID == endpoint.id,
+                    isRemoving: removingID == endpoint.id,
+                    seam: credentialSeam,
                     discoverModels: discoverModels,
-                    onClose: { changed in
-                        // 关引导卡只记本卡状态，不动编辑/添加卡草稿
-                        //（closeSetup :237-240 语义）。
-                        dismissedSetup.insert(endpoint.id)
-                        if changed { announceSaved() }
+                    onToggleEdit: {
+                        // 单展开（清单9）：开本卡即关他卡；再点收起。
+                        editingID = editingID == endpoint.id ? nil : endpoint.id
                     },
-                    onCredentialNotice: { appendCredentialNotice($0) })
+                    onRequestDelete: {
+                        deleteTarget = endpoint
+                    },
+                    onClosed: { changed, notice in
+                        if let notice { credentialNotice = notice }
+                        if changed { announceSaved() }
+                    })
+                // 行卡入场（原型 .provider-item：opacity 0 + 上移 8 + scale .99）。
+                .transition(.opacity.combined(with: .offset(y: -8))
+                    .combined(with: .scale(0.99)))
             }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    keyStatusDot(isConfigured(endpoint))
-                    Text(endpoint.displayName ?? endpoint.name)
-                        .font(.headline)
-                    if isCustom(endpoint) {
-                        Text("自定义")
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                if let editingID, editingID == endpoint.id {
-                    ProviderEditorView(
-                        store: store,
-                        endpoint: endpoint,
-                        credentialSeam: credentialSeam,
-                        discoverModels: discoverModels,
-                        onClose: { changed in
-                            closeEditor(changed: changed, endpoint: endpoint)
-                        },
-                        onCredentialNotice: { appendCredentialNotice($0) })
-                } else {
-                    HStack(spacing: 8) {
-                        Text("\(endpoint.baseURL)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        Spacer()
-                        // 编辑钮（开卡先关声明卡+saved 清除——:384-396）。
-                        Button("编辑") {
-                            savedNotice = nil
-                            declaring = false
-                            editingID = editingID == endpoint.id ? nil : endpoint.id
-                        }
-                        .frame(minHeight: 44)
-                        .buttonStyle(.bordered)
-                        Button("删除", role: .destructive) {
-                            savedNotice = nil
-                            deleteFailure = nil
-                            deleteTarget = endpoint
-                        }
-                        .frame(minHeight: 44)
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
         }
+        .animation(WOMP.ease(WOMP.durCardIn), value: store.endpoints)
     }
 
-    /// key 状态实心点（dsh :363-386：configured→绿实心 / 缺→灰）。
-    @ViewBuilder
-    private func keyStatusDot(_ present: Bool) -> some View {
-        if present {
-            Circle()
-                .fill(Color.green)
-                .frame(width: 8, height: 8)
-                .accessibilityLabel("已配置 API Key")
-        } else {
-            Circle()
-                .strokeBorder(Color.secondary, lineWidth: 1)
-                .frame(width: 8, height: 8)
-                .accessibilityLabel("未配置 API Key")
-        }
-    }
-
-    // MARK: - 首启引导判定（dsh needsSetup :141-145）
-
-    /// 无任何已配置端点（anyUsable=false 等价）且本行无凭据且未 dismiss。
-    private func needsSetup(_ endpoint: EndpointConfig) -> Bool {
-        guard !dismissedSetup.contains(endpoint.id) else { return false }
-        guard !store.endpoints.contains(where: isConfigured) else { return false }
-        return !isConfigured(endpoint)
-    }
-
-    private func isConfigured(_ endpoint: EndpointConfig) -> Bool {
-        credentialSeam.describe(endpoint).configured
-    }
-
-    /// custom 标签近似判定（文件头注·平台适配）：与出厂默认三元组不一致
-    /// 即视为手声明。
-    private func isCustom(_ endpoint: EndpointConfig) -> Bool {
-        !(endpoint.name == "DeepSeek"
-            && endpoint.baseURL == "https://api.deepseek.com"
-            && endpoint.model == "deepseek-v4-flash")
-    }
-
-    // MARK: - 编辑卡关闭 / saved 轻提示（dsh :216-228）
-
-    private func closeEditor(changed: Bool, endpoint: EndpointConfig) {
-        editingID = nil
-        declaring = false
-        if changed { announceSaved() }
-    }
+    // MARK: - saved 轻提示（dsh announceSaved 语义；WOToast 承载）
 
     private func announceSaved() {
-        // 万我 store 即发布源：@Published 已驱动重渲染，dsh 的 reload 步骤
-        // 不需要；提示在下次开卡/删除时清除（savedTarget 生命周期等价）。
-        savedNotice = savedNoticeBase
+        var text = "已保存。"
+        if let credentialNotice, !credentialNotice.isEmpty {
+            // 凭据存储描述并入轻提示（Keychain/文件兜底透出——ERR-016 语义）。
+            text += " \(credentialNotice)"
+            credentialNotice = nil
+        }
+        toast = text
     }
 
-    private var savedNoticeBase: String { "已保存。" }
-
-    private func appendCredentialNotice(_ notice: String?) {
-        guard let notice, !notice.isEmpty else { return }
-        // 凭据存储描述并入轻提示（Keychain/文件兜底透出——ERR-016 语义）。
-        savedNotice = "\(savedNoticeBase) \(notice)"
-    }
-
-    // MARK: - 删除（dsh removeProviderProfile :113-130 两步幂等）
+    // MARK: - 删除（清单13：二次确认 + 先 unset 凭据 + removing 出场）
 
     private func closeDelete() {
         if deleteInFlight { return }
         deleteTarget = nil
-        deleteFailure = nil
     }
 
     private func confirmDelete(_ endpoint: EndpointConfig) async {
         deleteInFlight = true
         defer { deleteInFlight = false }
-        // 第一步：先删凭据（幂等——第二步失败时行仍可见、整体可重试）。
+        // 第一步：先删凭据（幂等——失败时行仍可见、整体可重试）。
         do {
             try credentialSeam.unset(endpoint)
         } catch {
-            deleteFailure = "凭据清除失败：\((error as NSError).localizedDescription)"
-            savedNotice = deleteFailure
+            toast = "凭据清除失败：\((error as NSError).localizedDescription)"
             return
         }
-        // 第二步：删端点（store.remove 内部亦删 Keychain——双删幂等无害）。
-        store.remove(endpoint)
+        // 第二步：removing 出场折叠（.45s）→ 真正移除（store.remove 内部
+        // 亦三清凭据——双删幂等无害）。
+        let target = endpoint
         deleteTarget = nil
+        removingID = target.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            store.remove(target)
+            if editingID == target.id { editingID = nil }
+            removingID = nil
+        }
     }
 
-    /// 删除确认两版描述（有凭据点明一并清除——dsh deleteDescription 两版）。
+    /// 删除确认两版描述（有凭据点明一并清除）。
     private func deleteMessage(for endpoint: EndpointConfig) -> String {
-        isConfigured(endpoint)
-            ? "「\(endpoint.displayName ?? endpoint.name)」已配置 API Key，删除将一并清除凭据，且无法恢复。"
+        credentialSeam.describe(endpoint).configured
+            ? "「\(endpoint.displayName ?? endpoint.name)」已配置 API 密钥，删除将一并清除凭据，且无法恢复。"
             : "删除端点「\(endpoint.displayName ?? endpoint.name)」？此操作无法恢复。"
+    }
+}
+
+// MARK: - 行卡（原型 .provider-item + 内联编辑面板挂载）
+
+/// provider 行卡（原型 .provider-item 1:1；编辑面板常挂 WOCollapsible——
+/// 单展开由父级 editingID 驱动）。
+private struct ProviderRowCardView: View {
+
+    let endpoint: EndpointConfig
+    @ObservedObject var store: EndpointStore
+    let isEditing: Bool
+    let isRemoving: Bool
+    let seam: ProviderCredentialSeam
+    var discoverModels: ((String, String?) async -> Result<[DiscoveredModel], Error>)?
+    let onToggleEdit: () -> Void
+    let onRequestDelete: () -> Void
+    /// 编辑卡关闭（changed=有提交落地；notice=凭据存储描述透传）。
+    let onClosed: (Bool, String?) -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            head
+            WOCollapsible(open: isEditing) {
+                ProviderEditorView(
+                    store: store,
+                    endpoint: endpoint,
+                    credentialSeam: seam,
+                    discoverModels: discoverModels,
+                    onClose: { changed in
+                        onClosed(changed, nil)
+                    },
+                    onCredentialNotice: { notice in
+                        onClosed(false, notice)
+                    })
+                // 原型 .edit-panel margin 0 10 10。
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+            }
+        }
+        .background(Color.white)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(borderColor, lineWidth: 1))
+        .shadow(color: Color.black.opacity(isHovering ? 0.06 : 0.03),
+                radius: isHovering ? 18 : 2, y: isHovering ? 6 : 1)
+        .padding(.bottom, 10)
+        .modifier(WORemoveFold(removing: isRemoving))
+        .onHover { hovering = $0 } // hover 纯视觉增强（触屏直达不受影响）
+        .animation(.easeOut(duration: 0.25), value: hovering)
+        .animation(.easeOut(duration: 0.25), value: isEditing)
+    }
+
+    /// hover/编辑态底色引用（阴影与边框共用判定）。
+    private var isHovering: Bool { hovering && !isRemoving }
+
+    private var borderColor: Color {
+        if isRemoving { return WOMP.lineSoft }
+        if isEditing { return WOMP.lineEditing } // 原型 .editing rgba(0,0,0,.14)
+        return isHovering ? WOMP.lineHover : WOMP.lineSoft
+    }
+
+    // MARK: 行头（名称 + key 状态点 + 操作钮；原型 .provider-head）
+
+    private var head: some View {
+        HStack(spacing: 8) {
+            Text(endpoint.displayName ?? endpoint.name)
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundColor(WOMP.text)
+                .lineLimit(1)
+            keyStatusDot
+            Spacer(minLength: 8)
+            WOMiniButton(title: "编辑") { onToggleEdit() }
+            WOMiniButton(title: "删除", danger: true) { onRequestDelete() }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 56)
+    }
+
+    /// key 状态点（绿=已配 + 光晕 0 0 0 3px rgba(34,197,94,.15)；灰=未配）。
+    @ViewBuilder
+    private var keyStatusDot: some View {
+        let configured = seam.describe(endpoint).configured
+        Group {
+            if configured {
+                Circle()
+                    .fill(WOMP.green)
+                    .frame(width: 6, height: 6)
+                    .background(
+                        Circle().fill(WOMP.greenHalo).frame(width: 12, height: 12)
+                    )
+                    .accessibilityLabel("已配置 API 密钥")
+            } else {
+                Circle()
+                    .fill(WOMP.text3)
+                    .frame(width: 6, height: 6)
+                    .accessibilityLabel("未配置")
+            }
+        }
+        .frame(width: 12, height: 12)
     }
 }

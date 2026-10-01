@@ -76,8 +76,17 @@ struct DeriveFold {
                     }
                     return nil
                 }
+                // M7Fix2-A2：思考链随 assistant 消息进派生历史（dsh
+                // serialize.ts:205-208 serializeAssistant 1:1——reasoning 块
+                // text 按块序直接拼接 join('')，非空才承载；空串 = 无思考链
+                // → nil，wire 端 encodeIfPresent 不发字段）。
+                let reasoning = message.content.compactMap { block -> String? in
+                    if case .reasoning(let t) = block { return t }
+                    return nil
+                }.joined()
                 messages.append(ChatMessage(role: .assistant, content: text,
-                                            toolCalls: calls.isEmpty ? nil : calls))
+                                            toolCalls: calls.isEmpty ? nil : calls,
+                                            reasoning: reasoning.isEmpty ? nil : reasoning))
             case .toolResult(_, _, let callId, let content, let isError, _, _, _):
                 guard latestResultSeq[callId] == event.seq else { continue }
                 let contentText = isError ? content : content

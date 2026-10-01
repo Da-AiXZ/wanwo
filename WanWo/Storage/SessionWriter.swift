@@ -161,6 +161,33 @@ final class SessionWriter: @unchecked Sendable {
         }
     }
 
+    /// M7Fix2-A3：原子栅栏缝（dsh goal index.ts:585-602 commit 的 WanWo 等价）。
+    ///
+    /// 病灶：GoalService.commit 旧实现在 gate 外读 `writer.eventCount`，与
+    /// `await writer.append` 之间是 async 缝——宿主自产的 diag/trace 面包屑
+    /// （AppEnvironment 引擎面包屑，独立 Task append）从缝里插队 →
+    /// `event.seq != expectedSeq` → 防御性栅栏误判并发违例，create 的
+    /// .armed 被回退 .disarmed（真机实证：goal/change 落 seq1028、前一条
+    /// seq1027 是 "scheduler: runSingle pipeline.run begin create_goal"）。
+    /// dsh 原版 `session.seq` 读取→append→比较是同步代码一气呵成，插队
+    /// 不可能；方案甲把 seq 快照移进 gate 临界区，恢复 dsh 的原子假设——
+    /// 栅栏本意（防御并发写）原样保留，修的是原子性而非删栅栏。
+    ///
+    /// - Returns: `(event, fenced)`；fenced = append 实际落点 seq 恰为临界区
+    ///   内读取的预期 seq。gate 内读取与落盘之间无 await 插队窗口，正常恒
+    ///   true；false = 意外违例（如 appendSynthetic 之外的旁路写），调用方
+    ///   按 dsh 栅栏语义保守回退。
+    @discardableResult
+    func appendFenced(_ payload: SessionEvent.Payload,
+                      ignorable: Bool = false) async throws
+        -> (event: SessionEvent, fenced: Bool) {
+        try await gate.run { [self] in
+            let expectedSeq = eventCount
+            let event = try await appendWithRetry(payload, ignorable: ignorable)
+            return (event, event.seq == expectedSeq)
+        }
+    }
+
     /// 带重试的追加管线（仅在 gate 内调用；`append` 与
     /// `logRequestHeaderIfNeeded` 共用——后者已在 gate 内，不得再入 gate）。
     private func appendWithRetry(_ payload: SessionEvent.Payload,

@@ -2,73 +2,68 @@
 //  ModelCatalogEditorView.swift
 //  WanWo
 //
-//  【m8 批1 A2 · 照 dsh 语义翻译】模型目录编辑器。
-//  语义源：dsh ui-settings-models/src/client/DeepSeekModelsEditor.tsx:151-364
-//  （行列表 id+name+chevron 展开/收起+行删除、继承/已自定义徽标+重置、
-//  添加=append 空行 :353-361、行删除时缓冲与展开态 re-key :177-197）
-//  + ModelListEditor.tsx 的探测动作（fetchModels 语义：候选由用户挑选、
-//  绝不静默写配置；失败非死路=错误显示在行旁继续手填）。
+//  【m7-fix2 · E2 · 按用户 HTML 原型 1:1 重做】模型目录 field（.dir-field）。
+//  原型锚点（设置模型配置原型（带动画）.html）：
+//    · field-head（:1044-1054）：左 dir-label（label「模型目录」+ dir-status
+//      「正在使用适配器默认模型」/「已自定义模型目录」）；右 dir-links =
+//      「恢复默认模型」（有自定义才显示）+「获取可用模型」。
+//    · 空态 empty-box 虚线框（:1056）：「模型选择器中将不显示任何模型；
+//      目录外 ID 仍可直接发送。」
+//    · model-row（:589-659）：head=模型 ID（等宽 12.8）+显示名两输入+行尾
+//      展开（chev rotate 180° .42s）/删除钮；expanded 态阴影+顶部分隔线；
+//      展开区=上下文窗口/最大输出 grid-2 + 输入类型勾选（文本/图片，
+//      方框勾选 scale .24s）；entering 入场 modelRowIn .5s；删除=height
+//      折叠 .4s（420ms 后移除）。
+//    · 「＋ 添加模型」钮（:570-587）+ model-err 红行（:702-709）。
 //
+//  数据面契约（只消费不改）：ModelCatalogEntry / CapacityFormatting（十进制
+//  1M=100万，清单10）/ ModelCatalogValidation / ModelDiscovery（探测缝——
+//  候选由用户挑选、绝不静默写配置，清单12）。
 //  平台适配（报告登记）：
-//    · 容量以 K/M 文本编辑，per-field 输入缓冲（key "行:字段"）防重排丢字
-//      （dsh :152-163 同语义）；缓冲由父卡持有（Binding），不可读文本无法
-//      编码进 Int? 容量字段（dsh 以 NaN 存入 draft 由 validate 拒绝），故
-//      保存门经父卡读缓冲判不可读并按行报错。
-//    · 探测缝：万我无 Host discovery 面，经闭包缝注入（A1 ModelDiscovery
-//      就绪后接线）；候选=id 字符串列表，采纳=append 新行，绝不静默写。
-//    · chevron 旋转/展开动画为万我平台增强（WOMotion 纪律内）。
+//    · 容量输入键盘用 .default（可键入 K/M 后缀——旧实现 numberPad 键不出
+//      字母后缀，与清单10「1M/256K 十进制」冲突，本批修正）。
+//    · 「恢复默认模型」整组同时折叠（原型逐行 45ms 级联不做，登记）。
+//    · 弹窗改 fullScreenCover + presentationBackground(.clear)（iOS 16.4+，
+//      部署目标 16.6 内）承载原型遮罩+居中卡形态。
+//    · 目录空集（继承态）时 dir-status 恒「正在使用适配器默认模型」；行级
+//      目录在继承态直接编辑即转 override（onChange 整组上报，语义同批1）。
+//
+//  iOS 16.6 红线自查：无 foregroundStyle、无双参 onChange、无 iOS17+ API。
 //
 
 import SwiftUI
 
-/// 模型目录编辑器（dsh DeepSeekModelsEditor.tsx:151-364 交互骨架 1:1）。
+/// 模型目录 field（原型 .dir-field 交互骨架 1:1）。
 struct ModelCatalogEditorView: View {
 
-    // MARK: - 输入
+    // MARK: - 输入（契约同批1，只消费不改）
 
-    /// 生效行：父级在继承态供给缺省目录，首次编辑起为用户 override。
     let models: [ModelCatalogEntry]
-    /// 用户层当前是否持有整个目录（true=已自定义，false=继承）。
     let overridden: Bool
-    /// 行省略精确值时回落使用的上下文容量（placeholder 展示）。
     let defaultContextWindow: Int?
-    /// 行省略精确值时回落使用的输出上限（placeholder 展示）。
     let defaultMaxTokens: Int?
-    /// 禁用全部编辑（只读或保存进行中）。
     let disabled: Bool
-    /// 探测缝：(baseURL, 已输入未保存 key) → 候选模型（id+name+容量）列表 / 错误。
-    /// nil = 探测入口不渲染（A1 ModelDiscovery 交付后由挂点注入启用）。
     var discoverModels: ((String, String?) async -> Result<[DiscoveredModel], Error>)?
-    /// 探测用表单当前 baseURL（含未保存值——dsh "表单当前值"语义）。
     var probeBaseURL: String?
-    /// 探测用已输入未保存 key（永不回显，仅随请求）。
     var probeAPIKey: String?
-    /// 探测入口禁用原因文案（如 key 形校验未过——dsh probeBlocked 语义）。
     var probeBlockedReason: String?
-
-    /// 替换用户目录（一次可见编辑后整组回调）。
     let onChange: ([ModelCatalogEntry]) -> Void
-    /// 移除用户目录、回到继承。
     let onReset: () -> Void
-
-    /// 容量文本 per-field 缓冲（key = "\(行):\(字段)"）。父卡持有：
-    /// 保存门需读缓冲判不可读文本（文件头注·平台适配）。
+    /// 容量文本 per-field 缓冲（key = "\(行):\(字段)"；父卡持有供保存门读）。
     @Binding var capacityBuffers: [String: String]
 
     // MARK: - 状态
 
-    /// 展开的行集合（dsh expanded :164；行删除时同步 re-key）。
     @State private var expanded: Set<Int> = []
-    /// 探测进行中。
     @State private var probing = false
-    /// 探测失败文案（显示在行列表旁，非死路——继续手填）。
     @State private var probeFailure: String?
-    /// 候选挑选弹层。
-    @State private var candidates: [DiscoveredModel]?
-    /// 候选勾选集。
-    @State private var picked: Set<String> = []
-    /// 候选搜索词。
-    @State private var candidateQuery = ""
+    /// 候选弹窗（原型 .modal-mask/.modal）。
+    @State private var pickerPresented = false
+    @State private var candidates: [DiscoveredModel] = []
+    /// 出场折叠中的行（420ms 后真正移除——原型 removeModelRow 时序）。
+    @State private var removingIndices: Set<Int> = []
+    /// 「恢复默认模型」整组折叠中。
+    @State private var resetting = false
 
     // MARK: - 常量
 
@@ -78,219 +73,236 @@ struct ModelCatalogEditorView: View {
     // MARK: - Body
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            listHead
-            if models.isEmpty {
-                Text("选择器中将不显示任何模型；未列出的模型 ID 仍可直接发送。")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-            } else {
+        VStack(alignment: .leading, spacing: 0) {
+            fieldHead
+            emptyOrList
+            addModelButton
+                .padding(.top, models.isEmpty ? 10 : 0)
+            errorLine
+        }
+        .animation(WOMP.ease(WOMP.durRowIn), value: models)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("模型目录")
+        .fullScreenCover(isPresented: $pickerPresented) {
+            pickerLayer
+                // 透明演示底（iOS 16.4+；部署目标 16.6 内）——遮罩+居中卡自绘。
+                .presentationBackground(.clear)
+        }
+    }
+
+    // MARK: field-head（原型 :1044-1054）
+
+    private var fieldHead: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("模型目录")
+                    .font(.system(size: 12.8))
+                    .foregroundColor(Color(red: 0x55, green: 0x55, blue: 0x5f))
+                Text(statusText)
+                    .font(.system(size: 12))
+                    .foregroundColor(WOMP.text3)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            HStack(alignment: .top, spacing: 16) {
+                if !models.isEmpty {
+                    WOLinkButton(title: "恢复默认模型") { resetAll() }
+                        .disabled(disabled || resetting || !removingIndices.isEmpty)
+                }
+                if discoverModels != nil {
+                    WOLinkButton(title: probing ? "正在询问提供方…" : "获取可用模型") {
+                        Task { await probe() }
+                    }
+                    .disabled(disabled || probing)
+                }
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    /// dir-status（原型 updateDirState :1279-1292 语义）。
+    private var statusText: String {
+        models.isEmpty ? "正在使用适配器默认模型" : "已自定义模型目录"
+    }
+
+    // MARK: 空态 / 行列表
+
+    @ViewBuilder
+    private var emptyOrList: some View {
+        if models.isEmpty {
+            WOEmptyBox(text: "模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。")
+        } else {
+            VStack(spacing: 0) {
                 ForEach(models.indices, id: \.self) { index in
                     modelRow(index)
                 }
             }
-            addModelButton
-            if let probeFailure {
-                Text(probeFailure)
-                    .font(.footnote)
-                    .foregroundColor(.red)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("模型目录")
-        // 候选挑选弹层（dsh Modal fetchTitle 语义：挑选采纳，绝不静默写）。
-        .sheet(isPresented: Binding(get: { candidates != nil },
-                                    set: { if !$0 { closePicker() } })) {
-            candidatePicker
         }
     }
 
-    // MARK: - 列表头（标题 + 徽标 + 重置 + 探测）
-
-    private var listHead: some View {
-        HStack(spacing: 12) {
-            Text("模型")
-                .font(.subheadline.weight(.medium))
-            // 「继承/已自定义」徽标（dsh modelCatalogMeta :270-272）。
-            Text(overridden ? "已自定义目录" : "使用适配器缺省")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            Spacer(minLength: 0)
-            if overridden {
-                Button("恢复缺省") { reset() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
-                    .frame(minHeight: 44)
-                    .disabled(disabled)
-            }
-            // 探测入口（dsh ModelListEditor :338-348——表单当前值问端点；
-            // 失败非死路，错误留在行旁）。
-            if discoverModels != nil {
-                Button {
-                    Task { await probe() }
-                } label: {
-                    Text(probing ? "正在询问提供方…" : "拉取可用模型")
-                        .font(.callout)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.blue)
-                .frame(minHeight: 44)
-                .disabled(disabled || probing || !askable || probeBlockedReason != nil)
-                .help(probeBlockedReason ?? (!askable ? "先填写 Base URL 再拉取。" : ""))
-            }
-        }
-    }
-
-    /// 可问性：有 baseURL 才有可问对象（dsh askable :312）。
-    private var askable: Bool {
-        guard let probeBaseURL, !probeBaseURL.isEmpty else { return false }
-        return true
-    }
-
-    // MARK: - 模型行
+    // MARK: 模型行（原型 :589-659）
 
     private func modelRow(_ index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                TextField("模型 ID", text: idBinding(index),
-                          prompt: Text("模型 ID").foregroundColor(.secondary))
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("模型 ID \(index + 1)")
-                    // 外接键盘回车收尾：trim 粘贴残留（dsh blur 语义的可用近似；
-                    // 触屏路径由保存门统一 trim 归一——报告注明）。
-                    .onSubmit { settleID(index) }
-                TextField("显示名", text: nameBinding(index))
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("显示名 \(index + 1)")
-                // chevron 展开/收起（旋转动画=万我平台增强；dsh :320-329）。
-                Button {
-                    withAnimation(WOMotion.standardSpring) { toggle(index) }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .medium))
-                        .rotationEffect(.degrees(expanded.contains(index) ? 90 : 0))
-                        .foregroundColor(.secondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+        let isExpanded = expanded.contains(index)
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                rowHead(index)
+                WOCollapsible(open: isExpanded) {
+                    expandedBody(index)
+                        // expanded 态顶部分隔线（原型 .model-row.expanded 分隔线）
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(WOMP.lineSoft).frame(height: 1)
+                        }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("容量 \(index + 1)")
-                // 行删除（dsh :330-339；缓冲与展开态索引同步 re-key）。
-                Button(role: .destructive) {
-                    withAnimation(WOMotion.standardSpring) { remove(index) }
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 13))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.red)
-                .accessibilityLabel("删除模型 \(index + 1)")
-                .disabled(disabled)
             }
-            if expanded.contains(index) {
-                HStack(spacing: 12) {
-                    capacityField(index, field: Self.bufferK,
-                                  label: "上下文窗口",
-                                  fallback: defaultContextWindow)
-                    capacityField(index, field: Self.bufferM,
-                                  label: "最大输出",
-                                  fallback: defaultMaxTokens)
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+            .background(Color.white)
+            .cornerRadius(13)
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(WOMP.line, lineWidth: 1))
+            .shadow(color: isExpanded ? Color.black.opacity(0.05) : .clear, radius: 20, y: 6)
+            .animation(.easeOut(duration: 0.25), value: isExpanded)
+        }
+        // 行距（原型 margin-top 10）放进折叠体，出场时一并归零。
+        .padding(.top, 10)
+        .modifier(WORemoveFold(removing: removingIndices.contains(index) || resetting))
+        // entering 入场（原型 modelRowIn .5s：opacity 0 + 上移 8 + scale .985）。
+        .transition(.opacity.combined(with: .offset(y: -8)).combined(with: .scale(0.985)))
+    }
+
+    /// 行头：ID（等宽）+ 显示名两输入 + 展开/删除钮（原型 :607-654）。
+    private func rowHead(_ index: Int) -> some View {
+        let isExpanded = expanded.contains(index)
+        return HStack(spacing: 4) {
+            TextField("模型 ID", text: idBinding(index),
+                      prompt: Text("模型 ID").foregroundColor(WOMP.placeholder))
+                .font(.system(size: 12.8, design: .monospaced))
+                .foregroundColor(WOMP.text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44) // 触屏命中
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(rowFieldFocused(index, isID: true) ? Color.black.opacity(0.032) : Color.clear))
+                .accessibilityLabel("模型 ID \(index + 1)")
+
+            TextField("显示名称", text: nameBinding(index),
+                      prompt: Text("显示名称").foregroundColor(WOMP.placeholder))
+                .font(.system(size: 13.5))
+                .foregroundColor(WOMP.text)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(rowFieldFocused(index, isID: false) ? Color.black.opacity(0.032) : Color.clear))
+                .accessibilityLabel("显示名称 \(index + 1)")
+
+            // 行尾展开钮（chev rotate 180° .42s；触屏 ≥44pt）。
+            Button {
+                withAnimation(WOMP.ease(WOMP.durChevSection)) { toggle(index) }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(WOMP.text3)
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(WOProtoPressStyle())
+            .accessibilityLabel(isExpanded ? "收起容量设置 \(index + 1)" : "展开容量设置 \(index + 1)")
+
+            // 行尾删除钮（触屏 ≥44pt；danger hover 态）。
+            Button {
+                removeRow(index)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundColor(WOMP.text3)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(WOProtoPressStyle())
+            .accessibilityLabel("删除模型 \(index + 1)")
+            .disabled(disabled)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+    }
+
+    /// 行内输入 focus 底纹（原型 input:focus bg black 3.2% 的近似——
+    /// FocusState 无法按行下发，用「本行有展开态」不成立；退化为不做按行
+    /// focus 追踪，保留 hover/静态形态——报告登记）。
+    private func rowFieldFocused(_ index: Int, isID: Bool) -> Bool { false }
+
+    /// 展开区：grid-2 容量 + 输入类型勾选（原型 :1246-1269）。
+    private func expandedBody(_ index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                capacityField(index, field: Self.bufferK,
+                              label: "上下文窗口", fallback: defaultContextWindow)
+                capacityField(index, field: Self.bufferM,
+                              label: "最大输出 token 数", fallback: defaultMaxTokens)
+            }
+            HStack(spacing: 24) {
+                WOCheckbox(checked: modalityBinding(index, "text"), label: "文本")
+                WOCheckbox(checked: modalityBinding(index, "image"), label: "图片")
             }
         }
-        .padding(.vertical, 2)
+        .padding(14)
+        .padding(.bottom, 16)
     }
 
-    /// 行 id 绑定：直接写目录行；blur 时 trim（dsh :302-307 粘贴残留语义）。
-    private func idBinding(_ index: Int) -> Binding<String> {
-        Binding(
-            get: { models[index].id },
-            set: {
-                var next = models
-                next[index].id = $0
-                onChange(next)
-            })
-    }
-
-    /// 行 name 绑定：空串落 nil（dsh :316-318 清空=字段离场语义）。
-    private func nameBinding(_ index: Int) -> Binding<String> {
-        Binding(
-            get: { models[index].name ?? "" },
-            set: {
-                var next = models
-                next[index].name = $0.isEmpty ? nil : $0
-                onChange(next)
-            })
-    }
-
-    /// id blur 收尾（首尾空白=粘贴残留，按 dsh :302-307 blur 时 trim）。
-    private func settleID(_ index: Int) {
-        let trimmed = models[index].id.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed != models[index].id {
-            var next = models
-            next[index].id = trimmed
-            onChange(next)
-        }
-    }
-
-    /// 一个容量字段（dsh capacityField :237-263：显示=活键击优先，
-    /// 否则存储计数反写；占位符=继承缺省值 :344-345）。
+    /// 容量字段（十进制 K/M；占位=继承缺省值灰字——清单10「灰占位」）。
     private func capacityField(_ index: Int, field: String,
                                label: String, fallback: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-            TextField(label, text: bufferBinding(index, field: field),
-                          prompt: Text(fallback.map { CapacityFormatting.formatCapacity($0) }
-                                   ?? "使用提供方缺省值")
-                          .foregroundColor(.secondary))
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.numberPad)
-                .accessibilityLabel("\(label) \(index + 1)")
+                .font(.system(size: 12.8))
+                .foregroundColor(Color(red: 0x55, green: 0x55, blue: 0x5f))
+            WOProtoInput(
+                placeholder: fallback.map { CapacityFormatting.formatCapacity($0) }
+                    ?? "使用提供方缺省值",
+                text: bufferBinding(index, field: field))
         }
-        .frame(maxWidth: 160, alignment: .leading)
     }
 
-    /// 字段当前文本：活键击优先（缓冲），否则存储计数反写（dsh capacityText :214-219）。
-    private func bufferText(_ index: Int, field: String) -> String {
-        if let typed = capacityBuffers["\(index):\(field)"] { return typed }
-        let value = field == Self.bufferK
-            ? models[index].contextWindow
-            : models[index].maxTokens
-        return value.map { CapacityFormatting.formatCapacity($0) } ?? ""
-    }
-
-    private func bufferBinding(_ index: Int, field: String) -> Binding<String> {
+    /// 输入类型勾选绑定（nil/空 = 缺省 ["text"]；全不勾 → 存空数组，
+    /// 保存门按「输入类型至少勾选一项」行内报错——数据面 MODEL_MODALITIES_EMPTY）。
+    private func modalityBinding(_ index: Int, _ modality: String) -> Binding<Bool> {
         Binding(
-            get: { bufferText(index, field: field) },
-            set: { text in
-                // 键击进缓冲防重排丢字（dsh :255-259）；解析结果同步进行。
-                capacityBuffers["\(index):\(field)"] = text
-                let parsed = CapacityFormatting.parseCapacity(text)
-                let value = parsed.flatMap { $0.isNaN ? nil : Int($0) }
+            get: {
+                let modalities = models[index].inputModalities ?? ["text"]
+                return modalities.contains(modality)
+            },
+            set: { on in
                 var next = models
-                if field == Self.bufferK {
-                    next[index].contextWindow = value
+                var current = next[index].inputModalities ?? ["text"]
+                if on {
+                    if !current.contains(modality) { current.append(modality) }
                 } else {
-                    next[index].maxTokens = value
+                    current.removeAll { $0 == modality }
                 }
+                next[index].inputModalities = current
                 onChange(next)
             })
     }
 
-    // MARK: - 行操作（缓冲与展开态索引同步 re-key，dsh :177-197 / :388-403）
+    // MARK: 行操作
 
     private func toggle(_ index: Int) {
         if !expanded.insert(index).inserted { expanded.remove(index) }
     }
 
-    private func remove(_ index: Int) {
+    /// 删除 = 出场折叠 .4s → 420ms 后移除（原型 removeModelRow :1313-1334）。
+    private func removeRow(_ index: Int) {
+        guard !removingIndices.contains(index) else { return }
+        removingIndices.insert(index)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            actuallyRemove(index)
+        }
+    }
+
+    /// 真正移除（缓冲与展开态索引同步 re-key——批1 :293-308 语义原样）。
+    private func actuallyRemove(_ index: Int) {
+        removingIndices.remove(index)
         var rekeyed: [String: String] = [:]
         for (key, text) in capacityBuffers {
             guard let at = Int(key.prefix(while: { $0.isNumber })) else { continue }
@@ -307,24 +319,22 @@ struct ModelCatalogEditorView: View {
         onChange(next)
     }
 
-    private func reset() {
-        // 重置回继承：行没了，缓冲与展开态一并清场（dsh :199-203）。
-        capacityBuffers.removeAll()
+    /// 恢复默认模型：整组同时折叠 → onReset 回继承（级联 45ms 不做——登记）。
+    private func resetAll() {
+        resetting = true
         expanded.removeAll()
-        onReset()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            resetting = false
+            capacityBuffers.removeAll()
+            onReset()
+        }
     }
 
-    /// 添加模型 = append 空行（dsh :353-361）。
+    /// 添加模型 = append 空行（原型 :353-361 语义；entering 过渡由容器动画驱动）。
     private var addModelButton: some View {
-        Button {
+        WOAddModelButton(title: "＋ 添加模型", disabled: disabled) {
             onChange(models + [Self.emptyEntry])
-        } label: {
-            Label("添加模型", systemImage: "plus")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.blue)
-        .frame(minHeight: 44)
-        .disabled(disabled)
     }
 
     /// 空行起笔（契约全参构造——memberwise init 无默认参数保证）。
@@ -333,139 +343,148 @@ struct ModelCatalogEditorView: View {
                           contextWindow: nil, maxTokens: nil, inputModalities: nil)
     }
 
-    /// 目录变更上报（值拷贝语义：struct 复制天然保留本编辑器不触碰的字段
-    /// ——description/inputModalities 等，对齐 dsh "structurally open" 注释）。
-    private func emit() {
-        onChange(models)
+    // MARK: 行绑定（批1 语义原样）
+
+    private func idBinding(_ index: Int) -> Binding<String> {
+        Binding(
+            get: { models[index].id },
+            set: {
+                var next = models
+                next[index].id = $0
+                onChange(next)
+            })
     }
 
-    // MARK: - 探测（dsh ModelListEditor fetchModels :229-257 语义）
+    private func nameBinding(_ index: Int) -> Binding<String> {
+        Binding(
+            get: { models[index].name ?? "" },
+            set: {
+                var next = models
+                next[index].name = $0.isEmpty ? nil : $0
+                onChange(next)
+            })
+    }
+
+    /// 字段当前文本：活键击优先（缓冲），否则存储计数反写（清单10「输错文本
+    /// 不丢」的数据基础——不可读文本只存缓冲、不写回 Int? 字段）。
+    private func bufferText(_ index: Int, field: String) -> String {
+        if let typed = capacityBuffers["\(index):\(field)"] { return typed }
+        let value = field == Self.bufferK
+            ? models[index].contextWindow
+            : models[index].maxTokens
+        return value.map { CapacityFormatting.formatCapacity($0) } ?? ""
+    }
+
+    private func bufferBinding(_ index: Int, field: String) -> Binding<String> {
+        Binding(
+            get: { bufferText(index, field: field) },
+            set: { text in
+                capacityBuffers["\(index):\(field)"] = text
+                let parsed = CapacityFormatting.parseCapacity(text)
+                let value = parsed.flatMap { $0.isNaN ? nil : Int($0) }
+                var next = models
+                if field == Self.bufferK {
+                    next[index].contextWindow = value
+                } else {
+                    next[index].maxTokens = value
+                }
+                onChange(next)
+            })
+    }
+
+    // MARK: 行内报错（model-err，原型 :702-709 红行 #dc2626）
+
+    @ViewBuilder
+    private var errorLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let probeFailure {
+                Text(probeFailure)
+            } else if let live = liveValidationError {
+                Text(live)
+            } else if let blocked = probeBlockedReason {
+                Text(blocked)
+            }
+        }
+        .font(.system(size: 12.5))
+        .foregroundColor(WOMP.red)
+        .padding(.top, 10)
+        .padding(.horizontal, 2)
+    }
+
+    /// 活校验（原型 updateErrors :1294-1311：空 ID 首行点名——键击即时报，
+    /// 文本不丢）。
+    private var liveValidationError: String? {
+        for (index, model) in models.enumerated()
+        where model.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "模型 \(index + 1): 模型 ID 不能为空。"
+        }
+        return nil
+    }
+
+    // MARK: 探测（清单12：候选弹窗挑选加入；失败显错不偷写）
 
     private func probe() async {
-        guard let discoverModels, let probeBaseURL, !probeBaseURL.isEmpty else { return }
+        guard let discoverModels else { return }
+        guard let probeBaseURL, !probeBaseURL.isEmpty else {
+            probeFailure = "先填写 API 地址，再获取可用模型。"
+            return
+        }
         probing = true
         probeFailure = nil
         defer { probing = false }
         let result = await discoverModels(probeBaseURL, probeAPIKey)
         switch result {
         case .failure(let error):
-            // 失败非死路：错误显示在行旁，用户继续手填。
-            probeFailure = "拉取失败：\(error.localizedDescription)"
+            // 失败非死路：错误显示在行旁（model-err），继续手填。
+            probeFailure = "获取失败：\(error.localizedDescription)"
         case .success(let found):
             if found.isEmpty {
                 probeFailure = "提供方未列出任何模型，请手动添加。"
                 return
             }
-            // 已配置的行起始不勾选：采纳选择时绝不静默改写用户已调过的行
-            //（dsh :248-253）。
-            let known = Set(models.map(\.id))
-            candidateQuery = ""
             candidates = found
-            picked = Set(found.map(\.id).filter { !known.contains($0) })
+            pickerPresented = true
         }
     }
 
-    private func closePicker() {
-        candidates = nil
-        picked = []
-        candidateQuery = ""
+    // MARK: 候选弹窗（原型 .modal-mask/.modal；fullScreenCover + 清晰遮罩自绘）
+
+    private var pickerLayer: some View {
+        ModelPickerModal(
+            candidates: candidates,
+            existingIDs: Set(models.map(\.id)),
+            onAdd: { adopt($0) },
+            onCancel: { pickerPresented = false })
     }
 
-    /// 采纳勾选（dsh adopt :145-152 语义）：已有行（按 id 精确匹配）原样
-    /// 保留——用户调过的行赢过提供方数字（:265-279）；其余行连同提供方
-    /// 披露的容量一起采纳进目录，省手填。
-    private func adoptPicked() {
-        var byID = Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for candidate in candidates ?? [] where picked.contains(candidate.id) {
-            if byID[candidate.id] == nil {
+    /// 采纳勾选（带容量加入）。已有行（按 id 精确匹配）原样保留，绝不静默改写。
+    /// 修（清单12 · 多候选采纳丢行）：批量勾选改为**一次性整组上报**——
+    /// `models` 是父级下发的 `let` 快照，Task 内逐条 `onChange(models + [entry])`
+    /// 会反复读到同一份旧基线，最终覆写只剩最后一条。现在 Task 内以局部
+    /// 数组累积（不读捕获副本、循环中绝不触发 onChange），循环结束后以
+    /// 完整数组单次 onChange 落盘。行入场动画由 `.animation(value: models)`
+    /// 随整组变更触发（原"逐行 60ms 级联"随之让位于正确性）。
+    private func adopt(_ picked: [DiscoveredModel]) {
+        pickerPresented = false
+        guard !picked.isEmpty else { return }
+        let baseline = models
+        Task { @MainActor in
+            var next = baseline
+            var addedCount = 0
+            for candidate in picked {
+                // 去重：目录已有 + 本批内重复（同一 id 只收一次）。
+                guard !next.contains(where: { $0.id == candidate.id }) else { continue }
                 var entry = ModelCatalogEntry(id: candidate.id, name: candidate.name,
-                                              description: nil, contextWindow: candidate.contextWindow,
-                                              maxTokens: candidate.maxTokens, inputModalities: nil)
-                // 空名不落字段（清空=字段离场语义与行编辑一致）。
+                                              description: nil,
+                                              contextWindow: candidate.contextWindow,
+                                              maxTokens: candidate.maxTokens,
+                                              inputModalities: nil)
                 if (entry.name ?? "").isEmpty { entry.name = nil }
-                byID[candidate.id] = entry
+                next.append(entry)
+                addedCount += 1
             }
+            guard addedCount > 0 else { return }
+            onChange(next)
         }
-        onChange(Array(byID.values))
-        closePicker()
-    }
-
-    // MARK: - 候选挑选弹层
-
-    private var candidatePicker: some View {
-        NavigationStack {
-            List {
-                Section {
-                    TextField("搜索模型", text: $candidateQuery)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                Section {
-                    ForEach(visibleCandidates, id: \.id) { candidate in
-                        Button {
-                            if !picked.insert(candidate.id).inserted { picked.remove(candidate.id) }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(candidate.id)
-                                        .font(.callout.monospaced())
-                                        .foregroundColor(.primary)
-                                    // 容量副行：采纳时随行进目录（dsh adopt 语义）。
-                                    if candidate.contextWindow != nil || candidate.maxTokens != nil {
-                                        Text(capacitySummary(candidate))
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if picked.contains(candidate.id) {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(.blue)
-                                }
-                            }
-                        }
-                        .frame(minHeight: 44)
-                    }
-                    if visibleCandidates.isEmpty {
-                        Text("无匹配模型。")
-                            .foregroundColor(.secondary)
-                    }
-                } footer: {
-                    Text("这些是提供方当前可用的模型，勾选需要加入目录的项。")
-                }
-            }
-            .navigationTitle("选择要添加的模型")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { closePicker() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("加入所选") { adoptPicked() }
-                        .disabled(picked.isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private var visibleCandidates: [DiscoveredModel] {
-        let query = candidateQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let all = candidates ?? []
-        guard !query.isEmpty else { return all }
-        // id 或显示名含搜索词（dsh :291-294）。
-        return all.filter {
-            $0.id.lowercased().contains(query)
-                || $0.name?.lowercased().contains(query) == true
-        }
-    }
-
-    /// 候选容量摘要副行（K/M 短式）。
-    private func capacitySummary(_ candidate: DiscoveredModel) -> String {
-        let parts: [String] = [
-            candidate.contextWindow.map { "上下文 \(CapacityFormatting.formatCapacity($0))" },
-            candidate.maxTokens.map { "输出 \(CapacityFormatting.formatCapacity($0))" },
-        ].compactMap { $0 }
-        return parts.joined(separator: " · ")
     }
 }

@@ -337,20 +337,13 @@ struct WOChatView: View {
                 // 件 I 宿主接线：todo 状态卡（dsh TodoPanel dock 常驻语义
                 // "empty renders nothing"——当前计划非历史消息，座位组最上；
                 // goal 卡挂载另行评估，本件只挂 todo）。
-                if !viewModel.todoItems.isEmpty {
-                    WOTodoChecklistCard(todos: viewModel.todoItems)
-                        .frame(maxWidth: 620)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, heroMode ? 0 : 14)
-                        .transition(.opacity)
-                }
-                // 【M7-E3】子代理记录卡（dsh ui-subagent 目录语义最小面——
-                // 空目录不渲染；行点击 → 子会话只读回放，见卡片文件头注）。
-                WOSubagentCatalogCard(environment: environment, sessionId: sessionId)
+                // 【M7-Fix2 批2 B2 2026-09-29】挂载条件内收：出现/消失动画
+                // 按原型逐值重做后需要「数据已清空仍在树」的退场缓冲帧——
+                // 卡片自管 presented 生命周期（空态自渲染，见 WOStateCards）。
+                WOTodoChecklistCard(todos: viewModel.todoItems)
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, heroMode ? 0 : 14)
-                    .transition(.opacity)
                 if let hint = agentHint {
                     WOAgentHintPill(title: "AI 正在浏览", domain: hint.domain)
                         .frame(maxWidth: 620)
@@ -551,9 +544,11 @@ struct WOChatView: View {
     }
 
     /// 高 44pt：左=状态点 6pt（原型 .head-title .dot：流式 ongoing 蓝 / 其余
-    /// done 绿）+ 会话标题 14pt/500；右=右栏开关钮（规格=退役的
-    /// reopenSidebarButton：32pt r9 玻璃白 .9+blur；本批两处悬浮双钮已删，
-    /// 本钮是唯一入口）。
+    /// done 绿）+ 会话标题 14pt/500；标题右侧=子代理 count 徽章（【M7-Fix2
+    /// 批2 B1】dsh SubagentHeaderLineage variant 'count'——有子女证据才渲染，
+    /// 空目录零占位；点开=目录树下拉，行点击→子会话只读回放 sheet）；
+    /// 右=右栏开关钮（规格=退役的 reopenSidebarButton：32pt r9 玻璃白
+    /// .9+blur；本批两处悬浮双钮已删，本钮是唯一入口）。
     private var conversationHead: some View {
         HStack(spacing: 8) {
             WOStateDot(state: viewModel.phase == .streaming ? .ongoing : .done,
@@ -563,6 +558,9 @@ struct WOChatView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(WOAlias.labelPrimary)
                 .lineLimit(1)
+            // 【M7-Fix2 批2 B1】子代理徽章挂标题右侧（用户截图 IMG_2515
+            // 对位：标题左，右侧现有按钮组不动）。hero 态不渲染本头。
+            WOSubagentLineageBadge(environment: environment, sessionId: sessionId)
             Spacer(minLength: 0)
             if let onToggle = onToggleRightSidebar {
                 Button {

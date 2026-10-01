@@ -731,10 +731,16 @@ struct SessionsSidebarView: View {
                     Label("重命名工作区", systemImage: "pencil")
                 }
                 Button(role: .destructive) {
+                    // 【M7-Fix2 批2 B3·反馈24】N=侧栏可见口径（同源
+                    // WOVisibleSessionCount，隐藏 blank 草稿不计）；删除
+                    // 范围仍=账本实数（deleteCascade 缝一字不动）。
                     wsDeleteTarget = WorkspaceDeleteTarget(
                         id: workspaceID, title: group.title,
-                        sessionCount: workspaces.first(where: { $0.id == workspaceID })?
-                            .sessionIds.count ?? 0)
+                        sessionCount: WOVisibleSessionCount.count(
+                            inLedger: workspaces.first(where: { $0.id == workspaceID })?
+                                .sessionIds ?? [],
+                            sessions: summaries,
+                            currentSessionID: currentSessionID))
                     wsDeleteError = nil
                 } label: {
                     Label("删除工作区", systemImage: "trash")

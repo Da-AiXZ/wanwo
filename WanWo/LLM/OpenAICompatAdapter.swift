@@ -248,14 +248,7 @@ struct OpenAICompatAdapter {
         for message in request.messages {
             switch message.role {
             case .assistant:
-                // M2：assistant.tool_calls 随消息上 wire（内容可为空串）。
-                let toolCalls = message.toolCalls?.map { call in
-                    WireToolCall(id: call.id, type: "function",
-                                 function: WireFunctionCall(name: call.name,
-                                                            arguments: call.arguments))
-                }
-                wireMessages.append(WireMessage(role: "assistant", content: message.content,
-                                                toolCalls: toolCalls, toolCallID: nil))
+                wireMessages.append(Self.assistantWireMessage(for: message))
             case .tool:
                 // tool 结果消息：tool_call_id 配对；content 必为文本。
                 wireMessages.append(WireMessage(role: "tool", content: message.content,
@@ -357,6 +350,26 @@ struct OpenAICompatAdapter {
         } catch let error as AttachmentError {
             throw LLMError(message: error.message, code: error.code)
         }
+    }
+
+    /// M7Fix2-A2：assistant 消息 wire 序列化（dsh serialize.ts:203-235
+    /// serializeAssistant 1:1 语义移植；抽出为纯函数供单测对拍）。
+    ///   · content = text 块合并文本（无文本轮发 ""，绝不 null——dsh :219-226
+    ///     注释：部分网关对 null 直接 400）；
+    ///   · reasoning_content = 思考链非空即回传（thinking 模式官方规则：
+    ///     tool-call 轮必须回传——dsh :228-233 注释引 thinking_mode.mdx；
+    ///     空串视为缺席 = 字段不出现）；
+    ///   · tool_calls 非空才出现（M2 既有语义）。
+    static func assistantWireMessage(for message: ChatMessage) -> WireMessage {
+        let toolCalls = message.toolCalls?.map { call in
+            WireToolCall(id: call.id, type: "function",
+                         function: WireFunctionCall(name: call.name,
+                                                    arguments: call.arguments))
+        }
+        let reasoning = message.reasoning.flatMap { $0.isEmpty ? nil : $0 }
+        return WireMessage(role: "assistant", content: message.content,
+                           toolCalls: toolCalls, toolCallID: nil,
+                           reasoningContent: reasoning)
     }
 }
 
@@ -573,24 +586,33 @@ struct WireMessage: Codable {
     var tool_calls: [WireToolCall]?
     /// M2：tool 结果消息的配对 id（OpenAI wire tool_call_id）。
     var tool_call_id: String?
+    /// M7Fix2-A2：assistant 思考链回传（DeepSeek wire reasoning_content——
+    /// thinking 模式官方规则：tool-call 轮必须回传，见 dsh serialize.ts:228-233
+    /// 注释引 thinking_mode.mdx；nil/空串 = 不发字段，encodeIfPresent 对齐
+    /// 既有 tool_calls 形态）。
+    var reasoning_content: String?
 
     /// 文本形态便捷构造（既有调用点不变）。
     init(role: String, content: String,
-         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil) {
+         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil,
+         reasoningContent: String? = nil) {
         self.init(role: role, content: .text(content),
-                  toolCalls: toolCalls, toolCallID: toolCallID)
+                  toolCalls: toolCalls, toolCallID: toolCallID,
+                  reasoningContent: reasoningContent)
     }
 
     init(role: String, content: WireContent,
-         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil) {
+         toolCalls: [WireToolCall]? = nil, toolCallID: String? = nil,
+         reasoningContent: String? = nil) {
         self.role = role
         self.content = content
         self.tool_calls = toolCalls
         self.tool_call_id = toolCallID
+        self.reasoning_content = reasoningContent
     }
 
     private enum CodingKeys: String, CodingKey {
-        case role, content, tool_calls, tool_call_id
+        case role, content, tool_calls, tool_call_id, reasoning_content
     }
 
     func encode(to encoder: Encoder) throws {
@@ -604,6 +626,7 @@ struct WireMessage: Codable {
         }
         try container.encodeIfPresent(tool_calls, forKey: .tool_calls)
         try container.encodeIfPresent(tool_call_id, forKey: .tool_call_id)
+        try container.encodeIfPresent(reasoning_content, forKey: .reasoning_content)
     }
 
     init(from decoder: Decoder) throws {
@@ -611,6 +634,8 @@ struct WireMessage: Codable {
         role = try container.decode(String.self, forKey: .role)
         tool_calls = try container.decodeIfPresent([WireToolCall].self, forKey: .tool_calls)
         tool_call_id = try container.decodeIfPresent(String.self, forKey: .tool_call_id)
+        reasoning_content = try container.decodeIfPresent(String.self,
+                                                          forKey: .reasoning_content)
         if let text = try? container.decode(String.self, forKey: .content) {
             content = .text(text)
         } else {
