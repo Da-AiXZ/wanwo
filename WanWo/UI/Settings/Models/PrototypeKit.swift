@@ -437,6 +437,9 @@ struct WOAddModelButton: View {
 }
 
 /// 原型 .empty-box（虚线框空态，pad 17/16、r12、文案 12.5 text-3）。
+/// m7-fix2 M2（IMG_2517 空虚线框无字）加固：Text 垂直 fixedSize 防
+/// 折叠容器高度压缩吞行（fixedSize 宽度不限场景下的零行测量边界），
+/// lineSpacing(5) 对齐原型 line-height 1.65；文案色 text-3 与原型一致。
 struct WOEmptyBox: View {
 
     let text: String
@@ -446,6 +449,8 @@ struct WOEmptyBox: View {
             .font(.system(size: 12.5))
             .foregroundColor(WOMP.text3)
             .multilineTextAlignment(.center)
+            .lineSpacing(5) // 原型 line-height 1.65 的等价行距
+            .fixedSize(horizontal: false, vertical: true) // 文本理想高度不被压缩
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 17)
@@ -457,6 +462,8 @@ struct WOEmptyBox: View {
                     .stroke(Color.black.opacity(0.17),
                             style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
             )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(text)
     }
 }
 

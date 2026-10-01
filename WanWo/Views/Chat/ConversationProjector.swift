@@ -65,6 +65,15 @@ enum ConversationProjector {
             /// 【批2 2B 件4】轮次用量/用时 pill（TurnUsagePanel.tsx:99-235
             /// 语义——轮次尾 pill，点开明细）。
             case turnUsage(TurnUsageSummary)
+            /// 【批3 A1】goal_round 续轮指令专用卡（身份锚 `gr(seq)`）。
+            /// 真机 IMG_2521 双卡根因链：引擎注入的 goal_round userMessage
+            /// （AgentLoop.swift:889 发射 onUserMessageAppended）不走
+            /// marker 过滤 → ChatViewModel:801 乐观哨兵 "u-pending" 与落盘
+            /// 投影卡 "u(seq)" 并存。专卡化后：乐观路径被 marker 拦截（恒
+            /// 不追加），落盘投影恒产一张 gr 卡 = 每条 goal_round 注入恒
+            /// 一张卡；id 锚 seq 恒定 → 动画身份稳定（差分走 Equatable，
+            /// 禁整树刷新）。
+            case goalRound(String)
         }
 
         let id: String
@@ -109,7 +118,16 @@ enum ConversationProjector {
                                  "<system-reminder>", "<skill ",
                                  // 真机批 B4：作业完成纸条（JobCompletionNotice——
                                  // 给 AI 的中间事件）对用户隐藏（无感）。
-                                 "【系统通知】"]
+                                 "【系统通知】",
+                                 // 【批3 A1】goal_round 续轮指令（引擎注入，
+                                 // AgentLoop.goalDrive→userMessage 落盘）：
+                                 // 拦截 ChatViewModel 乐观哨兵路径（双卡根因
+                                 // 修复）；投影器内特判产 goalRound 专卡。
+                                 "<goal_round>",
+                                 // 【批3 A3】附件 URL 清单纸条（模型可见、用户
+                                 // 隐藏——防模型编造 wanwo:// 附件地址，"截图
+                                 // 已不可用"根因；注入点 AgentLoop kick 路径）。
+                                 "<attachment-refs>"]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }
@@ -140,6 +158,17 @@ enum ConversationProjector {
                 turnUsage[turn] = TurnUsageSummary(turn: turn)
 
             case .userMessage(let text):
+                // 【批3 A1】goal_round 特判在 marker guard 之前：marker 前缀
+                // 只负责拦乐观路径，投影本身要产专卡（每条注入恒一张）。
+                // id=gr(seq) 锚定事件 seq → live/settled/reproject 三态身份
+                // 恒定，视觉顺序恒=seq 序（卡片所在位置即其落盘位置，不存
+                // 在"插到直播块上方"的跳位）。
+                if text.hasPrefix("<goal_round>") {
+                    result.append(Bubble(id: "gr\(event.seq)", kind: .goalRound(text)))
+                    continue
+                }
+                // 【批3 A3】<attachment-refs> 纸条：模型可见、UI 隐藏（走
+                // marker 过滤即 skip，无卡）。
                 guard !isMarkerMessage(text) else { continue }
                 result.append(Bubble(id: "u\(event.seq)", kind: .user(text, [])))
 

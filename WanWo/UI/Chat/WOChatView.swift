@@ -340,6 +340,19 @@ struct WOChatView: View {
                 // 【M7-Fix2 批2 B2 2026-09-29】挂载条件内收：出现/消失动画
                 // 按原型逐值重做后需要「数据已清空仍在树」的退场缓冲帧——
                 // 卡片自管 presented 生命周期（空态自渲染，见 WOStateCards）。
+                // 【批3 A2】GoalBar 挂载（dsh GoalDock composer dock 语义，
+                // todo 卡同域其上方；快照=viewModel.goalView，动作接
+                // GoalService CAS——见 WOGoalBar 头注逐项对拍）。淡入淡出
+                // cubic-bezier(.22,1,.36,1)；reduceMotion 静态直出。
+                WOGoalBar(
+                    goal: viewModel.goalView,
+                    onPause: { await viewModel.pauseGoal() },
+                    onResume: { await viewModel.resumeGoal() },
+                    onEdit: { await viewModel.editGoalObjective($0) },
+                    onClear: { await viewModel.clearGoal() })
+                    .frame(maxWidth: 620)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, heroMode ? 0 : 14)
                 WOTodoChecklistCard(todos: viewModel.todoItems)
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
@@ -929,7 +942,27 @@ struct WOChatView: View {
             .onPreferenceChange(WOChatViewportKey.self) { viewportGlobalFrame = $0 }
             .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
             .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
-            .onChange(of: viewModel.bubbles) { _ in follow(proxy) }
+            .onChange(of: viewModel.bubbles) { newBubbles in
+                // 【批3 复审修 P1-2】settling（换手补打）窗口跳位残留：补打
+                // 目标（最后一条 .assistant 落盘正文）之后若已出现 goal_round
+                // 专卡或工具卡，说明引擎已步进到下一步/续轮（goal 续轮
+                // tool-call-first + 长文本补打是常态组合）——继续补打会让新卡
+                // 插在直播正文上方（IMG_2521 病灶形态在换手窄窗口复现；审查
+                // P1-2：原「直播块 seq 更大」论证只对 settled 路径成立，
+                // liveTail 承载的是 seq 更小的上一 step 正文）。对齐
+                // onChange(streamingText) 的既有立即换手语义：登记 seen（落盘
+                // 正文用户刚看过，不播动画）→ isSettling=false → 落盘节点全量
+                // 回归（视觉序=seq 序恢复），liveTail 卸载，gr/工具卡恒在直播
+                // 正文下方。turnUsage pill / system 纸条不构成步进信号（回合
+                // 尾自身产物、与补打目标同帧落盘）——不触发，保持九校补打
+                // 体验。
+                if isSettling, hasPostSettlingStepNode(in: newBubbles) {
+                    if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
+                    isSettling = false
+                    liveTailSeen = false
+                }
+                follow(proxy)
+            }
             .onChange(of: viewModel.phase) { _ in
                 // 批12+回归六校（RC3 手术）：换血帧惰性高度未就绪，即时跟随
                 // 会误落点——延迟补跟随纠偏。
@@ -1092,6 +1125,7 @@ struct WOChatView: View {
             case .assistant: return "assistant"
             case .reasoning: return "reasoning"
             case .tool: return "tool"
+            case .goalRound: return "goalRound"
             default: return "other"
             }
         }()
@@ -1103,7 +1137,7 @@ struct WOChatView: View {
         // （收尾帧落盘思考节点多播一次 fadeUp=用户实测），旗标补上跨帧语义。
         let instantLive = (viewModel.phase == .streaming || viewModel.justEndedStreaming)
             && (kindTag == "assistant" || kindTag == "reasoning")
-        let fadeUp = kindTag == "tool" || kindTag == "reasoning"
+        let fadeUp = kindTag == "tool" || kindTag == "reasoning" || kindTag == "goalRound"
         let fromRight = kindTag == "user"
         // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
         // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
@@ -1137,17 +1171,19 @@ struct WOChatView: View {
     private func bubbleView(_ bubble: ConversationProjector.Bubble) -> some View {
         switch bubble.kind {
         case .user(let text, let images):
-            // 【M7-E3】goal_round 注入拦截（识别=GoalRoundPrompt.render 模板头
-            // 前缀判定）：引擎自动续轮指令不渲染成巨大用户气泡，改收起系统卡
-            // （dsh web 聊天流无此渲染语义→自定方案，见 WOGoalRoundCard 头注）。
-            if text.hasPrefix(WOGoalRoundCard.injectionPrefix) {
-                HStack(alignment: .center, spacing: 0) {
-                    WOGoalRoundCard(text: text)
-                        .frame(maxWidth: 620, alignment: .leading)
-                    Spacer(minLength: 0)
-                }
-            } else {
-                userBubble(text: text, images: images)
+            // 【批3 A1】goal_round 拦截分支移除——投影器已将注入文本特判为
+            // `.goalRound` 专卡（乐观路径同时被 marker 拦截，双卡不再可
+            // 能）；user case 回归纯用户消息渲染。
+            userBubble(text: text, images: images)
+
+        case .goalRound(let text):
+            // 【批3 A1】goal_round 续轮指令专卡（WOGoalRoundCard 形态保持
+            // 不变——E3 战场只引用不改；收敛渲染 = 乐观/落盘/结算三态同
+            // 一身份 gr(seq)，无整树刷新）。
+            HStack(alignment: .center, spacing: 0) {
+                WOGoalRoundCard(text: text)
+                    .frame(maxWidth: 620, alignment: .leading)
+                Spacer(minLength: 0)
             }
 
         case .assistant(let text):
@@ -1357,6 +1393,27 @@ struct WOChatView: View {
     private func isSettlingAssistant(_ bubble: ConversationProjector.Bubble) -> Bool {
         guard case .assistant = bubble.kind else { return false }
         return lastAssistantBubbleID == bubble.id
+    }
+
+    /// 【批3 复审修 P1-2】settling 换手期「回合已步进」判定：最后一条
+    /// .assistant 落盘气泡之后是否已出现 goal_round 专卡或工具卡——两者都是
+    /// 引擎下一步/续轮的落盘证据（出现在补打正文之后 = 卡片将悬在 liveTail
+    /// 上方）。turnUsage/note/user 不算步进（回合尾自身产物，不构成插卡
+    /// 跳位形态；user 消息由乐观哨兵先上屏、投影替换同位，无跳变）。
+    private func hasPostSettlingStepNode(
+        in bubbles: [ConversationProjector.Bubble]) -> Bool {
+        guard let lastIndex = bubbles.lastIndex(where: { bubble in
+            if case .assistant = bubble.kind { return true }
+            return false
+        }) else { return false }
+        return bubbles.dropFirst(lastIndex + 1).contains { bubble in
+            switch bubble.kind {
+            case .goalRound, .tool:
+                return true
+            default:
+                return false
+            }
+        }
     }
 }
 

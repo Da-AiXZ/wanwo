@@ -149,13 +149,32 @@ enum WOSubagentCatalog {
         return fold
     }
 
+    /// 头部前 limit 字节的完整行集（【批3 A4.1】有界读——旧实现
+    /// `Data(contentsOf:)` 整文件进内存后才截 64KB，长会话反而更贵；
+    /// FileHandle.readData(ofLength:) 两段封顶）。截断半行丢弃：foldHead
+    /// 对残行 JSON 解码失败即跳过（既有兜底）。
+    static func headLines(url: URL, limit: Int) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { handle.close() }
+        let data = handle.readData(ofLength: limit)
+        var text = String(decoding: data, as: UTF8.self)
+        if data.count >= limit, let lastNewline = text.lastIndex(of: "\n") {
+            text = String(text[text.startIndex..<lastNewline])
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
     /// 全量扫描（同步磁盘面；调用方在后台线程执行）。
     /// 从会话集合逐个读日志头折叠血缘（覆盖 one-shot——runtime 边表仅
     /// continuable 落边），与 runtime listings 合并成整树：
     ///   · statuses = listings 正常行 → runtimeStatus（running/idle/ready）；
     ///   · diagnostics = listings.diagnosticReason → 诊断行
     ///     （head 读不出的子以 listing.parentSessionId 补挂——dsh :72-74
-    ///     "reported as diagnostics instead of being silently dropped"）。
+    ///     "reported as diagnostics instead of being silently dropped"）；
+    ///   · 【批3 A4.1】非诊断 listings 并入发现行（dsh list-agents.ts
+    ///     project() 语义——runtime 可见的子代理不因 head fold 缺口静默
+    ///     掉线；head 扫描已发现者带同款 status，不重复）。
     static func scan(rootID: String,
                      sessions: [SessionSummary],
                      listings: [SubagentRuntime.AgentListing]) -> ScanOutput {
@@ -173,17 +192,21 @@ enum WOSubagentCatalog {
         }
         var byParent: [String: [ChildRecord]] = [:]
         var entries: [WOSubagentLineageIndex.Entry] = []
+        // 【批3 A4.1】head 扫描实际发现集合（listings 补挂的查重依据）。
+        var discovered = Set<String>()
         for summary in sessions {
             let url = root.appendingPathComponent("\(summary.id).jsonl")
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url) else { continue }
-            // 头部 64KB 足够覆盖 lineage+descriptor（前两条事件）。
-            let head = data.prefix(64 * 1024)
-            let lines = String(decoding: head, as: UTF8.self)
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map(String.init)
-            let fold = foldHead(lines: lines)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            // 【批3 A4.1】头部读取分级放宽：lineage/descriptor 恒在头部
+            // 事件（原始日志头两行=lineage+descriptor，64KB 内），但 descriptor
+            // 若排在 seeding 上下文之后（长首事件）可能越窗——先 64KB，
+            // 未折全再放宽到 256KB（IO 有界两档封顶）。
+            var fold = foldHead(lines: headLines(url: url, limit: 64 * 1024))
+            if fold.parentSession == nil || fold.mode == nil {
+                fold = foldHead(lines: headLines(url: url, limit: 256 * 1024))
+            }
             guard let parentID = fold.parentSession else { continue }
+            discovered.insert(summary.id)
             let label = fold.label ?? summary.title ?? summary.id
             let record = ChildRecord(
                 id: summary.id,
@@ -216,6 +239,26 @@ enum WOSubagentCatalog {
                 runtimeStatus: nil,
                 diagnosticReason: listing.diagnosticReason)
             byParent[listing.parentSessionId, default: []].append(record)
+        }
+        // 【批3 A4.1】非诊断 listings 补挂发现行：head 扫描未见（头折缺
+        // 口/新落盘竞态）但 runtime 在册的子代理照常入树——运行状态随行，
+        // 后代索引照常入（有 parentSessionId 即可导航）。
+        for listing in listings
+        where listing.diagnosticReason == nil
+                && !discovered.contains(listing.subagentId) {
+            let record = ChildRecord(
+                id: listing.subagentId,
+                label: listing.label.isEmpty ? listing.subagentId : listing.label,
+                title: nil,
+                mode: "continuable",
+                depth: listing.depth,
+                createdAt: .distantPast,
+                runtimeStatus: listing.status,
+                diagnosticReason: nil)
+            byParent[listing.parentSessionId, default: []].append(record)
+            entries.append(WOSubagentLineageIndex.Entry(
+                id: listing.subagentId, parentID: listing.parentSessionId,
+                running: listing.status == "running"))
         }
         for key in byParent.keys {
             byParent[key]?.sort { $0.createdAt < $1.createdAt }
@@ -419,6 +462,68 @@ struct WOSubagentReplayView: View {
                 .foregroundColor(WOAlias.labelTertiary)
         case .turnUsage:
             EmptyView()
+        case .goalRound(let text):
+            // 【批3 A1】回放只读面编译完备项（子会话不含 goal 续轮，防御
+            // 渲染同款专卡）。
+            WOGoalRoundCard(text: text)
+                .padding(.vertical, 4)
         }
+    }
+}
+
+// MARK: - 批3 A4.2 子代理会话侧栏可见性源（dsh tree.ts sessionVisible origin 项）
+
+/// dsh `ui-workspace/src/client/tree.ts:131-135` sessionVisible 1:1：
+/// `session.origin !== 'subagent'` 恒隐藏（!archived 与 blank 项万我侧栏
+/// 既有语义已覆盖）。万我 origin 在日志首事件 lineage（dsh 在
+/// SessionHeader.listFields 廉价携带——改 JsonlEventLog 头不可行，平台
+/// 适配 = 头折缓存，每会话头折一次/进程生命周期）。
+/// 消费方 = SessionsSidebarView.filteredSummaries 与
+/// WOVisibleSessionCount.count（B3 红线：两处调用点同源——本类型即唯一
+/// 事实源）。锁盒承载（GoalService OnChangeBox 模式，Swift 5.9 禁
+/// nonisolated 存储属性）。
+enum WOSubagentLineageVisibility {
+    private static let lock = NSLock()
+    /// 已分类集合（含非子代理——防重复头折）。
+    private static var classified: Set<String> = []
+    /// 子代理 origin 会话 id（隐藏集合）。
+    private static var subagentOrigin: Set<String> = []
+
+    /// 判定（侧栏过滤与可见计数共用）。
+    static func isSubagentOrigin(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return subagentOrigin.contains(id)
+    }
+
+    /// 增量分类：只折未分类过的会话头（64KB 档——lineage 恒在头两行）。
+    /// 文件 IO 有界（每会话一次、进程生命周期一次）；调用方保证后台线程。
+    /// 已删除会话残留的已分类标记无害（不进列表即不参与判定）。
+    static func reconcile(sessions: [SessionSummary]) {
+        let pendingIDs: [String] = {
+            lock.lock()
+            defer { lock.unlock() }
+            return sessions.map(\.id).filter { !classified.contains($0) }
+        }()
+        guard !pendingIDs.isEmpty else { return }
+        let root = GroupStore.groupSessionsRoot(
+            base: WanWoPaths.persistentBase,
+            groupID: GroupStore.defaultGroupID)
+        var newlyClassified = Set<String>()
+        var newlySubagent = Set<String>()
+        for id in pendingIDs {
+            newlyClassified.insert(id)
+            let url = root.appendingPathComponent("\(id).jsonl")
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let fold = WOSubagentCatalog.foldHead(
+                lines: WOSubagentCatalog.headLines(url: url, limit: 64 * 1024))
+            if fold.parentSession != nil {
+                newlySubagent.insert(id)
+            }
+        }
+        lock.lock()
+        classified.formUnion(newlyClassified)
+        subagentOrigin.formUnion(newlySubagent)
+        lock.unlock()
     }
 }

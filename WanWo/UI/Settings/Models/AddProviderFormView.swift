@@ -30,12 +30,6 @@
 
 import SwiftUI
 
-/// 预置提供商（UI 静态表——数据面缺口登记：万我无 provider 目录）。
-struct WOPresetProvider: Identifiable, Equatable {
-    let id: String
-    let baseURL: String
-}
-
 /// 「＋ 添加模型提供商」表单卡（原型 .form-card 1:1）。
 struct AddProviderFormView: View {
 
@@ -49,21 +43,11 @@ struct AddProviderFormView: View {
     /// 凭据存储描述透传（同 ProviderEditorView）。
     var onCredentialNotice: ((String?) -> Void)?
 
-    // MARK: - 预置表（OpenAI 兼容子集；登记）
+    // MARK: - 预置表（m7-fix2 M6①：UI 静态表下沉数据面 ProviderCatalog）
 
-    static let presets: [WOPresetProvider] = [
-        WOPresetProvider(id: "openai", baseURL: "https://api.openai.com/v1"),
-        WOPresetProvider(id: "deepseek", baseURL: "https://api.deepseek.com"),
-        WOPresetProvider(id: "moonshot", baseURL: "https://api.moonshot.cn/v1"),
-        WOPresetProvider(id: "minimax-cn", baseURL: "https://api.minimaxi.com/v1"),
-        WOPresetProvider(id: "siliconflow", baseURL: "https://api.siliconflow.cn/v1"),
-        WOPresetProvider(id: "groq", baseURL: "https://api.groq.com/openai/v1"),
-        WOPresetProvider(id: "mistral", baseURL: "https://api.mistral.ai/v1"),
-        WOPresetProvider(id: "fireworks", baseURL: "https://api.fireworks.ai/inference/v1"),
-        WOPresetProvider(id: "together", baseURL: "https://api.together.xyz/v1"),
-        WOPresetProvider(id: "openrouter", baseURL: "https://openrouter.ai/api/v1"),
-        WOPresetProvider(id: "google", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai"),
-    ]
+    /// 预置提供商（ProviderCatalog.presets 透传——每预置带 baseUrl + 内置
+    /// 模型 id 表，dsh catalog.ts:186-190/:799-800 语义；候选只读）。
+    static var presets: [ProviderCatalogPreset] { ProviderCatalog.presets }
 
     private static let apiProtocols = [
         "OpenAI Chat Completions", "OpenAI Responses", "Anthropic Messages",
@@ -138,6 +122,18 @@ struct AddProviderFormView: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
             .strokeBorder(WOMP.lineSoft, lineWidth: 1))
         .padding(.top, 14) // 原型 .form-card margin-top 14
+        // m7-fix2 M7（preset→baseURL 预填，dsh 语义）：选中预置即把预置 URL
+        // 显进「自定义设置·API 地址」字段——用户可改（改后即自定义覆盖）；
+        // :224 生效值合成逻辑原样保留（字段清空仍回落预置表）。
+        .onAppear {
+            if presetBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                presetBaseURL = Self.presets.first(where: { $0.id == presetID })?.baseURL ?? ""
+            }
+        }
+        .onChange(of: presetID) { newValue in
+            // 切换预置 = 换默认地址（iOS16 单参 onChange；红线自查）。
+            presetBaseURL = Self.presets.first(where: { $0.id == newValue })?.baseURL ?? ""
+        }
     }
 
     // MARK: Tabs（原型 :324-349：active=白底描边+阴影）
@@ -221,7 +217,9 @@ struct AddProviderFormView: View {
         }
     }
 
-    /// 生效 baseURL：自定义设置覆盖 > 预置表（尾斜杠剥离）。
+    /// 生效 baseURL：字段值（M7 预填后字段恒非空；用户可改=自定义覆盖语义
+    /// 不变——字段即「自定义设置覆盖 > 预置表」合成的显式形态；字段清空仍
+    /// 回落预置表，尾斜杠剥离）。
     private var effectivePresetBaseURL: String {
         let custom = presetBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let raw = custom.isEmpty ? (Self.presets.first(where: { $0.id == presetID })?.baseURL ?? "") : custom

@@ -121,7 +121,7 @@ struct ProviderEditorView: View {
             // edit-actions（右对齐：取消 ghost / 保存 primary）。
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
-                WOProtoButton(title: "取消", kind: .ghost) { onClose(false) }
+                WOProtoButton(title: "取消", kind: .ghost) { cancelEdits() }
                     .disabled(busy)
                 WOProtoButton(title: "保存", kind: .primary) {
                     Task { await apply() }
@@ -179,7 +179,13 @@ struct ProviderEditorView: View {
 
     private var probeAPIKey: String? {
         let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        // m7-fix2 M1②（IMG_2516 根因②）：dsh ModelListEditor.tsx:8-10「表单
+        // 当前值优先」——但「已配置——输入新值可替换」态的框恒空，此前空字段
+        // 直传 nil → 匿名探测 → 401 必败。修 = 输入值非空 ? 输入值 : 已存
+        // key（EndpointStore.apiKey 只读；nil = 从未配置 → 匿名探测仍成立，
+        // dsh discovery.ts:244-246 语义不变）。
+        if !trimmed.isEmpty { return trimmed }
+        return store.apiKey(for: endpoint)
     }
 
     // MARK: - 保存门（dsh :504-507 同构 + 输入类型空勾门）
@@ -238,6 +244,19 @@ struct ProviderEditorView: View {
         guard let seam = credentialSeam else { return }
         // describe 是占位提示而非编辑前置（拒绝只丢提示）。
         credential = seam.describe(endpoint)
+    }
+
+    /// 取消 = 放弃编辑并收起（m7-fix2 M3②；原型 closeEditPanel :1644-1648
+    /// 语义：取消/保存同一收起路径）。未保存草稿整组丢弃：草稿回基线、
+    /// key 草稿/容量缓冲/折叠态/报错清零（面板常挂 WOCollapsible，@State
+    /// 不随收起销毁——必须显式复位，否则重开会见残稿）。
+    private func cancelEdits() {
+        draft = endpoint
+        keyDraft = ""
+        capacityBuffers.removeAll()
+        customExpanded = false
+        failure = nil
+        onClose(false)
     }
 
     private func apply() async {

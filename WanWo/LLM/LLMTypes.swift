@@ -524,6 +524,18 @@ struct LLMError: Error, Equatable, Sendable {
     }
 }
 
+// MARK: - LocalizedError（m7-fix2 M1①：IMG_2516 根因①——struct 只 Error
+// 未 LocalizedError，被 NSError 包装后 UI 只见 "WanWo.LLMError error 1"，
+// ModelDiscovery 抛的人话 message 全被吞。errorDescription = 人话 message
+// + code（有 status 时附 HTTP 码）；仅加此一致性，struct 本体零改动。）
+
+extension LLMError: LocalizedError {
+    var errorDescription: String? {
+        let statusSuffix = status.map { ", HTTP \($0)" } ?? ""
+        return "\(message)（\(code)\(statusSuffix)）"
+    }
+}
+
 // MARK: - HTTP 错误码映射（dsh adapter.ts httpErrorCode 1:1 移植）
 
 /// 非 2xx 状态 + 错误体 → 稳定错误码（dsh httpErrorCode 语义）。

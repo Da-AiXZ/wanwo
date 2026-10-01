@@ -170,7 +170,10 @@ struct WOSubagentLineageBadge: View {
         scanSeq += 1
         let seq = scanSeq
         scanning = snapshot.directChildren.isEmpty
-        let sessions = environment.sessionStore.listSessions()
+        // 【批3 A4.1】SessionStore 为 actor——跨隔离取数补 await（原同步
+        // 调用缺 await；AppEnvironment:874 为既有正确惯例。419D6993 场景
+        // 徽章空态排查见报告 A4.1 节排除表）。
+        let sessions = await environment.sessionStore.listSessions()
         let listings = await environment.subagentRuntime
             .listAgents(callerSessionId: sessionId, includeDescendants: true)
         let parentID = sessionId

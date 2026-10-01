@@ -340,6 +340,43 @@ final class AttachmentStore: @unchecked Sendable {
         return String(clean.prefix(255))
     }
 
+    // MARK: - 批3 A3 模型可见附件引用清单（"截图已不可用"根因修复）
+
+    /// 附件对象 URL（可被 BrowserUseManager.resolveWanwoURLWithBase 解析：
+    /// host="attachments" 命中 sessionBuckets → base=
+    /// sessionPersistentDir(bucket:"attachments")，subPath=objects/<p2>/<sha>
+    /// 恰为 objectPath 落点——构造性保证可达）。
+    static func attachmentURL(sha256: String) -> String {
+        "wanwo://attachments/objects/\(sha256.prefix(2))/\(sha256)"
+    }
+
+    /// 模型可见引用清单纸条（kick 路径带图条目紧随 attachment/images 追加
+    /// 的 `<attachment-refs>` 前缀 userMessage）。
+    ///
+    /// 病灶（真机 IMG）：PromptSections.wanwoLinkGuide 只教 wanwo:// 链接
+    /// 语义、不携带真实附件地址 → 模型对"用户发的截图"编造
+    /// `wanwo://attachments/coconut.png`（真附件 sha256:c9e1a951… 在
+    /// seq=4 的 attachment/images）→ 助手正文引用该假 URL →
+    /// WOInlineAgentImage resolveWanwoURL 失败 →"截图已不可用"。
+    ///
+    /// dsh 无对应教学语义（全仓 grep 无 attachments URL 产生源）——平台
+    /// 适配登记（dsh SessionHeader 携带 lineage，万我 lineage 在首事件，
+    /// 改头不可行 → 通道选 userMessage）。
+    ///
+    /// 通道语义：DeriveFold 中 userMessage 是唯一模型可见通道；UI 侧
+    /// ConversationProjector.markerPrefixes 含 `<attachment-refs>` 恒隐藏。
+    /// 行格式 = 助手正文截图引用同款 markdown 图片形态（批12 P2-1c 保序
+    /// 切分的提取源格式一致——模型照抄即达）。
+    static func modelReferenceNote(refs: [ImageAttachmentRef]) -> String? {
+        let lines: [String] = refs.compactMap { ref in
+            guard let hex = sha256Hex(of: ref) else { return nil }
+            let name = displayName(ref.name) ?? "image"
+            return "- ![\(name)](\(attachmentURL(sha256: hex)))"
+        }
+        guard !lines.isEmpty else { return nil }
+        return "<attachment-refs>\n" + lines.joined(separator: "\n")
+    }
+
     // MARK: - E1 载荷编解码
 
     private struct ImagesPayload: Codable {

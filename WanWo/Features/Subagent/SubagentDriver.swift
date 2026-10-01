@@ -157,6 +157,16 @@ enum SubagentInProcessDriver {
             (cancelled && recorded != .completed) ? .aborted : recorded
         var structured: JSONValue?
         var diagnostic: String?
+        // 【批3 A4.3】撞 32 步护栏如实上报（test seq11687 父侧误报根因）：
+        // blocked 此前 diagnostic=nil → SubagentRun.stopReasonError 走
+        // .refusal 词汇文案 "subagent declined the task"——真实语义=子代理
+        // 撞步数上限（32 步护栏熔断），非"拒绝任务"。词汇层 dsh 1:1 保持
+        // （toStopReason blocked→.refusal，dsh index.ts:50-67）；文案层
+        // 如实说明并登记 one-shot 不可续（需父会话缩小任务重委派）。
+        // withDiagnosticAndPartialText 会把 diagnostic 拼进父侧呈现。
+        if lastEnd == .blocked, stopReason == .refusal {
+            diagnostic = "子代理撞步数上限（32 步护栏熔断）；本次 one-shot 委派不可继续，请在父会话缩小任务范围后重新委派"
+        }
         if let schema, stopReason == .completed {
             if let parsed = Self.parseStructuredText(output) {
                 if let violation = WorkflowJsonSchema.match(parsed, against: schema,

@@ -171,6 +171,10 @@ struct SideChatView: View {
             // 【批2 2B 件4】侧聊为紧凑只读面——轮次用量 pill 不呈现
             //（主对话区 ChatView 专属；投影枚举新增 case 的编译完备项）。
             EmptyView()
+        case .goalRound:
+            // 【批3 A1】侧聊无 goal 续轮语义（goalDrive 仅宿主会话）——
+            // 编译完备项，不呈现（注入文本不透出，防巨大气泡）。
+            EmptyView()
         }
     }
 

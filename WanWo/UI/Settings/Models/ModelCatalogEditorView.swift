@@ -98,12 +98,16 @@ struct ModelCatalogEditorView: View {
                 Text("模型目录")
                     .font(.system(size: 12.8))
                     .foregroundColor(Color(red: 0x55, green: 0x55, blue: 0x5f))
+                // m7-fix2 M1④（IMG_2516）：dir-status 与右侧 link 组同排时，
+                // 窄屏被 lineLimit(1) 压缩截断、视觉上与下方「自定义设置」
+                // 折叠区叠字。修 = 去行数限制 + 垂直自适应（原型 .dir-label
+                // min-width:0 换行语义，:386-393），整行随两行文本自然增高。
                 Text(statusText)
                     .font(.system(size: 12))
                     .foregroundColor(WOMP.text3)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
+            .frame(maxWidth: .infinity, alignment: .leading) // 弹性列（原型 flex）
             HStack(alignment: .top, spacing: 16) {
                 if !models.isEmpty {
                     WOLinkButton(title: "恢复默认模型") { resetAll() }
@@ -116,6 +120,7 @@ struct ModelCatalogEditorView: View {
                     .disabled(disabled || probing)
                 }
             }
+            .fixedSize(horizontal: true, vertical: true) // 链接组不压缩（原型 flex: 0 0 auto）
         }
         .padding(.bottom, 8)
     }

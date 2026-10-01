@@ -357,6 +357,18 @@ final class EndpointStore: ObservableObject {
         return nil
     }
 
+    // MARK: - 预置内置目录只读消费（m7-fix2 M6②；dsh catalogModels(provider)
+    // 语义——catalog.ts:186-190；候选语义只读，绝不静默写配置）
+
+    /// 端点对应的预置内置模型目录（dsh catalogModels：未收录 = 空集）。
+    /// 匹配键 = 端点 name（预置创建时 name=preset.id，AddProviderFormView
+    /// savePreset 语义；出厂 DeepSeek 端点 name 亦命中，大小写不敏感）。
+    /// 消费方：ModelSelectView dock 模型菜单（用户目录 ∪ 内置目录，discovery
+    /// .ts:208-216 installed 语义）。
+    func builtinCatalog(for endpoint: EndpointConfig) -> [ModelCatalogEntry] {
+        ProviderCatalog.builtinModels(forProvider: endpoint.name)
+    }
+
     // MARK: - 持久化
 
     private func persist() {

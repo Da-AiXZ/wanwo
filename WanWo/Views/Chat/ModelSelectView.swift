@@ -83,11 +83,24 @@ struct ModelSelectView: View {
         return order.map { (name: $0, endpoints: buckets[$0] ?? []) }
     }
 
+    /// 目录数据源（m7-fix2 M6③；dsh discovery.ts:208-216 installed 语义）：
+    /// 端点用户目录 ∪ 该端点预置内置目录（ProviderCatalog 只读候选）。
+    /// 去重保序、用户目录优先；只读候选——**绝不静默写配置**（dsh
+    /// ModelListEditor 口径：内置 id 仅供挑选发送，不回写 endpoint.models）。
+    private func mergedEntries(for endpoint: EndpointConfig) -> [ModelCatalogEntry] {
+        var seen = Set<String>()
+        var merged: [ModelCatalogEntry] = []
+        for entry in endpoint.catalogEntries() + store.builtinCatalog(for: endpoint) {
+            if seen.insert(entry.id).inserted { merged.append(entry) }
+        }
+        return merged
+    }
+
     /// 触发器模型显示名（M8 件A4：目录项 name 优先，缺省 = id——
-    /// dsh modelInfo name ?? id 语义）。
+    /// dsh modelInfo name ?? id 语义；M6③：并集目录内解析）。
     private var currentModelLabel: String? {
         guard let current else { return nil }
-        return current.catalogEntries().first { $0.id == current.model }?.name ?? current.model
+        return mergedEntries(for: current).first { $0.id == current.model }?.name ?? current.model
     }
 
     /// 悬停底色（指针场景增强；触屏无 hover——触屏纪律）。
@@ -105,7 +118,8 @@ struct ModelSelectView: View {
                     Section(group.name) {
                         ForEach(group.endpoints) { endpoint in
                             Menu {
-                                ForEach(endpoint.catalogEntries(), id: \.id) { entry in
+                                // M6③：目录 = 用户目录 ∪ 预置内置目录（去重）。
+                                ForEach(mergedEntries(for: endpoint), id: \.id) { entry in
                                     Button {
                                         onSelect(endpoint, entry.id)
                                     } label: {

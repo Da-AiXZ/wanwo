@@ -539,9 +539,15 @@ struct SessionsSidebarView: View {
 
     // MARK: - 会话列表（分组树 / 平铺双形态）
 
-    /// 渲染集合 = 查询过滤（标题+工作区名，blank 排除）+ 归档排除。
+    /// 渲染集合 = 归档排除 + 子代理隐藏（【批3 A4.2】dsh tree.ts:131-135
+    /// `origin !== 'subagent'` 恒隐藏 1:1——WOSubagentLineageVisibility
+    /// 唯一事实源，WOVisibleSessionCount 同源消费）+ 查询过滤
+    /// （标题+工作区名，blank 排除）。
     private var filteredSummaries: [SessionSummary] {
-        let base = summaries.filter { !archivedIDs.contains($0.id) }
+        let base = summaries.filter {
+            !archivedIDs.contains($0.id)
+                && !WOSubagentLineageVisibility.isSubagentOrigin($0.id)
+        }
         return SidebarGroupingModel.filterSessions(base, query: query,
                                                    workspaces: workspaces)
     }
@@ -891,6 +897,12 @@ struct SessionsSidebarView: View {
             if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
             return lhs.id < rhs.id
         }
+        // 【批3 A4.2】子代理 origin 分类先行（后台头折，IO 有界——每会话
+        // 头折一次/进程生命周期）：先分类后赋值，新会话首帧即持正确可见性；
+        // 侧栏过滤与可见计数自此同源。
+        await Task.detached(priority: .utility) {
+            WOSubagentLineageVisibility.reconcile(sessions: loaded)
+        }.value
         summaries = loaded
         archivedIDs = environment.workspaceRegistry.archivedSessionIDs()
         // 工作区基线快照（follow 订阅在 task 里；此处直读 registry 兜底首帧前空窗）。

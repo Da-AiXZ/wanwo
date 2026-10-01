@@ -868,6 +868,22 @@ actor AgentLoop {
                         _ = try await deps.writer.append(.extensionEvent(
                             kind: AttachmentStore.imagesEventKind, payload: payload))
                     }
+                    // 【批3 A3】模型可见附件 URL 清单（"截图已不可用"根因
+                    // 修复）：带图条目紧随 attachment/images 注入
+                    // `<attachment-refs>` userMessage——模型获得真实可解析
+                    // 地址，防编造 wanwo:// 附件名（见
+                    // AttachmentStore.modelReferenceNote 头注）。UI 侧走
+                    // marker 过滤恒隐藏（ConversationProjector.markerPrefixes）；
+                    // 注入失败不抛穿（UPS/R5 同族纪律）。
+                    if !entry.images.isEmpty,
+                       let note = AttachmentStore.modelReferenceNote(refs: entry.images) {
+                        do {
+                            _ = try await deps.writer.append(.userMessage(text: note))
+                        } catch {
+                            Self.logger.error("attachment-refs note append "
+                                              + "failed: \(error)")
+                        }
+                    }
                     // M7 件 B：goal 轮 admitted 记录（dsh user/message
                     // MessageSource 的伴随事件等价——载荷冻结定案；fold 据此
                     // 推进 roundsStarted，GoalFold.applyGoalEvent）。

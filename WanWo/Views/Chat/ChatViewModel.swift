@@ -47,6 +47,10 @@ final class ChatViewModel: ObservableObject {
     /// 当前计划卡数据源（dsh todo/write "Log-only UI state" 的 dock 常驻
     /// 语义——整表替换，非历史消息；空=不渲染。件 I 宿主接线补挂载）。
     @Published private(set) var todoItems: [TodoItem] = []
+    /// 【批3 A2】GoalBar 数据源（GoalFold.foldGoal 事件流快照；goal/change
+    /// 落盘即失效、随 reproject/onToolCallFinished 重 fold——与 todoItems
+    /// 同一 log-only 独立槽纪律，不进 Bubble 流）。nil = 无 goal（条消失）。
+    @Published private(set) var goalView: GoalView?
     @Published private(set) var streamingText = ""
     @Published private(set) var streamingReasoning = ""
     @Published private(set) var phase: Phase = .loading
@@ -768,6 +772,10 @@ final class ChatViewModel: ObservableObject {
                         // 整表替换语义，fold 幂等便宜）。
                         self.todoItems = TodoProjection.fold(
                             events: self.writer?.events ?? []) ?? []
+                        // 【批3 A2】goal 快照同位刷新（goal/change 落盘先于
+                        // finished 发射——与 todoItems 同一刷新时钟）。
+                        self.goalView = (try? GoalFold.foldGoal(
+                            events: self.writer?.events ?? []))?.goal
                     } else {
                         // 卡不在场兜底（理论不发生：started 已重投影；防御
                         // 回调乱序/漏发——直接按事件流重建）。
@@ -785,7 +793,25 @@ final class ChatViewModel: ObservableObject {
                     // T2.6 件6（用户 #22 前半）：乐观气泡带图——回调第二参 =
                     // 随行图片引用（E1 attachment/images 已落盘后发射），重投影
                     // 前图片即时可见。
-                    guard !ConversationProjector.isMarkerMessage(text) else { return }
+                    // 【批3 复审修 P1-1】goal_round 注入的即时上屏补触发：双卡
+                    // 根因修复拆掉乐观哨兵（正确），但 marker 拦截 return 之后
+                    // 到下一投影触发点（turn 尾/工具卡 reproject）之间无投影
+                    // 时钟——goal 收尾轮（模型纯文本回复，goal_drive 常态）gr
+                    // 卡整轮缺席；onTurnEnd 与注入落盘（seq1967-1969 在 turn/
+                    // end 后 ~7ms 落盘，test_core 实证）同帧竞态下还可能再延
+                    // 一轮。此刻 goal_round userMessage 已落盘（AgentLoop 注入
+                    // 先 append 后发射本回调，见回调契约头注），直接重投影：
+                    // 恒产一张 gr(seq) 专卡、无乐观哨兵、无竞态窗口（紧随的
+                    // goal/round、system 纸条经 onToolCallStarted/onTurnEnd
+                    // 常规时钟收敛）。<attachment-refs> 无卡面（UI 隐藏），不
+                    // 需触发。侧聊（SideChatViewModel）同 guard 不修：gr 卡
+                    // 渲染面=EmptyView（批3 A1 拍板），无用户可见缺陷。
+                    guard !ConversationProjector.isMarkerMessage(text) else {
+                        if text.hasPrefix("<goal_round>") {
+                            self.reproject()
+                        }
+                        return
+                    }
                     // 【批2 变更检测 2026-09-27】真实用户消息=回合开始 → 拍工作区
                     // 快照（cc-haha turn checkpoint 语义；平台适配=回合边界宿主
                     // 快照对比，见 WorkspaceChangeMonitor 头注）。此刻 AI 尚未
@@ -905,6 +931,10 @@ final class ChatViewModel: ObservableObject {
         // 件 I 宿主接线：todo 投影随重投影全量 fold（todo/write log-only
         // 不进 Bubble 流——dsh "never derived history" 语义，状态卡独立槽）。
         todoItems = TodoProjection.fold(events: writer.events) ?? []
+        // 【批3 A2】goal 快照同位重 fold（goal/* extensionEvent log-only，
+        // 除 goalRound 专卡外不进 Bubble 流；dsh 'goal' projection
+        // whole-value 语义——快照整体替换）。
+        goalView = (try? GoalFold.foldGoal(events: writer.events))?.goal
         streamingText = ""
         streamingReasoning = ""
         // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
@@ -937,6 +967,75 @@ final class ChatViewModel: ObservableObject {
             if case .tool(let card) = bubble.kind { cards[card.callId] = card }
         }
         return cards
+    }
+
+    // MARK: - GoalBar 动作（批3 A2；dsh slots.ts GoalBarActions CAS 语义对拍）
+
+    /// 暂停目标（GoalService.pause：expectCurrent CAS——revision 不匹配 =
+    /// GOAL_STALE_REVISION，UI 侧回读收敛）。
+    func pauseGoal() async -> String? {
+        await goalMutation { try await $0.pause(ref: $1) }
+    }
+
+    /// 恢复目标（服务侧拒绝 active+armed 与 roundsStarted≥max——错误如实
+    /// 透出给 GoalBar error 槽）。
+    func resumeGoal() async -> String? {
+        await goalMutation { try await $0.resume(ref: $1) }
+    }
+
+    /// 编辑目标内容（dsh onEdit(trimmed)：仅 objective，maxGoalRounds 不动）。
+    func editGoalObjective(_ objective: String) async -> String? {
+        await goalMutation { try await $0.edit(ref: $1, objective: objective,
+                                               maxGoalRounds: nil) }
+    }
+
+    /// 清除目标（dsh onClear；成功后快照置 nil → GoalBar 消失条件命中）。
+    func clearGoal() async -> String? {
+        guard let service = agentLoop?.deps.goalService,
+              let ref = goalRef() else { return nil }
+        do {
+            _ = try await service.clear(ref: ref)
+            goalView = nil
+            return nil
+        } catch {
+            refreshGoalSnapshot()
+            return Self.goalActionMessage(error)
+        }
+    }
+
+    /// 统一变更通道：以当前快照 revision 提交 CAS → 成功采纳服务端返回的
+    /// 权威快照（revision 已自增）；失败回读事件流收敛 UI（服务端权威，
+    /// stale 双写不可达——dsh GoalActionResult{ok,error} 语义，错误文案
+    /// 交 GoalBar actionError 槽呈现）。
+    private func goalMutation(
+        _ body: (GoalService, GoalRef) async throws -> GoalView
+    ) async -> String? {
+        guard let service = agentLoop?.deps.goalService,
+              let ref = goalRef() else { return nil }
+        do {
+            goalView = try await body(service, ref)
+            return nil
+        } catch {
+            refreshGoalSnapshot()
+            return Self.goalActionMessage(error)
+        }
+    }
+
+    /// CAS 提交用的当前引用（id + revision——快照捕获时刻的乐观锁）。
+    private func goalRef() -> GoalRef? {
+        goalView.map { GoalRef(id: $0.id, revision: $0.revision) }
+    }
+
+    /// 失效回读（事件流 = 权威日志；fold 幂等便宜——todoItems 同款纪律）。
+    private func refreshGoalSnapshot() {
+        guard let writer else { return }
+        goalView = (try? GoalFold.foldGoal(events: writer.events))?.goal
+    }
+
+    /// 错误文案（dsh GoalBar.tsx:61 `message (code)` 形态；错误码透出，
+    /// F060 自解释纪律）。
+    private static func goalActionMessage(_ error: Error) -> String {
+        "\(error.localizedDescription)"
     }
 
     // MARK: - 流式直通车（批12+回归三校：文本/思考 0.04s 快车道 + shell 行 0.2s E2 节流）

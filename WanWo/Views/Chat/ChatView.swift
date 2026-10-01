@@ -425,6 +425,14 @@ struct ChatView: View {
         case .turnUsage(let summary):
             // 【批2 2B 件4】轮次尾用量/用时 pill（TurnUsagePanel 语义）。
             TurnUsagePillView(summary: summary)
+        case .goalRound(let text):
+            // 【批3 A1】goal_round 续轮指令专卡（投影器专卡化配套；旧视图
+            // 编译完备项——形态与 WOChatView 同源 WOGoalRoundCard）。
+            HStack(alignment: .center, spacing: 0) {
+                WOGoalRoundCard(text: text)
+                    .frame(maxWidth: 620, alignment: .leading)
+                Spacer(minLength: 0)
+            }
         }
     }
 

@@ -184,14 +184,27 @@ struct ProvidersSectionView: View {
                     discoverModels: discoverModels,
                     onToggleEdit: {
                         // 单展开（清单9）：开本卡即关他卡；再点收起。
-                        editingID = editingID == endpoint.id ? nil : endpoint.id
+                        // m7-fix2 M3①：折叠事务显式带原型 .58s 曲线（此前
+                        // 依赖隐式动画被行级 0.25s 覆盖 → 闪回无动画）。
+                        withAnimation(WOMP.ease(WOMP.durCollapse)) {
+                            editingID = editingID == endpoint.id ? nil : endpoint.id
+                        }
                     },
                     onRequestDelete: {
                         deleteTarget = endpoint
                     },
-                    onClosed: { changed, notice in
-                        if let notice { credentialNotice = notice }
+                    onEditClosed: { changed in
+                        // m7-fix2 M3②：编辑卡关闭（取消/保存都走原型
+                        // closeEditPanel 同一路径）→ 收起；changed=有提交
+                        // 才并 saved 轻提示。收起事务显式带原型 .58s 曲线。
+                        withAnimation(WOMP.ease(WOMP.durCollapse)) {
+                            if editingID == endpoint.id { editingID = nil }
+                        }
                         if changed { announceSaved() }
+                    },
+                    onCredentialNotice: { notice in
+                        // 凭据存储描述只透传（不收卡——保存中段回调）。
+                        credentialNotice = notice
                     })
                 // 行卡入场（原型 .provider-item：opacity 0 + 上移 8 + scale .99）。
                 // 显式 AnyTransition（iOS13+）——避免命中 iOS17 Transition 协议。
@@ -267,8 +280,10 @@ private struct ProviderRowCardView: View {
     var discoverModels: ((String, String?) async -> Result<[DiscoveredModel], Error>)?
     let onToggleEdit: () -> Void
     let onRequestDelete: () -> Void
-    /// 编辑卡关闭（changed=有提交落地；notice=凭据存储描述透传）。
-    let onClosed: (Bool, String?) -> Void
+    /// 编辑卡收起（m7-fix2 M3②：取消/保存统一收起路径；changed=有提交落地）。
+    let onEditClosed: (Bool) -> Void
+    /// 凭据存储描述透传（保存中段回调，不触发收起）。
+    let onCredentialNotice: (String?) -> Void
 
     @State private var hovering = false
 
@@ -282,10 +297,11 @@ private struct ProviderRowCardView: View {
                     credentialSeam: seam,
                     discoverModels: discoverModels,
                     onClose: { changed in
-                        onClosed(changed, nil)
+                        // 取消/保存统一收起（M3②）；凭据描述走独立通道。
+                        onEditClosed(changed)
                     },
                     onCredentialNotice: { notice in
-                        onClosed(false, notice)
+                        onCredentialNotice(notice)
                     })
                 // 原型 .edit-panel margin 0 10 10。
                 .padding(.horizontal, 10)
@@ -302,7 +318,10 @@ private struct ProviderRowCardView: View {
         .modifier(WORemoveFold(removing: isRemoving))
         .onHover { hovering = $0 } // hover 纯视觉增强（触屏直达不受影响）
         .animation(.easeOut(duration: 0.25), value: hovering)
-        .animation(.easeOut(duration: 0.25), value: isEditing)
+        // m7-fix2 M3①：移除原 `.animation(.easeOut(0.25), value: isEditing)`
+        // ——该行级动画包住整个子树（含 WOCollapsible 的 frame/opacity），
+        // 以 0.25s 覆盖折叠容器的 .58s 原型曲线 → 收起闪回。边框编辑态变色
+        // 随状态瞬切（原型 border-color .25s 的微小偏差，登记报告）。
     }
 
     /// hover/编辑态底色引用（阴影与边框共用判定）。

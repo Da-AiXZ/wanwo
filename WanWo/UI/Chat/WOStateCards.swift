@@ -9,6 +9,11 @@
 //      【M7-Fix2 批2 B2 2026-09-29】出现/消失/展开/收起/级联入场动画全套
 //      按用户 HTML 原型逐值重做（挂载条件内收 WOChatView——退场动画需要
 //      数据已清空仍在树的缓冲帧，卡片自管生命周期）。
+//      【M7-Fix2 批3 2026-09-29】T1 收起态高度按 dsh TodoPanel.module.css
+//      收紧（≈36px）+ 列表 180px 内滚；T2 数据更新禁重播收展序列（原位
+//      刷新，差分身份稳定）；T3 空列表整卡消失（dsh "empty renders
+//      nothing"，退场走 B2 消失对称动画）。详见 analysis/m7-fix2/
+//      e3-report-batch3.md。
 //    · WOGoalStatusCard —— goal 状态卡（GoalView 快照消费面：objective +
 //      phase 徽章 + 回合计数——M7 件 B goal 事件的呈现端搭车）。
 //  宿主接线（登记，装配行号随报告呈报合并）：ChatViewModel 会话投影在
@@ -35,26 +40,25 @@ private struct WOTodoPanelHeightKey: PreferenceKey {
 }
 
 /// todo 清单卡（TodoItem 三态行）。
-/// 【M7-E3 B2 2026-09-29】动画全套按用户 HTML 原型逐值重做
-///（语义源=唯一基准 C:/Users/JuYang/Desktop/动画/todo出现消失展开收起动画.html
-/// 587 行全文通读；逐值表见 analysis/m7-fix2/e3-report.md）：
-///   · 出现：面板淡入 opacity .42s（伴随 translateY(18px) scale(.96)→none、
-///     transform-origin 50% 100% → anchor .bottom、transform .62s）→
-///     等 130ms → 展开（高度 0→自然高 .6s ≙ CSS grid-template-rows 0fr→1fr）。
-///   · 消失（对称）：展开中=先收起(.6s)→等 130ms→淡出 .42s（余量等 500ms）；
-///     已收起=直接淡出，440ms 后清数据（原型 clearTasks :542-572 逐值）。
-///   · 数据更新（AI 重发整表）：收起 → 等 300ms → 换数据（级联重跑）→
-///     等 130ms → 展开（原型 invokeAI :515-535 同款间隔）。
-///   · 条目级联入场 itemIn .58s both，delay = i*72ms + 150ms，
-///     from {opacity 0; translateY(14px); scale(.985); blur(3px)}。
-///   · chevron 旋转 180° .55s；badge 开合态变色 .3s。
-///   · header hover 底色 = 纯视觉增强（触屏无 hover，裁剪，登记）。
-///   · 收起状态记住（清单5 原文）：沿用 @AppStorage("wo.todo.card.collapsed")
-///     持久位——手动开合写回，动画序列展开终态 = !collapsed。
-///   · 挂载条件内收（WOChatView 无条件挂载）：退场动画需要「数据已清空
-///     仍在树」的缓冲帧——卡片自管 presented/open 生命周期，空态自渲染。
-///  颜色/内边距沿用万我主题令牌族（原型为白底黑字版，动画值为移交物，
-///  主题色不是——登记 e3-report.md）。
+/// 【M7-Fix2 批3 2026-09-29】三件（语义源 dsh ui-conversation/skeleton/
+/// TodoPanel.tsx + TodoPanel.module.css 全文；事件流 _ev_digest_1001b
+/// test_core.txt turn7-9）：
+///   · T1 收起态高度按 dsh 收紧：.body padding 6px 12px + .title 13px/24px
+///     medium → 收起态总高 ≈36px（6+24+6）；展开列表 max-height 180px 内滚；
+///     条目 .item 13px/20px 单行省略、.glyph 16px 格、行距/列距 10/8。
+///   · T2 数据更新禁重播收展序列（dsh TodoPanel 无任何重播语义——同一
+///     面板 re-render；turn8"为什么任务清单又打开了"根因 = 旧 updateSequence
+///     每次更新末尾强制 open = !collapsed）：更新一律原位刷新，只有
+///     ①首次出现 ②用户手动收/展 ③清空退场 走动画。
+///   · T3 空列表整卡消失（TodoPanel.tsx:90 "empty renders nothing" 逐字；
+///     退场走 B2 消失对称动画后卸载——turn8 回归场景）。
+/// 【M7-E3 B2 2026-09-29】动画原型逐值（保留面）：出现=淡入 opacity .42s
+///（translateY(18px) scale(.96)→none、anchor .bottom、.62s）→ 130ms → 展开
+///（自然高揭示 .6s ≙ 0fr→1fr）；消失对称（展开中=收起.6s→130ms→淡出.42s
+///→500ms；已收起=直淡出→440ms）；首次出现条目级联 itemIn .58s both
+///（delay=i*72ms+150ms，from{opacity 0; translateY(14); scale(.985); blur(3)}）；
+/// chevron 180° .55s；badge 变色 .3s；收起状态记住 @AppStorage 持久位。
+///  颜色/内边距沿用万我主题令牌族（登记）。
 struct WOTodoChecklistCard: View {
     let todos: [TodoItem]
 
@@ -68,16 +72,17 @@ struct WOTodoChecklistCard: View {
     @State private var liftShown = false
     /// 展开态（grid-template-rows 0fr→1fr 对应的自然高揭示，.6s）。
     @State private var open = false
-    /// 条目级联代际（出现/更新/手动展开重跑 itemIn——CSS .open 重挂重播语义）。
-    @State private var generation = 0
     /// 展示中的条目快照（退场期间 todos 已空仍需展示到动画收尾）。
     @State private var items: [TodoItem] = []
     /// 面板在树（出现序曲前挂载 → 消失清数据后卸载）。
     @State private var presented = false
-    /// 列表自然高（0fr→1fr 揭示用；隐藏副本量测）。
+    /// 列表自然高（0fr→1fr 揭示用；隐藏副本量测；展开封顶 180 内滚）。
     @State private var naturalHeight: CGFloat = 0
     /// 节奏器（新序列取消旧序列——原型 busy 单飞语义）。
     @State private var sequencer: Task<Void, Never>?
+
+    /// dsh .list max-height（TodoPanel.module.css :94）。
+    private static let listMaxHeight: CGFloat = 180
 
     private var completedCount: Int {
         items.filter { $0.status == .completed }.count
@@ -102,14 +107,22 @@ struct WOTodoChecklistCard: View {
             // grid-template-rows 0fr→1fr 折算：Color.clear 定高度动画，
             // 内容经 overlay 恒按自然尺寸布局（不被高度约束压缩），
             // clipped 裁切自上而下揭示（原型 .todo-body 语义 1:1）。
+            // 【批3 T1】内层 ScrollView：内容 > 180px 时在封顶高度内滚动
+            //（dsh .list max-height 180px overflow-y :87-96）。
             Color.clear
                 .frame(height: revealHeight)
                 .overlay(alignment: .top) {
-                    todoList
+                    ScrollView {
+                        todoListBody
+                    }
                 }
                 .clipped()
+                // 量测到位/内容变化时高度平滑适配（0.3s 轻量过渡）。
+                .animation(WOTodoMotion.curve(0.3), value: naturalHeight)
         }
-        .padding(12)
+        // 【批3 T1】dsh .body padding 6px 12px（:34-39）——原 12 全边退役。
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(WOAlias.bgLayer1))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -124,7 +137,8 @@ struct WOTodoChecklistCard: View {
         .accessibilityLabel("任务清单：\(completedCount) / \(items.count) 完成")
         .background(
             // 隐藏副本量测自然高（fixedSize 竖向解约束 = 0fr 基准的自然尺寸；
-            // 揭示容器内内容不被压缩，量测与展示解耦）。
+            // 量测副本不带 ScrollView——纯 VStack 才能量出内容真高，
+            // 展示侧 ScrollView 吃掉 revealHeight 提案封顶 180 内滚）。
             todoListBody
                 .fixedSize(horizontal: false, vertical: true)
                 .opacity(0)
@@ -137,15 +151,22 @@ struct WOTodoChecklistCard: View {
         .onPreferenceChange(WOTodoPanelHeightKey.self) { naturalHeight = $0 }
     }
 
-    /// 展开高：0（收起）→ 自然高（展开；量测未达时先不限高防首帧 0 跳变）。
+    /// 展开高：0（收起）→ min(自然高, 180)（【批3 T1】dsh .list 封顶内滚；
+    /// 量测未达时先不限高防首帧 0 跳变）。
     private var revealHeight: CGFloat? {
         guard open else { return 0 }
-        return naturalHeight > 0 ? naturalHeight : nil
+        guard naturalHeight > 0 else { return nil }
+        return min(naturalHeight, Self.listMaxHeight)
     }
 
     // MARK: 标题行（= 收起/展开开关）
 
-    /// 标题行 = 收起/展开开关（44pt 命中区达标；chevron 表达当前态）。
+    /// 标题行 = 收起/展开开关。
+    /// 【批3 T1】可视行 24px（dsh .title 13px/24px medium :60-66）——收起态
+    /// 总高 = 6 + 24 + 6 ≈ 36px（IMG_2527 过高修）。
+    /// 44pt 触屏红线 × 36px 卡高的调和：可视 24px 行 + 卡上下 padding 6+6
+    /// + 命中区负内缩外扩 4pt = 竖向 44pt（横向外扩 8pt 覆盖卡左右 padding
+    /// ——contentShape 负内缩为 SwiftUI 官方扩大命中手法）。
     private var headerRow: some View {
         Button {
             toggleExpanded()
@@ -155,7 +176,7 @@ struct WOTodoChecklistCard: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(WOAlias.stateBusinessPrimary)
                 Text("任务清单")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: .medium)) // dsh .title 500
                     .foregroundColor(WOAlias.labelPrimary)
                 Spacer()
                 // todo-badge（原型 :186-200：tabular-nums + 开合态变色 .3s）。
@@ -175,43 +196,46 @@ struct WOTodoChecklistCard: View {
                     .rotationEffect(.degrees(open ? 180 : 0))
                     .animation(WOTodoMotion.curve(0.55), value: open)
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .center)
+            // 命中区外扩：竖向 24+6+6+4+4=44pt、横向覆盖卡 padding（批3 T1）。
+            .contentShape(Rectangle().inset(by: EdgeInsets(
+                top: -4, left: -8, bottom: -4, right: -8)))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(open ? "收起任务清单" : "展开任务清单")
         .accessibilityAddTraits(.isButton)
     }
 
-    /// 手动开合：.6s 揭示 + .55s chevron + 开态级联重跑（CSS .open 重挂
-    /// 重播语义）；收起位写回持久（清单5 收起状态记住）。
+    /// 手动开合：.6s 揭示 + .55s chevron（批3 T2：这是"手动收/展"专属
+    /// 动画路径，数据更新绝不进入）；收起位写回持久（清单5 收起状态记住）。
     private func toggleExpanded() {
         let next = !open
         withAnimation(WOTodoMotion.curve(0.6)) { open = next }
-        if next { generation += 1 }
         collapsed = !next
     }
 
     // MARK: 条目列表
 
-    private var todoList: some View {
-        todoListBody
-            .id(generation) // 代际换身份 → 级联重跑（出现/更新/手动展开）
-    }
-
+    /// 【批3 T1】dsh .list/.item 几何：行距 8（:90 gap）、条目 13px/20px
+    ///（:98-106）、glyph 16px 格（:108-114）、单行省略（:135-141）；
+    /// 列表顶部 8px = .body gap（:37）。
+    /// 【批3 T2】差分身份稳定：ForEach id = content（dsh TodoPanel.tsx:111
+    /// key={item.content} 同源）——更新只增删变动行，存量行 @State 不重置
+    /// （禁 .id(epoch) 整树刷新）。
     private var todoListBody: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, todo in
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(items.enumerated()), id: \.element.content) { index, todo in
                 WOTodoCascadeRow(index: index, todo: todo)
             }
         }
-        .padding(.top, 2)
-        .padding(.bottom, 8)
+        .padding(.top, 8)
     }
 
     // MARK: 序列编排（原型 busy 单飞 + sleep 节奏逐值）
 
     /// 数据到达分派（onAppear + onChange(todos) 共用）。
+    /// 【批3 T2/T3】三条路径只有 ①首次出现 ②清空退场 走动画；数据更新
+    /// 一律原位刷新（禁收展重播——turn8"又打开了"/"跟抽搐了一样"根因）。
     private func handleArrival(_ newValue: [TodoItem]) {
         if newValue.isEmpty {
             guard presented else { return }
@@ -219,7 +243,7 @@ struct WOTodoChecklistCard: View {
         } else if !presented {
             run { await appearSequence(newValue) }
         } else if newValue != items {
-            run { await updateSequence(newValue) }
+            run { await updateInPlace(newValue) }
         }
     }
 
@@ -239,7 +263,6 @@ struct WOTodoChecklistCard: View {
     /// 展开终态 = !collapsed——收起偏好被尊重）。
     private func appearSequence(_ newItems: [TodoItem]) async {
         items = newItems
-        generation += 1
         presented = true
         // 先让面板以 from 态（opacity 0 / translateY(18px) scale(.96)）上树
         // 一帧——同帧同改会以终值首帧直出（无动画，CSS transition 与 class
@@ -251,26 +274,28 @@ struct WOTodoChecklistCard: View {
         withAnimation(WOTodoMotion.curve(0.6)) { open = !collapsed }
     }
 
-    /// 更新（AI 重发整表）：收起(.6s) → 等 300ms → 换数据（级联重跑）→
-    /// 等 130ms → 展开（原型 :527-534：closePanel → sleep 300 → render →
-    /// sleep 130 → open 逐值）。
-    /// 【P1-1 修】开头恢复可见态：本序列被新数据打断旧 disappear 序列时
-    /// （run() cancel——"清空后立即重发整表"必现窗），fadeShown/liftShown
-    /// 可能停在 false，只恢复 open 会致卡片全透明且不自愈——三态齐恢复。
-    private func updateSequence(_ newItems: [TodoItem]) async {
-        withAnimation(WOTodoMotion.curve(0.42)) { fadeShown = true }
-        withAnimation(WOTodoMotion.curve(0.62)) { liftShown = true }
-        withAnimation(WOTodoMotion.curve(0.6)) { open = false }
-        guard await step(300) else { return }
-        items = newItems
-        generation += 1
-        guard await step(130) else { return }
-        withAnimation(WOTodoMotion.curve(0.6)) { open = !collapsed }
+    /// 【批3 T2】数据更新 = 原位刷新（替代旧 updateSequence 收展舞步——
+    /// dsh TodoPanel 对 todo_write 无任何重播语义，同一面板 re-render）：
+    ///   · 展开态：内容/计数原位换 + 0.3s 轻量内容过渡（高度经
+    ///     naturalHeight 动画适配；新行按级联入场、存量行身份稳定不重播）；
+    ///   · 收起态：仅计数/摘要静默换（列表在 0 高揭示位内不可见）。
+    ///   · 绝不改 open/fade/lift 的既有值——不再"更新即重新展开"（turn8
+    ///     根因）。
+    /// P1-1 同族教训保留：旧序列（出现/退场）被打断时可能停在半途态——
+    /// 先补齐可见三态再刷新（清空→立即重发整表场景自愈）。
+    private func updateInPlace(_ newItems: [TodoItem]) async {
+        if !fadeShown || !liftShown {
+            withAnimation(WOTodoMotion.curve(0.42)) { fadeShown = true }
+            withAnimation(WOTodoMotion.curve(0.62)) { liftShown = true }
+        }
+        withAnimation(WOTodoMotion.curve(0.3)) { items = newItems }
     }
 
     /// 消失（对称）：展开中=收起(.6s)→等 130ms→淡出(.42s)→余量等 500ms；
     /// 已收起=直接淡出→等 440ms；末尾清数据卸载（原型 clearTasks :549-571
     /// 逐值：open 案 sleep(500)、非 open 案 sleep(440)）。
+    /// 【批3 T3】todos 空 → 整卡消失（TodoPanel.tsx:90 "empty renders
+    /// nothing" 逐字；收起态/展开态同路径——turn8 回归场景）。
     private func disappearSequence() async {
         let wasOpen = open
         if wasOpen {
@@ -289,8 +314,13 @@ struct WOTodoChecklistCard: View {
 
 /// 条目行：级联入场 itemIn .58s both，delay = i*72ms + 150ms，
 /// from {opacity 0; translateY(14px); scale(.985); blur(3px)}（原型 :259-266
-/// 逐值）。状态标记：done=实心勾圈 / doing=12 叶 spinner（currentColor 语义
-/// =条目文本色）/ pending=空心圈（原型 :268-338 折算）。
+/// 逐值；仅首次出现/新增行走级联——批3 T2 存量行身份稳定不重播）。
+/// 【批3 T1】dsh TodoPanel.module.css 几何：.glyph 16px 格（:108-114，
+/// 图形 14×14 artboard :29/:43/:59）、条目 13px/20px（:98-106）、间距 10
+///（:100 gap）、单行省略（.content :135-141）。
+/// 状态标记：done=实心勾圈 / doing=12 叶 spinner（currentColor 语义=条目
+/// 文本色）/ pending=空心圈——三态图形沿用 B2 用户原型（dsh 为描边环/渐隐
+/// 环/虚线环，图形不一致登记 e3-report-batch3.md，几何格 16px 已对齐）。
 private struct WOTodoCascadeRow: View {
     let index: Int
     let todo: TodoItem
@@ -298,17 +328,18 @@ private struct WOTodoCascadeRow: View {
     @State private var appeared = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
+        HStack(alignment: .center, spacing: 10) { // dsh .item gap 10
             statusIcon
-                .padding(.top, 1.5)
+                .frame(width: 16, height: 16)     // dsh .glyph 16px 格
             Text(todo.content)
-                .font(.system(size: 13.5))
+                .font(.system(size: 13))          // dsh .item 13px
                 .foregroundColor(todo.status == .completed
                                  ? WOAlias.labelSecondary : WOAlias.labelPrimary)
                 .strikethrough(todo.status == .completed)
+                .lineLimit(1)                     // dsh .content 单行省略
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 5)
+        .frame(minHeight: 20)                     // dsh .item line-height 20px
         // itemIn：from {opacity 0; translateY(14px); scale(.985); blur(3px)}。
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 14)
@@ -328,14 +359,15 @@ private struct WOTodoCascadeRow: View {
         switch todo.status {
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 17))
+                .font(.system(size: 14))          // dsh 图形 14×14 artboard
                 .foregroundStyle(WOAlias.stateSuccessPrimary)
         case .inProgress:
-            // 【M7-E3 B2】12 叶片渐隐 spinner（currentColor = 条目文本色）。
-            WOTodoBladeSpinner(size: 17, color: WOAlias.labelPrimary)
+            // 【M7-E3 B2】12 叶片渐隐 spinner（currentColor = 条目文本色；
+            // 批3 T1 尺寸入 16px 格：spinner 14 + 格内居中）。
+            WOTodoBladeSpinner(size: 14, color: WOAlias.labelPrimary)
         case .pending:
             Image(systemName: "circle")
-                .font(.system(size: 17))
+                .font(.system(size: 14))
                 .foregroundStyle(.secondary)
         }
     }
