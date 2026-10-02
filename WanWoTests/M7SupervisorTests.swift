@@ -154,9 +154,14 @@ final class M7SupervisorTests: XCTestCase {
         /// 处（phase = .running）——此后 followup/submit 的 wake() 命中
         /// `guard case .idle`（AgentLoop.swift:545）为 no-op，条目仅排队 +
         /// notifyActivity 发射，pending 检查确定性立返（wait.rs:190-197）。
-        func makeGatedLoop(sessionId: String, writer: SessionWriter)
+        /// 【CI修43 根因修复】gate 参数：materializer 组装面必须把测试持有的
+        /// 闸口注入子 loop——旧实现 makeGatedLoop 内部自建闸口、materializer
+        /// 以 `let (loop, _)` 丢弃返回闸口，测试轮询的外层闸口与适配器捕获的
+        /// 内层闸口是两个对象 → isHeld 永假（CI run 36951201924 :756 必失败）。
+        func makeGatedLoop(sessionId: String, writer: SessionWriter,
+                           gate: Gate? = nil)
             -> (loop: AgentLoop, gate: Gate) {
-            let gate = Gate()
+            let gate = gate ?? Gate()
             let registry = ToolRegistry()
             let pipeline = ToolPipeline(registry: registry,
                                         repeatAdviser: RepeatCallAdviser())
@@ -184,13 +189,15 @@ final class M7SupervisorTests: XCTestCase {
         /// gated materializer（M7-Fix 批5 W1）：子 loop 驱动器卡在 gated
         /// 适配器（phase = .running）——active-peer 判定的确定性 running
         /// 构造（startContinuable 的初始 followup 唤醒子驱动器 → hold）。
+        /// 【CI修43 根因修复】测试持有的闸口原样注入子 loop（同对象）——
+        /// 闸口错线根因见 makeGatedLoop 注释。
         func makeGatedMaterializer()
             -> (materializer: SubagentRuntime.ChildMaterializer, gate: Gate) {
             let gate = Gate()
             let materializer: SubagentRuntime.ChildMaterializer = { resolved, _, _ in
                 let (writer, _) = try await self.makeWriter(id: resolved.childId)
                 let (loop, _) = self.makeGatedLoop(sessionId: resolved.childId,
-                                                   writer: writer)
+                                                   writer: writer, gate: gate)
                 return (loop, writer)
             }
             return (materializer, gate)
