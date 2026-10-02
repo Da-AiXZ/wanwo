@@ -768,9 +768,27 @@ final class M7SupervisorTests: XCTestCase {
             completeLLM: { _, _ in "" },
             sandboxMode: .workspaceWrite,
             escalationApprover: nil)
-        let call = Task { try await tool.execute(.object(["timeout_ms": .int(1)]), ctx) }
+        // CI修42：Task 无 isCompleted 成员——完成标志盒等价判定（NSLock
+        // 保并发安全；defer 在 Task 体退出时置位，先于 await call.value 消费）。
+        final class WaitDoneBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var done = false
+            var isDone: Bool {
+                lock.lock(); defer { lock.unlock() }
+                return done
+            }
+            func finish() {
+                lock.lock(); defer { lock.unlock() }
+                done = true
+            }
+        }
+        let waitDone = WaitDoneBox()
+        let call = Task {
+            defer { waitDone.finish() }
+            return try await tool.execute(.object(["timeout_ms": .int(1)]), ctx)
+        }
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertFalse(call.isCompleted,
+        XCTAssertFalse(waitDone.isDone,
                        "有 active peer 且仅积压条目 → 必须真阻塞（W1 turn21 修复）")
 
         // 新边（子结算通知等价的 followup 入列 + notifyActivity）→ 立即唤醒。
