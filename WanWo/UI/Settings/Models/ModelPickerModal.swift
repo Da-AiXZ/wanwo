@@ -4,9 +4,10 @@
 //
 //  【m7-fix2 · E2 · 按用户 HTML 原型 1:1】「获取可用模型」候选挑选弹窗。
 //  原型锚点（设置模型配置原型（带动画）.html :750-896 + :1409-1556）：
-//    · mask rgba(12,12,16,.45) + blur(4px)，opacity .3s；
-//    · modal 白底圆角20，maxWidth 500，pad 22/22/18，入场
-//      translateY(16) scale(.965) → none，opacity .3s / transform .5s；
+//    · mask rgba(12,12,16,.45)，opacity .3s（M4⑤：blur(4px) 作废——用户令
+//      与完全权限弹窗一致无模糊）；
+//    · modal 白底圆角20，maxWidth 500，pad 22/22/18（M4⑤：自绘入场
+//      translateY(16) scale(.965) 作废——随 fullScreenCover 系统转场）；
 //    · 标题「选择要添加的模型」+ 右上 icon 关闭钮；副标「以下是模型提供商
 //      的可用模型，勾选要添加的模型。」；
 //    · picker-toolbar = 搜索圆角999（bg #f5f5f7，focus 白底蓝环）+
@@ -18,6 +19,15 @@
 //
 //  承载方式：fullScreenCover + presentationBackground(.clear)（iOS 16.4+，
 //  部署目标 16.6 内）——遮罩+居中卡自绘，逃出 ScrollView 裁剪面。
+//  m7-fix2 M4⑤（用户令）：①去模糊——遮罩只留纯色暗化 rgba(12,12,16,.45)
+//  （原型 :757 色值保留，backdrop blur(4px) 作废）；②开/关动画与
+//  「选择完全权限模式」确认弹窗（WOChatView:1844 confirmingFullAccess →
+//  PermissionConfirmationGate）一模一样——参照物无任何自绘动画，卡片本体
+//  静置、完全随 fullScreenCover 系统转场出入（本弹窗同承载方式 ⇒ 同转场）。
+//  故删除卡片 opacity/scale/offset 自绘动画与出场 320ms 延迟，close 即回
+//  isPresented=false（与参照物 confirmingFullAccess=false 同路径）；遮罩
+//  仅保留 appear 期 .3s 淡入（原型 .modal-mask opacity .3s，:761）避免
+//  系统滑入期黑幕先行的突兀感（参照物无遮罩、无对应物——登记报告）。
 //  iOS 16.6 红线自查：无 foregroundStyle、无双参 onChange、无 iOS17+ API。
 //
 
@@ -35,6 +45,7 @@ struct ModelPickerModal: View {
 
     // MARK: - 状态
 
+    /// 遮罩淡入开关（仅遮罩用；卡片静置随系统转场——M4⑤）。
     @State private var shown = false
     @State private var query = ""
     /// 勾选集合（起笔 = 未添加项全选——原型 :1457-1459）。
@@ -56,12 +67,11 @@ struct ModelPickerModal: View {
         }
     }
 
-    // MARK: 遮罩（rgba(12,12,16,.45) + blur(4px)；点遮罩关闭）
+    // MARK: 遮罩（纯色暗化 rgba(12,12,16,.45)，M4⑤ 去 blur；点遮罩关闭）
 
     private var mask: some View {
         Rectangle()
             .fill(Color(red: 12.0 / 255.0, green: 12.0 / 255.0, blue: 16.0 / 255.0).opacity(0.45))
-            .background(.ultraThinMaterial)
             .ignoresSafeArea()
             .opacity(shown ? 1 : 0)
             .contentShape(Rectangle())
@@ -70,7 +80,8 @@ struct ModelPickerModal: View {
                        value: shown)
     }
 
-    // MARK: 居中卡（原型 .modal）
+    // MARK: 居中卡（原型 .modal；无自绘动画——随 fullScreenCover 系统转场，
+    // 与完全权限确认弹窗一模一样，M4⑤）
 
     private var modalCard: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -96,15 +107,6 @@ struct ModelPickerModal: View {
         .padding(.horizontal, 24)
         .frame(maxWidth: 500)
         .frame(maxHeight: 640)
-        .opacity(shown ? 1 : 0)
-        // opacity .3s（原型 :761）——紧贴 .opacity 生效，只管透明度。
-        .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durMask),
-                   value: shown)
-        .scaleEffect(shown ? 1 : 0.965)
-        .offset(y: shown ? 0 : 16)
-        // 主体 transform .5s（原型双时长：opacity .3s / transform .5s）。
-        .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durModalIn),
-                   value: shown)
     }
 
     // MARK: 头（标题 + icon 关闭）
@@ -258,13 +260,8 @@ struct ModelPickerModal: View {
     }
 
     private func close() {
-        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durMask)) {
-            shown = false
-        }
-        // 出场动画后真正卸载（原型 :1531-1535 的 320ms 时序；fullScreenCover
-        // 卸载由父级 isPresented 驱动——300ms 后收）。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            onCancel()
-        }
+        // M4⑤：与参照物同路径——直接回 isPresented=false，由父级
+        // fullScreenCover 系统转场收场（无自绘退场、无 320ms 延迟）。
+        onCancel()
     }
 }

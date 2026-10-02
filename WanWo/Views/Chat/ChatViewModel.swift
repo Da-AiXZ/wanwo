@@ -27,6 +27,7 @@
 
 import Foundation
 import SwiftUI
+import UIKit
 import Collections
 
 @MainActor
@@ -778,7 +779,8 @@ final class ChatViewModel: ObservableObject {
                         // `events:` 标签无匹配重载=整链歧义；且 FoldedGoal.goal
                         // 是 GoalSnapshot?，直接 `?.goal` 得双可选且类型不符
                         // （GoalView≠GoalSnapshot）——统一走 foldGoalView 重建。
-                        self.goalView = Self.foldGoalView(self.writer?.events ?? [])
+                        // 【批4 G3】赋值点 1/5：动画化（GoalBar 淡入）。
+                        self.setGoalView(Self.foldGoalView(self.writer?.events ?? []))
                     } else {
                         // 卡不在场兜底（理论不发生：started 已重投影；防御
                         // 回调乱序/漏发——直接按事件流重建）。
@@ -936,8 +938,10 @@ final class ChatViewModel: ObservableObject {
         todoItems = TodoProjection.fold(events: writer.events) ?? []
         // 【批3 A2】goal 快照同位重 fold（goal/* extensionEvent log-only，
         // 除 goalRound 专卡外不进 Bubble 流；dsh 'goal' projection
-        // whole-value 语义——快照整体替换）。
-        goalView = Self.foldGoalView(writer.events)
+        // whole-value 语义——快照整体替换）。【批4 G3】赋值点 2/5：单语句
+        // 动画事务——只让 goal 快照变化进事务，bubbles/todoItems 等其余
+        // 重投影赋值保持原时钟不动。
+        setGoalView(Self.foldGoalView(writer.events))
         streamingText = ""
         streamingReasoning = ""
         // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
@@ -974,6 +978,28 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - GoalBar 动作（批3 A2；dsh slots.ts GoalBarActions CAS 语义对拍）
 
+    // 【批4 G3】GoalBar 淡入淡出时钟（用户复测 A2①）：goalView 的全部赋值
+    // 点原为裸赋值——WOGoalBar 内部 `.animation(value: goal)` 管不住
+    // EmptyView↔横条的结构性插入/移除（transition 需要祖先链上有动画时钟）。
+    // 统一经 setGoalViewAnimated 包 withAnimation；曲线与 WOGoalBar.motionCurve
+    // 同参数（timingCurve(0.22,1,0.36,1, 0.35s)——本文件侧独立常量，WOGoalBar
+    // 不在本批白名单，参数对齐以注释互证）；reduceMotion 时静态直出
+    // （WOGoalBar/WOAgentHintPill 同款先例）。挂载点结构（WOChatView:347-355）
+    // 不动。
+    /// goal 条入/退场曲线（与 WOGoalBar.motionCurve 同参数：cubic-bezier(.22,1,.36,1)）。
+    private static let goalMotionCurve = Animation.timingCurve(0.22, 1, 0.36, 1,
+                                                               duration: 0.35)
+
+    /// goalView 唯一动画化赋值缝（五个原赋值点统一收口；单语句事务——
+    /// reproject 等批量刷新面内不得整包动画，只让 goal 快照变化进事务）。
+    private func setGoalView(_ newValue: GoalView?) {
+        if UIAccessibility.isReduceMotionEnabled {
+            goalView = newValue
+        } else {
+            withAnimation(Self.goalMotionCurve) { goalView = newValue }
+        }
+    }
+
     /// 暂停目标（GoalService.pause：expectCurrent CAS——revision 不匹配 =
     /// GOAL_STALE_REVISION，UI 侧回读收敛）。
     func pauseGoal() async -> String? {
@@ -998,7 +1024,8 @@ final class ChatViewModel: ObservableObject {
               let ref = goalRef() else { return nil }
         do {
             _ = try await service.clear(ref: ref)
-            goalView = nil
+            // 【批4 G3】赋值点 3/5：清除 → 横条淡出（动画化 nil）。
+            setGoalView(nil)
             return nil
         } catch {
             refreshGoalSnapshot()
@@ -1016,7 +1043,10 @@ final class ChatViewModel: ObservableObject {
         guard let service = agentLoop?.deps.goalService,
               let ref = goalRef() else { return nil }
         do {
-            goalView = try await body(service, ref)
+            // 【批4 G3】赋值点 4/5：CAS 成功采纳权威快照（动画化——active↔
+            // paused 翻转不闪，同曲线跨状态过渡）。
+            let adopted = try await body(service, ref)
+            setGoalView(adopted)
             return nil
         } catch {
             refreshGoalSnapshot()
@@ -1030,9 +1060,10 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// 失效回读（事件流 = 权威日志；fold 幂等便宜——todoItems 同款纪律）。
+    /// 【批4 G3】赋值点 5/5：CAS 失败回读路径同走动画时钟（视觉收敛一致）。
     private func refreshGoalSnapshot() {
         guard let writer else { return }
-        goalView = Self.foldGoalView(writer.events)
+        setGoalView(Self.foldGoalView(writer.events))
     }
 
     /// 事件流 → GoalView 重建（GoalService.view(:109-119) 同构映射；【CI修39】

@@ -456,4 +456,89 @@ final class M7FixGoalLoopTests: XCTestCase {
             identity, blocks: blocks, sessionId: "s", turn: 3, step: 2)
         XCTAssertEqual(same, blocks)
     }
+
+    // MARK: - 5【批4 G1】goal 收尾指令对用户隐藏（isMarkerMessage 新前缀）
+
+    /// goal_complete/goal_blocked（GoalWrapup.render——dsh wrapup.ts:17-38
+    /// 同族，AgentLoop 经 inject 以 userMessage 落盘）按用户 B4 裁决「给 AI
+    /// 的注入纸条对用户完全隐藏」办理：
+    ///   ① isMarkerMessage 命中新前缀（拦 ChatViewModel 乐观气泡路径）；
+    ///   ② 投影器对 goal_complete userMessage 产零气泡（marker 过滤即 skip）；
+    ///   ③ goal_round 专卡特判不受影响（只认 <goal_round>，恒产 gr 卡）；
+    ///   ④ 真实用户消息照常渲染（无误伤）。
+    func testMarkerPrefixesHideGoalWrapupNotices() {
+        // ① 新前缀命中（IMG_2532 实证的两种落盘形态：首行即标签）。
+        let complete = "<goal_complete>\nObjective: \"Ship M7\"\n…</goal_complete>"
+        let blocked = "<goal_blocked>\nObjective: \"Ship M7\"\nBlocked: \"…\"\n…</goal_blocked>"
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(complete))
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(blocked))
+
+        // ② 投影器：goal_complete userMessage 不产任何气泡。
+        var callArgs: [String: (name: String, args: JSONValue)] = [:]
+        let hidden = ConversationProjector.project(
+            events: [SessionEvent(seq: 1, timeMs: 0, payload: .userMessage(text: complete))],
+            registry: nil, callArgs: &callArgs)
+        XCTAssertTrue(hidden.isEmpty, "goal 收尾指令对用户隐藏（零气泡）")
+
+        // ③ goal_round 特判不受影响：恒产 gr(seq) 专卡。
+        let mixed = ConversationProjector.project(
+            events: [
+                SessionEvent(seq: 2, timeMs: 0, payload: .userMessage(text: complete)),
+                SessionEvent(seq: 3, timeMs: 0,
+                             payload: .userMessage(text: "<goal_round>\nObjective: \"Ship M7\"\n</goal_round>")),
+            ],
+            registry: nil, callArgs: &callArgs)
+        XCTAssertEqual(mixed.count, 1)
+        guard case .goalRound(let text)? = mixed.first?.kind else {
+            return XCTFail("goal_round 必须仍走专卡特判")
+        }
+        XCTAssertTrue(text.hasPrefix("<goal_round>"))
+
+        // ④ 真实用户消息照常渲染（新前缀无误伤）。
+        let plain = ConversationProjector.project(
+            events: [SessionEvent(seq: 4, timeMs: 0, payload: .userMessage(text: "帮我写个文件"))],
+            registry: nil, callArgs: &callArgs)
+        XCTAssertEqual(plain.count, 1)
+        guard case .user(let text, _)? = plain.first?.kind else {
+            return XCTFail("普通用户消息必须照常产泡")
+        }
+        XCTAssertEqual(text, "帮我写个文件")
+    }
+
+    // MARK: - 6【批4 G2】GoalError errorDescription 人话化
+
+    /// dsh index.ts:373-377 1:1 的 resume 拒绝（rounds exhausted）等三类
+    /// 关键语义必须以中文人话透出——修复前被 NSError 包装吞成
+    /// "The operation couldn't be completed…"天书（用户复测 A2②）。
+    func testGoalErrorLocalizedDescriptionCoversKeySemantics() {
+        // rounds exhausted（resume 第 5 次被拒的实况 message 指纹）。
+        let exhausted = GoalError(
+            message: "goal \"goal-x\" exhausted 4 goal rounds; "
+                + "increase maxGoalRounds before resuming",
+            code: .goalInvalidTransition)
+        let exhaustedText = exhausted.localizedDescription
+        XCTAssertFalse(exhaustedText.isEmpty)
+        XCTAssertTrue(exhaustedText.contains("轮次已用完"),
+                      "rounds exhausted 必须人话化：\(exhaustedText)")
+        XCTAssertTrue(exhaustedText.contains("调大轮数"),
+                      "必须给出出路（编辑调大轮数）：\(exhaustedText)")
+
+        // stale revision（CAS 失守）。
+        let stale = GoalError(message: "stale goal ref", code: .goalStaleRevision)
+        let staleText = stale.localizedDescription
+        XCTAssertTrue(staleText.contains("目标状态已变化"),
+                      "stale revision 必须人话化：\(staleText)")
+
+        // 其余 invalid transition（phase 矩阵拒绝）。
+        let transition = GoalError(
+            message: "cannot pause goal \"goal-x\" from phase \"complete\"",
+            code: .goalInvalidTransition)
+        let transitionText = transition.localizedDescription
+        XCTAssertTrue(transitionText.contains("不支持该操作"),
+                      "invalid transition 必须人话化：\(transitionText)")
+
+        // 其余错误码兜底：领域 message 原文透出（非空、非天书）。
+        let fallback = GoalError(message: "no current goal", code: .goalNotFound)
+        XCTAssertEqual(fallback.localizedDescription, "no current goal")
+    }
 }

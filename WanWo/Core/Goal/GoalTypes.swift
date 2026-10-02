@@ -181,6 +181,37 @@ struct GoalError: Error, Equatable {
     var code: GoalErrorCode
 }
 
+// 【批4 G2】错误人话化（LLMError+LocalizedError 同款先例——LLMTypes.swift
+// m7-fix2 M1①）：GoalError 原为裸 struct Error，被 NSError 包装后 UI 只见
+// "The operation couldn't be completed..."天书（用户复测 A2②：暂停横条错误
+// 槽）。errorDescription = 中文人话；rounds exhausted 的拒绝逻辑本身是 dsh
+// index.ts:373-377 1:1 行为（不动），此处只人话化显示面。
+extension GoalError: LocalizedError {
+    var errorDescription: String? {
+        switch code {
+        case .goalStaleRevision:
+            // expectCurrent CAS 失守（index.ts:454-464）——UI 侧本就回读收敛，
+            // 人话指向重试。
+            return "目标状态已变化，请重试"
+        case .goalInvalidTransition:
+            // resume 轮次耗尽（index.ts:373-377 逐字同款 message 指纹
+            // "exhausted N goal rounds"）：roundsStarted 未随错误携带
+            // （GoalError 只有 message/code），N/M 拼不齐 → 简报拍板的通用
+            // 文案，出路指向横条编辑。
+            if message.contains("exhausted"), message.contains("goal rounds") {
+                return "目标轮次已用完，可在编辑中调大轮数后继续"
+            }
+            // 其余非法转移（phase 矩阵/版本/畸形 change）。
+            return "目标当前状态不支持该操作"
+        default:
+            // 其余错误码（NOT_FOUND/ALREADY_EXISTS/INVALID_*）：领域 message
+            // 原文透出（F060 自解释纪律——code 语义在 message 中自足，
+            // 硬翻反而丢信息）。
+            return message
+        }
+    }
+}
+
 /// 工具面策略错误（tool-goal authority.ts:24-26 HarnessError 的 WanWo 形态）。
 struct GoalToolError: Error, Equatable {
     var message: String

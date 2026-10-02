@@ -113,6 +113,9 @@ struct ProvidersSectionView: View {
                             store: store,
                             credentialSeam: credentialSeam,
                             discoverModels: discoverModels,
+                            // M4③：展开态下传——false→true 时表单整体重置
+                            // （重开残留清零，成功/取消路径都覆盖）。
+                            isOpen: formOpen,
                             onClose: { changed in
                                 formOpen = false
                                 if changed { announceSaved() }
@@ -309,7 +312,12 @@ private struct ProviderRowCardView: View {
             }
         }
         .background(Color.white)
-        .cornerRadius(14)
+        // m7-fix2 M4⑥：对齐原型 .provider-item { overflow: hidden }（:183）——
+        // 白卡本体即唯一裁切边界，灰编辑面板（.edit-panel margin 0 10 10）是
+        // 卡内嵌段，收合时卡整体连续、灰面板在白卡内高度收合（配合
+        // WOCollapsible 关闭 opacity .28s 快隐 + mask 幕帘），杜绝白层盖到
+        // 灰面上的视觉断层（用户录屏实证的白闪）。
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(borderColor, lineWidth: 1))
         .shadow(color: Color.black.opacity(isHovering ? 0.06 : 0.03),

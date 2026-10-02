@@ -83,7 +83,9 @@ enum WOMP {
     static let durCardIn: Double = 0.55
     static let durCardOut: Double = 0.45
 
-    private static func woRGB(_ r: Int, _ g: Int, _ b: Int) -> Color {
+    /// hex 字节 → 0-1 浮点归一（组件内 hex 色必须经此或 /255.0——
+    /// Color(red:green:blue:) 参数域是 0-1，裸 hex 字节越界被钳白，M4② 血训）。
+    static func woRGB(_ r: Int, _ g: Int, _ b: Int) -> Color {
         Color(red: Double(r) / 255.0, green: Double(g) / 255.0, blue: Double(b) / 255.0)
     }
     private static func woRGBA(_ r: Int, _ g: Int, _ b: Int, _ a: Double) -> Color {
@@ -95,17 +97,25 @@ enum WOMP {
 
 /// 原型 .collapsible/.collapsible-inner/.collapsible-content 三层结构的
 /// SwiftUI 等价：实测自然高度 → 高度 0↔natural 动画（.58s 原型曲线）+
-/// 内容 opacity/translate 入场（开：.4s ease .1s 延迟 / 位移 .55s .06s；
-/// 关：opacity .28s）。clipped = inner overflow hidden。
-/// 注：下拉弹层（WOSelect）在展开容器内不被裁（原型 body.select-open
-/// overflow visible 语义）——弹层尺寸设计上落在容器内部（报告登记）。
+/// 内容 opacity/translate 入场（开：opacity .4s ease .1s 延迟（原型 :307）；
+/// 关：opacity .28s ease（原型 :302））。
+///
+/// 裁切（m7-fix2 M4①）：原型 `.collapsible-inner { overflow: hidden }` +
+/// `body.select-open .collapsible-inner { overflow: visible }`（:297/:311）。
+/// SwiftUI 等价：mask 替代 .clipped()——渲染中高度（GeometryReader 实测
+/// 逐帧跟随动画值）< 自然高（折叠中/收起）→ 精确幕帘裁切；**完全展开
+/// （渲染高==自然高）→ 底部留 600pt headroom**，让 WOSelect 下拉弹层溢出
+/// 容器边界（原型 overflow visible 语义），同时开合动画期保持幕帘不穿帮。
 struct WOCollapsible<Content: View>: View {
 
     var open: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder var content: () -> Content
 
+    /// 内容自然高度（fixedSize 理想高度，闭态也按理想测量）。
     @State private var naturalHeight: CGFloat = 0
+    /// 渲染中高度（frame 动画逐帧实测；驱动 mask 幕帘）。
+    @State private var renderedHeight: CGFloat = 0
 
     var body: some View {
         content()
@@ -120,13 +130,46 @@ struct WOCollapsible<Content: View>: View {
                 }
             )
             .frame(height: open ? naturalHeight : 0, alignment: .top)
-            .opacity(open ? 1 : 0)
+            // 渲染中高度实测（背景挂在 frame 之后 → 读到动画逐帧值）。
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { trackRendered(geo.size.height) }
+                        .onChange(of: geo.size.height) { trackRendered($0) }
+                }
+            )
             .offset(y: open ? 0 : -6) // 收起时内容随手上移（原型 content 态）
-            .clipped()
+            // 高度/位移：原型 grid-template-rows .58s（开合同曲线）。
             .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durCollapse),
                        value: open)
+            .opacity(open ? 1 : 0)
+            // 透明度逐值对齐原型 collapsible-content：开 .4s ease .1s 延迟
+            // （:307）/ 关 .28s ease（:302）——关闭快速隐去，杜绝灰面板半透明
+            // 期白卡底透色（M4⑥ 白闪根因之一）。
+            .animation(reduceMotion
+                       ? .easeOut(duration: 0.15)
+                       : (open ? WOMP.ease(0.4).delay(0.1) : WOMP.ease(0.28)),
+                       value: open)
+            // overflow hidden ⇄ visible 的 SwiftUI 等价（见结构注释）。
+            .mask(alignment: .top) {
+                Rectangle().frame(height: maskHeight)
+            }
             // 高度基准变化（内容增删行）瞬时应答，不叠动画（原型 open 态自然回流）。
             .animation(nil, value: naturalHeight)
+    }
+
+    /// 渲染中高度逐帧追踪（禁动画事务——mask 必须紧贴动画帧，不滞后）。
+    private func trackRendered(_ height: CGFloat) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { renderedHeight = height }
+    }
+
+    /// mask 高：折叠中/收起（渲染高 < 自然高）→ 精确幕帘；完全展开 →
+    /// 底部 headroom 放行下拉弹层溢出（原型 select-open overflow visible）。
+    private var maskHeight: CGFloat {
+        let collapsed = renderedHeight < naturalHeight - 0.5
+        return collapsed ? renderedHeight : renderedHeight + 600
     }
 }
 
@@ -298,12 +341,15 @@ struct WOMiniButton: View {
 
 /// 原型 .btn.primary（黑底白字 pad 9/22 r11 + 0 4 14 rgba(0,0,0,.16) 阴影；
 /// hover #23232b）与 .btn.ghost 共用外壳。
+/// m7-fix2 M4④：补禁用态视觉（opacity .4，同 WOAddModelButton 先例）——
+/// 就绪门未过时保存钮肉眼可辨（此前禁用无任何视觉差，用户"点了没反应"）。
 struct WOProtoButton: View {
 
     enum Kind { case primary, ghost }
 
     let title: String
     var kind: Kind = .ghost
+    var disabled: Bool = false
     var action: () -> Void
     @State private var hovering = false
 
@@ -324,6 +370,8 @@ struct WOProtoButton: View {
         }
         .buttonStyle(WOProtoPressStyle())
         .frame(minHeight: 44) // 触屏命中区
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.22), value: hovering)
         .accessibilityLabel(title)
@@ -332,9 +380,9 @@ struct WOProtoButton: View {
     private var fill: Color {
         switch kind {
         case .primary:
-            return hovering ? Color(red: 0x23 / 255.0, green: 0x23 / 255.0, blue: 0x2b / 255.0) : WOMP.text
+            return hovering ? WOMP.woRGB(0x23, 0x23, 0x2b) : WOMP.text
         case .ghost:
-            return hovering ? Color(red: 0xf4, green: 0xf4, blue: 0xf6) : Color.white
+            return hovering ? WOMP.woRGB(0xf4, 0xf4, 0xf6) : Color.white
         }
     }
 }
@@ -394,8 +442,10 @@ struct WODashedAddButton: View {
     }
 
     // 子表达式拆分（CI 超时教训：大三元链导致 type-check 超时）。
+    // m7-fix2 M4②：Color(red:green:blue:) 参数域 0-1——裸 hex 字节 0x4a=74
+    // 越界被钳到 1.0 → 三通道全 1.0 = 纯白（用户实证）。改走 woRGB 归一。
     private var foreground: Color {
-        hovering ? WOMP.text : Color(red: 0x4a, green: 0x4a, blue: 0x55)
+        hovering ? WOMP.text : WOMP.woRGB(0x4a, 0x4a, 0x55) // 原型 #4a4a55
     }
     private var backgroundFill: Color {
         hovering ? Color.black.opacity(0.022) : Color.clear
@@ -421,7 +471,7 @@ struct WOAddModelButton: View {
                 .padding(.horizontal, 15)
                 .frame(minWidth: 44, minHeight: 38)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(hovering ? Color(red: 0xf4, green: 0xf4, blue: 0xf6) : Color.white))
+                    .fill(hovering ? WOMP.woRGB(0xf4, 0xf4, 0xf6) : Color.white))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(hovering ? Color.black.opacity(0.2) : WOMP.line, lineWidth: 1))
                 .contentShape(Rectangle())
@@ -569,6 +619,13 @@ struct WOSectionToggle: View {
 /// 原型 .select 自定义下拉。弹层 = 圆角13 白底大阴影（0 22 50 .16 / 0 3 10 .07）、
 /// opt hover black 5%、selected 蓝底白字；开合 = opacity .26/.28 + translateY(-8)
 /// scale(.98)→none .38/.42 + chev rotate 180° .38s。
+/// m7-fix2 M4①（用户两次复测）：弹层改 **overlay 脱离布局流**——此前弹层写在
+/// VStack 流内，open 时撑高容器把下方字段（API 密钥等）挤下去；.zIndex 只管
+/// 绘制顺序不管布局。现对齐原型 `.select-pop { position: absolute; top:
+/// calc(100% + 6px) }`（:476-478）：按钮占位恒定，弹层经 .overlay(topLeading)
+/// + .offset(按钮高+6) 浮于下方内容之上，开合时下方字段纹丝不动。
+/// 弹层溢出容器边界由 WOCollapsible 的 mask headroom 放行（原型 body.select-open
+/// overflow visible，:311）。
 /// 关闭路径：选项点选 / 按钮重按 / 表单收起（原型 document 级外点关闭监听无
 /// SwiftUI 等价——报告登记，触屏路径直达不受影响）。
 struct WOSelect: View {
@@ -578,24 +635,42 @@ struct WOSelect: View {
     var maxHeight: CGFloat = 258
 
     @State private var open = false
+    /// 按钮实测高度（弹层 offset 基准 = 按钮底 + 6；按钮恒 44pt 单行，实测只为稳健）。
+    @State private var buttonHeight: CGFloat = 44
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            button
-            if open {
-                popup
-                    // 显式 AnyTransition（iOS13+）——裸 `.asymmetric/.opacity`
-                    // 链在 transition 上下文会命中 iOS17 Transition 协议成员。
-                    .transition(AnyTransition.asymmetric(
-                        insertion: AnyTransition.opacity
-                            .combined(with: .offset(y: -8))
-                            .combined(with: .scale(scale: 0.98, anchor: .top)),
-                        removal: .opacity))
+        button
+            // 原型 .select-pop top: calc(100% + 6px)——脱离文档流浮出。
+            .overlay(alignment: .topLeading) {
+                if open {
+                    popup
+                        .offset(y: buttonHeight + 6)
+                        // 显式 AnyTransition（iOS13+）——裸 `.asymmetric/.opacity`
+                        // 链在 transition 上下文会命中 iOS17 Transition 协议成员。
+                        .transition(AnyTransition.asymmetric(
+                            insertion: AnyTransition.opacity
+                                .combined(with: .offset(y: -8))
+                                .combined(with: .scale(scale: 0.98, anchor: .top)),
+                            removal: .opacity))
+                }
             }
-        }
-        .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durChevSelect), value: open)
-        .zIndex(open ? 10 : 0) // 弹层压住后续内容
+            .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durChevSelect), value: open)
+            // open 时压住同层后续兄弟（含两列并排卡场景，要求④）。
+            .zIndex(open ? 10 : 0)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { buttonHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { buttonHeight = $0 }
+                }
+            )
+    }
+
+    /// 弹层高 = min(行数 × 44, maxHeight)（opt 行单行定高 44，见 optRow；
+    /// 原型 .select-pop max-height: 258px + overflow-y: auto，:482-483）。
+    private var popupHeight: CGFloat {
+        min(CGFloat(options.count) * 44, maxHeight)
     }
 
     private var button: some View {
@@ -636,7 +711,7 @@ struct WOSelect: View {
                 }
             }
         }
-        .frame(maxHeight: maxHeight)
+        .frame(height: popupHeight)
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 13, style: .continuous)
             .fill(Color.white))
@@ -655,6 +730,7 @@ struct WOSelect: View {
             Text(option)
                 .font(.system(size: 13.5))
                 .foregroundColor(selected ? Color.white : WOMP.text)
+                .lineLimit(1) // 单行定高——popupHeight = 行数 × 44 的前提
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) // 触屏命中
                 .padding(.horizontal, 12)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)

@@ -127,7 +127,18 @@ enum ConversationProjector {
                                  // 【批3 A3】附件 URL 清单纸条（模型可见、用户
                                  // 隐藏——防模型编造 wanwo:// 附件地址，"截图
                                  // 已不可用"根因；注入点 AgentLoop kick 路径）。
-                                 "<attachment-refs>"]
+                                 "<attachment-refs>",
+                                 // 【批4 G1】goal 收尾指令（GoalWrapup.render——
+                                 // dsh wrapup.ts:17-38 同族；AgentLoop 经 inject
+                                 // 以 userMessage 落盘）。按用户 B4 裁决「给 AI
+                                 // 的中间事件（注入纸条）对用户完全隐藏」同款
+                                 // 办理：goal_complete/goal_blocked 同属给 AI
+                                 // 的指令（IMG_2532 实证渲染成巨大蓝色用户泡，
+                                 // 用户未发过）。与 dsh web 的差异=登记偏差
+                                 // （dsh web 无过滤）。只影响 UI 渲染——模型侧
+                                 // 载荷不变（AgentLoop.swift:876/:1126 注释已证
+                                 // markerPrefixes 为纯呈现面）。
+                                 "<goal_complete>", "<goal_blocked>"]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }

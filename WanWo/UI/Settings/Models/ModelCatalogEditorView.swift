@@ -97,7 +97,7 @@ struct ModelCatalogEditorView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("模型目录")
                     .font(.system(size: 12.8))
-                    .foregroundColor(Color(red: 0x55, green: 0x55, blue: 0x5f))
+                    .foregroundColor(WOMP.woRGB(0x55, 0x55, 0x5f)) // 原型 #55555f（M4②：裸 hex 字节越界钳白 → woRGB 归一）
                 // m7-fix2 M1④（IMG_2516）：dir-status 与右侧 link 组同排时，
                 // 窄屏被 lineLimit(1) 压缩截断、视觉上与下方「自定义设置」
                 // 折叠区叠字。修 = 去行数限制 + 垂直自适应（原型 .dir-label
@@ -265,7 +265,7 @@ struct ModelCatalogEditorView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label)
                 .font(.system(size: 12.8))
-                .foregroundColor(Color(red: 0x55, green: 0x55, blue: 0x5f))
+                .foregroundColor(WOMP.woRGB(0x55, 0x55, 0x5f)) // 原型 #55555f（M4②：裸 hex 字节越界钳白 → woRGB 归一）
             WOProtoInput(
                 placeholder: fallback.map { CapacityFormatting.formatCapacity($0) }
                     ?? "使用提供方缺省值",

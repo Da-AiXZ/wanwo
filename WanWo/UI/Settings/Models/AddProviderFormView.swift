@@ -25,6 +25,11 @@
 //  校验/创建语义：沿用批1 CustomProviderCardView 的 route slug 正则、
 //  baseURL 前缀校验、committed 两步语义（配置落地后 key 重试不再 add）。
 //
+//  m7-fix2 批4 增量（本文件）：M4③ 重开即重置（isOpen false→true →
+//  resetAll，残零 ID/名称/key/目录清零——原型 closeForm 520ms 重挂同语义）；
+//  M4④ 保存禁用态视觉（WOProtoButton.disabled）+ ready 未过时「还差什么」
+//  行内提示（failure 槽展示，readyHint）。
+//
 //  iOS 16.6 红线自查：无 foregroundStyle、无双参 onChange、无 iOS17+ API。
 //
 
@@ -38,6 +43,8 @@ struct AddProviderFormView: View {
     @ObservedObject var store: EndpointStore
     var credentialSeam: ProviderCredentialSeam?
     var discoverModels: ((String, String?) async -> Result<[DiscoveredModel], Error>)?
+    /// 表单展开态（父级 WOCollapsible 同源；false→true 时整体重置——M4③）。
+    var isOpen: Bool = false
     /// 关闭表单；`changed` 报告是否已创建。
     let onClose: (Bool) -> Void
     /// 凭据存储描述透传（同 ProviderEditorView）。
@@ -101,18 +108,27 @@ struct AddProviderFormView: View {
                     .font(.system(size: 12.5))
                     .foregroundColor(WOMP.red)
                     .padding(.top, 10)
+            } else if !busy, !ready, let readyHint {
+                // m7-fix2 M4④：就绪门未过时把「还差什么」透出（failure 槽
+                // 同位展示）——此前保存钮静默禁用、无任何解释（用户复测 E2③）。
+                // 提示文案与 ready 各 guard 一一对应；不改 ready 判定语义本身。
+                Text(readyHint)
+                    .font(.system(size: 12.5))
+                    .foregroundColor(WOMP.red)
+                    .padding(.top, 10)
             }
 
-            // form-actions（底部右对齐）。
+            // form-actions（底部右对齐）。禁用态视觉由 WOProtoButton.disabled
+            // 承载（opacity .4，M4④）。
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
-                WOProtoButton(title: "取消", kind: .ghost) { onClose(committed) }
-                    .disabled(busy)
+                WOProtoButton(title: "取消", kind: .ghost, disabled: busy) {
+                    onClose(committed)
+                }
                 WOProtoButton(title: activeTab == .custom ? "创建提供商" : "保存",
-                              kind: .primary) {
+                              kind: .primary, disabled: busy || !ready) {
                     Task { await save() }
                 }
-                .disabled(busy || !ready)
             }
             .padding(.top, 20)
         }
@@ -134,6 +150,44 @@ struct AddProviderFormView: View {
             // 切换预置 = 换默认地址（iOS16 单参 onChange；红线自查）。
             presetBaseURL = Self.presets.first(where: { $0.id == newValue })?.baseURL ?? ""
         }
+        // m7-fix2 M4③：表单重开残留清零——表单恒挂 WOCollapsible 内（卸载
+        // 即丢退场动画），故选「重开即重置」方案：isOpen false→true 时整体
+        // 回到初值。原型同语义（closeForm 后 520ms mountForm 重挂，:1761-1765）：
+        // 收起动画期旧内容原样可见，重开后必为全新表单——成功创建（onClose(true)）
+        // 与手动取消（onClose(false)）任何关闭路径都覆盖。
+        .onChange(of: isOpen) { newValue in
+            if newValue { resetAll() }
+        }
+    }
+
+    // MARK: - 重置（M4③：全部 @State 回初值；busy 中跳过防中断在途保存）
+
+    /// 整表单重置（重开时调用；busy=true 时跳过——在途保存不可打断）。
+    private func resetAll() {
+        guard !busy else { return }
+        activeTab = .preset
+        // tab1（第三方模型提供商）
+        presetID = Self.presets.first?.id ?? "openai"
+        presetKey = ""
+        presetAdvOpen = false
+        // 预填首个预置地址（与首挂 onAppear 同语义；presetID 未变时
+        // onChange(of: presetID) 不会触发，此处显式补齐）。
+        presetBaseURL = Self.presets.first(where: { $0.id == presetID })?.baseURL ?? ""
+        presetModels = []
+        presetBuffers = [:]
+        // tab2（自定义模型 API）
+        routeID = ""
+        customName = ""
+        customBaseURL = ""
+        customProtocol = Self.apiProtocols[0]
+        customKey = ""
+        customModels = []
+        customBuffers = [:]
+        // 保存流程态
+        busy = false
+        failure = nil
+        committed = false
+        createdEndpoint = nil
     }
 
     // MARK: Tabs（原型 :324-349：active=白底描边+阴影）
@@ -346,6 +400,41 @@ struct AddProviderFormView: View {
         return !routeID.isEmpty && !routeInvalid && !routeTaken
             && !baseURLInvalid && !customModels.isEmpty
             && ModelCatalogValidation.validate(customModels) == nil
+    }
+
+    /// 「还差什么」提示（M4④；guard 顺序与 ready 严格同序，首条未过项胜出；
+    /// 只读 ready 各组成判定，不改其语义）。
+    private var readyHint: String? {
+        if let keyFailure { return keyFailure }
+        if unreadableCapacity {
+            return "容量格式无法读取，请检查上下文窗口 / 最大输出（如 131072、256K）。"
+        }
+        if hasEmptyModality { return "存在未选择输入模态的模型行，请至少勾选一项。" }
+        if activeTab == .preset {
+            if let failure = ModelCatalogValidation.validate(presetModels) {
+                return "模型 \(failure.index + 1)：\(validationText(failure.key))"
+            }
+            if presetModels.isEmpty {
+                return "请至少添加一个模型（可用「获取可用模型」拉取）。"
+            }
+            return nil
+        }
+        if committed { return nil } // 已创建成功，表单随即关闭，无需提示
+        if routeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "请填写 Provider ID。"
+        }
+        if routeInvalid {
+            return "Provider ID 以小写字母开头；其后为小写字母、数字和连字符。"
+        }
+        if routeTaken { return "已有提供方使用此 ID。" }
+        if baseURLInvalid { return "API 地址须以 http:// 或 https:// 开头。" }
+        if let failure = ModelCatalogValidation.validate(customModels) {
+            return "模型 \(failure.index + 1)：\(validationText(failure.key))"
+        }
+        if customModels.isEmpty {
+            return "请至少添加一个模型（可用「获取可用模型」拉取）。"
+        }
+        return nil
     }
 
     /// 配置字段在创建落地后停用（dsh profileDisabled 语义）。

@@ -807,6 +807,11 @@ final class EventStreamViewModel: ObservableObject {
 struct EventStreamView: View {
     @StateObject private var model: EventStreamViewModel
 
+    /// 【批4 L2】会话选择 sheet 开合位（替换系统 Picker——自动回顶修）。
+    @State private var showSessionPicker = false
+    /// 【批4 L2】sheet 内搜索过滤词（可选项，做了即登记）。
+    @State private var sessionFilter = ""
+
     init(environment: AppEnvironment) {
         _model = StateObject(wrappedValue: EventStreamViewModel(environment: environment))
     }
@@ -838,6 +843,11 @@ struct EventStreamView: View {
         .onChange(of: model.selectedSessionID) { _ in
             Task { await model.loadEvents() }
         }
+        // 【批4 L2】会话选择 sheet（List 承载——父视图 1s 定时重渲染不再
+        // 重建选择器，List 滚动状态稳定不回顶）。
+        .sheet(isPresented: $showSessionPicker) {
+            sessionPickerSheet
+        }
         // 只读诊断页不持写柄：本视图不触碰 SessionStore.openWriter，也不写任何事件/文件。
     }
 
@@ -846,13 +856,36 @@ struct EventStreamView: View {
     @ViewBuilder
     private var sessionSection: some View {
         Section("会话") {
-            Picker("查看会话", selection: sessionBinding) {
-                if model.sessions.isEmpty {
-                    Text("暂无会话").tag("")
+            // 【批4 L2 修】系统 Picker 菜单承载长列表：滚动不可控 + 父视图
+            // 任何重渲染（本页 1s 资源护栏定时刷新）都重建菜单 → 往下划被
+            // 自动回顶（用户复测"额外问题"）。改=选择行 + sheet 列表：
+            // List 自持滚动状态（结构身份稳定，父重渲染不回顶）；行=会话名
+            // +事件数（sessionLabel 沿用）、当前选中高亮、"暂无会话"兜底
+            // 保留、sessionBinding 失效回落语义不变（reloadSessions :682 照旧）。
+            if model.sessions.isEmpty {
+                Label("暂无会话", systemImage: "tray")
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 44) // 触屏可点目标口径对齐（此行不可点）
+            } else {
+                Button {
+                    showSessionPicker = true
+                } label: {
+                    HStack {
+                        Text("查看会话")
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Text(selectedSessionLabel)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(minHeight: 44) // 触屏可点目标 ≥44pt
+                    .contentShape(Rectangle())
                 }
-                ForEach(model.sessions) { summary in
-                    Text(sessionLabel(summary)).tag(summary.id)
-                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看会话，当前 \(selectedSessionLabel)")
             }
             HStack {
                 // M2.9：原始事件总数 + 聚合后行数对照（如「1894 事件 · 聚合后 37 行」）。
@@ -876,6 +909,75 @@ struct EventStreamView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+        }
+    }
+
+    /// 【批4 L2】会话选择 sheet（List 承载；顶部搜索框过滤——会话多时
+    /// 可用，登记为新增能力）。点行写 sessionBinding（空→nil 语义同 Picker
+    /// 时代）+ 收 sheet；当前选中行勾选高亮。
+    private var sessionPickerSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    TextField("搜索会话", text: $sessionFilter)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section {
+                    if filteredSessions.isEmpty {
+                        Text("无匹配会话")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(filteredSessions) { summary in
+                        Button {
+                            sessionBinding.wrappedValue = summary.id
+                            showSessionPicker = false
+                        } label: {
+                            HStack {
+                                Text(sessionLabel(summary))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if summary.id == model.selectedSessionID {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .frame(minHeight: 44) // 触屏可点目标 ≥44pt
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("查看会话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showSessionPicker = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        // 收 sheet 清过滤词（下次打开不残留）。
+        .onChange(of: showSessionPicker) { open in
+            if !open { sessionFilter = "" }
+        }
+    }
+
+    /// 选择行展示的当前会话标签（未选择/被删回落 → 「未选择」）。
+    private var selectedSessionLabel: String {
+        model.sessions
+            .first { $0.id == model.selectedSessionID }
+            .map(sessionLabel) ?? "未选择"
+    }
+
+    /// 搜索过滤（标题子串大小写不敏感；消毒沿本地语义——只读比较无注入面）。
+    private var filteredSessions: [SessionSummary] {
+        let needle = sessionFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return model.sessions }
+        return model.sessions.filter {
+            sessionLabel($0).localizedCaseInsensitiveContains(needle)
         }
     }
 
