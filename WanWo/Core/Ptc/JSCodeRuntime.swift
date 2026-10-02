@@ -1258,7 +1258,7 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                       let promise = deferred.objectForKeyedSubscript("promise"),
                       let resolve = deferred.objectForKeyedSubscript("resolve"),
                       let reject = deferred.objectForKeyedSubscript("reject") else {
-                    config.onTrace("[jscore] bridge deferred construction failed (terminated): " + name)
+                    self.config.onTrace("[jscore] bridge deferred construction failed (terminated): " + name)
                     return JSValue(nullIn: context)
                 }
                 let bindingToken = UUID()
