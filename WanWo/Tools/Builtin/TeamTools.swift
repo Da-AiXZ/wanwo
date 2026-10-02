@@ -149,7 +149,13 @@ private func teamFailure(_ error: Error) -> ToolOutput {
 
 struct TeamSpawnTeammateTool: AgentTool {
     let name = "spawn_teammate"
-    let description = "Create one named, durable teammate. Only the Team Lead may call this tool."
+    // 【M7-Fix 批5 W2 描述补充】上限语义：dsh 同口径（roster.ts:274-276
+    // TEAM_MEMBER_LIMIT 按持久花名册条目计数——idle/已完成队友照样占坑），
+    // 且双方均无模型面释放工具；文案写明，防模型把"live"误读为"全在跑"。
+    let description = "Create one named, durable teammate. Only the Team Lead may call this tool. "
+        + "The session holds at most \(SubagentGovernance.totalChildrenLimit) continuable "
+        + "children in total: idle or finished teammates still occupy slots, and no tool "
+        + "releases a slot early."
     let parameters: JSONValue = .schemaObject(
         properties: [
             "name": .object([

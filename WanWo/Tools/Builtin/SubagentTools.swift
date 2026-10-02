@@ -22,6 +22,10 @@
 //      wait_agent（M7.3 件 H 新增：主理人判定①"六工具仅 spawn/send_message/
 //      interrupt/list_agents 与批1 重叠，仅新增 wait_agent"；spec description
 //      逐字 + timeout 夹取 wait.rs:53-65 + 结果文案 from_outcome :139-159）。
+//      【M7-Fix 批5 W1 修订】turn21 实证 wait_agent 立即返回不阻塞——对拍
+//      dsh tool-agent-team index.ts:228-261/:34-40 修为：active-peer 短路
+//      （noProgress）+ 真阻塞（AgentLoop.waitForNextInboxActivity 只观察
+//      调用开始之后的变化；AgentLoop 侧为纯增量缝，事件机制零改动）。
 //
 //  万我适配裁定（登记）：
 //    - model selection 面（provider/model/reasoning_effort 成对 + KV-cache
@@ -429,11 +433,22 @@ struct ListAgentsTool: AgentTool {
 
 /// wait_agent：等任意存活 agent 的 mailbox 活动（M7.3 件 H 新增——codex
 /// multi_agents_v2/wait.rs 1:1；主理人判定①：批1 工具词汇之外唯一新增工具）。
-/// 等待-唤醒基于 AgentLoop.waitForInboxActivity（watch 通道语义，不轮询）；
+/// M7-Fix 批5 W1（turn21 实证：wait_agent 立即返回不阻塞）对拍修为 dsh
+/// tool-agent-team 语义（packages/experimental/tool-agent-team/src/index.ts
+/// :228-261 + :34-40）：
+///   ① active-peer 短路（:248-258）：无成员 running/provisioning → 立即
+///      noProgress（:39-40 ACTIVE_WAIT_STATUSES/NO_ACTIVE_PEER_MESSAGE——
+///      唯一合法的"立即返回"路径）；
+///   ② 真阻塞（:230 description 契约"observes only changes after that call
+///      starts"）：等待只观察本调用开始之后的状态/邮箱变化——经
+///      AgentLoop.waitForNextInboxActivity（既有 waiter/notify 基建复用，
+///      跳过 pending 短路，settle 通知积压不再伪装成"Wait completed"）；
+///   ③ 超时（wait.rs:53-65 夹取语义保持）→ timeout 态。
+/// 等待-唤醒基于 AgentLoop waitForNextInboxActivity（watch 通道语义，不轮询）；
 /// timeout 语义（wait.rs:53-65）：>max 拒绝 / <min 上夹至 min / 缺省 30s。
 struct WaitAgentTool: AgentTool {
     let name = "wait_agent"
-    let description = "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+    let description = "Wait for the next teammate status, mailbox, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. The wait also ends early when new user input is steered into the active turn. Re-list after wakeup or timeout instead of polling."
     let parameters: JSONValue = .schemaObject(
         properties: [
             "timeout_ms": .object([
@@ -446,14 +461,26 @@ struct WaitAgentTool: AgentTool {
         ],
         required: [])
 
-    private let parentLoop: AgentLoop
+    /// dsh ACTIVE_WAIT_STATUSES（index.ts:39 = running|provisioning）的万我
+    /// 承载：万我 statusOf 只产 running|idle|ready——provisioning 无可见档
+    ///（startContinuable 返回时激活已同步登记，running 即唯一 active 等待
+    /// 态；万我适配裁定，登记报告）。
+    private static let activeWaitStatuses: Set<String> = ["running"]
 
-    init(parentLoop: AgentLoop) {
+    /// dsh NO_ACTIVE_PEER_MESSAGE（index.ts:40 逐字）。
+    private static let noActivePeerMessage = "No other Team member is running or provisioning. wait_agent cannot make progress or wake inactive teammates. Re-list with list_agents and team_task_list, then use send_message to wake each required inactive teammate before waiting again."
+
+    private let parentLoop: AgentLoop
+    private let runtime: SubagentRuntime
+
+    init(parentLoop: AgentLoop, runtime: SubagentRuntime) {
         self.parentLoop = parentLoop
+        self.runtime = runtime
     }
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-        // wait.rs:52 parse_arguments + :57-65 夹取语义 1:1。
+        // wait.rs:52 parse_arguments + :57-65 夹取语义 1:1。timeout 校验
+        // 先于 noProgress 短路（dsh :241-245 同序：权威校验在前）。
         let requestedMs: Int64?
         if let field = args.field("timeout_ms") {
             if let intValue = field.intValue {
@@ -480,8 +507,34 @@ struct WaitAgentTool: AgentTool {
             effectiveMs = SubagentGovernance.defaultWaitTimeoutMs
         }
 
-        // wait_for_activity（wait.rs:187-205）：watch 通道挂起至活动/超时。
-        let outcome = await parentLoop.waitForInboxActivity(timeoutMs: effectiveMs)
+        // dsh :248-258：active-peer 判定（直接子 = 花名册口径；dsh 花名册
+        // = Lead 直接队友，不含孙代）+ noProgress 短路。诊断条目不参与
+        // 判定（list-agents "reported as diagnostics" 同纪律）。
+        // 万我缝缺席登记：dsh 要求 active-peer 读与等待者登记同处一个同步
+        // 段（:246-248 注释）；万我跨 runtime/parentLoop 两个 actor——窗口
+        // 内 peer 最后一条边会把本次等待推迟到超时收敛（不产生错误唤醒，
+        // 只损失一次提前返回；dsh 语义的保守近似）。
+        let peers = await runtime.listAgents(callerSessionId: ctx.sessionId,
+                                             includeDescendants: false)
+        let hasActivePeer = peers.contains { peer in
+            peer.diagnosticReason == nil
+                && Self.activeWaitStatuses.contains(peer.status)
+        }
+        if !hasActivePeer {
+            return .success(Self.noActivePeerMessage, meta: .object([
+                "timed_out": .bool(false),
+                "no_progress": .object([
+                    "reason": .string("no-active-peer"),
+                    "message": .string(Self.noActivePeerMessage),
+                ]),
+            ]))
+        }
+
+        // wait_for_activity（wait.rs:187-205 watch 通道语义 + W1 修复核心：
+        // waitForNextInboxActivity 跳过 pending 短路——调用时已排队条目
+        //（settle 通知积压等）不唤醒，只等待真实新边或超时；dsh index.ts:37
+        // "observes only changes after that call starts, never wakes a member"）。
+        let outcome = await parentLoop.waitForNextInboxActivity(timeoutMs: effectiveMs)
         // WaitAgentResult.from_outcome（wait.rs:139-159）1:1：三分支消息 +
         // 夹取提示行 + timed_out 旗标。恒 success（wait.rs:167 success_for_logging）。
         let base: String
@@ -546,7 +599,7 @@ enum SubagentTools {
             SendMessageAgentTool(runtime: runtime),
             InterruptAgentTool(runtime: runtime),
             ListAgentsTool(runtime: runtime),
-            WaitAgentTool(parentLoop: parentLoop),
+            WaitAgentTool(parentLoop: parentLoop, runtime: runtime),
         ]
         for tool in candidates {
             do {

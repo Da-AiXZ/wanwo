@@ -32,6 +32,12 @@
 //      detail 缺省（M9 卡片族补齐），登记。
 //    - JSON.stringify(value, null, 2) → JSONEncoder prettyPrinted（缩进
 //      2 空格 + 键排序；JS UTF-16 length → Swift Character count，登记）。
+//  【M7-Fix 批5 W3 登记】turn20 实证：schema 校验失败静默 null——对拍 dsh
+//    workflow-worker-thread/src/runtime.ts:318-339：completed 而无 structured
+//    值 → null（:322-324）；子自身失败 → null（:332-339 "scripts
+//    .filter(Boolean) per the CC contract"）。dsh 同款静默 null，行为不改
+//    （WorkflowExecution.swift:1026-1050 已 1:1）；仅在工具 description 补
+//    "null 为契约内静默失败、必须显式上报"警示（主理人④）。
 //
 
 import Foundation
@@ -75,7 +81,7 @@ struct WorkflowTool: AgentTool {
         The workflow's identity rides the `meta` parameter as JSON: required `name` (short kebab-case) and `description` strings, optional `whenToUse` string and `phases` array (`{title, detail?, provider?, model?}`). The `script` parameter is the plain JavaScript body ONLY (NOT TypeScript, and NO `export const meta` statement — meta is a parameter, not code), running with top-level await; end with `return <value>` — the value must be JSON-serializable and is this tool's result.
 
         Script-body hooks:
-        - `agent(prompt, opts?): Promise<any>` — run one subagent to completion. Without `opts.schema` it resolves to the child's final text; with `opts.schema` (an object-rooted JSON Schema using ONLY type/properties/required/additionalProperties/items/enum/const/oneOf — no pattern/format/numeric bounds) it resolves to the validated object. Resolves `null` when the child fails (filter with `.filter(Boolean)`). Other opts: `label` (display), `phase` (progress group), and independent `provider`/`model` LLM target overrides (either may be provided alone). Anything else (`effort`/`isolation`/`agentType`) is rejected loudly.
+        - `agent(prompt, opts?): Promise<any>` — run one subagent to completion. Without `opts.schema` it resolves to the child's final text; with `opts.schema` (an object-rooted JSON Schema using ONLY type/properties/required/additionalProperties/items/enum/const/oneOf — no pattern/format/numeric bounds) it resolves to the validated object. Resolves `null` when the child fails OR when its final output does not validate against `opts.schema` — this null is silent by contract, so treat EVERY null as an explicit per-entry failure and surface it in your result; never make nulls disappear silently with `filter(Boolean)`. Other opts: `label` (display), `phase` (progress group), and independent `provider`/`model` LLM target overrides (either may be provided alone). Anything else (`effort`/`isolation`/`agentType`) is rejected loudly.
         - `pipeline(items, ...stages): Promise<any[]>` — run each item through the stages independently with NO barrier between stages (prefer this for multi-stage work). Each stage receives `(prev, item, index)`. An ordinary stage throw drops that ITEM to `null` and skips its remaining stages.
         - `parallel(thunks): Promise<any[]>` — run zero-argument functions concurrently and await ALL of them (a barrier; use only when a stage genuinely needs every prior result together). A throwing thunk resolves to `null`.
         - `phase(title)` — start a progress phase; `log(message)` — narrate progress; `args` — the tool call's `args` input, verbatim.

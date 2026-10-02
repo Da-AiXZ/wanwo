@@ -334,9 +334,17 @@ actor SubagentRuntime {
         // 仅治理 continuable 驻留树：one-shot 生命周期由调用方/jobs 持有，
         // ephemeral 形态不计入（裁定见 SubagentSupervisor.swift 裁定书④）。
         guard liveChildrenCount < SubagentGovernance.totalChildrenLimit else {
+            // 【M7-Fix 批5 W2 文案修订】turn21 实证：已完成/idle 的驻留子
+            // 也占坑，模型误以为"3 live"全在跑。dsh 对拍（roster.ts:274-276
+            // TEAM_MEMBER_LIMIT）：口径同为持久花名册条目数（含 inactive），
+            // 且同样无模型面释放工具（stopTeammates 仅宿主 teardown 走）。
+            // 行为不变，仅文案写明口径（主理人③）。
             throw SubagentError(
                 message: "subagent limit reached "
-                    + "(\(SubagentGovernance.totalChildrenLimit) live children per session)",
+                    + "(\(SubagentGovernance.totalChildrenLimit) live children per session; "
+                    + "idle or finished continuable children still occupy slots, and no "
+                    + "tool releases a slot — slots free only when the host tears "
+                    + "resident children down)",
                 code: "AGENT_LIMIT_REACHED")
         }
         liveChildrenCount += 1

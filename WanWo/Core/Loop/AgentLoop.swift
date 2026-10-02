@@ -680,6 +680,28 @@ actor AgentLoop {
     func waitForInboxActivity(timeoutMs: Int64) async -> InboxActivity? {
         if !nextStepInbox.isEmpty { return .steer }
         if !nextTurnInbox.isEmpty { return .mailbox }
+        return await registerActivityWaiter(timeoutMs: timeoutMs)
+    }
+
+    /// 等待"下一次" inbox 活动（M7-Fix 批5 W1 · dsh tool-agent-team
+    /// wait_agent 语义对拍：只观察本调用开始**之后**的变化——调用时已排队
+    /// 的条目不唤醒等待者，index.ts:37 "observes only changes after that
+    /// call starts, never wakes a member"）。turn21 实证根因修复：父 inbox
+    /// 积压（settle 通知等）曾使 pending 短路把 wait_agent 变成立返。
+    /// 与 waitForInboxActivity 的唯一差异：**不做 pending 短路**。事件机制
+    /// 零改动——完全复用既有 activityWaiters/notifyActivity/超时哨兵基建。
+    /// actor 串行化保证登记是单一同步段——登记之后任何 enqueue 的
+    /// notifyActivity 必达；登记之前入队的边（含积压）只留待新边。
+    /// - Returns: 活动类别；nil = 超时。
+    func waitForNextInboxActivity(timeoutMs: Int64) async -> InboxActivity? {
+        return await registerActivityWaiter(timeoutMs: timeoutMs)
+    }
+
+    /// 活动等待者登记（一次一续体；activity 与 timeout 双端竞争，先到先
+    /// resume，后到按 id 摘除不再 resume——续体单次恢复纪律）。
+    /// withCheckedContinuation 体在 actor 同步段内同步执行（不让出），
+    /// 保证登记与 notify 之间无丢失窗口。
+    private func registerActivityWaiter(timeoutMs: Int64) async -> InboxActivity? {
         return await withCheckedContinuation { (cont: CheckedContinuation<InboxActivity?, Never>) in
             let waiter = ActivityWaiter(continuation: cont)
             activityWaiters.append(waiter)

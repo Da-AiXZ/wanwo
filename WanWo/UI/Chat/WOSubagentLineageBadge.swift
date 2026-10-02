@@ -25,9 +25,10 @@
 //    · metrics 段（token 总数/活跃时长）→ 裁剪：万我会话摘要无
 //      tokenUsage/subagentTiming 投影源（Core/ 禁碰）。
 //    · switcher（子会话视角切父/兄弟）→ 裁剪：子会话以 sheet 回放承载。
-//    · 运行状态刷新：dsh 订阅驱动 → sessionsRevision 失效重扫（用户
-//      反馈8 刷新缝根因修复）+ running>0 期 1s 轮询（对位 dsh :652-656
-//      的 1s now 步进）。
+//    · 运行状态刷新：dsh 订阅驱动 → SessionStore 索引失效信号重扫
+//      （appState.sessionListEpoch——【批5 根因②】原 sessionsRevision 不含
+//      子会话回合中创建的失效信号，登记见下）+ running>0 期 1s 轮询
+//      （对位 dsh :652-656 的 1s now 步进）。
 //
 
 import SwiftUI
@@ -46,6 +47,10 @@ struct WOSubagentLineageBadge: View {
     @State private var replayTarget: WOSubagentCatalog.ChildRecord?
     /// 重扫序列令牌（并发重扫只认最新）。
     @State private var scanSeq = 0
+    /// epoch 防抖合并任务（写柄追加逐事件 bump epoch——只认窗内最后一次）。
+    @State private var rescanDebounce: Task<Void, Never>?
+    /// 防抖首推迟时间戳（【批5 复审修 P1-1】deadline 兜底基准；nil = 无挂起推迟）。
+    @State private var deferStart: Date?
 
     /// dsh :516 bootstrap 双源取大（直接行已见 vs 索引聚合——目录可以
     /// 先于基线到达，绝不短算已可见行）。
@@ -59,9 +64,16 @@ struct WOSubagentLineageBadge: View {
     private var visible: Bool { descendantCount > 0 }
 
     var body: some View {
-        // 刷新缝挂 Group 外层（不可见期也要听失效信号——首个子会话回合中
-        // 诞生时徽章还不可见，监听挂 if 内会永久失聪，反馈8 复发）。
-        Group {
+        // 【批5 根因①】扫描驱动必须挂在"无条件出现"的真实容器上：
+        // Group 的修饰符语义 = 下沉应用到每个子视图——visible=false 时
+        // if 分支是 EmptyView、永不 appear，挂在 Group 上的 .task /
+        // .onReceive 随之永不激活 → 首扫永不发生 → snapshot 恒 empty
+        // → visible 恒 false（死锁：真机徽章永不显示的病根；此前批2
+        // 把监听从 if 内挪到 Group 外层并未改变该语义）。ZStack 是真实
+        // 布局节点（内容为空同样 appear），驱动挂它恒活——对位 dsh
+        // SubagentHeaderLineage：React 组件恒挂载、空时 render null 而
+        // hooks 照常运行；SwiftUI 的等价物 = 驱动挂无条件出现的容器。
+        ZStack {
             if visible {
                 badgeButton
                     .popover(isPresented: $menuOpen, arrowEdge: .bottom) {
@@ -72,13 +84,23 @@ struct WOSubagentLineageBadge: View {
                     }
             }
         }
-        // 首扫 + 会话切换换身份重扫。
+        // 首扫 + 会话切换换身份重扫（立即执行，不走防抖）。
         .task(id: sessionId) { await rescan() }
-        // 刷新缝（反馈8 根因修复）：订阅环境会话列表失效信号——回合中
-        // 新建子会话（sessionsRevision bump）触发重扫，不再是
-        // "仅会话打开扫一次"。
-        .onReceive(environment.$sessionsRevision) { _ in
-            Task { await rescan() }
+        // 【批5 根因②】刷新缝改听 appState.sessionListEpoch（防抖+2s 兜底）：
+        // 这是 SessionStore 建索引钩子的唯一汇聚信号（database.onIndexChanged
+        // → externalListSignal → bumpSessionList，见 SessionStore init），
+        // 覆盖子会话创建 / 写柄追加 / 标题落盘 / 建 / 删全部写路径 ⊇
+        // sessionsRevision。原 onReceive(environment.$sessionsRevision) 对
+        // 回合中诞生的子会话恒失聪——makeSubagentChildStack 经
+        // SessionStore.createSession(withID:) 直写索引，失效信号只走
+        // epoch；sessionsRevision 仅由 AppEnvironment 用户建删三处直 bump
+        //（init:918/:959/:497），与子会话创建零交集。
+        // 防抖必要：写柄追加逐事件 bump epoch，流式回合高频；全量重扫
+        // 有界（64KB 头折/文件）但不必逐事件跑（scanSeq 保证并读不串台）。
+        // 【批5 复审修 P1-1】trailing-reset 防抖有 2s 硬截止兜底（长流中段
+        // 诞生的孩子最迟 2s 现形）——机制见 scheduleRescan 注释。
+        .onReceive(environment.appState.$sessionListEpoch) { _ in
+            scheduleRescan()
         }
         // 运行期 1s 轮询（对位 dsh :652-656 running>0 的 1s 步进；
         // dsh 为订阅驱动，万我 runtime 无发布面——登记）。
@@ -163,6 +185,42 @@ struct WOSubagentLineageBadge: View {
     }
 
     // MARK: 数据（扫描编排；IO 全程后台）
+
+    /// 防抖合并窗（常规；epoch 被流式写柄逐事件 bump，合并到窗尾只跑一次）。
+    private static let rescanWindow: TimeInterval = 0.25
+    /// 兜底硬截止（【批5 复审修 P1-1】）：首次被推迟起最迟 2s 强制执行。
+    private static let rescanDeadline: TimeInterval = 2.0
+
+    /// epoch 防抖重扫 + deadline 兜底：
+    /// trailing-reset 型防抖在连续长流（chunk 间隔常小于 250ms 窗长）中会被
+    /// 无限重置——首个孩子若诞生于不间断长流中段，徽章首现将推迟到事件
+    /// 间隙/流结束，与"即时出现"承诺不符。兜底：从第一次被推迟起算 2s
+    /// 硬截止，窗长取 min(常规 250ms, 距 deadline 剩余)——deadline 先到即
+    /// 提前执行。保证①流式高峰期孩子诞生 → 徽章最迟 2s 出现；②正常间隙
+    /// 仍 250ms 合并（省电意义保留）。
+    /// 重入/取消安全：deferStart 触碰全程 MainActor（View 方法 + Task 继承
+    /// 外围隔离）；旧 Task 先 cancel 再换新，迟到旧任务与 scanSeq 令牌共同
+    /// 保证并读不串台；rescan 实际执行时清零 deferStart 开新窗。
+    private func scheduleRescan() {
+        let now = Date()
+        let deadlineRemaining: TimeInterval
+        if let start = deferStart {
+            deadlineRemaining = Self.rescanDeadline - now.timeIntervalSince(start)
+        } else {
+            deferStart = now
+            deadlineRemaining = Self.rescanDeadline
+        }
+        let delay = min(Self.rescanWindow, max(0, deadlineRemaining))
+        rescanDebounce?.cancel()
+        rescanDebounce = Task(priority: .userInitiated) {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+            deferStart = nil
+            await rescan()
+        }
+    }
 
     /// 重扫：会话快照（同步缓存面）+ runtime listings（含后代/诊断）→
     /// 后台全量头扫描 → ScanOutput。序列令牌防并发串台。

@@ -180,6 +180,21 @@ final class M7SupervisorTests: XCTestCase {
                 escalationApprover: nil))
             return (loop, gate)
         }
+
+        /// gated materializer（M7-Fix 批5 W1）：子 loop 驱动器卡在 gated
+        /// 适配器（phase = .running）——active-peer 判定的确定性 running
+        /// 构造（startContinuable 的初始 followup 唤醒子驱动器 → hold）。
+        func makeGatedMaterializer()
+            -> (materializer: SubagentRuntime.ChildMaterializer, gate: Gate) {
+            let gate = Gate()
+            let materializer: SubagentRuntime.ChildMaterializer = { resolved, _, _ in
+                let (writer, _) = try await self.makeWriter(id: resolved.childId)
+                let (loop, _) = self.makeGatedLoop(sessionId: resolved.childId,
+                                                   writer: writer)
+                return (loop, writer)
+            }
+            return (materializer, gate)
+        }
     }
 
     override func setUp() {
@@ -628,12 +643,12 @@ final class M7SupervisorTests: XCTestCase {
 
     func testWaitAgentToolClampAndMessages() async throws {
         let (writer, _) = try await harness.makeWriter(id: "wait-tool")
-        // QA-4 P1-2：缺省段改占跑构造——原实现 followup 先行经 wake() 派生
-        // 驱动器，runTurn 首步 claim 与工具内 pending 检查先到先消费。gated
-        // loop 未 submit 前无驱动器（夹取段语义等同普通 loop）。
+        // QA-4 P1-2：占跑构造保留——gated loop 未 submit 前无驱动器（夹取段
+        // 语义等同普通 loop）。M7-Fix 批5 W1：runtime 无子 → 全部调用走
+        // noProgress 短路（dsh tool-agent-team :248-258），不进入等待路径。
         let (loop, gate) = harness.makeGatedLoop(sessionId: "wait-tool",
                                                  writer: writer)
-        let tool = WaitAgentTool(parentLoop: loop)
+        let tool = WaitAgentTool(parentLoop: loop, runtime: SubagentRuntime())
         let ctx = ToolExecutionContext(
             sessionId: "wait-tool", turn: 0, step: 0, callId: "call-1",
             workspace: WorkspaceFileAccess(sessionId: "wait-tool"),
@@ -643,7 +658,8 @@ final class M7SupervisorTests: XCTestCase {
             sandboxMode: .workspaceWrite,
             escalationApprover: nil)
 
-        // >max → RespondToModel 等价拒绝（wait.rs:58-61）。
+        // >max → RespondToModel 等价拒绝（wait.rs:58-61；校验先于 noProgress
+        // 短路——dsh :241-245 timeout 权威校验在前）。
         let tooLarge = try await tool.execute(
             .object(["timeout_ms":
                         .int(Int(SubagentGovernance.maxWaitTimeoutMs) + 1)]), ctx)
@@ -652,27 +668,125 @@ final class M7SupervisorTests: XCTestCase {
         XCTAssertTrue(tooLarge.text.contains("timeout_ms must be at most "
             + "\(SubagentGovernance.maxWaitTimeoutMs)"))
 
-        // <min → 上夹 + 夹取提示（wait.rs:63 + :149-154）。
-        let clamped = try await tool.execute(.object(["timeout_ms": .int(1)]), ctx)
-        XCTAssertFalse(clamped.isError, "夹取路径应成功返回")
-        XCTAssertTrue(clamped.text.contains("Wait timed out."), "1ms 必超时")
-        XCTAssertTrue(clamped.text.contains("Requested timeout of 1ms was clamped to "
-            + "the minimum of \(SubagentGovernance.minWaitTimeoutMs)ms."))
+        // W1：无 active peer → 立即 noProgress（dsh :248-258 + :39-40
+        // NO_ACTIVE_PEER_MESSAGE 逐字）。即便 1ms 请求也不进入等待路径。
+        let noPeer = try await tool.execute(.object(["timeout_ms": .int(1)]), ctx)
+        XCTAssertFalse(noPeer.isError, "noProgress 短路应成功返回")
+        XCTAssertTrue(noPeer.text.hasPrefix(
+            "No other Team member is running or provisioning."),
+            "无 peer 必须立即 noProgress，不得进入等待")
+        XCTAssertEqual(
+            noPeer.meta?.field("no_progress")?.field("reason")?.stringValue,
+            "no-active-peer")
+        XCTAssertEqual(
+            noPeer.meta?.field("timed_out")?.boolValue, false)
 
-        // 缺省（无参数）→ default 30s（测试以 pending 活动提前返回校验通路；
-        // QA-4 P1-2：占跑期 followup 不经 wake 派生消费——mailbox 确定性）。
+        // W1 回归（turn21 实证）：父 inbox 已积压 settle 通知时，wait_agent
+        // 不得伪装"Wait completed"立返——无 peer 时仍走 noProgress 短路
+        //（pending 条目不再参与唤醒判定）。
         await loop.submit("占跑 kick（被 gated 适配器阻塞）")
         let claimDeadline = Date().addingTimeInterval(5)
         while !gate.isHeld && Date() < claimDeadline {
             try await Task.sleep(nanoseconds: 1_000_000)
         }
         XCTAssertTrue(gate.isHeld, "驱动器应已在 gated 适配器处阻塞（claim 已发生）")
-        await loop.followup("notice", source: .system)
-        let defaulted = try await tool.execute(.object([:]), ctx)
-        XCTAssertFalse(defaulted.isError, "缺省路径应成功返回")
-        XCTAssertTrue(defaulted.text.hasPrefix("Wait completed."))
+        await loop.followup("stale settlement notice", source: .subagentSettled(
+            childId: "c", stopReason: "completed"))
+        let stale = try await tool.execute(.object([:]), ctx)
+        XCTAssertFalse(stale.isError)
+        XCTAssertTrue(stale.text.hasPrefix(
+            "No other Team member is running or provisioning."),
+            "积压条目不得伪装 Wait completed（turn21 回归）")
 
         gate.open()  // 放行驱动器收敛（回放队列消费后 idle）。
+        await loop.whenIdle()
+    }
+
+    // MARK: - W1：wait_agent 真阻塞（dsh tool-agent-team wait_agent 语义）
+
+    func testWaitForNextIgnoresPendingEntries() async throws {
+        let (writer, _) = try await harness.makeWriter(id: "wait-next-pending")
+        let loop = harness.makeLoop(sessionId: "wait-next-pending", writer: writer)
+        // 调用前已排队条目：不得短路唤醒（dsh index.ts:37 "observes only
+        // changes after that call starts"——turn21 实证根因的缝级断言）。
+        await loop.inject("stale steer", source: .system)
+        await loop.followup("stale mailbox", source: .system)
+        let startedAt = Date()
+        let outcome = await loop.waitForNextInboxActivity(timeoutMs: 150)
+        XCTAssertNil(outcome, "已排队条目不得唤醒——只等待新边或超时")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(startedAt), 0.1,
+                                    "必须真阻塞至超时，不得立返")
+    }
+
+    func testWaitForNextWakesOnNewFollowupOnly() async throws {
+        let (writer, _) = try await harness.makeWriter(id: "wait-next-wake")
+        let loop = harness.makeLoop(sessionId: "wait-next-wake", writer: writer)
+        // 调用前积压一条（不得唤醒）；登记后的新 followup（子结算通知等价）
+        // 才唤醒——waiter/notify 基建复用，watch 通道语义不变。
+        await loop.followup("调用前积压", source: .system)
+        let waiter = Task { await loop.waitForNextInboxActivity(timeoutMs: 5_000) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        await loop.followup("子结算通知", source: .subagentSettled(
+            childId: "c", stopReason: "completed"))
+        let outcome = await waiter.value
+        XCTAssertEqual(outcome, .mailbox, "登记后的新边唤醒（W1 修复核心）")
+    }
+
+    func testWaitAgentToolBlocksWithActivePeerAndWakesOnNewChange() async throws {
+        // 工具级真阻塞：active peer（gated 子 loop = running）在场 + 父 inbox
+        // 仅有调用前积压条目 → wait_agent 不得立返；新边到达才 "Wait completed."
+        //（turn21 实证场景的正向修复断言）。
+        let parentSessionId = "wait-tool-block"
+        let (writer, _) = try await harness.makeWriter(id: parentSessionId)
+        let loop = harness.makeLoop(sessionId: parentSessionId, writer: writer)
+        let runtime = SubagentRuntime()
+        await runtime.registerProvider(harness.makeForkProvider())
+        let (materializer, childGate) = harness.makeGatedMaterializer()
+        await runtime.registerChildMaterializer(materializer)
+        _ = try await runtime.startContinuable(
+            provider: "fork",
+            request: SubagentStartRequest(
+                label: "writer", prompt: "p",
+                parentSessionId: parentSessionId, parentCwd: nil, parentDepth: 0))
+        // 确定性等待子驱动器进入 gated 适配器（phase = .running）。
+        let heldDeadline = Date().addingTimeInterval(5)
+        while !childGate.isHeld && Date() < heldDeadline {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(childGate.isHeld, "子驱动器应已在 gated 适配器处阻塞（running）")
+
+        // 调用前积压一条 stale 通知——不得唤醒。
+        await loop.followup("stale settlement notice", source: .subagentSettled(
+            childId: "stale", stopReason: "completed"))
+
+        let tool = WaitAgentTool(parentLoop: loop, runtime: runtime)
+        let ctx = ToolExecutionContext(
+            sessionId: parentSessionId, turn: 0, step: 0, callId: "call-1",
+            workspace: WorkspaceFileAccess(sessionId: parentSessionId),
+            spill: SpillStore(root: FileManager.default.temporaryDirectory),
+            onShellLine: { _, _ in },
+            completeLLM: { _, _ in "" },
+            sandboxMode: .workspaceWrite,
+            escalationApprover: nil)
+        let call = Task { try await tool.execute(.object(["timeout_ms": .int(1)]), ctx) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(call.isCompleted,
+                       "有 active peer 且仅积压条目 → 必须真阻塞（W1 turn21 修复）")
+
+        // 新边（子结算通知等价的 followup 入列 + notifyActivity）→ 立即唤醒。
+        await loop.followup("fresh settlement notice", source: .subagentSettled(
+            childId: "fresh", stopReason: "completed"))
+        let result = try await call.value
+        XCTAssertFalse(result.isError)
+        XCTAssertTrue(result.text.hasPrefix("Wait completed."),
+                      "新边到达必须唤醒（而非超时）")
+        XCTAssertTrue(result.text.contains("Requested timeout of 1ms was clamped to "
+            + "the minimum of \(SubagentGovernance.minWaitTimeoutMs)ms."),
+                      "夹取提示随等待结果返回（wait.rs:149-154）")
+
+        // 清理：放行子驱动器 + 回收驻留子。
+        childGate.open()
+        await runtime.drainChildren(of: parentSessionId)
         await loop.whenIdle()
     }
 }
