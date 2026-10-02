@@ -420,6 +420,11 @@ final class RunCodeToolTests: XCTestCase {
         // 【根因已修 2026-09-15】当年 CI 两轮 20min+ 挂死=车道 drain 等
         // 常驻服务循环（见 setUpWithError 注释）——本测试覆盖的正是
         // run-cancel 后 drain 收敛路径，修复后应为天然回归面。
+        // 【CI修44 · run 36953745087】本测试进程崩溃（JSCodeRuntime.swift:942
+        // 强解包）=中止窗口时序竞态：cancel 触发的在飞 binding 统一拒绝面
+        // 在 Watchdog 拧 0/finish 跨线程清空窗口内执行 JS——根因修复见
+        // rejectInflightBindings（守卫解包快照 + 构造失败 best-effort 弃拒绝）。
+        // 下方 shake 测试为该窗口的重复抖动回归面。
         let gate = PtcTestGate()
         let stack = try await makeStack(id: "abandon", gate: gate,
                                         gateParallelSafe: true,
@@ -461,6 +466,47 @@ final class RunCodeToolTests: XCTestCase {
             guard case .extensionEvent = event.payload else {
                 return XCTFail("非 extension 事件混入: \(event.wireType)")
             }
+        }
+    }
+
+    // MARK: - CI修44 · 中止窗口时序竞态抖动（run 36953745087 :942 崩溃回归面）
+
+    func testAbandonedQueuedSubDispatchRaceShake() async throws {
+        // 【CI修44 加固】testAbandoned 的崩溃是竞态（单次通过无法证伪）——
+        // 重复泵同一中止窗口：在飞 binding 拒绝列表非空（gate1 持闸未结算）
+        // + 排队未启动弃单（gate2）+ 在飞 body 落定后 settle（drain 等待面）
+        // 三面同时在场，cancel 与 rejectInflightBindings/finish 的跨线程交错
+        // 被逐轮抖动。回归判据 = 每轮无崩溃收敛 + 事件不变量（start/settle
+        // 恰好 1:1、settle isError=false、弃单零事件）。
+        for index in 0..<3 {
+            let gate = PtcTestGate()
+            let stack = try await makeStack(id: "abandon-shake-\(index)", gate: gate,
+                                            gateParallelSafe: true,
+                                            maxParallelSubCalls: 1)
+            defer { try? FileManager.default.removeItem(at: stack.dir) }
+            let runTask = Task {
+                try await stack.tool.execute(
+                    runArgs(code:
+                        "tools.ptc_gate({ i: 1 }); return await tools.ptc_gate({ i: 2 });"),
+                    makeCtx(callId: "call-1"))
+            }
+            await gate.awaitEntered(count: 1)
+            runTask.cancel()
+            gate.releaseOne()
+            let output = try await runTask.value
+            XCTAssertTrue(output.isError, "iteration=\(index) text=\(output.text)")
+            XCTAssertTrue(output.text.contains("code run failed"),
+                          "iteration=\(index) text=\(output.text)")
+            let starts = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.startKind)
+            let settles = dispatchEvents(of: stack.writer, kind: PtcDispatchEvents.dispatchKind)
+            XCTAssertEqual(starts.map { $0.subCallId }, ["call-1:ptc:1"],
+                           "iteration=\(index)")
+            XCTAssertEqual(settles.map { $0.subCallId }, ["call-1:ptc:1"],
+                           "iteration=\(index)")
+            let settle = try XCTUnwrap(settles.first,
+                                       "iteration=\(index) settle 必须在 execute 返回前落盘")
+            XCTAssertEqual(settle.fields["isError"], .bool(false),
+                           "iteration=\(index) 在飞 body 正常完成（取消检查点在闸前）")
         }
     }
 

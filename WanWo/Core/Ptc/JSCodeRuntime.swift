@@ -925,25 +925,48 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
             forceWatchdogNow()
         }
 
-        /// 拒绝全部在飞 binding Promise（queue 上执行；settled 后 context 已
-        /// 释放——settled 守卫跳过）。
+        /// 拒绝全部在飞 binding Promise（queue 上执行）。
+        /// 【CI修44 · run 36953745087 :942 强解包进程崩溃根因修复】本函数是
+        /// 中止路径上唯一主动执行 JS 的面，而同一条 requestStop 流程刚把
+        /// Watchdog 拧到 0（forceWatchdogNow）——此窗口内任何 JS 求值都可能
+        /// 被终止（JSValue.call 返回 nil）；且 finish 对 context/api 的清空
+        /// 存在跨线程可见性（:1316 先例实证"另一线程"）。旧 guard-then-强解包
+        /// 模式（`!= nil` 检查后 `context!`）在该窗口必炸。
+        /// dsh 语义对拍：worker.terminate() 硬杀下程序随 worker 死亡，不存在
+        /// "拒绝在飞调用"的操作——本拒绝面是 WanWo 的收敛加速器（deferred
+        /// await 解堵），失败即弃且不影响 run 结果：唯一权威收敛面是随行的
+        /// finishIfStopped（恒落定 abort 结果）。守卫解包快照 + 构造失败静默
+        /// 弃 = 与 :1316 修复（resolve dropped (api cleared)）同语义，非裸
+        /// try? 掩盖。
         private func rejectInflightBindings(_ failure: CodeRunFailure) {
-            guard !settled, context != nil, api != nil else {
+            guard !settled, let liveContext = context, let liveAPI = api else {
                 inflightBindingRejects.removeAll()
                 return
             }
             let rejects = Array(inflightBindingRejects.values)
             inflightBindingRejects.removeAll()
             guard !rejects.isEmpty else { return }
-            let newErrorFn = api!.objectForKeyedSubscript("newError")!
+            // binding 拒绝错误实例构造一次复用（无 errorClass = 普通
+            // Error(reason)）；构造失败（JS 抛错/Watchdog 0-limit 终止/上下文
+            // 污染）= best-effort 弃拒绝，program await 不解堵但 run 已由
+            // stop 面收敛，context 随 finish 释放（程序随之消亡，无泄漏面）。
+            let errorValue = JSValue(object: "binding", in: liveContext)
+                .flatMap { name in
+                    RunState.rejectionError(
+                        context: liveContext, errorClass: nil, name: name,
+                        message: failure.message,
+                        newErrorFn: liveAPI.objectForKeyedSubscript("newError"))
+                }
+            guard let errorValue else {
+                config.onTrace("[jscore] binding reject skipped (construction failed under teardown)")
+                return
+            }
             for reject in rejects {
-                // binding 拒绝错误实例（无 errorClass = 普通 Error(reason)）。
-                let errorValue = RunState.rejectionError(
-                    context: context!, errorClass: nil,
-                    name: JSValue(object: "binding", in: context!)!,
-                    message: failure.message, newErrorFn: newErrorFn)
                 reject.call(withArguments: [errorValue])
             }
+            // Watchdog 终止会在 context 留悬挂 exception——清除防污染收敛前
+            // 的后续 JS 操作面。
+            liveContext.exception = nil
         }
 
         /// Watchdog 立即到期（setTimeLimit(0)——cpp 内 JSLockHolder，线程安全）。
@@ -1123,14 +1146,26 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                         message: "dsh-code-runtime-jscore: __dsh_program__ not found after fallback eval"))
                     return
                 }
-                promise = programFn.call(withArguments: parameterValues)!
+                // 【CI修44】程序调用可被 Watchdog 终止返回 nil（墙钟到期
+                // forceWatchdogNow 拧 0 的终止窗口）——强解包必炸。终止面
+                // interruptCallback→dispatchStop 恒已排队 finish（幂等收敛），
+                // 此处静默让位，失败形态由 stop 面权威落定。
+                guard let promiseValue = programFn.call(withArguments: parameterValues) else {
+                    config.onTrace("[jscore] program call interrupted (watchdog)")
+                    return
+                }
+                promise = promiseValue
             } else {
-                let program = api.objectForKeyedSubscript("makeProgram")!
+                guard let program = api.objectForKeyedSubscript("makeProgram")?
                     .call(withArguments: [
                         JSValue(object: paramNames, in: context),
                         JSValue(object: "'use strict';\n" + stripped, in: context),
-                    ])
-                promise = program!.call(withArguments: parameterValues)!
+                    ]),
+                    let promiseValue = program.call(withArguments: parameterValues) else {
+                    config.onTrace("[jscore] program call interrupted (watchdog)")
+                    return
+                }
+                promise = promiseValue
             }
             let onResolve: @convention(block) (JSValue) -> Void = { [weak self] value in
                 self?.handleResolve(value)
@@ -1179,11 +1214,18 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 let encoded = encode.call(withArguments: [argsJS])
                 if encoded == nil || encoded!.isUndefined {
                     // bootstrap :336——args 无损预检拒绝（errorClass 实例化）。
+                    // 【CI修44】newError 构造可 nil（Watchdog 终止/上下文污
+                    // 染）——降级为字符串拒绝保住 promise 面（dsh :336
+                    // errorClass 形态的降级登记；终态窗口下外包执行已被终止，
+                    // 返回值随即丢弃）。
                     let error = RunState.rejectionError(
                         context: context, errorClass: errorClassValue,
                         name: nameValue, message: "binding arguments must be lossless JSON",
-                        newErrorFn: api.objectForKeyedSubscript("newError")!)
-                    return rejectedFn.call(withArguments: [error])!
+                        newErrorFn: api.objectForKeyedSubscript("newError"))
+                        ?? JSValue(object: "binding arguments must be lossless JSON", in: context)
+                        ?? JSValue(nullIn: context)
+                    return rejectedFn.call(withArguments: [error])
+                        ?? JSValue(nullIn: context)
                 }
                 self.config.onTrace("[jscore] binding call: \(name) args=\(encoded!.toString()?.count ?? -1)B")
                 // args 解码在同步段完成（原 Task 内解码迁出）：解码失败与
@@ -1193,19 +1235,32 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 let argsText = encoded!.toString() ?? "null"
                 guard let decoded = try? JSONDecoder().decode(
                     JSONValue.self, from: Data(argsText.utf8)) else {
+                    // 【CI修44】newError 构造可 nil（Watchdog 终止/上下文污
+                    // 染）——降级为字符串拒绝保住 promise 面（dsh :336
+                    // errorClass 形态的降级登记；终态窗口下外包执行已被终止，
+                    // 返回值随即丢弃）。
                     let error = RunState.rejectionError(
                         context: context, errorClass: errorClassValue,
                         name: nameValue, message: "binding arguments must be lossless JSON",
-                        newErrorFn: api.objectForKeyedSubscript("newError")!)
-                    return rejectedFn.call(withArguments: [error])!
+                        newErrorFn: api.objectForKeyedSubscript("newError"))
+                        ?? JSValue(object: "binding arguments must be lossless JSON", in: context)
+                        ?? JSValue(nullIn: context)
+                    return rejectedFn.call(withArguments: [error])
+                        ?? JSValue(nullIn: context)
                 }
                 // 提交序盖章（必须在本同步段——JS 串行队列保证盖章序=程序
                 // 调用序；Task 起跑序无保证，故不能延后到 Task 内）。
                 let submission = CodeBindingSubmission(order: state.nextSubmissionOrder())
-                let deferred = deferredFn.call(withArguments: [])
-                let promise = deferred!.objectForKeyedSubscript("promise")!
-                let resolve = deferred!.objectForKeyedSubscript("resolve")!
-                let reject = deferred!.objectForKeyedSubscript("reject")!
+                // 【CI修44】deferred 构造可 nil（Watchdog 终止窗口内 JS 求值
+                // 被终止）——外包程序执行已被终止，返回占位 null（调用侧
+                // await 语义随终止消亡，无泄漏面）。
+                guard let deferred = deferredFn.call(withArguments: []),
+                      let promise = deferred.objectForKeyedSubscript("promise"),
+                      let resolve = deferred.objectForKeyedSubscript("resolve"),
+                      let reject = deferred.objectForKeyedSubscript("reject") else {
+                    config.onTrace("[jscore] bridge deferred construction failed (terminated): " + name)
+                    return JSValue(nullIn: context)
+                }
                 let bindingToken = UUID()
                 state.registerBindingReject(bindingToken, reject)
                 Task {
@@ -1229,14 +1284,20 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
         }
 
         /// binding 拒绝错误实例（bootstrap :258-260 bindingFailure 形态；
-        /// 无 errorClass = 普通 Error——helper newError 内回落）。
+        /// 无 errorClass = 普通 Error(message)）。
+        /// 【CI修44】返回 Optional：JS 求值被 Watchdog 终止/上下文污染时
+        /// JSValue.call 返回 nil——强解包在 abort 终止窗口必炸（:942 实证），
+        /// 调用方按 best-effort 弃拒绝语义兜底。
         private static func rejectionError(
             context: JSContext, errorClass: JSValue?, name: JSValue,
-            message: String, newErrorFn: JSValue
-        ) -> JSValue {
-            let messageValue = JSValue(object: message, in: context)!
+            message: String, newErrorFn: JSValue?
+        ) -> JSValue? {
+            guard let newErrorFn,
+                  let messageValue = JSValue(object: message, in: context) else {
+                return nil
+            }
             let cls = errorClass ?? JSValue(nullIn: context)
-            return newErrorFn.call(withArguments: [cls, name, messageValue])!
+            return newErrorFn.call(withArguments: [cls, name, messageValue])
         }
 
         /// 在飞 binding reject 登记（run 中止面统一拒绝用）。
@@ -1257,32 +1318,55 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 return
             }
             config.onTrace("[jscore] binding resolved: \(name) ok=\((try? outcome.get()) != nil ? 1 : 0)")
-            let context = self.context!
-            let api = self.api!
-            let newErrorFn = api.objectForKeyedSubscript("newError")!
+            // 【CI修44】guard-then-强解包 TOCTOU（:1316 同类——abort 终止窗口
+            // 下 context/api 可被 finish 跨线程清空）——守卫解包快照：已清 =
+            // 收敛已发生，静默丢弃。
+            guard let liveContext = context, let liveAPI = api else {
+                config.onTrace("[jscore] binding resolution dropped (api cleared): \(name)")
+                return
+            }
+            let newErrorFn = liveAPI.objectForKeyedSubscript("newError")
             switch outcome {
             case .success(let value):
                 // resolution 无损由类型面保证；编码失败（如非有限 double）=
                 // 'binding resolution must be lossless JSON'（:499）。
                 guard let data = try? JSONEncoder().encode(value),
                       let text = String(data: data, encoding: .utf8) else {
-                    let error = RunState.rejectionError(
-                        context: context, errorClass: errorClass, name: name,
+                    if let errorValue = RunState.rejectionError(
+                        context: liveContext, errorClass: errorClass, name: name,
                         message: "binding resolution must be lossless JSON",
-                        newErrorFn: newErrorFn)
-                    reject.call(withArguments: [error])
+                        newErrorFn: newErrorFn) {
+                        reject.call(withArguments: [errorValue])
+                    } else {
+                        config.onTrace("[jscore] binding reject skipped (construction failed): \(name)")
+                    }
                     return
                 }
-                let parsed = api.objectForKeyedSubscript("parse")!
-                    .call(withArguments: [JSValue(object: text, in: context)])
-                resolve.call(withArguments: [parsed!])
+                // parse 求值可 nil（Watchdog 终止/上下文污染）——按编码失败
+                // 同面 best-effort 拒绝（强解包在终止窗口必炸，:942 同类）。
+                guard let parsed = liveAPI.objectForKeyedSubscript("parse")?
+                    .call(withArguments: [JSValue(object: text, in: liveContext)]) else {
+                    if let errorValue = RunState.rejectionError(
+                        context: liveContext, errorClass: errorClass, name: name,
+                        message: "binding resolution must be lossless JSON",
+                        newErrorFn: newErrorFn) {
+                        reject.call(withArguments: [errorValue])
+                    } else {
+                        config.onTrace("[jscore] binding reject skipped (construction failed): \(name)")
+                    }
+                    return
+                }
+                resolve.call(withArguments: [parsed])
             case .failure(let error):
                 let message = (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)   // worker :504 messageOf 形态
-                let errorValue = RunState.rejectionError(
-                    context: context, errorClass: errorClass, name: name,
-                    message: message, newErrorFn: newErrorFn)
-                reject.call(withArguments: [errorValue])
+                if let errorValue = RunState.rejectionError(
+                    context: liveContext, errorClass: errorClass, name: name,
+                    message: message, newErrorFn: newErrorFn) {
+                    reject.call(withArguments: [errorValue])
+                } else {
+                    config.onTrace("[jscore] binding reject skipped (construction failed): \(name)")
+                }
             }
         }
 
@@ -1315,8 +1399,10 @@ final class JSCodeRuntime: CodeRuntimeProtocol, @unchecked Sendable {
                 config.onTrace("[jscore] resolve dropped (api cleared)")
                 return
             }
-            let encoded = liveAPI.objectForKeyedSubscript("encode")!
-                .call(withArguments: [value])
+            // 【CI修44】subscript 强解包去毒（键缺失/求值异常可 nil）——下方
+            // nil 检查已承载 invalid-output 语义，无需强解包。
+            let encoded = liveAPI.objectForKeyedSubscript("encode")
+                .flatMap { $0.call(withArguments: [value]) }
             if encoded == nil || encoded!.isUndefined {
                 // bootstrap :178-185——snapshot 失败 = invalid-output。
                 finish(result: ledger.failure(logs, CodeRunFailure(
