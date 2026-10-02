@@ -5,7 +5,8 @@
 //  【m7-fix2 · E2 · 按用户 HTML 原型 1:1】「获取可用模型」候选挑选弹窗。
 //  原型锚点（设置模型配置原型（带动画）.html :750-896 + :1409-1556）：
 //    · mask rgba(12,12,16,.45)，opacity .3s（M4⑤：blur(4px) 作废——用户令
-//      与完全权限弹窗一致无模糊）；
+//      与完全权限弹窗一致无模糊；**批6 G2：暗化整层亦作废**——用户复测逐字
+//      「把背景纯色暗化也去掉」，遮罩只剩透明命中面，点遮罩关闭保留）；
 //    · modal 白底圆角20，maxWidth 500，pad 22/22/18（M4⑤：自绘入场
 //      translateY(16) scale(.965) 作废——随 fullScreenCover 系统转场）；
 //    · 标题「选择要添加的模型」+ 右上 icon 关闭钮；副标「以下是模型提供商
@@ -25,9 +26,12 @@
 //  PermissionConfirmationGate）一模一样——参照物无任何自绘动画，卡片本体
 //  静置、完全随 fullScreenCover 系统转场出入（本弹窗同承载方式 ⇒ 同转场）。
 //  故删除卡片 opacity/scale/offset 自绘动画与出场 320ms 延迟，close 即回
-//  isPresented=false（与参照物 confirmingFullAccess=false 同路径）；遮罩
-//  仅保留 appear 期 .3s 淡入（原型 .modal-mask opacity .3s，:761）避免
-//  系统滑入期黑幕先行的突兀感（参照物无遮罩、无对应物——登记报告）。
+//  isPresented=false（与参照物 confirmingFullAccess=false 同路径）。
+//  批6 G2（用户令）：遮罩纯色暗化 rgba(12,12,16,.45) 整层移除（用户令覆盖
+//  原型 :757 色值，同 M4⑤「用户令 > 原型」先例）——遮罩 Rectangle 只剩
+//  Color.clear 命中面（contentShape + onTapGesture 保留点遮罩关闭），shown
+//  淡入开关及其 .3s 动画一并清场（唯一消费方就是遮罩 opacity）。至此本弹窗
+//  与参照物完全一致：无 blur、无暗化、无自绘动画，仅卡片本体 + 系统转场。
 //  iOS 16.6 红线自查：无 foregroundStyle、无双参 onChange、无 iOS17+ API。
 //
 
@@ -45,12 +49,11 @@ struct ModelPickerModal: View {
 
     // MARK: - 状态
 
-    /// 遮罩淡入开关（仅遮罩用；卡片静置随系统转场——M4⑤）。
-    @State private var shown = false
     @State private var query = ""
     /// 勾选集合（起笔 = 未添加项全选——原型 :1457-1459）。
     @State private var checked: Set<String> = []
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // 批6 G2：reduceMotion 环境值随遮罩淡入一并退役（弹窗内已无自绘动画——
+    // 卡片本体随 fullScreenCover 系统转场，系统转场自带 reduceMotion 降级）。
 
     // MARK: - Body
 
@@ -61,23 +64,17 @@ struct ModelPickerModal: View {
         }
         .onAppear {
             checked = Set(visibleAll.map(\.id).filter { !existingIDs.contains($0) })
-            withAnimation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durMask)) {
-                shown = true
-            }
         }
     }
 
-    // MARK: 遮罩（纯色暗化 rgba(12,12,16,.45)，M4⑤ 去 blur；点遮罩关闭）
+    // MARK: 遮罩（批6 G2：零视觉——只剩透明命中面；点遮罩关闭保留）
 
     private var mask: some View {
         Rectangle()
-            .fill(Color(red: 12.0 / 255.0, green: 12.0 / 255.0, blue: 16.0 / 255.0).opacity(0.45))
+            .fill(Color.clear)
             .ignoresSafeArea()
-            .opacity(shown ? 1 : 0)
-            .contentShape(Rectangle())
+            .contentShape(Rectangle()) // 透明也保留全屏命中区（点遮罩关闭）
             .onTapGesture(perform: close)
-            .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durMask),
-                       value: shown)
     }
 
     // MARK: 居中卡（原型 .modal；无自绘动画——随 fullScreenCover 系统转场，

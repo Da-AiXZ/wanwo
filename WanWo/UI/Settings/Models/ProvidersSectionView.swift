@@ -104,7 +104,12 @@ struct ProvidersSectionView: View {
                     providerList
 
                     WODashedAddButton(title: "＋ 添加模型提供商") {
-                        formOpen.toggle()
+                        // 批6 G3：显式事务开合（此前裸 toggle 依赖 WOCollapsible
+                        // 隐式 .animation 注入 → 真机「添加卡收起直接没动画，
+                        // 瞬间闪上来」——用户复测实证的根因路径）。
+                        withAnimation(WOMP.ease(WOMP.durCollapse)) {
+                            formOpen.toggle()
+                        }
                     }
                     .padding(.top, 4)
 
@@ -117,7 +122,11 @@ struct ProvidersSectionView: View {
                             // （重开残留清零，成功/取消路径都覆盖）。
                             isOpen: formOpen,
                             onClose: { changed in
-                                formOpen = false
+                                // 批6 G3：关闭也走显式 .58s 事务（取消/保存
+                                // 统一路径；changed=有提交才并 saved 轻提示）。
+                                withAnimation(WOMP.ease(WOMP.durCollapse)) {
+                                    formOpen = false
+                                }
                                 if changed { announceSaved() }
                             },
                             onCredentialNotice: { credentialNotice = $0 })

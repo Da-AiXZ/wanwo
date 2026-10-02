@@ -505,6 +505,44 @@ final class M7FixGoalLoopTests: XCTestCase {
         XCTAssertEqual(text, "帮我写个文件")
     }
 
+    // MARK: - 5b【M7-Fix2 批6 F2】team 队员回传消息对用户隐藏
+
+    /// "Team message {id} from {sender}:"（TeamConstants.deliveryFrame——
+    /// TeamTypes.swift:59-61，dsh mailbox deliveryContent :309-314 逐字）为
+    /// team 驱动 → AgentLoop 经 userMessage 落账的引擎路径注入纸条。按用户
+    /// 裁决（IMG_2550 实证+逐字）「team 队员回传给主 agent 不在对话里用消息
+    /// 泡显示出来，后台传给主 agent 就行」办理，B4 同族偏差登记（dsh web 按
+    /// 用户消息显示）：
+    ///   ① isMarkerMessage 命中注入框架行（引擎路径无乐观哨兵——ChatVM:814
+    ///     marker guard 同前缀拦截，双保险）；
+    ///   ② 投影器对回传 userMessage 产零气泡（marker 过滤即 skip，隐藏=
+    ///     不产 Bubble，exhaustive switch 无需新 case）；
+    ///   ③ 真实用户消息照常渲染（无误伤）；
+    ///   ④ 误伤面评估：用户手动输入以 "Team message " 开头的文本会被隐藏
+    ///     （与 <system-reminder> 等既有前缀同风险等级，dsh 同构，既定取舍）。
+    func testMarkerPrefixesHideTeamMemberRelayNotices() {
+        // ① 注入框架行逐字命中（deliveryFrame 产物形态）。
+        let relay = "Team message team-message-abc from researcher:\n组会要点已整理完毕"
+        XCTAssertTrue(ConversationProjector.isMarkerMessage(relay))
+
+        // ② 投影器：team 回传 userMessage 不产任何气泡（后台落账面不变）。
+        var callArgs: [String: (name: String, args: JSONValue)] = [:]
+        let hidden = ConversationProjector.project(
+            events: [SessionEvent(seq: 1, timeMs: 0, payload: .userMessage(text: relay))],
+            registry: nil, callArgs: &callArgs)
+        XCTAssertTrue(hidden.isEmpty, "team 回传纸条对用户隐藏（零气泡）")
+
+        // ③ 真实用户消息照常渲染（新前缀无误伤）。
+        let plain = ConversationProjector.project(
+            events: [SessionEvent(seq: 2, timeMs: 0, payload: .userMessage(text: "帮我把 team 结论整理一下"))],
+            registry: nil, callArgs: &callArgs)
+        XCTAssertEqual(plain.count, 1)
+        guard case .user(let text, _)? = plain.first?.kind else {
+            return XCTFail("普通用户消息必须照常产泡")
+        }
+        XCTAssertEqual(text, "帮我把 team 结论整理一下")
+    }
+
     // MARK: - 6【批4 G2】GoalError errorDescription 人话化
 
     /// dsh index.ts:373-377 1:1 的 resume 拒绝（rounds exhausted）等三类

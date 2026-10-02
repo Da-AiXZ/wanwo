@@ -106,6 +106,19 @@ enum WOMP {
 /// 逐帧跟随动画值）< 自然高（折叠中/收起）→ 精确幕帘裁切；**完全展开
 /// （渲染高==自然高）→ 底部留 600pt headroom**，让 WOSelect 下拉弹层溢出
 /// 容器边界（原型 overflow visible 语义），同时开合动画期保持幕帘不穿帮。
+///
+/// 批6 G3（b6 第三轮根治）：动画接线重构。旧实现把 `.animation(.58s,
+/// value: open)` 与 `.animation(.28s/.4s, value: open)` **同值叠置**在一条
+/// 修饰链上——SwiftUI 对同值叠置的动画覆盖语义不保证内外次序，真机上
+/// frame 高度的 .58s 曲线可被外层 0.28s 覆盖（收起「瞬间闪上」）甚至整层
+/// 失效（布局瞬跳、只剩 opacity 在动 = 用户实证「白色区域直接闪上来，编辑卡
+/// 本身的收起动画正常执行」）；纯 toggle 调用点（添加卡/自定义设置）不包
+/// withAnimation 时全靠隐式注入 → 无动画路径。现改为 **作用域不相交的两层**：
+/// ① opacity + 自身动画（内层 Group，scope 只含 opacity）；② frame+offset +
+/// 自身动画（外层，scope 不再包含内层动画各自的可动画值之外的重叠歧义——
+/// 即使覆盖语义反转，也只会退化为全 .58s 的同步动画，**任何语义下都不存在
+/// 无动画路径**）。同时所有 toggle 调用点一律补显式 withAnimation（见
+/// WOSectionToggle / ProvidersSectionView / WOSelect——隐式注入只作兜底）。
 struct WOCollapsible<Content: View>: View {
 
     var open: Bool
@@ -118,44 +131,49 @@ struct WOCollapsible<Content: View>: View {
     @State private var renderedHeight: CGFloat = 0
 
     var body: some View {
-        content()
-            // fixedSize：保证闭态下也按理想高度测量（0 高提案不会压缩文本
-            // 导致重开时两段跳变）。
-            .fixedSize(horizontal: false, vertical: true)
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { naturalHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { naturalHeight = $0 }
-                }
-            )
-            .frame(height: open ? naturalHeight : 0, alignment: .top)
-            // 渲染中高度实测（背景挂在 frame 之后 → 读到动画逐帧值）。
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { trackRendered(geo.size.height) }
-                        .onChange(of: geo.size.height) { trackRendered($0) }
-                }
-            )
-            .offset(y: open ? 0 : -6) // 收起时内容随手上移（原型 content 态）
-            // 高度/位移：原型 grid-template-rows .58s（开合同曲线）。
-            .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durCollapse),
-                       value: open)
-            .opacity(open ? 1 : 0)
-            // 透明度逐值对齐原型 collapsible-content：开 .4s ease .1s 延迟
-            // （:307）/ 关 .28s ease（:302）——关闭快速隐去，杜绝灰面板半透明
-            // 期白卡底透色（M4⑥ 白闪根因之一）。
-            .animation(reduceMotion
-                       ? .easeOut(duration: 0.15)
-                       : (open ? WOMP.ease(0.4).delay(0.1) : WOMP.ease(0.28)),
-                       value: open)
-            // overflow hidden ⇄ visible 的 SwiftUI 等价（见结构注释）。
-            .mask(alignment: .top) {
-                Rectangle().frame(height: maskHeight)
+        // 内层 Group：opacity 动画作用域止于此（scope 只含 opacity，
+        // 与外层 frame 动画作用域不相交——同值叠置歧义根除，见结构注释）。
+        Group {
+            content()
+                // fixedSize：保证闭态下也按理想高度测量（0 高提案不会压缩文本
+                // 导致重开时两段跳变）。
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { naturalHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { naturalHeight = $0 }
+                    }
+                )
+                .opacity(open ? 1 : 0)
+                // 透明度逐值对齐原型 collapsible-content：开 .4s ease .1s 延迟
+                // （:307）/ 关 .28s ease（:302）——关闭快速隐去，杜绝灰面板
+                // 半透明期白卡底透色（M4⑥ 白闪根因之一）。
+                .animation(reduceMotion
+                           ? .easeOut(duration: 0.15)
+                           : (open ? WOMP.ease(0.4).delay(0.1) : WOMP.ease(0.28)),
+                           value: open)
+        }
+        .frame(height: open ? naturalHeight : 0, alignment: .top)
+        // 渲染中高度实测（背景挂在 frame 之后 → 读到动画逐帧值）。
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { trackRendered(geo.size.height) }
+                    .onChange(of: geo.size.height) { trackRendered($0) }
             }
-            // 高度基准变化（内容增删行）瞬时应答，不叠动画（原型 open 态自然回流）。
-            .animation(nil, value: naturalHeight)
+        )
+        .offset(y: open ? 0 : -6) // 收起时内容随手上移（原型 content 态）
+        // 高度/位移：原型 grid-template-rows .58s（开合同曲线）。唯一外层
+        // open 动画（scope = frame + offset）。
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durCollapse),
+                   value: open)
+        // overflow hidden ⇄ visible 的 SwiftUI 等价（见结构注释）。
+        .mask(alignment: .top) {
+            Rectangle().frame(height: maskHeight)
+        }
+        // 高度基准变化（内容增删行）瞬时应答，不叠动画（原型 open 态自然回流）。
+        .animation(nil, value: naturalHeight)
     }
 
     /// 渲染中高度逐帧追踪（禁动画事务——mask 必须紧贴动画帧，不滞后）。
@@ -590,10 +608,18 @@ struct WOSectionToggle: View {
 
     let title: String
     @Binding var open: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button {
-            open.toggle()
+            // 批6 G3：显式事务开合（.collapsible .58s 原型曲线）——此前裸
+            // toggle 依赖 WOCollapsible 隐式 .animation 注入，真机上「自定义
+            // 设置展开后收起直接没动画」（用户复测实证）即此路径。
+            withAnimation(reduceMotion
+                          ? .easeOut(duration: 0.15)
+                          : WOMP.ease(WOMP.durCollapse)) {
+                open.toggle()
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
@@ -624,8 +650,18 @@ struct WOSectionToggle: View {
 /// 绘制顺序不管布局。现对齐原型 `.select-pop { position: absolute; top:
 /// calc(100% + 6px) }`（:476-478）：按钮占位恒定，弹层经 .overlay(topLeading)
 /// + .offset(按钮高+6) 浮于下方内容之上，开合时下方字段纹丝不动。
-/// 弹层溢出容器边界由 WOCollapsible 的 mask headroom 放行（原型 body.select-open
-/// overflow visible，:311）。
+/// 批6 G1（b1 返工根治）：弹层改 **恒挂载**——废除 `if open` 条件插入 +
+/// AnyTransition。机制：条件插入让弹层在祖先 mask（WOCollapsible 幕帘）+
+/// opacity + 双阴影的离屏合成组里做插拔重提交，iOS 16.6 真机上该组合会把
+/// 弹层图层拆分（内容行单独成层、白底 Shape 被丢弃）→ 行内容半透明叠印在
+/// 表单上（字段透出）、弹层文字与下层字段文字混叠成「乱码状重影」、半透明
+/// 大阴影成灰雾（用户逐字三症）。恒挂载后白底与行内容永远在同一合成组内
+/// （再经 compositingGroup 压平成单层后才施阴影/被幕帘裁切），开合只是
+/// opacity/offset/scale 三个普通可动画值；开合动画全部走 **显式 withAnimation
+/// 事务**（toggle 点注入，不再依赖 .animation(value:) 隐式注入——批6 G3 实证
+/// 隐式注入在本视图族不可靠），无事务时不渲染中间态、无冻结半透明可言。
+/// 弹层溢出容器边界仍由 WOCollapsible 的 mask headroom 放行（原型
+/// body.select-open overflow visible，:311）。
 /// 关闭路径：选项点选 / 按钮重按 / 表单收起（原型 document 级外点关闭监听无
 /// SwiftUI 等价——报告登记，触屏路径直达不受影响）。
 struct WOSelect: View {
@@ -639,23 +675,24 @@ struct WOSelect: View {
     @State private var buttonHeight: CGFloat = 44
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// 开合曲线（reduceMotion 降级 .15s easeOut）——toggle 点显式事务共用。
+    private var toggleAnimation: Animation? {
+        reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durChevSelect)
+    }
+
     var body: some View {
         button
             // 原型 .select-pop top: calc(100% + 6px)——脱离文档流浮出。
+            // 批6 G1：恒挂载 + 普通可动画值驱动（不再条件插入 + transition，
+            // 根因见结构注释）。闭态还原原型 .select-pop translateY(-8)
+            // scale(.98) 的隐藏基线，开态动画从基线过渡到原位。
             .overlay(alignment: .topLeading) {
-                if open {
-                    popup
-                        .offset(y: buttonHeight + 6)
-                        // 显式 AnyTransition（iOS13+）——裸 `.asymmetric/.opacity`
-                        // 链在 transition 上下文会命中 iOS17 Transition 协议成员。
-                        .transition(AnyTransition.asymmetric(
-                            insertion: AnyTransition.opacity
-                                .combined(with: .offset(y: -8))
-                                .combined(with: .scale(scale: 0.98, anchor: .top)),
-                            removal: .opacity))
-                }
+                popup
+                    .opacity(open ? 1 : 0)
+                    .offset(y: buttonHeight + 6 + (open ? 0 : -8))
+                    .scaleEffect(open ? 1 : 0.98, anchor: .top)
+                    .allowsHitTesting(open) // 闭态弹层不拦截点击
             }
-            .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durChevSelect), value: open)
             // open 时压住同层后续兄弟（含两列并排卡场景，要求④）。
             .zIndex(open ? 10 : 0)
             .background(
@@ -675,7 +712,8 @@ struct WOSelect: View {
 
     private var button: some View {
         Button {
-            open.toggle()
+            // 批6 G1：显式事务开合（chev 旋转/边框变色同事务，内联隐式注入退役）。
+            withAnimation(toggleAnimation) { open.toggle() }
         } label: {
             HStack(spacing: 10) {
                 Text(selection)
@@ -717,15 +755,23 @@ struct WOSelect: View {
             .fill(Color.white))
         .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
             .strokeBorder(Color.black.opacity(0.1), lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.16), radius: 50, y: 22)
-        .shadow(color: Color.black.opacity(0.07), radius: 10, y: 3)
+        // 批6 G1：compositingGroup 把（白底+描边+行内容）压平成单一图层后才
+        // 施阴影/被祖先幕帘裁切——阻断 iOS16 离屏合成期的图层拆分（白底丢失
+        // 的直接机制），保证白底与行内容永远同层同透明度。
+        .compositingGroup()
+        // 原型 box-shadow: 0 22px 50px rgba(0,0,0,.16) / 0 3px 10px rgba(0,0,0,.07)
+        // （:487-490）。CSS blur-radius ≈ SwiftUI .shadow(radius:) ×2 的换算——
+        // 旧 radius 50/10 是把 CSS blur 直接照抄，模糊范围视觉翻倍（用户点名
+        // 「那个阴影是什么情况」的成因之一），按换算改 25/5。
+        .shadow(color: Color.black.opacity(0.16), radius: 25, y: 22)
+        .shadow(color: Color.black.opacity(0.07), radius: 5, y: 3)
     }
 
     private func optRow(_ option: String) -> some View {
         let selected = option == selection
         return Button {
             selection = option
-            open = false
+            withAnimation(toggleAnimation) { open = false }
         } label: {
             Text(option)
                 .font(.system(size: 13.5))

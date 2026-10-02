@@ -138,7 +138,26 @@ enum ConversationProjector {
                                  // （dsh web 无过滤）。只影响 UI 渲染——模型侧
                                  // 载荷不变（AgentLoop.swift:876/:1126 注释已证
                                  // markerPrefixes 为纯呈现面）。
-                                 "<goal_complete>", "<goal_blocked>"]
+                                 "<goal_complete>", "<goal_blocked>",
+                                 // 【M7-Fix2 批6 F2 2026-09-30 用户令（IMG_2550
+                                 // 实证+逐字）】team 队员回传给主 agent 的消息
+                                 // 不产用户泡（后台注入即可）。注入构造锚点 =
+                                 // TeamConstants.deliveryFrame（TeamTypes.swift
+                                 // :59-61，dsh mailbox deliveryContent :309-314
+                                 // 逐字："Team message {id} from {sender}:"），
+                                 // team 驱动 → AgentLoop 经 userMessage 落账的
+                                 // 引擎路径，无 ChatViewModel 乐观哨兵（ChatVM
+                                 // :814 marker guard 同拦，双保险）。按用户 B4
+                                 // 裁决「给 AI 的中间事件对用户完全隐藏」同族
+                                 // 办理，覆盖 dsh web 的按用户消息显示行为=登记
+                                 // 偏差（dsh web 无此过滤）。markerPrefixes 为
+                                 // 纯呈现面（AgentLoop:876/:1126 已证）——模型
+                                 // 侧载荷不变；隐藏=不产 Bubble，四个 exhaustive
+                                 // switch 无需新 case。误伤面评估：用户手动输入
+                                 // 以 "Team message " 开头的文本会被隐藏（与
+                                 // <system-reminder> 等既有前缀同风险等级，dsh
+                                 // 同构，登记为既定取舍）。
+                                 "Team message "]
 
     static func isMarkerMessage(_ text: String) -> Bool {
         markerPrefixes.contains { text.hasPrefix($0) }

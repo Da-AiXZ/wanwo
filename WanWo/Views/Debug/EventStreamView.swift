@@ -63,35 +63,81 @@ private struct ExportedLogFile: Transferable {
     }
 }
 
-// MARK: - replay 结果缓存（bug f-1 修复②，lead 批准 f①+f②）
+// MARK: - replay 结果缓存（bug f-1 修复②，lead 批准 f①+f②；【I1】stat 失效）
 
-/// 事件流 replay 结果缓存：key=会话 id，条目绑定 sessionsRevision 快照——
-/// 读时 revision 不匹配即失效（删除/新建会话都推进 revision，双键失效
-/// 语义由「revision 快照比对」达成）。容量上限 2（插入序淘汰）——防大会话
-/// rows 数组常驻内存累积。全链 MainActor（AppEnvironment/EventStream-
-/// ViewModel 同域），无需加锁。
+/// 事件流 replay 结果缓存：key=会话 id，条目绑定 sessionsRevision 快照 +
+/// 源 .jsonl 文件 stat（size + modificationDate）双失效信号——
+/// ①revision 失效（既有）：删除/新建会话推进 revision，快照比对不匹配即失效；
+/// ②【I1】stat 失效：同一会话事件增长时 revision 不动（sessionsRevision 仅
+/// 会话增删推进），旧条目复用 = 查看面停旧轮次 + 导出旧副本（用户真机实证：
+/// 8 轮导出后续跑 3 轮，第二次导出拿到的还是旧 8 轮文件）。get 时 stat 一次
+/// 比对（单文件 attributesOfItem，微秒级），size/mtime 任一维变化即失效清
+/// 条目，重走未命中路径全量重放 + 重制导出副本——同一会话事件增长后查看与
+/// 导出都反映全量。
+/// 容量上限 2（插入序淘汰）——防大会话 rows 数组常驻内存累积。
+/// stat 取样器可注入（默认=分组会话根 <id>.jsonl 真实 stat；单测指向临时
+/// 目录实测）。全链 MainActor（AppEnvironment/EventStreamViewModel 同域），
+/// 无需加锁。
 @MainActor
 final class EventStreamReplayCache {
+    /// 源文件指纹（【I1】size + modificationDate——append-only 日志两维任一
+    /// 变化即判变；同尺寸重写概率为零，mtime 精度覆盖同尺寸面）。
+    struct FileStat: Equatable {
+        let size: Int
+        let modificationDate: Date
+    }
+
     private struct Entry {
         let sessionsRevision: Int
         let output: EventStreamLoader.Output
         /// 导出副本路径（f② 收益：缓存命中时复用，不重复复制文件）。
         let exportURL: URL?
+        /// put 时的源文件 stat 基线（【I1】get 比对失效依据）。
+        let fileStat: FileStat?
     }
 
     private var entries: [String: Entry] = [:]
     private var insertionOrder: [String] = []
     private let capacity = 2
+    private let statProvider: (String) -> FileStat?
 
-    /// 命中返回 (replay 输出, 导出副本)；revision 已推进/无条目= nil
-    /// （顺手清掉过期条目，防陈旧引用滞留）。
+    /// - Parameter statProvider: 源文件 stat 取样（注入缝；默认真实实现）。
+    init(statProvider: @escaping (String) -> FileStat?
+         = EventStreamReplayCache.defaultFileStat) {
+        self.statProvider = statProvider
+    }
+
+    /// 默认取样：分组会话根 <id>.jsonl 的 size + modificationDate。
+    /// id 校验 fail closed（与 SessionStore.fileURL 同口径）——非法 id 按
+    /// "文件不可 stat"处理（返回 nil），只影响缓存命中（下次必然 miss 重放），
+    /// 绝不影响正确性。
+    private static func defaultFileStat(_ sessionID: String) -> FileStat? {
+        guard !sessionID.isEmpty,
+              sessionID.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else { return nil }
+        let url = GroupStore.groupSessionsRoot(
+            base: WanWoPaths.persistentBase,
+            groupID: GroupStore.defaultGroupID)
+            .appendingPathComponent("\(sessionID).jsonl")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attrs[.size] as? NSNumber)?.intValue,
+              let mtime = attrs[.modificationDate] as? Date else { return nil }
+        return FileStat(size: size, modificationDate: mtime)
+    }
+
+    /// 命中返回 (replay 输出, 导出副本)；①revision 已推进 ②源文件 stat 变化
+    /// （含文件被外部删除）/无条目 = nil（顺手清掉过期条目，防陈旧引用滞留）。
     func get(sessionID: String,
              sessionsRevision: Int) -> (output: EventStreamLoader.Output, exportURL: URL?)? {
         guard let entry = entries[sessionID] else { return nil }
         guard entry.sessionsRevision == sessionsRevision else {
-            entries[sessionID] = nil
-            insertionOrder.removeAll { $0 == sessionID }
-            return nil
+            return drop(sessionID: sessionID)
+        }
+        // 【I1】stat 比对：put 基线 vs 当前——nil vs 非 nil（文件消失/出现）
+        // 同样判变（!= 语义天然覆盖），失效方向恒安全（宁可 miss 重放，绝不
+        // 复用可能陈旧的结果）。
+        if statProvider(sessionID) != entry.fileStat {
+            return drop(sessionID: sessionID)
         }
         return (entry.output, entry.exportURL)
     }
@@ -101,12 +147,23 @@ final class EventStreamReplayCache {
         if entries[sessionID] == nil {
             insertionOrder.append(sessionID)
         }
+        // 【I1】put 即取样存基线：若瞬时 stat 失败（nil）→ 下次 get 必 miss
+        // 重放，失效方向安全。
         entries[sessionID] = Entry(sessionsRevision: sessionsRevision,
-                                   output: output, exportURL: exportURL)
+                                   output: output, exportURL: exportURL,
+                                   fileStat: statProvider(sessionID))
         while insertionOrder.count > capacity {
             let oldest = insertionOrder.removeFirst()
             entries[oldest] = nil
         }
+    }
+
+    /// 清条目（失效路径共用；恒返回 nil 供 get 直接回传）。
+    private func drop(sessionID: String)
+        -> (output: EventStreamLoader.Output, exportURL: URL?)? {
+        entries[sessionID] = nil
+        insertionOrder.removeAll { $0 == sessionID }
+        return nil
     }
 }
 

@@ -341,19 +341,26 @@ struct WOChatView: View {
                 // 按原型逐值重做后需要「数据已清空仍在树」的退场缓冲帧——
                 // 卡片自管 presented 生命周期（空态自渲染，见 WOStateCards）。
                 // 【批3 A2】GoalBar 挂载（dsh GoalDock composer dock 语义，
-                // todo 卡同域其上方；快照=viewModel.goalView，动作接
-                // GoalService CAS——见 WOGoalBar 头注逐项对拍）。淡入淡出
-                // cubic-bezier(.22,1,.36,1)；reduceMotion 静态直出。
+                // 快照=viewModel.goalView，动作接 GoalService CAS——见
+                // WOGoalBar 头注逐项对拍）。淡入淡出 cubic-bezier(.22,1,.36,1)；
+                // reduceMotion 静态直出。
+                // 【M7-Fix2 批6 F1 2026-10-02 用户令（IMG_2545 实证）】todo 卡
+                // 与 GoalBar 挂载顺序对调：todo 在上、GoalBar 在下（紧邻
+                // composerSeat）。底部锚定堆栈中 GoalBar 位置恒定不随 todo
+                // 出现/展开/消失上下漂移（原序 todo 卡把 GoalBar 顶上去）；
+                // todo 生命周期向上生长。GoalBar 淡入淡出（批4 setGoalView
+                // withAnimation）与 todo presented 生命周期（WOStateCards）互
+                // 不受位置影响——二者各自独立条件挂载，修饰符跟各自行走。
+                WOTodoChecklistCard(todos: viewModel.todoItems)
+                    .frame(maxWidth: 620)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, heroMode ? 0 : 14)
                 WOGoalBar(
                     goal: viewModel.goalView,
                     onPause: { await viewModel.pauseGoal() },
                     onResume: { await viewModel.resumeGoal() },
                     onEdit: { await viewModel.editGoalObjective($0) },
                     onClear: { await viewModel.clearGoal() })
-                    .frame(maxWidth: 620)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, heroMode ? 0 : 14)
-                WOTodoChecklistCard(todos: viewModel.todoItems)
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, heroMode ? 0 : 14)

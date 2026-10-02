@@ -254,7 +254,11 @@ struct ProviderEditorView: View {
         draft = endpoint
         keyDraft = ""
         capacityBuffers.removeAll()
-        customExpanded = false
+        // 批6 审查 P2-1：显式动画事务（WOCollapsible 动画作用域重构后
+        // 不再依赖隐式兜底——取消时自定义设置段展开态同曲线收合）。
+        withAnimation(WOMP.ease(WOMP.durCollapse)) {
+            customExpanded = false
+        }
         failure = nil
         onClose(false)
     }
