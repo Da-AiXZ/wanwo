@@ -100,7 +100,15 @@ struct AddProviderFormView: View {
 
             // 面板高度过渡：两面板常挂 WOCollapsible（原型 .tab-panels
             // height .5s 的等价承载；状态跨 tab 保留）。
+            // 批8 R1 残余收口（主理人裁决）：preset 弹层下溢段最坏情况
+            // （自定义设置折叠 + 4 选项弹层）可越出面板底界触及根层后绘
+            // 兄弟 form-actions 行——根层 zIndex(10) 堵住（面板本体与
+            // form-actions 不重叠，zIndex 仅影响弹层下溢段的绘制顺序）。
+            // custom 分支同判据核过不挂：其下 API 密钥字段 + 目录编辑器
+            // （空态亦有 WOEmptyBox+添加钮 ≥150pt）保证 3 选项弹层（144pt
+            // 下溢）不可能越出面板底界。
             WOCollapsible(open: activeTab == .preset) { presetPanel }
+                .zIndex(10)
             WOCollapsible(open: activeTab == .custom) { customPanel }
 
             if let failure {
@@ -233,9 +241,15 @@ struct AddProviderFormView: View {
                 .lineSpacing(4)
                 .padding(.bottom, 2)
 
+            // 批8 R1：zIndex 只在同容器兄弟间比较、不跨容器传播——WOSelect
+            // 内部的 zIndex 止步于组件自身，弹层下溢段会被本面板层后绘的兄弟
+            // 盖住。在字段包装（本面板 VStack 层）恒挂 zIndex(10)：整棵字段
+            // 子树（含溢出弹层）提升到面板层兄弟之上（闭态弹层 opacity 0，
+            // 恒挂无视觉副作用）。
             WOProtoField("提供商") {
                 WOSelect(options: Self.presets.map(\.id), selection: $presetID)
             }
+            .zIndex(10)
 
             WOProtoField("API 密钥") {
                 WOProtoInput(placeholder: "输入 API 密钥，或留空使用环境认证",
@@ -322,10 +336,13 @@ struct AddProviderFormView: View {
                     .disabled(profileDisabled)
             }
 
+            // 批8 R1（同 presetPanel 注）：两处使用点不在同一面板层，各在各层
+            // 挂 zIndex(10)——customPanel 层弹层下溢段盖过下方 API 密钥/目录。
             WOProtoField("API 协议") {
                 WOSelect(options: Self.apiProtocols, selection: $customProtocol)
                     .disabled(profileDisabled)
             }
+            .zIndex(10)
 
             WOProtoField("API 密钥") {
                 WOProtoInput(placeholder: "输入 API 密钥", text: $customKey, secure: true)

@@ -258,12 +258,13 @@ struct ProvidersSectionView: View {
             toast = "凭据清除失败：\((error as NSError).localizedDescription)"
             return
         }
-        // 第二步：removing 出场折叠（.45s）→ 真正移除（store.remove 内部
-        // 亦三清凭据——双删幂等无害）。
+        // 第二步：removing 出场（原型 .provider-item.removing 1:1：淡出+上移
+        // .45s/.55s）→ 真正移除（原型 :1812 setTimeout remove 380ms；store.remove
+        // 内部亦三清凭据——双删幂等无害）。
         let target = endpoint
         deleteTarget = nil
         removingID = target.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
             store.remove(target)
             if editingID == target.id { editingID = nil }
             removingID = nil
@@ -332,7 +333,11 @@ private struct ProviderRowCardView: View {
         .shadow(color: Color.black.opacity(isHovering ? 0.06 : 0.03),
                 radius: isHovering ? 18 : 2, y: isHovering ? 6 : 1)
         .padding(.bottom, 10)
-        .modifier(WORemoveFold(removing: isRemoving))
+        // 【2026-10-03 审计对齐】行卡出场换 WOProviderRemoveFade（原型
+        // .provider-item.removing 1:1：淡出+上移+微缩，无高度折叠）——
+        // WORemoveFold 的高度折叠语义源是模型行 removeModelRow（:1313-1334
+        // 实测高→0），被过度延伸到整卡；原型删卡=淡出后 380ms 移除（:1810-1813）。
+        .modifier(WOProviderRemoveFade(removing: isRemoving))
         .onHover { hovering = $0 } // hover 纯视觉增强（触屏直达不受影响）
         .animation(.easeOut(duration: 0.25), value: hovering)
         // m7-fix2 M3①：移除原 `.animation(.easeOut(0.25), value: isEditing)`
@@ -388,5 +393,27 @@ private struct ProviderRowCardView: View {
             }
         }
         .frame(width: 12, height: 12)
+    }
+}
+
+// MARK: - 行卡出场（原型 .provider-item.removing 1:1）
+
+/// 淡出 + 上移 + 微缩（opacity .45s / transform .55s，var(--ease)）；**无高度
+/// 折叠**——原型删卡=加 .removing 类后 380ms 移除 DOM（:1810-1813），空间随
+/// 移除即时回收。pointer-events: none 等价 = disabled。【2026-10-03 审计】
+/// 旧实现误用 WORemoveFold 的高度折叠（其语义源=模型行 removeModelRow）。
+private struct WOProviderRemoveFade: ViewModifier {
+    let removing: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(removing ? 0 : 1)
+            .offset(y: removing ? -6 : 0)
+            .scaleEffect(removing ? 0.97 : 1)
+            .disabled(removing)
+            .animation(reduceMotion ? .easeOut(duration: 0.15)
+                                    : WOMP.ease(WOMP.durCardOut),
+                       value: removing)
     }
 }

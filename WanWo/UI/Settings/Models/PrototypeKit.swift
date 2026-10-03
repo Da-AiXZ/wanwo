@@ -66,6 +66,16 @@ enum WOMP {
     static func ease(_ duration: Double) -> Animation {
         .timingCurve(0.22, 1, 0.36, 1, duration: min(duration, 0.6))
     }
+    /// 原型 .collapsible-content 内容淡入/淡出专用曲线（CSS `ease` =
+    /// cubic-bezier(.25,.1,.25,1)）。【2026-10-03 审计】内容透明度禁用全站
+    /// 激烈曲线 WOMP.ease——淡下方向（1→0）在激烈 ease-out 下 0.1s 内砸到
+    /// 近透明（用户实证感知="灰色内容直接消失"+白洞）；原型此处用的是温和
+    /// CSS ease（:302 关 / :307 开），前半程保持高不透明 → 感知="灰面板保持
+    /// 可见、被幕帘从底部逐步裁掉"。高度/位移仍用 WOMP.ease（原型同位就是
+    /// --ease），两套曲线在原型内本就并存。
+    static func cssEase(_ duration: Double) -> Animation {
+        .timingCurve(0.25, 0.1, 0.25, 1, duration: min(duration, 0.6))
+    }
     /// 折叠容器 .58s（.collapsible）
     static let durCollapse: Double = 0.58
     /// 下拉 chev .38s（.select-btn .chev）
@@ -147,11 +157,14 @@ struct WOCollapsible<Content: View>: View {
                 )
                 .opacity(open ? 1 : 0)
                 // 透明度逐值对齐原型 collapsible-content：开 .4s ease .1s 延迟
-                // （:307）/ 关 .28s ease（:302）——关闭快速隐去，杜绝灰面板
-                // 半透明期白卡底透色（M4⑥ 白闪根因之一）。
+                // （:307）/ 关 .28s ease（:302）。【2026-10-03 审计纠偏】原型
+                // 此处的 "ease" 是 CSS 温和曲线（前半程保持高不透明——收起时
+                // 灰面板保持可见、被幕帘从底部逐步裁掉），不是全站 --ease 激烈
+                // 曲线；旧实现错用 WOMP.ease → 淡下 0.1s 内砸透明 = 用户实证
+                // 的"灰色内容直接消失 + 收起白洞"。两支同换 WOMP.cssEase。
                 .animation(reduceMotion
                            ? .easeOut(duration: 0.15)
-                           : (open ? WOMP.ease(0.4).delay(0.1) : WOMP.ease(0.28)),
+                           : (open ? WOMP.cssEase(0.4).delay(0.1) : WOMP.cssEase(0.28)),
                            value: open)
         }
         .frame(height: open ? naturalHeight : 0, alignment: .top)
@@ -199,6 +212,9 @@ struct WOCollapsible<Content: View>: View {
 // MARK: - 出场折叠（.removing：remeasure→height 0 + opacity 0 + scale .97）
 
 /// 原型 removeModelRow(:1313-1334) 出场形态的 SwiftUI 等价：
+/// 【2026-10-03 审计限定】本修饰器**仅模型行使用**（ModelCatalogEditorView）——
+/// provider 行卡出场已改 WOProviderRemoveFade（ProvidersSectionView，原型
+/// .provider-item.removing 淡出形态，无高度折叠），勿再复用回整卡。
 /// removing 时实测高度动画折叠到 0（.4s）+ opacity 0（.28s）+ scale .97，
 /// 调用方 420ms 后真正移除数据。marginTop 语义由调用方把间距放进本视图
 /// 内部（padding），折叠时一并归零。
@@ -699,6 +715,25 @@ struct WOSectionToggle: View {
 /// body.select-open overflow visible，:311）。
 /// 关闭路径：选项点选 / 按钮重按 / 表单收起（原型 document 级外点关闭监听无
 /// SwiftUI 等价——报告登记，触屏路径直达不受影响）。
+///
+/// 批8 B1（真机诊断页对照实证·根治换路径）：诊断页 1-5 号（overlay 系全部
+/// 变体：对照/去压平/去阴影/去幕帘/去透明动画）全坏（透出/重影/灰雾），6 号
+/// （VStack 流内条件插入旧形态）只"挤开"无透明/重影 → 唯一共同点=overlay
+/// 挂载 → **病根=overlay 挂载本身**（批5/批6 的修复都在 overlay 内部，故白
+/// 修）。本改造废除 overlay 挂载，弹层改 **按钮之后的流内兄弟**——
+/// 「流内零占位+溢出绘制」：
+///   · fixedSize(vertical)：弹层按理想高度测量（不受 0 高提案压缩）；
+///   · frame(height: 0)：布局占位归零——不挤开下方字段（M4① 目标保留）；
+///   · zIndex(10)：绘制层级盖过后续兄弟（含两列并排卡场景，要求④）；
+///   · offset(y: 6)：原型 .select-pop top: calc(100% + 6px)（:476-478）间隙。
+/// 恒挂载保留（批6 G1 正确部分）：闭态 opacity 0 + allowsHitTesting(false)，
+/// 开合走 toggle 点显式事务（withAnimation）；compositingGroup/双阴影原样
+/// 保留。buttonHeight 捕获退役（流内弹层自然贴按钮下方，仅需 6pt 间隙）。
+/// 溢出绘制的不裁切前提（逐项核验见 e3-report-batch8.md）：WOCollapsible
+/// open 态 headroom 600pt（:188-191）＞弹层最大 270pt；AddProviderFormView
+/// 外壳无 clipShape；ScrollView 视口裁切与原型（absolute 定位仍在滚动容器内）
+/// 同语义。公开 API（options/selection/maxHeight）零变化，调用侧
+/// （AddProviderFormView :237/:326）零适配。
 struct WOSelect: View {
 
     let options: [String]
@@ -706,8 +741,6 @@ struct WOSelect: View {
     var maxHeight: CGFloat = 258
 
     @State private var open = false
-    /// 按钮实测高度（弹层 offset 基准 = 按钮底 + 6；按钮恒 44pt 单行，实测只为稳健）。
-    @State private var buttonHeight: CGFloat = 44
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 开合曲线（reduceMotion 降级 .15s easeOut）——toggle 点显式事务共用。
@@ -716,27 +749,24 @@ struct WOSelect: View {
     }
 
     var body: some View {
-        button
-            // 原型 .select-pop top: calc(100% + 6px)——脱离文档流浮出。
-            // 批6 G1：恒挂载 + 普通可动画值驱动（不再条件插入 + transition，
-            // 根因见结构注释）。闭态还原原型 .select-pop translateY(-8)
-            // scale(.98) 的隐藏基线，开态动画从基线过渡到原位。
-            .overlay(alignment: .topLeading) {
-                popup
-                    .opacity(open ? 1 : 0)
-                    .offset(y: buttonHeight + 6 + (open ? 0 : -8))
-                    .scaleEffect(open ? 1 : 0.98, anchor: .top)
-                    .allowsHitTesting(open) // 闭态弹层不拦截点击
-            }
-            // open 时压住同层后续兄弟（含两列并排卡场景，要求④）。
-            .zIndex(open ? 10 : 0)
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { buttonHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { buttonHeight = $0 }
-                }
-            )
+        // 批8 B1「流内零占位+溢出绘制」（机制见结构注释）：弹层=按钮之后的
+        // 流内兄弟，布局占位归零、内容向下溢出绘制。
+        VStack(alignment: .leading, spacing: 0) {
+            button
+            popup
+                .fixedSize(horizontal: false, vertical: true) // 理想高度（不受 0 高提案压缩）
+                .frame(height: 0, alignment: .top)            // 布局占位归零——不挤开下方
+                .zIndex(open ? 10 : 0)                        // 盖过本容器内先绘兄弟
+                // R2（批8 审查）：闭态上漂分量找回——旧链闭态基线 translateY(-8)
+                //（原型 .select-pop 隐藏基线），此前流内改造误丢了 -8 分量。
+                .offset(y: 6 + (open ? 0 : -8))               // 原型间隙（:476-478）+ 闭态上漂基线
+                .opacity(open ? 1 : 0)                        // 恒挂载：闭态隐身
+                .scaleEffect(open ? 1 : 0.98, anchor: .top)   // 开态从 .98 基线展开
+                .allowsHitTesting(open)                       // 闭态弹层不拦截点击
+        }
+        // open 时压住同层后续兄弟（含两列并排卡场景，要求④）——zIndex 作用域
+        // 在本视图所处的父容器，溢出段随整棵子树提升绘制层级。
+        .zIndex(open ? 10 : 0)
     }
 
     /// 弹层高 = min(行数 × 44, maxHeight)（opt 行单行定高 44，见 optRow；
