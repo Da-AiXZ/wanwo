@@ -53,6 +53,7 @@ struct MemoryStorage {
     /// rollout_summaries 建目录。
     func ensureLayout() throws {
         try Self.fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        registerFakefsIfInTree(rootURL, isDirectory: true)
         guard (try? Self.fm.attributesOfItem(atPath: rootURL.path)) != nil else {
             throw MemoryError(message: "memory root unreadable: \(rootURL.path)")
         }
@@ -60,6 +61,9 @@ struct MemoryStorage {
         try Self.fm.createDirectory(
             at: rootURL.appendingPathComponent(MemoryConstants.rolloutSummariesSubdir),
             withIntermediateDirectories: true)
+        registerFakefsIfInTree(
+            rootURL.appendingPathComponent(MemoryConstants.rolloutSummariesSubdir),
+            isDirectory: true)
     }
 
     // MARK: - raw_memories.md（storage.rs :44-78）
@@ -127,7 +131,9 @@ struct MemoryStorage {
             guard entry.hasSuffix(".md") else { continue }
             let stem = String(entry.dropLast(2))
             guard !keep.contains(stem) else { continue }
-            try? Self.fm.removeItem(at: dir.appendingPathComponent(entry))
+            let url = dir.appendingPathComponent(entry)
+            try? Self.fm.removeItem(at: url)
+            removeFakefsIfInTree(url)
         }
     }
 
@@ -331,6 +337,7 @@ struct MemoryStorage {
         try Self.fm.createDirectory(
             at: manifestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try manifest.encode().write(to: manifestURL, options: .atomic)
+        registerFakefsIfInTree(manifestURL, isDirectory: false)
     }
 
     // MARK: - Phase2 diff 工件（write_workspace_diff / remove_workspace_diff）
@@ -346,7 +353,9 @@ struct MemoryStorage {
 
     /// remove_workspace_diff 1:1（NotFound 吞掉）。
     func removeWorkspaceDiff() {
+        let removed = Self.fm.fileExists(atPath: workspaceDiffURL.path)
         try? Self.fm.removeItem(at: workspaceDiffURL)
+        if removed { removeFakefsIfInTree(workspaceDiffURL) }
     }
 
     // MARK: - 一键清空（clear_memory_roots_contents 承载——设置页消费）
@@ -355,8 +364,10 @@ struct MemoryStorage {
     func clearAll() throws {
         if Self.fm.fileExists(atPath: rootURL.path) {
             try Self.fm.removeItem(at: rootURL)
+            removeFakefsIfInTree(rootURL)
         }
         try? Self.fm.removeItem(at: manifestURL)
+        removeFakefsIfInTree(manifestURL)
         try ensureLayout()
     }
 
@@ -594,11 +605,30 @@ struct MemoryStorage {
             try write(doc, to: url)
         case .rolloutSummary, .adHocNote:
             try validateEntryRelPath(entry.relPath)
-            try Self.fm.removeItem(at: rootURL.appendingPathComponent(entry.relPath))
+            let url = rootURL.appendingPathComponent(entry.relPath)
+            try Self.fm.removeItem(at: url)
+            removeFakefsIfInTree(url)
         }
     }
 
     // MARK: - 私有
+
+    /// 宿主直写文件的 fakefs 元数据注册（树内才生效——iSH 以 meta.db 为
+    /// "文件存在"真相源，未注册文件 bash 不可见；2026-10-04 EB 实证整合员
+    /// bash 看不到记忆桶。SessionNotesStore 同款语义收口到
+    /// MemoryProjectLayout.fakefsGuestPathIfInTree）。
+    private func registerFakefsIfInTree(_ url: URL, isDirectory: Bool) {
+        guard let guestPath = MemoryProjectLayout.fakefsGuestPathIfInTree(url) else { return }
+        IshExecutorBridge.ensureParentDirsInMetaDB(for: guestPath)
+        IshExecutorBridge.ensureFakefsMetadata(for: guestPath, isDirectory: isDirectory)
+    }
+
+    /// 宿主侧删除的元数据回收（防幽灵：meta 残留会让 bash 列出已删文件且
+    /// 打开必错——RootfsInstaller.removeFakefsPath 连同 stats 行一并清）。
+    private func removeFakefsIfInTree(_ url: URL) {
+        guard let guestPath = MemoryProjectLayout.fakefsGuestPathIfInTree(url) else { return }
+        RootfsInstaller.shared.removeFakefsPath(guestPath)
+    }
 
     private var memoryMDURL: URL {
         rootURL.appendingPathComponent("MEMORY.md")
@@ -635,6 +665,7 @@ struct MemoryStorage {
             throw MemoryError(message: "utf8 encode failed: \(url.path)")
         }
         try data.write(to: url, options: .atomic)
+        registerFakefsIfInTree(url, isDirectory: false)
     }
 
     /// 万我会话事实源路径标签（codex rollout_path 列位——storage.rs :67；

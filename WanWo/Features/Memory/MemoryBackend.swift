@@ -361,6 +361,12 @@ struct MemoryBackend {
                 try Self.fm.createDirectory(at: notesDir, withIntermediateDirectories: true)
             }
         }
+        // fakefs 元数据注册（拍板 2026-10-04——宿主直写须注册才对 bash 可见，
+        // MemoryStorage.registerFakefsIfInTree 同语义；legacy 桶树外自然跳过）。
+        if let guestNotesDir = MemoryProjectLayout.fakefsGuestPathIfInTree(notesDir) {
+            IshExecutorBridge.ensureParentDirsInMetaDB(for: guestNotesDir)
+            IshExecutorBridge.ensureFakefsMetadata(for: guestNotesDir, isDirectory: true)
+        }
         let target = notesDir.appendingPathComponent(filename)
         if Self.fm.fileExists(atPath: target.path) {
             throw MemoryError(message: "ad-hoc note '\(filename)' already exists")
@@ -369,6 +375,9 @@ struct MemoryBackend {
             throw MemoryError(message: "ad-hoc note utf8 encode failed")
         }
         try data.write(to: target, options: .atomic)
+        if let guestTarget = MemoryProjectLayout.fakefsGuestPathIfInTree(target) {
+            IshExecutorBridge.ensureFakefsMetadata(for: guestTarget, isDirectory: false)
+        }
     }
 
     /// validate_filename 1:1（:84-126）。

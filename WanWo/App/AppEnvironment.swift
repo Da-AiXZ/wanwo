@@ -635,12 +635,6 @@ final class AppEnvironment: ObservableObject {
                     }
                     return await log.snapshotEvents()
                 },
-                activeRunSessionIDs: { [weak self] in
-                    await MainActor.run { self?.activeRunSessionIDs ?? [] }
-                },
-                isForeground: { [weak self] in
-                    await MainActor.run { self?.isAppForegroundActive ?? false }
-                },
                 phase1: self.memoryPhase1,
                 phase2: self.memoryPhase2,
                 contextWindowTokens: { nil },
@@ -667,6 +661,27 @@ final class AppEnvironment: ObservableObject {
                           let cwd = probe.header.cwd, !cwd.isEmpty else { return nil }
                     return cwd
                 }))
+
+            // 孤儿整合员会话清扫（拍板 2026-10-04）：整合子会话本应收口自删
+            // （runner 成功/失败两路都有删除），但进程死亡（杀 App/崩溃/后台
+            // 挂起被 jetsam 收割）会让协程消失、删除永不执行——启动时按 cwd
+            // 识别清偿（cwd=记忆桶 guest 路径即整合会话；正常会话不可能挂
+            // 该 cwd——createSession 缺省 cwd=工作区路径，无记忆桶形态）。
+            Task { [weak self] in
+                guard let self else { return }
+                let sessions = await self.sessionStore.listSessions()
+                for summary in sessions {
+                    guard let url = AppEnvironment.sessionFileURL(summary.id),
+                          let probe = try? SessionLogScanner.probeLightweight(fileURL: url),
+                          let cwd = probe.header.cwd,
+                          cwd == MemoryConstants.memoryGuestPath
+                              || cwd.hasSuffix("/"
+                                  + MemoryProjectLayout.memoryBucketDirName)
+                    else { continue }
+                    await self.sessionStore.closeWriter(id: summary.id)
+                    try? await self.sessionStore.deleteSession(id: summary.id)
+                }
+            }
 
             // M7 件 L（F046）：Team 服务真缝绑定（AgentLoop/SubagentRuntime
             // 冻结件一律经公开缝调用；所需新缝清单见交付报告）。
@@ -793,18 +808,17 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
-    // MARK: - M7 件 G（F043）：memory 前台镜像 + 整合 runner
-
-    /// 前台快照（scenePhase 转入门的镜像源——WanWoApp onChange .active 落
-    /// memoryTrigger.onDidEnterForeground 的同时翻转本旗标；装配行号随报告）。
-    @Published var isAppForegroundActive = true
+    // MARK: - M7 件 G（F043）：memory 整合 runner
+    //（原"前台镜像旗标"随触发器换 codex 原版退役——拍板 2026-10-04；
+    // isAppForegroundActive 消费面仅前台门，一并删除。）
 
     /// Phase2 整合子会话 runner（agent::get_config 锁死清单的万我承载——
     /// 完整对照与偏差登记见 MemoryPhase2 头注）：
     ///   · ephemeral：临时子会话（UUID），收口后删除（get_config :322）；
     ///   · cwd=memory guest 根：文件/shell/技能 project 根全部限定 memory 树；
-    ///   · 收口判定：尾回合（turn/end 且本回合无 tool/call——agent 自然终止
-    ///     语义；onTurnEnd 信号 + 事件流复核）；
+    ///   · 收口判定：回合收束即完成（拍板 2026-10-04 根修——原"尾回合无
+    ///     tool/call"判定对干活型 agent 永假，每次整合空等 900s 假失败，
+    ///     真机实证后根修；onTurnEnd 信号直放）；
     ///   · generate/use_memories=false → 子会话 cwd 不在候选枚举面（触发器
     ///     防回流判定）+ 非根会话；notify=None → onTurnEnd 仅收口信号；
     ///   · mcp_servers=空/approval=Never/Collab/MemoryTool/Apps/Plugins 禁/
@@ -842,7 +856,7 @@ final class AppEnvironment: ObservableObject {
                 sessionId: childId,
                 writer: writer,
                 callbacks: AgentLoop.Callbacks(onTurnEnd: { [gate] _ in
-                    gate.evaluateAndSignalIfFinal()
+                    gate.noteTurnEnd()
                 }),
                 interactionPresenter: nil,
                 modelSelection: modelSelection,

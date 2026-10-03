@@ -63,6 +63,13 @@ enum MemoryBucketResolver {
         try? FileManager.default.createDirectory(
             at: bucketRoot(forCwd: cwd),
             withIntermediateDirectories: true)
+        // fakefs 元数据注册（拍板 2026-10-04——宿主直建目录须注册才对 bash
+        // 可见，MemoryStorage.registerFakefsIfInTree 同语义；EB 实证未注册
+        // 桶被整合员 bash 判"No such file"）。
+        if let guestPath = MemoryProjectLayout.memoryBucketGuestPath(forCwd: cwd) {
+            IshExecutorBridge.ensureParentDirsInMetaDB(for: guestPath)
+            IshExecutorBridge.ensureFakefsMetadata(for: guestPath, isDirectory: true)
+        }
     }
 }
 

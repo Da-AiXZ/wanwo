@@ -241,8 +241,12 @@ actor MemoryPhase2 {
 // MARK: - 尾回合收口闸（AppEnvironment runner 装配消费）
 
 /// 整合子会话收口闸（agent::handle 的 loop_agent 终态判定万我承载）：
-/// onTurnEnd 信号到达时复核事件流——刚收束的回合内无 tool/call 即「agent
-/// 自然终止」（AgentStatus::Completed 等价），放行 wait()。
+/// 回合收束即完成（拍板 2026-10-04 根修）——整合子会话单输入、无续轮来源
+/// （consolidation prompt 一次性提交；无 goal/用户注入/子代理回传），
+/// 任何回合收束即 agent 自然终止（AgentStatus::Completed 等价）。
+/// 原判定"刚收束的回合窗口内无 tool/call 才算收口"对干活型 agent 永假
+/// （整合员的工具调用全在回合窗口内——2026-10-04 真机实证 30 次调用导致
+/// 每次整合空等 consolidationWaitTimeoutSeconds 假失败、Phase2 从未成功）。
 final class MemoryTurnCompletionGate: @unchecked Sendable {
     private let writer: SessionWriter
     private let condition = NSCondition()
@@ -252,24 +256,9 @@ final class MemoryTurnCompletionGate: @unchecked Sendable {
         self.writer = writer
     }
 
-    /// 尾回合判定（回合边界取本回合 turn/start…turn/end 窗口内 tool/call）。
-    func evaluateAndSignalIfFinal() {
-        let events = writer.events
-        guard let lastEnd = events.last(where: { event in
-            if case .turnEnd = event.payload { return true }
-            return false
-        }) else { return }
-        guard case .turnEnd(let turn, _) = lastEnd.payload else { return }
-        guard let lastStart = events.last(where: { event in
-            if case .turnStart(let startTurn) = event.payload { return startTurn == turn }
-            return false
-        }) else { return }
-        let hadToolCall = events[(lastStart.seq + 1)..<max(lastEnd.seq, lastStart.seq + 1)]
-            .contains { event in
-                if case .toolCall = event.payload { return true }
-                return false
-            }
-        if !hadToolCall { signalFinish() }
+    /// 回合收束信号（onTurnEnd 回调直呼——无条件放行，理由见类注）。
+    func noteTurnEnd() {
+        signalFinish()
     }
 
     /// 等待终态（finish 先于 wait 的竞态由 finished 旗标承接；QA-5 P2-②：

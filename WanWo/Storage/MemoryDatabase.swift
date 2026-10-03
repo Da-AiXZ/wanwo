@@ -314,7 +314,15 @@ final class MemoryDatabase: @unchecked Sendable {
             let lastSuccessWatermark = row?["last_success_watermark"] as Int? ?? 0
             switch status {
             case "running":
-                return .skippedRunning
+                // 租约回收（codex lib.rs:82 JOB_LEASE_SECONDS=3600 1:1——拍板
+                // 2026-10-04）：领取后进程死亡（杀 App/崩溃/挂起越窗）会让
+                // running 行永久卡死（无心跳/租约的移植假设"进程不死"不成立）
+                // ——超租约视为陈旧落回可领取（原行由下方 upsert 覆盖）；
+                // started_at 缺席按陈旧处理（防御旧格式行）。
+                if let startedAt = row?["started_at"] as Int?,
+                   now - startedAt < MemoryConstants.phase2JobLeaseSeconds {
+                    return .skippedRunning
+                }
             case "done":
                 if let finishedAt, now < finishedAt + cooldownSeconds {
                     return .skippedCooldown

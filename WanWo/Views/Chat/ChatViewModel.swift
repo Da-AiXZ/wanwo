@@ -329,6 +329,10 @@ final class ChatViewModel: ObservableObject {
                     }
                 }
             }
+            // M7 件 G 触发器（codex turn_processor.rs:658-671 1:1——拍板
+            // 2026-10-04 恢复）：用户新回合启动即尝试记忆管线（总开关/单飞/
+            // 领取闸在触发器内部，空轮近零成本）。
+            environment.memoryTrigger.onUserTurnStarted()
             await loop.submit(text, images: refs)
         }
     }

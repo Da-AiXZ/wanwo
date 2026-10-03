@@ -19,9 +19,10 @@
 //    - 编排（start.rs :54-81）：ensureLayout → prune → Phase1 → Phase2。
 //      rate_limits_ok 守卫（guard.rs）万我无配额面→不移植（登记）。
 //  万我形态（登记）：
-//    - 不碰 AgentLoop：前台/空闲观察经 NotificationCenter + 轮询面（scenePhase
-//      与 activeRunSessionIDs 既有 AppEnvironment 镜像经装配缝回调注入）；
-//      会话枚举/事件读取经 SessionStore/JsonlEventLog 只读缝。
+//    - 不碰 AgentLoop：触发经装配缝回调（2026-10-04 拍板恢复 codex 原版——
+//      每次"用户新回合启动"尝试管线，turn_processor.rs:658-671 1:1；原
+//      "前台+空闲"拍板门退役，管线内部闸自压频）；会话枚举/事件读取经
+//      SessionStore/JsonlEventLog 只读缝。
 //    - 总开关持久化：UserDefaults（App 级单键；MemorySettings 承载设置页绑定）。
 //
 
@@ -49,11 +50,6 @@ final class MemoryTrigger: @unchecked Sendable {
         var listSessions: @Sendable () async -> [SessionSummary]
         /// 会话事件流只读读取（JsonlEventLog.open(writeMode:false)）。
         var readSessionEvents: @Sendable (String) async -> [SessionEvent]?
-        /// 当前活跃运行会话集（AppEnvironment.activeRunSessionIDs 镜像快照；
-        /// async——MainActor 镜像跳线程读取）。
-        var activeRunSessionIDs: @Sendable () async -> Set<String>
-        /// 前台判定（scenePhase == .active 等价快照；async——同上跳线程）。
-        var isForeground: @Sendable () async -> Bool
         /// Phase1 连接事实与调用缝。
         var phase1: MemoryPhase1
         /// Phase2（configure 已注入 runner/storage）。
@@ -89,8 +85,11 @@ final class MemoryTrigger: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// 前台转入门（WanWoApp scenePhase .active onChange 调用点——报行号）。
-    func onDidEnterForeground() {
+    /// 用户新回合启动门（codex turn_processor.rs:658-671 1:1——拍板
+    /// 2026-10-04 恢复：每次"用户新回合启动"即尝试管线。原"前台+空闲"拍板
+    /// 门退役——管线内部闸（总开关/单飞/领取冷却-重试/无变化不派 AI）自压
+    /// 频，真活只发生在有 6h 沉默对话可挖或有新碎片可整合的轮次）。
+    func onUserTurnStarted() {
         guard MemorySettings.isEnabled else { return }
         startPipelineIfNeeded()
     }
@@ -116,17 +115,19 @@ final class MemoryTrigger: @unchecked Sendable {
 
     private func runPipeline() async {
         guard let seams else { return }
-        // 三重门（start.rs :33-38 映射 + 拍板追加门）：
-        // ①总开关（MemoryTool feature 等价）②前台 ③空闲（无运行中会话）。
+        // 门（2026-10-04 拍板后）：总开关（codex Feature::MemoryTool 等价）。
+        // 原"前台+空闲"拍板门随触发器换 codex 原版一并退役（正在运行的
+        // 回合天然不会被挖——候选须 6h 沉默）。
         guard MemorySettings.isEnabled else { return }
-        guard await seams.isForeground() else { return }
-        guard await seams.activeRunSessionIDs().isEmpty else { return }
 
         // 批3 C1 桶化：当前工作区 cwd → 项目桶（冻结契约）；解析失败 →
         // legacy 全局桶（init 注入 storage——AppEnvironment 装配段同源，
         // 只读保留口径）。本轮管线全部读写面（布局/raw_memories/rollout_
         // summaries/清单/整合工件）均落该桶。
         let currentCWD = await seams.activeWorkspaceCWD()
+        // 无活动工作区跳过整轮（拍板 2026-10-04）：legacy 桶只读保留、无
+        // 会话归属——2026-10-04 01:34 实证该轮只会白跑 + 整合秒败占账。
+        guard let currentCWD else { return }
         let runStorage = MemoryProjectLayout.storage(forCwd: currentCWD)
 
         do {

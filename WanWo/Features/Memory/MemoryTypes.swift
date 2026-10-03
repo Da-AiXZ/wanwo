@@ -49,6 +49,11 @@ enum MemoryConstants {
     static let stageTwoReasoningEffort = "medium"
     /// Phase2 成功冷却（批2 拍板 PHASE2_SUCCESS_COOLDOWN = 6h）。
     static let phase2SuccessCooldownSeconds = 6 * 3_600
+    /// Phase2 任务租约（codex lib.rs:82 JOB_LEASE_SECONDS=3600 1:1——拍板
+    /// 2026-10-04 恢复移植）：领取后进程死亡（杀 App/崩溃/挂起越窗）会让
+    /// running 行永久卡死（running 无过期回收 = 整合永不再跑）——超租约
+    /// 视为陈旧落回可领取。
+    static let phase2JobLeaseSeconds = 3_600
     /// 整合收口等待超时（QA-5 P2-② 兜底——codex status_poll 等价：AgentLoop
     /// 异常路径不发 onTurnEnd 时防触发器单飞永挂；超时 = failed_agent 重试窗）。
     static let consolidationWaitTimeoutSeconds: TimeInterval = 900

@@ -194,6 +194,8 @@ final class SideChatViewModel: ObservableObject {
         draft = ""
         phase = .streaming
         Task { [loop] in
+            // M7 件 G 触发器（codex 原版——拍板 2026-10-04，主对话缝同批）。
+            environment.memoryTrigger.onUserTurnStarted()
             await loop.submit(text)
         }
     }

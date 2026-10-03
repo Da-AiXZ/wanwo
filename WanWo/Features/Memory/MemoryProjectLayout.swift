@@ -92,6 +92,21 @@ enum MemoryProjectLayout {
                 .appendingPathComponent(legacyManifestFilename))
     }
 
+    // MARK: - fakefs 元数据换算（宿主直写可见性——拍板 2026-10-04）
+
+    /// 宿主 URL → fakefs guest 路径（rootfs 持久层树内才返回非 nil；legacy
+    /// Library 路径 = 树外静态只读挂载、挂载面自带注册，nil = 调用方跳过）。
+    /// iSH 以 meta.db 为"文件存在"真相源——宿主直写的树内文件须注册才对
+    /// bash 可见（SessionNotesStore.registerFakefsMetadataIfGuest 同款守卫
+    /// 收口到单一权威）。
+    static func fakefsGuestPathIfInTree(_ url: URL) -> String? {
+        var p = url.standardizedFileURL.path
+        if p.hasPrefix("/private") { p = String(p.dropFirst("/private".count)) }
+        let guestRootPath = RootfsInstaller.shared.dataPath.standardizedFileURL.path
+        guard p.hasPrefix(guestRootPath + "/") else { return nil }
+        return "/" + String(p.dropFirst(guestRootPath.count + 1))
+    }
+
     // MARK: - 私有
 
     /// cwd 归一：trim 空白、去尾斜杠；空串 → nil（SessionHeader.cwd 可空、
