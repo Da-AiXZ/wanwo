@@ -1340,6 +1340,10 @@ final class AppEnvironment: ObservableObject {
         // （MemoryBucketResolver→MemoryProjectLayout；cwd 无法解析项目 = nil
         // 回落 legacy 全局桶只读兜底——批3 派单冻结口径，c2-report 登记）。
         let memoryBucketRoot = MemoryBucketResolver.bucketRoot(forCwd: writer.header.cwd)
+        // A 组验收拍板（2026-10-03）：项目桶装配时确保存在（新项目首查不报
+        // NotFound，空桶优雅返回 No entries./No matches.——MemoryBucketResolver
+        // ensureBucket 头注）。
+        MemoryBucketResolver.ensureBucket(forCwd: writer.header.cwd)
         if let summaryData = try? Data(contentsOf: memoryBucketRoot
             .appendingPathComponent("memory_summary.md")),
            let summaryText = String(data: summaryData, encoding: .utf8),

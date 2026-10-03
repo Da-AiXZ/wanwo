@@ -46,6 +46,19 @@ enum MemoryBucketResolver {
             ? cwd + "/wanwo-memory"
             : MemoryConstants.memoryGuestPath
     }
+
+    /// 项目桶确保存在（A 组真机验收拍板 2026-10-03）：项目化增强引入 codex
+    /// 全局单库没有的新场景——新项目桶必不存在，首查命中 codex local/list.rs
+    /// NotFound 原语义（"path '' was not found"），模型只能 bash fallback 绕行
+    /// （A5 实测六连报错）。ensure 后空桶 list/search 返回 "No entries."/
+    /// "No matches."（backend 对存在但空的目录本就返回空表）。legacy 全局桶
+    /// 不 touch（已存在且只读保留）。失败静默（防御性 ensure，工具面自然兜底）。
+    static func ensureBucket(forCwd cwd: String?) {
+        guard MemoryProjectLayout.memoryBucketURL(forCwd: cwd) != nil else { return }
+        try? FileManager.default.createDirectory(
+            at: bucketRoot(forCwd: cwd),
+            withIntermediateDirectories: true)
+    }
 }
 
 // MARK: - 注册面
