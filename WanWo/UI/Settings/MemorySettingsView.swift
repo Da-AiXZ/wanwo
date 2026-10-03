@@ -293,7 +293,7 @@ private struct MemoryEntryDetailSheet: View {
             try storage.updateSettingEntry(entry, newText: draft)
             errorText = nil
             isEditing = false
-            onNotify("用户刚在设置中编辑了长期记忆条目「\(entry.path)」，内容已更新——后续请以最新内容为准。")
+            onNotify("用户刚在设置中编辑了长期记忆条目「\(entry.relPath)」，内容已更新——后续请以最新内容为准。")
             onMutated()
             dismiss()
         } catch {
@@ -305,7 +305,7 @@ private struct MemoryEntryDetailSheet: View {
         do {
             try storage.deleteSettingEntry(entry)
             errorText = nil
-            onNotify("用户刚在设置中删除了长期记忆条目「\(entry.path)」，请不要再引用它。")
+            onNotify("用户刚在设置中删除了长期记忆条目「\(entry.relPath)」，请不要再引用它。")
             onMutated()
             dismiss()
         } catch {
