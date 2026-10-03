@@ -397,9 +397,11 @@ final class M7FixGoalLoopTests: XCTestCase {
         let view = try await service.get()
         XCTAssertEqual(view?.phase, .paused)
         XCTAssertEqual(view?.activation, .disarmed)
-        XCTAssertTrue(systemNotes(writer).contains(
-            "目标已自动暂停（续轮条件在回合结束时未满足），回复「继续」可恢复"),
-            "自动 pause 必须落用户可见注记")
+        // 注记落盘与 phase 收敛是两条异步线（f71138f 前后 CI 各红绿一次的
+        // 时序 flake 实证）——断言前等注记出现，根修假红。
+        let noteSeen = await waitUntil { systemNotes(writer).contains(
+            "目标已自动暂停（续轮条件在回合结束时未满足），回复「继续」可恢复") }
+        XCTAssertTrue(noteSeen, "自动 pause 必须落用户可见注记")
         await loop.whenIdle()
     }
 

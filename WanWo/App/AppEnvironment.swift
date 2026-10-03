@@ -817,6 +817,11 @@ final class AppEnvironment: ObservableObject {
                                        cwd: String = MemoryConstants.memoryGuestPath) async throws {
         let childId = UUID().uuidString
         _ = try await sessionStore.createSession(withID: childId, cwd: cwd)
+        // 会话命名（子代理身份可见性①同批）：临时整合会话收口即删，存在
+        // 期间的事件流/调试面可辨识——确定性标题直写（同②双写先例）。
+        try? await writer.append(.sessionTitle(title: "记忆整合（临时）", source: "fallback"),
+                                 ignorable: true)
+        database.setTitle(id: childId, title: "记忆整合（临时）")
         do {
             let opened = try await sessionStore.openWriter(id: childId)
             let writer = opened.writer
@@ -1572,9 +1577,12 @@ final class AppEnvironment: ObservableObject {
             // M8 批2 件B3 缝③（主理人合并；参数序依 Dependencies 声明序居末）：
             // 回合收尾小更新（digest=最近一条 assistant 文本回复前 400 字符；
             // digest/files 双空时写入面自跳过）。回合收尾供值 Optional 化
-            // （整合子会话 nil 自跳过——整合子会话闸）。
+            // （整合子会话 nil 自跳过——整合子会话闸）。子代理栈（depth 非
+            // nil）摘要加前缀——项目日志中可区分主/子来源（子代理身份
+            // 可见性③）。
             onTurnSettled: { [sessionNotesStore, writer] observation in
                 guard let sessionNotesStore else { return }
+                let digestPrefix = subagentDepth == nil ? "" : "子代理摘要："
                 let digest = writer.events.reversed().compactMap { event -> String? in
                     if case .assistantMessage(_, _, let message, _, _) = event.payload {
                         return message.content.compactMap { block -> String? in
@@ -1586,7 +1594,7 @@ final class AppEnvironment: ObservableObject {
                 }.first
                 try? SessionNotesRecorder(store: sessionNotesStore).sessionNotesOnTurnEnd(
                     SessionNotesTurnObservation(
-                        assistantReplyDigest: digest.map { String($0.prefix(400)) },
+                        assistantReplyDigest: digest.map { digestPrefix + String($0.prefix(400)) },
                         filesTouched: []))
             })
         let agentLoop = AgentLoop(deps: deps)
@@ -1817,6 +1825,16 @@ final class AppEnvironment: ObservableObject {
         _ = try await childWriter.append(.extensionEvent(
             kind: SubagentDescriptor.eventKind,
             payload: SubagentDescriptor.payload(for: resolved.descriptor)))
+        // 会话命名（子代理身份可见性①，真机实证：后台创建无 LLM 标题环节
+        // → 侧栏/事件流全显默认名）。创建窗口直写确定性标题 + 数据库投影
+        // 双写（TitleGenerator 先例）；label 缺省回落 descriptor 短描述。
+        let childLabel = resolved.request.label
+            ?? resolved.descriptor.label
+            ?? "未命名"
+        let childTitle = "子代理·\(childLabel)"
+        try? await childWriter.append(.sessionTitle(title: childTitle, source: "fallback"),
+                                      ignorable: true)
+        database.setTitle(id: childId, title: childTitle)
         // 种子批量写（fork 前缀逐 payload 追加；shape 复用既有事件；ignorable
         // 随行保真——assistantChunk 等非 model-visible 行不污染派生历史）。
         for event in seed ?? [] {
