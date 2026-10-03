@@ -96,6 +96,22 @@ final class AppEnvironment: ObservableObject {
     /// M7 件 L：Team loop 目录（Lead 运行态供值——TeamSeams.leadStatus 消费；
     /// makeAgentStack 登记每个装配栈的 loop 公开缝引用）。
     let teamLoops = TeamLoopDirectory()
+
+    /// 设置侧记忆变更 → 当前活跃会话静默系统纸条（A 组验收拍板 2026-10-03）。
+    /// 复用【系统通知】markerPrefixes 隐藏通道（B4 语义：对用户不可见、AI 侧
+    /// 前缀即来源标识）——AI 下轮自然知情，不再引用已删条目/不再自我怀疑幻觉
+    /// （A6 实证：设置删除无通知 → AI 误判自身幻觉并错误撤回真实原文）。
+    /// 目标 = selection 当前选中会话的已装配 loop；无活跃会话自静默（纸条
+    /// 本质是"看得见的场合才需要"）。inject 不落用户可见面（markerPrefixes），
+    /// 只进下一轮 prompt——不唤醒、不弹窗、不建回合。
+    func notifyMemoryChange(_ text: String) {
+        guard case .session(let id) = selection,
+              let loop = teamLoops.get(id) else { return }
+        Task { [weak loop] in
+            await loop?.inject("【系统通知】" + text)
+        }
+    }
+
     /// 真机批 B 全方位诊断：会话 writer 注册表（diagTrace 写事件流用）。
     /// nonisolated(unsafe)：NSLock 自保护（diagTrace 标 nonisolated 供
     /// 非隔离上下文调用——闭包/调度/通知各面）。
@@ -1358,10 +1374,22 @@ final class AppEnvironment: ObservableObject {
         // progress 每请求确定性注入（DynamicPromptSection 槽 930，各截 2K+
         // 尾注记；空文件零扰动）。brief/tech/system 不自动注入（@引用或
         // 压缩时并入，登记）。
-        let sessionNotesStore = SessionNotesStore(sessionId: sessionId,
-                                                  workspaceCwd: writer.header.cwd)
-        sessionNotesStore.ensureBucket()
-        assembler.dynamicSection(SessionNotesInjection.dynamicSection(store: sessionNotesStore))
+        // 整合子会话闸（A 组验收拍板 2026-10-03）：Phase2 整合临时子会话
+        // cwd=记忆桶 guest 路径（legacy 全局桶 /var/wanwo/memory 或项目桶
+        // <项目>/wanwo-memory）——一次性任务无需常驻笔记工位，且桶解析会把
+        // 该 cwd 误当项目根（WanWoPaths.projectsHostRoot 不裁深度）→ 笔记桶
+        // 错位建进记忆桶（EB 事件流实证 projects/1/wanwo-memory/wanwo-notes）。
+        // 跳过建桶/注入/压缩联动/回合收尾全段（钩子 Optional 自跳过）。
+        let isMemoryIntegrationSubsession = writer.header.cwd == MemoryConstants.memoryGuestPath
+            || writer.header.cwd?.hasSuffix("/" + MemoryProjectLayout.memoryBucketDirName) == true
+        let sessionNotesStore: SessionNotesStore? = isMemoryIntegrationSubsession
+            ? nil
+            : SessionNotesStore(sessionId: sessionId,
+                                workspaceCwd: writer.header.cwd)
+        if let sessionNotesStore {
+            sessionNotesStore.ensureBucket()
+            assembler.dynamicSection(SessionNotesInjection.dynamicSection(store: sessionNotesStore))
+        }
         // M8 批2 件B2/B3 装配（主理人合并）：摘要兜底链=结构化 LLM 摘要
         // 优先、nil 回落 basic（Cline compaction.ts:546-565 agentic→basic
         // 语义的协议级承载）；摘要模型=会话当前模型（adapter.endpoint.model，
@@ -1384,11 +1412,12 @@ final class AppEnvironment: ObservableObject {
             // 槽无法按 auto/manual 分流，恒带 suffix（manual /compact 后同样
             // 续跑——行为差异=多一句"继续"指令， cosmetic）。
             includeContinuationDirective: true))
-        let notesRecorder = SessionNotesRecorder(store: sessionNotesStore)
-        compactor.onCondensation = { record in
+        // 压缩联动供值（Optional——整合子会话 nil 自跳过，见整合子会话闸）。
+        compactor.onCondensation = { [sessionNotesStore] record in
             // 件B3 缝②：压缩落地 → activeContext 全文重写为摘要（try? 不阻断）。
             // batch2-review P2#5 收口：剥离锚点前缀/后缀（B2 终版 grammar 的
             // summary 承载带锚点全文——笔记里只留正文）。
+            guard let sessionNotesStore else { return }
             var summary = record.summary ?? ""
             if summary.hasPrefix(ContextSummarizerAnchor.prefix) {
                 summary = String(summary.dropFirst(ContextSummarizerAnchor.prefix.count))
@@ -1398,7 +1427,7 @@ final class AppEnvironment: ObservableObject {
             }
             summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !summary.isEmpty else { return }
-            try? notesRecorder.sessionNotesDidCompact(summary: summary)
+            try? SessionNotesRecorder(store: sessionNotesStore).sessionNotesDidCompact(summary: summary)
         }
         // M7 件 G（F043）：memory 四工具（codex memories 扩展四工具——原名 +
         // schema 逐字；后端宿主直读记忆桶，件头注裁定）。
@@ -1542,8 +1571,9 @@ final class AppEnvironment: ObservableObject {
             },
             // M8 批2 件B3 缝③（主理人合并；参数序依 Dependencies 声明序居末）：
             // 回合收尾小更新（digest=最近一条 assistant 文本回复前 400 字符；
-            // digest/files 双空时写入面自跳过）。
-            onTurnSettled: { [weak sessionNotesStore, writer] observation in
+            // digest/files 双空时写入面自跳过）。回合收尾供值 Optional 化
+            // （整合子会话 nil 自跳过——整合子会话闸）。
+            onTurnSettled: { [sessionNotesStore, writer] observation in
                 guard let sessionNotesStore else { return }
                 let digest = writer.events.reversed().compactMap { event -> String? in
                     if case .assistantMessage(_, _, let message, _, _) = event.payload {

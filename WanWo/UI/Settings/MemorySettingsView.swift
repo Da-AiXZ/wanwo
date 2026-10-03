@@ -90,9 +90,9 @@ struct MemorySettingsView: View {
         }
         .sheet(item: $selectedEntry) { entry in
             MemoryEntryDetailSheet(entry: entry,
-                                   storage: bucketStorage ?? environment.memoryStorage) {
-                refresh()
-            }
+                                   storage: bucketStorage ?? environment.memoryStorage,
+                                   onMutated: { refresh() },
+                                   onNotify: { environment.notifyMemoryChange($0) })
         }
         .alert("清空全部记忆？", isPresented: $confirmClear) {
             Button("取消", role: .cancel) {}
@@ -211,6 +211,7 @@ struct MemorySettingsView: View {
             try environment.memoryDatabase.clearAll()
             try environment.memoryStorage.clearAll()
             clearError = nil
+            environment.notifyMemoryChange("用户刚在设置中清空了全部长期记忆条目与整合产物，请不要再引用任何旧记忆。")
         } catch {
             clearError = "清空失败：\(String(describing: error))"
         }
@@ -226,6 +227,9 @@ private struct MemoryEntryDetailSheet: View {
     let entry: MemoryStorage.MemoryEntry
     let storage: MemoryStorage
     let onMutated: () -> Void
+    /// 设置侧记忆变更 → 活跃会话静默系统纸条（A 组验收拍板；AppEnvironment.
+    /// notifyMemoryChange 注释）。
+    let onNotify: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var isEditing = false
@@ -289,6 +293,7 @@ private struct MemoryEntryDetailSheet: View {
             try storage.updateSettingEntry(entry, newText: draft)
             errorText = nil
             isEditing = false
+            onNotify("用户刚在设置中编辑了长期记忆条目「\(entry.path)」，内容已更新——后续请以最新内容为准。")
             onMutated()
             dismiss()
         } catch {
@@ -300,6 +305,7 @@ private struct MemoryEntryDetailSheet: View {
         do {
             try storage.deleteSettingEntry(entry)
             errorText = nil
+            onNotify("用户刚在设置中删除了长期记忆条目「\(entry.path)」，请不要再引用它。")
             onMutated()
             dismiss()
         } catch {
