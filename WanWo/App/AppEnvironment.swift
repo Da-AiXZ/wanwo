@@ -817,14 +817,14 @@ final class AppEnvironment: ObservableObject {
                                        cwd: String = MemoryConstants.memoryGuestPath) async throws {
         let childId = UUID().uuidString
         _ = try await sessionStore.createSession(withID: childId, cwd: cwd)
-        // 会话命名（子代理身份可见性①同批）：临时整合会话收口即删，存在
-        // 期间的事件流/调试面可辨识——确定性标题直写（同②双写先例）。
-        try? await writer.append(.sessionTitle(title: "记忆整合（临时）", source: "fallback"),
-                                 ignorable: true)
-        database.setTitle(id: childId, title: "记忆整合（临时）")
         do {
             let opened = try await sessionStore.openWriter(id: childId)
             let writer = opened.writer
+            // 会话命名（子代理身份可见性①同批）：临时整合会话收口即删，存在
+            // 期间的事件流/调试面可辨识——确定性标题直写（同②双写先例）。
+            try? await writer.append(.sessionTitle(title: "记忆整合（临时）", source: "fallback"),
+                                     ignorable: true)
+            database.setTitle(id: childId, title: "记忆整合（临时）")
             // 尾回合判定：turn/end 且自对应 turn/start 起无 tool/call。
             let gate = MemoryTurnCompletionGate(writer: writer)
             // QA-5 P1-1③：整合会话推理档锁定 medium（codex get_config :338-348
