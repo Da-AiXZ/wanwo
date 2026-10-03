@@ -172,8 +172,13 @@ struct WOCollapsible<Content: View>: View {
         .mask(alignment: .top) {
             Rectangle().frame(height: maskHeight)
         }
-        // 高度基准变化（内容增删行）瞬时应答，不叠动画（原型 open 态自然回流）。
-        .animation(nil, value: naturalHeight)
+        // 高度基准变化（内容增删行/子面板开合的理想高变化）——并入同曲线事务：
+        // 布局与视觉同一时钟（"自定义设置"子面板 .58s 展开时外层高度平滑跟随，
+        // 不再瞬跳）。【2026-10-03 重诊断】批9 S2 同款一行；当时被外层
+        // WORemoveFold 的同款 nil 瞬传掩盖（按钮供值层=外层钉高），双层同修
+        // 后此行才真正生效。
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durCollapse),
+                   value: naturalHeight)
     }
 
     /// 渲染中高度逐帧追踪（禁动画事务——mask 必须紧贴动画帧，不滞后）。
@@ -201,26 +206,56 @@ struct WORemoveFold: ViewModifier {
 
     let removing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var naturalHeight: CGFloat = 0
+    /// 逐帧实测高（仅 removing 起点捕获用；常态不参与布局）。
+    @State private var liveHeight: CGFloat = 0
+    /// 钉高：nil=常态零干预（透传——按钮/下方兄弟直接跟随内层动画）；
+    /// 非 nil=折叠期钉住（remeasure→fold 两步）。
+    @State private var pinnedHeight: CGFloat?
 
     func body(content: Content) -> some View {
         content
-            // fixedSize：出场地基按理想高度测量（同 WOCollapsible 注）。
+            // fixedSize：折叠起点按理想高度测量（同 WOCollapsible 注）。
             .fixedSize(horizontal: false, vertical: true)
             .background(
                 GeometryReader { geo in
                     Color.clear
-                        .onAppear { naturalHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { naturalHeight = $0 }
+                        .onAppear { liveHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { liveHeight = $0 }
                 }
             )
-            .frame(height: removing ? 0 : naturalHeight, alignment: .top)
+            // 【2026-10-03 重诊断（b3 终局根修 v2）】常态不再钉高：旧实现
+            // `.frame(height: removing ? 0 : naturalHeight)` 把行卡钉在逐帧
+            // 实测值上 + `.animation(nil, value: naturalHeight)` 瞬传——内层
+            // WOCollapsible 的 .58s 展开动画被本层逐帧测量→逐帧瞬钉，按钮
+            // 1-2 帧即到终态（瞬跳），内层幕帘/淡入照播（"面板慢悠悠"）=
+            // 两口时钟分家的真凶层。批9 只修内层 WOCollapsible:176、本层
+            // 原样 → 真机无差别（用户实证"批9 没区别"）。诊断页样本从不
+            // 套本修饰器（grep 实证 0 处）→ 样本全部正常，差异点唯一。
+            // 现常态透传（height nil=不约束），折叠改两步：先瞬钉当前
+            // 实测高（禁动画事务），下一拍再曲线归零——remeasure→fold
+            // 语义原样保留（ModelCatalogEditorView 行折叠/resetting 同享）。
+            .frame(height: pinnedHeight, alignment: .top)
             .opacity(removing ? 0 : 1)
             .scaleEffect(removing ? 0.97 : 1)
             .clipped()
             .animation(reduceMotion ? .easeOut(duration: 0.15) : WOMP.ease(WOMP.durRowOut),
                        value: removing)
-            .animation(nil, value: naturalHeight)
+            .onChange(of: removing) { r in
+                var instant = Transaction()
+                instant.disablesAnimations = true
+                if r {
+                    withTransaction(instant) { pinnedHeight = liveHeight }
+                    DispatchQueue.main.async {
+                        withAnimation(reduceMotion
+                                      ? .easeOut(duration: 0.15)
+                                      : WOMP.ease(WOMP.durRowOut)) {
+                            pinnedHeight = 0
+                        }
+                    }
+                } else {
+                    withTransaction(instant) { pinnedHeight = nil }
+                }
+            }
     }
 }
 
