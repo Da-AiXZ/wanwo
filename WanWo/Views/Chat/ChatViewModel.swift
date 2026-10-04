@@ -60,6 +60,39 @@ final class ChatViewModel: ObservableObject {
     /// .streaming，"刚在直播看过不重播动画"（instantLive）判定失效=收尾帧
     /// 落盘思考节点多播一次 fadeUp（用户实测）；此旗让视图跨帧拿到该语义。
     @Published private(set) var justEndedStreaming = false
+    // MARK: 流式渲染官方化（2026-10-04）：dsh assistant-step 零换手语义的万我形态
+    //  语义源 repos/deepseek-harness-master packages/client/ui-chat
+    //  conversation-nodes/assistant.ts:377-410——流式 chunk 与落盘 message 折叠进
+    //  同一节点（step/start 建节点 → assistant/chunk update → assistant/message
+    //  换最终 blocks 收敛），无"换手"概念。万我形态：直播槽（liveReasoning/
+    //  liveText）以正式 Bubble 身份经 displayNodes 进入统一节点流，与落盘节点
+    //  同构渲染；reproject 的落盘收敛走 settle 决策（打字机积压未清 → 补打期
+    //  过滤落盘正文节点；否则同帧直接呈现）。
+    /// 直播思考槽（nil = 无在途思考；镜像 streamingReasoning 缓冲——思考无打
+    /// 字机，LED 尾行跟随即模型出字节奏）。
+    @Published private(set) var liveReasoning: String?
+    /// 直播正文槽（nil = 无在途正文；打字机演示值 = typeTarget.prefix(typeCursor)）。
+    @Published private(set) var liveText: String?
+    /// 落盘补打期（打字机积压未清；displayNodes 过滤补打目标落盘节点，live 槽
+    /// 把剩余字打完后同帧结算——原 View 层 isSettling 迁入）。
+    @Published private(set) var isSettling = false
+    /// 结算帧落盘节点预登记（内容用户刚在直播看过 → 落盘节点即时呈现不播入场
+    /// 动画；View 以 seen = animatedIDs ∪ settledBubbleIDs 消费——对应原
+    /// :967/:1011/:1373 的 animatedIDs.insert 三处）。
+    @Published private(set) var settledBubbleIDs: Set<String> = []
+    /// live id 代际 ×2（review P1-1 修复：思考/正文**分立**——共享代际时，
+    /// 正文开槽的 nil→非空 bump 会波及思考槽 id（live-r-N 整体换 id），
+    /// ForEach diff 删旧插新 → WOEntryModifier @State 重置 → 思考行 fadeUp
+    /// 重播。各自只在**本槽** nil→非空时推进（新段落/新 step = 新 id = 入场
+    /// 动画天然一次，对应 dsh 每步新 turn:step 节点）。
+    private var liveReasoningGeneration = 0
+    private var liveTextGeneration = 0
+    /// 打字机数据侧全文（当前段落累积快照；flushTextNow 同步，settle 后重置）。
+    private var typeTarget = ""
+    /// 打字机显示侧游标（33Hz 步进；段间不重置，仅新目标短于游标时归零）。
+    private var typeCursor = 0
+    /// 33Hz 节奏器（open 启动 / close 取消；仅在有打字目标时产生写面）。
+    private var typewriterTask: Task<Void, Never>?
     @Published private(set) var resumeBanner: String?
     @Published private(set) var pressure: Compactor.PressureInfo?
     @Published var draft = ""
@@ -162,6 +195,9 @@ final class ChatViewModel: ObservableObject {
     // MARK: - 打开（resume + AgentLoop 装配）
 
     func open() {
+        // 33Hz 节奏器生命周期（close 取消；重开恢复——open 的 phase 守卫针对
+        // 装配流程，节奏器必须无条件就位，否则二次 onAppear 后补打停摆）。
+        startTypewriterIfNeeded()
         guard phase == .loading else { return }
         Task { [weak self] in
             guard let self = self else { return }
@@ -218,6 +254,13 @@ final class ChatViewModel: ObservableObject {
     // MARK: - 关闭（会话切换 / 视图离场）
 
     func close() {
+        // 流式官方化：直播槽收摊（节奏器停摆 + 槽清退——live 槽只承载在途
+        // 内容，不持历史；重开落盘内容由事件流重投影呈现）。
+        typewriterTask?.cancel()
+        typewriterTask = nil
+        isSettling = false
+        liveReasoning = nil
+        liveText = nil
         Task { [weak agentLoop] in await agentLoop?.cancel(cause: .disposed) }
         let task = runningTask
         runningTask = nil
@@ -946,6 +989,10 @@ final class ChatViewModel: ObservableObject {
         // 动画事务——只让 goal 快照变化进事务，bubbles/todoItems 等其余
         // 重投影赋值保持原时钟不动。
         setGoalView(Self.foldGoalView(writer.events))
+        // 流式官方化（2026-10-04）：streamingText/streamingReasoning 降级为
+        // 数据侧缓冲——清空不再充当"换手信号"（原 :949-950 清空 = View 层
+        // onChange(streamingText) 换手状态机触发点，已拆除）。live 槽结算改走
+        // 本函数末尾 settleLiveSlots()（打字机积压决策），防双产。
         streamingText = ""
         streamingReasoning = ""
         // 幽灵回合修复（根因终判+lead 批准）：pending 流式缓冲一并清空。
@@ -969,6 +1016,10 @@ final class ChatViewModel: ObservableObject {
         if let first = pendingApprovals.first, let callId = first.callId {
             setCardStatus(callId: callId, note: "等待审批")
         }
+        // 流式官方化：live 槽结算（dsh assistant/message 落盘收敛语义——同一
+        // 节点换最终 blocks，无换手）。须在 bubbles 更新后执行（steppedForward
+        // 判定读 bubbles；打字机积压读 typeTarget/typeTarget 已由 flush 同步）。
+        settleLiveSlots()
     }
 
     /// 现存工具卡快照（callId → 卡），供投影续接瞬态字段。
@@ -1129,6 +1180,8 @@ final class ChatViewModel: ObservableObject {
                 streamingReasoning += chunk
             }
         }
+        // 流式官方化：缓冲更新后同步直播槽（思考镜像 + 打字机目标）。
+        syncLiveSlots()
     }
 
     private func flushIfIdle() {
@@ -1160,6 +1213,222 @@ final class ChatViewModel: ObservableObject {
                 for line in lines {
                     appendToCard(callId: callId, line: line)
                 }
+            }
+        }
+        // 流式官方化：回合尾/慢车道最终 flush 也同步直播槽——打字机目标必须
+        // 在 reproject 的 settle 决策前拿到全文（否则补打目标缺尾部 delta，
+        // 结算帧内容跳变）。原 View 层 onChange(streamingText) 同语义迁入。
+        syncLiveSlots()
+    }
+
+    // MARK: - 流式官方化：直播槽 / 打字机 / settle（原 View 层换手状态机迁入）
+
+    /// flush 后同步直播槽（快车道/慢车道/回合尾统一入口）：
+    /// ①思考槽直接镜像缓冲（nil→非空时代际 +1，新 id = 入场动画天然一次）；
+    /// ②正文槽由打字机驱动，本函数只更新数据侧全文 typeTarget（段间游标连续，
+    /// 仅新目标短于游标时归零——九校④语义）并在补打中遇新 delta 时立即结算
+    /// 上段（立即结算+新段开槽）。
+    private func syncLiveSlots() {
+        if !streamingReasoning.isEmpty {
+            // 思考代际只随思考槽自身开合推进（P1-1：与正文槽分立，正文开槽
+            // 不换思考 id——否则思考行 fadeUp 重播）。
+            if liveReasoning == nil { liveReasoningGeneration += 1 }
+            liveReasoning = streamingReasoning
+        }
+        // 空缓冲不清目标：reproject 清缓冲后的迟到 flush 定时器（textFlushTimer
+        // 0.04s 单发可能落在 reproject 之后）不得打断补打（幽灵回合同源防护
+        // ——空 flush 面对补打目标必须 no-op）。
+        guard !streamingText.isEmpty, streamingText != typeTarget else { return }
+        if isSettling { finishSettling() }
+        typeTarget = streamingText
+        typeCursor = Self.cursorAfterTargetChange(
+            oldCursor: typeCursor, newTargetCount: typeTarget.count)
+    }
+
+    /// 节奏器启动（幂等；open 启动 / close 取消。Task 继承 @MainActor）。
+    private func startTypewriterIfNeeded() {
+        if let task = typewriterTask, !task.isCancelled { return }
+        typewriterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                guard let self else { return }
+                self.typewriterStep()
+            }
+        }
+    }
+
+    /// 打字机单步（原 View 层 typewriterLoop 循环体 1:1 迁移）：步长 =
+    /// max(1, min(4, backlog/3))；全新长积压（>140 字）快进只打尾部。
+    /// 补打打完即结算（finishSettling：落盘节点同帧显现，视觉无缝）。
+    private func typewriterStep() {
+        if typeCursor == 0, typeTarget.count > 140 {
+            typeCursor = typeTarget.count - 140
+        }
+        guard typeCursor < typeTarget.count else {
+            if isSettling { finishSettling() }
+            return
+        }
+        let backlog = typeTarget.count - typeCursor
+        let step = Self.typewriterStepLength(backlog: backlog)
+        typeCursor = min(typeTarget.count, typeCursor + step)
+        let prefix = String(typeTarget.prefix(typeCursor))
+        if !prefix.isEmpty {
+            // 正文代际只随正文槽自身开合推进（P1-1：与思考槽分立）。
+            if liveText == nil { liveTextGeneration += 1 }
+            liveText = prefix
+        }
+    }
+
+    /// live 槽结算（reproject 末尾调用；替代原"清空 streamingText = 换手"）：
+    /// 两槽均空 no-op；打字机有积压且回合未步进 → 补打期（displayNodes 过滤
+    /// 补打目标落盘节点，live 槽继续打完）；否则槽直接置 nil（同帧落盘节点
+    /// 显现）。批3 复审修 P1-2 语义保留（steppedForward）。
+    private func settleLiveSlots() {
+        let liveActive = liveReasoning != nil || liveText != nil || isSettling
+        switch Self.settleDecision(
+            liveActive: liveActive,
+            cursorBacklog: typeCursor < typeTarget.count,
+            steppedForward: Self.hasPostSettlingStepNode(in: bubbles)) {
+        case .none:
+            return
+        case .finish:
+            finishSettling()
+        case .keepSettling:
+            isSettling = true
+            // review P1-2 修复：思考无打字积压概念——keepSettling（补打期）
+            // 思考槽必须同步清退，否则落盘 reasoning 节点（补打过滤只滤
+            // .assistant，reasoning 不过滤）与 live-r 槽（保持旧内容）同帧
+            // 在场 = 同内容思考显示两遍（旧版 liveTailNode 思考部分挂载条件
+            // `!streamingReasoning.isEmpty`，reproject 清空后即消失）。落盘
+            // 思考即时呈现（同位同内容无缝，instantLive 覆盖动画面）；正文
+            // 槽继续补打。finishSettling 另已清 reasoning（终态路径）。
+            liveReasoning = nil
+        }
+    }
+
+    /// 结算帧预登记集合（纯函数，单测直呼；review P2 补齐：最后落盘正文 +
+    /// 同帧落盘思考——长积压补打超过 justEndedStreaming 1.5s 窗口时，思考
+    /// 节点否则会播 fadeUp 重播）。
+    nonisolated static func settledRegistrationIDs(
+        in bubbles: [Bubble]) -> Set<String> {
+        var ids = Set<String>()
+        if let textID = bubbles.last(where: {
+            if case .assistant = $0.kind { return true }
+            return false
+        })?.id {
+            ids.insert(textID)
+        }
+        if let reasoningID = bubbles.last(where: {
+            if case .reasoning = $0.kind { return true }
+            return false
+        })?.id {
+            ids.insert(reasoningID)
+        }
+        return ids
+    }
+
+    /// 结算收口：落盘节点预登记（正文 + 同帧思考，不播入场动画——内容用户
+    /// 刚在直播看过）+ 槽清退 + 打字机数据面重置。
+    private func finishSettling() {
+        settledBubbleIDs.formUnion(Self.settledRegistrationIDs(in: bubbles))
+        isSettling = false
+        liveReasoning = nil
+        liveText = nil
+        typeTarget = ""
+        typeCursor = 0
+    }
+
+    /// View 渲染单一数据源（dsh conversation-nodes：流式 live 槽与落盘节点
+    /// 同处一条节点流）。合成 = foldTurnProcess(bubbles) → 补打期过滤补打目标
+    /// 落盘正文节点 → 尾部追加 live 槽（正式 Bubble 身份，id 双代际化）。
+    var displayNodes: [ConversationProjector.DisplayNode] {
+        Self.composeDisplayNodes(bubbles: bubbles, isSettling: isSettling,
+                                 liveReasoning: liveReasoning, liveText: liveText,
+                                 liveReasoningGeneration: liveReasoningGeneration,
+                                 liveTextGeneration: liveTextGeneration)
+    }
+
+    /// settle 决策纯函数（单测直呼）：补打 = 有在途内容 + 打字机有积压 +
+    /// 回合未步进。
+    nonisolated static func settleDecision(liveActive: Bool, cursorBacklog: Bool,
+                                           steppedForward: Bool) -> SettleDecision {
+        guard liveActive else { return .none }
+        if cursorBacklog, !steppedForward { return .keepSettling }
+        return .finish
+    }
+
+    /// settle 决策产物（单测断言位）。
+    enum SettleDecision: Equatable {
+        /// 两槽均空：no-op（不打扰落盘面）。
+        case none
+        /// 直接结算（无积压或回合已步进）：槽置 nil，落盘节点同帧显现。
+        case finish
+        /// 进入/保持补打期：过滤补打目标落盘节点，live 槽继续打。
+        case keepSettling
+    }
+
+    /// 打字机步长（纯函数，单测直呼；原 View 层 typewriterLoop 参数 1:1：
+    /// 步长封顶 4 字——/3 指数收敛在大积压时唰完全文="整块"观感的第二机制，
+    /// 恒速小步让长总结也有持续流式感）。
+    nonisolated static func typewriterStepLength(backlog: Int) -> Int {
+        max(1, min(4, backlog / 3))
+    }
+
+    /// 段间游标连续（纯函数，单测直呼；九校④：typeTarget 换源时 cursor 不
+    /// 重置，仅新目标短于游标时归零）。
+    nonisolated static func cursorAfterTargetChange(oldCursor: Int,
+                                                    newTargetCount: Int) -> Int {
+        newTargetCount < oldCursor ? 0 : oldCursor
+    }
+
+    /// displayNodes 合成（纯函数，单测直呼；双代际——P1-1：思考/正文 id
+    /// 各自独立推进，互不波及）。
+    nonisolated static func composeDisplayNodes(
+        bubbles: [Bubble], isSettling: Bool, liveReasoning: String?,
+        liveText: String?, liveReasoningGeneration: Int,
+        liveTextGeneration: Int) -> [ConversationProjector.DisplayNode] {
+        var nodes = ConversationProjector.foldTurnProcess(bubbles)
+        if isSettling {
+            // 补打目标 = 最后一条 .assistant 落盘正文（内容正由 live 槽补打，
+            // 从渲染列表过滤，打完同帧结算——原 View 层 isSettlingAssistant 同语义）。
+            let targetID = bubbles.last(where: {
+                if case .assistant = $0.kind { return true }
+                return false
+            })?.id
+            nodes = nodes.filter { node in
+                if case .plain(let bubble) = node, case .assistant = bubble.kind {
+                    return bubble.id != targetID
+                }
+                return true
+            }
+        }
+        if let reasoning = liveReasoning {
+            nodes.append(.plain(Bubble(id: "live-r-\(liveReasoningGeneration)",
+                                       kind: .reasoning(reasoning))))
+        }
+        if let text = liveText, !text.isEmpty {
+            nodes.append(.plain(Bubble(id: "live-t-\(liveTextGeneration)",
+                                       kind: .assistant(text))))
+        }
+        return nodes
+    }
+
+    /// 【批3 复审修 P1-2】settling 期「回合已步进」判定（纯函数，单测直呼）：
+    /// 最后一条 .assistant 落盘气泡之后是否已出现 goal_round 专卡或工具卡——
+    /// 两者都是引擎下一步/续轮的落盘证据（出现在补打正文之后 = 卡片将悬在
+    /// 直播正文上方）。turnUsage/note/user 不算步进（回合尾自身产物，不构成
+    /// 插卡跳位形态；user 消息由乐观哨兵先上屏、投影替换同位，无跳变）。
+    nonisolated static func hasPostSettlingStepNode(in bubbles: [Bubble]) -> Bool {
+        guard let lastIndex = bubbles.lastIndex(where: { bubble in
+            if case .assistant = bubble.kind { return true }
+            return false
+        }) else { return false }
+        return bubbles.dropFirst(lastIndex + 1).contains { bubble in
+            switch bubble.kind {
+            case .goalRound, .tool:
+                return true
+            default:
+                return false
             }
         }
     }

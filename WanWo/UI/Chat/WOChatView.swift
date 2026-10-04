@@ -28,8 +28,10 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
-// 批12 T7：流式 Markdown 渲染（SwiftStreamingMarkdown v0.7.0）——仅本文件
-// import（用户气泡/思考正文/工具卡输出不接库，保持 Text）。
+// 流式渲染官方化（2026-10-04）：Markdown 渲染（SwiftStreamingMarkdown v0.7.0）
+// 仅本文件 import——落盘正文与直播正文（live 槽）用**同一个** MarkdownView
+// (text:)（换手帧前后同一组件类型；库内 .task(id: text) 块级 diff 原地更新，
+// 33Hz text 变化不重建视图）。原 StreamedMarkdownView 流桥退役。
 import SwiftStreamingMarkdown
 
 struct WOChatView: View {
@@ -201,24 +203,16 @@ struct WOChatView: View {
     /// 批A2：会话内 hero 芯片菜单的「添加工作区…」流（与 WOChatHero 共用
     /// 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal）呈现位。
     @State private var showAddFlow = false
-    /// 批12 T7：流式正文 Markdown 桥接（StreamedMarkdownSource；离开
-    /// .streaming 即 finish 并重建，供下一回合——见 phase onChange 链）。
-    @State private var streamSource = WOChatStreamSource()
     /// 批12+回归八校：用户消息哨兵交接旗——"u-pending"（乐观，mInR 入场）
     /// 被 "u(seq)"（落盘投影）替换时，后者即时呈现不重播（日志 L1/L2 双身份
     /// 实证）；onSeen 后归位，下一轮乐观气泡照常入场。
     @State private var pendingUserSeen = false
-    /// 批12+回归九校（官方模式改造）：换手补打期——段落落盘（reproject 清空
-    /// 直播缓冲）但打字机尚有积压时，liveTail 占位节点保留把剩余字打完，落盘
-    /// 节点此期间从渲染列表过滤（打完同帧交换，视觉无缝）。
-    @State private var isSettling = false
-    /// 批12+回归九校：liveTail 入场动画一次性门——每个直播段落（思考/正文）
-    /// 出现时播一次 fadeUp（用户令"动画在思考/正文开始时出现"），消失即重置。
-    @State private var liveTailSeen = false
-    /// 批12+回归五/七校：打字机节奏器状态——typeTarget=数据侧全文（VM 快照），
-    /// typeCursor=显示侧已打出的字数（33Hz 步进，积压越大步进越大）。
-    @State private var typeTarget = ""
-    @State private var typeCursor = 0
+    // 流式渲染官方化（2026-10-04）：原 View 层流式状态（streamSource 流桥 /
+    // isSettling 补打期 / liveTailSeen 动画门 / typeTarget+typeCursor 打字机）
+    // 全部迁入 ChatViewModel 数据面（liveReasoning/liveText/isSettling/
+    // settledBubbleIDs/typeTarget/typeCursor/typewriterTask）——dsh assistant
+    // -step 零换手语义：直播槽与落盘节点同处一条节点流（viewModel.displayNodes），
+    // View 层不再持有换手状态机。
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
@@ -278,7 +272,8 @@ struct WOChatView: View {
         default: return false
         }
         return viewModel.bubbles.isEmpty
-            && viewModel.streamingText.isEmpty
+            && viewModel.liveText == nil
+            && viewModel.liveReasoning == nil
             && viewModel.pendingApprovals.isEmpty
             && viewModel.pendingQuestions.isEmpty
     }
@@ -501,24 +496,13 @@ struct WOChatView: View {
             seedEntry()
             // 批12+联动B：回合结束 → 轻提示胶囊淡出（浏览过程结束即消失）。
             if phase != .streaming { agentHint = nil }
-            // 批12 T7：流式 Markdown 桥接生命周期——离开 .streaming 即终结流并
-            // 重建（供下一回合；finish 后 StreamedMarkdownView 以终态收尾）。
-            // 批12+回归六校（闪跳手术 RC1/RC4）：换血帧身份补种——reproject
-            // 把本轮直播过的内容以全新节点 id 插回列表，不补种则整轮重播入场
-            // 动画（淡入+微放大）+直播总结瞬消失（用户录屏实证）。补种后
-            // 直播块撤下与落盘节点插入同帧同高=视觉无缝；打字机游标同步归零。
-            if phase == .streaming {
-                typeTarget = viewModel.streamingText
-                typeCursor = 0
-            } else {
-                // 批12+回归八校：展示列表已扁平化（foldTurnProcess 恒 .plain），
-                // 补种=全量气泡 id。
+            // 流式官方化（2026-10-04）：原 typeTarget/typeCursor 流式种子与
+            // 换血帧 liveTailSeen 重置退役——live 槽/settle 决策/代际 id 全在
+            // VM 数据面（结算帧落盘节点免动画由 settledBubbleIDs 承担，见
+            // entryBubble）。回合边界补种保留（六校 RC1/RC4 语义）：turnUsage
+            // pill/系统纸条等回合尾新增节点即时呈现，不播入场动画。
+            if phase != .streaming {
                 animatedIDs.formUnion(viewModel.bubbles.map(\.id))
-                // 批12+回归九校-B：流桥终身单例（不再 finish/重建——StateObject
-                // 不随 source 参数重建，见 onChange(streamingText) 注）；liveTail
-                // 卸载/重挂自然换控制器。liveTailSeen 保留显式重置（回合边界
-                // 双保险，onDisappear 为主路径）。
-                liveTailSeen = false
             }
             // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
             // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
@@ -869,35 +853,21 @@ struct WOChatView: View {
                         }
                         .padding(.top, 48)
                     }
-                    // 批12+回归九校（官方模式改造）：换手补打期，刚落盘的
-                    // 正文节点从渲染列表过滤——liveTail 占位节点（同结构：
-                    // 蓝圆头像+同一份文字）继续打完，打完同帧交换，视觉无缝
-                    // （旧版隐藏成零高度=内容消失观感，用户实测判废）。
-                    let allNodes = ConversationProjector.foldTurnProcess(viewModel.bubbles)
-                    let nodes: [ConversationProjector.DisplayNode] = isSettling
-                        ? allNodes.filter { node in
-                            if case .plain(let b) = node, case .assistant = b.kind {
-                                return !isSettlingAssistant(b)
-                            }
-                            return true
-                        }
-                        : allNodes
-                    ForEach(nodes) { node in
+                    // 流式渲染官方化（2026-10-04）：**单一渲染数据源**
+                    // viewModel.displayNodes——dsh conversation-nodes 语义：
+                    // 流式 live 槽与落盘节点同处一条节点流，View 层无换手。
+                    // 补打期过滤/合成在 VM 数据面完成；live 节点（live-r-N/
+                    // live-t-N 代际 id）与落盘节点同构渲染（思考=同一
+                    // ReasoningDisclosure 参数翻转 running→settled；正文=同一
+                    // MarkdownView 块级 diff 原地更新）。原 ForEach 外
+                    // liveTailNode 特殊分支拆除。
+                    ForEach(viewModel.displayNodes) { node in
                         entryNode(node)
                             .onTapGesture {
                                 // 菜单开着时点消息区 = 区外关闭（dsh MenuView
                                 // outside-click 语义的触屏形）。
                                 if slashMenuOpen { slashDismissed = true }
                             }
-                    }
-                    // 批12+回归九校：liveTail 占位节点（官方 LLMChatInteractor
-                    // "先建占位消息再原地更新"语义）——流式段落以正式消息完整
-                    // 形态（蓝圆头像+正文）在列表内渲染；落盘换手=同一位置
-                    // 同一内容，无消失无重现。挂载条件=有内容才挂（空流式期
-                    // 不挂，入场动画精确播在首段内容出现的时刻）。
-                    if !viewModel.streamingReasoning.isEmpty
-                        || !viewModel.streamingText.isEmpty || isSettling {
-                        liveTailNode
                     }
                     if viewModel.phase == .streaming {
                         // 流光换字状态行（批12+回归五校：用户参考件"流光换字·
@@ -949,86 +919,25 @@ struct WOChatView: View {
             .onPreferenceChange(WOChatViewportKey.self) { viewportGlobalFrame = $0 }
             .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
             .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
-            .onChange(of: viewModel.bubbles) { newBubbles in
-                // 【批3 复审修 P1-2】settling（换手补打）窗口跳位残留：补打
-                // 目标（最后一条 .assistant 落盘正文）之后若已出现 goal_round
-                // 专卡或工具卡，说明引擎已步进到下一步/续轮（goal 续轮
-                // tool-call-first + 长文本补打是常态组合）——继续补打会让新卡
-                // 插在直播正文上方（IMG_2521 病灶形态在换手窄窗口复现；审查
-                // P1-2：原「直播块 seq 更大」论证只对 settled 路径成立，
-                // liveTail 承载的是 seq 更小的上一 step 正文）。对齐
-                // onChange(streamingText) 的既有立即换手语义：登记 seen（落盘
-                // 正文用户刚看过，不播动画）→ isSettling=false → 落盘节点全量
-                // 回归（视觉序=seq 序恢复），liveTail 卸载，gr/工具卡恒在直播
-                // 正文下方。turnUsage pill / system 纸条不构成步进信号（回合
-                // 尾自身产物、与补打目标同帧落盘）——不触发，保持九校补打
-                // 体验。
-                if isSettling, hasPostSettlingStepNode(in: newBubbles) {
-                    if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
-                    isSettling = false
-                    liveTailSeen = false
-                }
+            .onChange(of: viewModel.bubbles) { _ in
+                // 流式官方化：原 P1-2 立即换手分支（settling + 回合已步进 →
+                // 放弃补打）语义迁 VM（settleLiveSlots 的 steppedForward 判定
+                // ——reproject 后自检）。本处保留单次 follow（探针闸门内）。
                 follow(proxy)
             }
             .onChange(of: viewModel.phase) { _ in
-                // 批12+回归六校（RC3 手术）：换血帧惰性高度未就绪，即时跟随
-                // 会误落点——延迟补跟随纠偏。
-                // 批12+回归九校-E：回合收尾（justEndedStreaming）走三连补跟
-                // （与 settling 换手同款）；非收尾保持闸门内跟随（历史区不拽）。
-                let endedTurn = viewModel.justEndedStreaming
-                Task { @MainActor in
-                    if endedTurn {
-                        staggeredSettleFollow(proxy)
-                    } else {
-                        follow(proxy)
-                    }
-                }
+                // 批12+回归六校（RC3）：换血帧惰性高度未就绪，即时跟随会误
+                // 落点——延迟一拍跟随（原九校-E 三连补跟拆除：换手帧=同位同
+                // 内容同组件，跳位根源消除；真机观察残留再议）。
+                Task { @MainActor in follow(proxy) }
             }
-            .onChange(of: viewModel.streamingText) { newValue in
-                // 批12+回归九校（官方模式改造）：直播/补打共用一个打字机游标，
-                // 段落切换游标连续、显示无缝（官方 LLMChatInteractor：同一
-                // 占位消息原地更新，无跨视图换手）。
-                if newValue.isEmpty {
-                    // 落盘清空（reproject）：有积压 → liveTail 保留补打
-                    // （换手期，落盘节点由渲染过滤暂不显示）；无积压 → 清面。
-                    if typeCursor < typeTarget.count {
-                        isSettling = true
-                    } else {
-                        typeTarget = ""
-                        liveTailSeen = false
-                    }
-                } else {
-                    // 新段落 delta：若上段还在补打 → 立即完成换手（剩余量
-                    // ≤稳态滞后 0.1s 的字数，瞬现可忽略）。
-                    // 批12+回归九校-B：不再 finish/重建流桥——官方
-                    // StreamedMarkdownView 的 controller 是 @StateObject
-                    // （仅首次挂载创建、抱住当时的 source 实例），换 source
-                    // 实例它根本不接=新 emit 无人消费="总结整块"真凶（官方
-                    // StreamedMarkdownController 源码实证）。同一 stream 终身
-                    // 单例持续 yield，liveTail 卸载/重挂时由官方 onDisappear
-                    // 的 controller.end() + 新 StateObject 自然接力消费。
-                    if isSettling {
-                        if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
-                        isSettling = false
-                        liveTailSeen = false
-                    } else if typeCursor >= typeTarget.count, !typeTarget.isEmpty {
-                        liveTailSeen = false
-                    }
-                    typeTarget = newValue
-                    if newValue.count < typeCursor { typeCursor = 0 }
-                }
-                follow(proxy)
-            }
-            .onChange(of: isSettling) { _ in
-                // 批12+回归九校-E（方案A）：换手纠偏三连补跟。
-                staggeredSettleFollow(proxy)
-            }
-            .onChange(of: typeCursor) { _ in
-                // 批12+回归八校：显示侧步进也驱动跟随（hold 期间数据侧不再
-                // 变化，靠游标步进把新打的字滚进视口）。
-                follow(proxy)
-            }
-            .onChange(of: viewModel.streamingReasoning) { _ in follow(proxy) }
+            // 流式官方化：跟随挂到 live 槽/节点流变化——覆盖流式步进（33Hz
+            // 打字机驱动 liveText）与槽开合（段间切换/settle 帧节点流变化）。
+            // 原 onChange(streamingText) 换手状态机、onChange(isSettling)、
+            // onChange(typeCursor)、onChange(streamingReasoning) 全部拆除。
+            .onChange(of: viewModel.liveText) { _ in follow(proxy) }
+            .onChange(of: viewModel.liveReasoning) { _ in follow(proxy) }
+            .onChange(of: viewModel.displayNodes) { _ in follow(proxy) }
         }
     }
 
@@ -1041,31 +950,6 @@ struct WOChatView: View {
         let transaction = Transaction(animation: nil)
         withTransaction(transaction) {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
-    }
-
-    /// 批12+回归九校-E（方案A，用户拍板）：换手纠偏**三连补跟**（时点
-    /// 150/450/900ms 各强制贴底一次，豁免 autoFollow 闸门）。
-    /// 机制：换手帧（liveTail 卸载+落盘节点插入）的 LazyVStack 高度惰性
-    /// 计算，单次 scrollTo 落点在布局未稳时随机错——用户实测一轮跳列表顶
-    /// （列表刚挂载+内容最短，滚底定位失败）、一轮跳内容下方（塌缩窗口）。
-    /// 三连保证最后一次必然落在稳定布局；中间至多两次快速校正。补打/
-    /// 收尾内容=刚流式播过的段落，强制贴底语义成立。
-    private func staggeredSettleFollow(_ proxy: ScrollViewProxy) {
-        Task { @MainActor in
-            let transaction = Transaction(animation: nil)
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            withTransaction(transaction) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
-            }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            withTransaction(transaction) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
-            }
-            try? await Task.sleep(nanoseconds: 450_000_000)
-            withTransaction(transaction) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
-            }
         }
     }
 
@@ -1125,7 +1009,12 @@ struct WOChatView: View {
     /// 已接管其呈现节奏）。
     /// 诊断：diag 参数经 WOEntryModifier.onAppear 落行（仅未 seen 时非 nil）。
     private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
+        // 流式官方化：seen = animatedIDs ∪ settledBubbleIDs——结算帧落盘节点
+        // 由 VM 预登记（内容用户刚在直播看过，即时呈现不播动画；对应原
+        // :967/:1011/:1373 的 animatedIDs.insert 三处）。
+        let isLive = bubble.id.hasPrefix("live-")
         let seen = animatedIDs.contains(bubble.id)
+            || viewModel.settledBubbleIDs.contains(bubble.id)
         let kindTag: String = {
             switch bubble.kind {
             case .user: return "user"
@@ -1136,15 +1025,22 @@ struct WOChatView: View {
             default: return "other"
             }
         }()
-        // 批12+回归九校：思考落盘改 instant——动画已前移到 liveTail LED 行
-        // 出现时刻（段落开始时播），落盘换手不再重播（旧"思考完才补动画"=
-        // 动画挂在落盘节点所致）；正文保持 instant（同理由）。
+        // 批12+回归九校：思考落盘改 instant——动画已前移到直播思考行出现
+        // 时刻（段落开始时播），落盘不再重播（旧"思考完才补动画"=动画挂在
+        // 落盘节点所致）；正文保持 instant（同理由）。
         // 批12+回归九校-B：justEndedStreaming——onTurnEnd 里 reproject 与
         // phase=.idle 同帧，渲染时 phase 已非 .streaming，单看 phase 会漏判
         // （收尾帧落盘思考节点多播一次 fadeUp=用户实测），旗标补上跨帧语义。
-        let instantLive = (viewModel.phase == .streaming || viewModel.justEndedStreaming)
+        // 流式官方化：live 节点（live-r-N/live-t-N）不参与 instantLive——
+        // 直播段落的 fadeUp 正是它的入场（generation id 天然一次性，对应原
+        // liveTailSeen 门）。
+        let instantLive = !isLive
+            && (viewModel.phase == .streaming || viewModel.justEndedStreaming)
             && (kindTag == "assistant" || kindTag == "reasoning")
-        let fadeUp = kindTag == "tool" || kindTag == "reasoning" || kindTag == "goalRound"
+        // 流式官方化：live 节点强制 fadeUp（原 liveTailNode 的 WOEntryModifier
+        // 参数原样：offset(0,8) 0.4s scale 1）——与思考/工具入场同族。
+        let fadeUp = isLive || kindTag == "tool" || kindTag == "reasoning"
+            || kindTag == "goalRound"
         let fromRight = kindTag == "user"
         // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
         // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
@@ -1227,7 +1123,11 @@ struct WOChatView: View {
 
         case .reasoning(let text):
             // 思考披露：标题 + 首行预览 + chevron；展开体左缩进 22（digest-H .think）。
-            ReasoningDisclosure(text: text)
+            // 流式官方化：live 槽（live-r-N）= running 态（LED 尾行跟随+扫光），
+            // 落盘 = 同一组件参数翻转 running→settled，零视图重建（dsh 同节点
+            // 收敛语义；落盘思考节点 id=a(seq)-b(idx) 恒不撞 live-r- 前缀）。
+            ReasoningDisclosure(text: text,
+                                running: bubble.id.hasPrefix("live-r-"))
 
         case .tool(let card):
             // R2a：工具卡全型（digest-F §41；D6 清偿）。
@@ -1311,117 +1211,15 @@ struct WOChatView: View {
         }
     }
 
-    // MARK: - liveTail 占位节点（批12+回归九校：官方 LLMChatInteractor 模式
-    // ——先建占位消息再原地更新；流式段落以正式消息完整形态在列表内渲染）
+    // 流式渲染官方化（2026-10-04）：原 liveTail 占位节点 / typewriterLoop
+    // 打字机节奏器 / lastAssistantBubbleID / isSettlingAssistant /
+    // hasPostSettlingStepNode 全部拆除——
+    //  · 直播段落以正式 Bubble（live-r-N / live-t-N 代际 id）经
+    //    viewModel.displayNodes 进统一 ForEach，与落盘节点同构渲染；
+    //  · 打字机节奏器（33Hz，步长 max(1,min(4,backlog/3))，长积压快进）迁
+    //    ChatViewModel.typewriterStep（open 启动 / close 取消）；
+    //  · 补打目标过滤 / settle 决策 / 回合步进判定（P1-2）迁 VM 数据面纯函数。
 
-    private var liveTailNode: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !viewModel.streamingReasoning.isEmpty {
-                // 思考直播形态：running 态思考行（LED 尾行跟随+扫光；与 settled
-                // 同一行件）。无头像=与落盘思考节点同构，换手视觉连续。
-                // 注意思考与正文同一步并行累积（引擎单条 assistant message 的
-                // reasoning+text），两者并列显示（原 streamingBlock 同构）。
-                ReasoningDisclosure(text: viewModel.streamingReasoning, running: true)
-            }
-            if !viewModel.streamingText.isEmpty || isSettling {
-                // 正文直播/补打形态：蓝圆头像 + 流式正文（官方同款——头像从
-                // 第一个字之前就在，"先输出字、输出完才补蓝圆"的换手毛刺根治）。
-                // 打字机节奏器驱动显示（数据/显示解耦），唯一挂载点=本节点。
-                HStack(alignment: .top, spacing: 8) {
-                    WOAssistantAvatar()
-                    StreamedMarkdownView(
-                        source: streamSource,
-                        config: Self.chatMarkdownConfig)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.top, 1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(WOEntryModifier(
-            offset: CGSize(width: 0, height: 8),
-            scale: 1,
-            duration: 0.4,
-            animate: !liveTailSeen,
-            onSeen: { liveTailSeen = true }))
-        // 批12+回归九校-B：动画名额"消失即重置"——纯思考段落落盘时
-        // streamingText 空→空不触发 onChange（旧重置路径漏掉=蓝圆后连续
-        // 思考全部无动画的机制，用户规律实证），onDisappear 覆盖所有
-        // 消失路径（用户规律：每个小段输出后的第一个思考有动画）。
-        .onDisappear { liveTailSeen = false }
-        .task { await typewriterLoop() }
-    }
-
-    /// 打字机节奏器（批12+回归五/七校）：33Hz 步进，步长=积压的 1/3（指数
-    /// 收敛——稳态显示滞后 ≤0.1s，收尾只补最后几个字不致整块补拍；网络突发
-    /// 不致掉队）。会话恢复若已有长积压（>140 字）快进只打尾部。
-    private func typewriterLoop() async {
-        if typeCursor == 0, typeTarget.count > 140 {
-            typeCursor = typeTarget.count - 140
-        }
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            let target = typeTarget
-            guard typeCursor < target.count else {
-                // 批12+回归九校：补打完成换手——落盘节点显现（预登记 seen
-                // 不播动画：内容用户刚看过），liveTail 卸载（官方 onDisappear
-                // 自动 end 控制器）。九校-B：不再 finish/重建流（终身单例，
-                // StateObject 不随 source 参数重建——"总结整块"真凶）。
-                // 同帧同内容交换=视觉无缝。
-                if isSettling {
-                    isSettling = false
-                    if let id = lastAssistantBubbleID { animatedIDs.insert(id) }
-                    liveTailSeen = false
-                }
-                continue
-            }
-            let backlog = target.count - typeCursor
-            // 批12+回归九校-B：步长封顶 4 字（官方 demo=3 字/30ms 恒速
-            // 100 字/s）——/3 指数收敛在大积压时 0.3s 唰完全文="整块"观感
-            // 的第二机制；恒速小步让长总结也有持续流式感。
-            let step = max(1, min(4, backlog / 3))
-            typeCursor = min(target.count, typeCursor + step)
-            let prefix = String(target.prefix(typeCursor))
-            if !prefix.isEmpty {
-                streamSource.emit(prefix)
-            }
-        }
-    }
-
-    /// 批12+回归九校：换手期过滤/登记共用的"最后一条 .assistant 气泡"判定
-    /// （补打目标=刚落盘的那条正文）。
-    private var lastAssistantBubbleID: String? {
-        viewModel.bubbles.last(where: { bubble in
-            if case .assistant = bubble.kind { return true }
-            return false
-        })?.id
-    }
-
-    private func isSettlingAssistant(_ bubble: ConversationProjector.Bubble) -> Bool {
-        guard case .assistant = bubble.kind else { return false }
-        return lastAssistantBubbleID == bubble.id
-    }
-
-    /// 【批3 复审修 P1-2】settling 换手期「回合已步进」判定：最后一条
-    /// .assistant 落盘气泡之后是否已出现 goal_round 专卡或工具卡——两者都是
-    /// 引擎下一步/续轮的落盘证据（出现在补打正文之后 = 卡片将悬在 liveTail
-    /// 上方）。turnUsage/note/user 不算步进（回合尾自身产物，不构成插卡
-    /// 跳位形态；user 消息由乐观哨兵先上屏、投影替换同位，无跳变）。
-    private func hasPostSettlingStepNode(
-        in bubbles: [ConversationProjector.Bubble]) -> Bool {
-        guard let lastIndex = bubbles.lastIndex(where: { bubble in
-            if case .assistant = bubble.kind { return true }
-            return false
-        }) else { return false }
-        return bubbles.dropFirst(lastIndex + 1).contains { bubble in
-            switch bubble.kind {
-            case .goalRound, .tool:
-                return true
-            default:
-                return false
-            }
-        }
-    }
 }
 
 /// composer chrome 高度 PreferenceKey（slash 菜单锚定；旧 ChatView 同法）。
@@ -1455,33 +1253,10 @@ private struct WOChatViewportKey: PreferenceKey {
     }
 }
 
-/// 批12 T7：流式 Markdown 桥接源（SwiftStreamingMarkdown StreamedMarkdownSource
-/// 语义——每次 yield 全文累积快照；ObservableObject 供 StreamedMarkdownView
-/// 订阅并在内部 .task 消费）。
-/// 批12+回归九校-C：可重启流——原实现 init 建死一条管道（let continuation）；
-/// 官方 StreamedMarkdownController 的取消语义=消费任务被取消即流终结
-/// （AsyncStream storage.done，后续 yield 静默丢弃），而 liveTail 卸载/
-/// 重挂（换手/回合边界）必经一次取消——死管道+终身单例=重挂后 emit 全部
-/// 无人消费="卡住不显示、等落盘全文才显示"且随换手路径时序呈规律交替
-/// （用户实测）。改为每次 controller.start 访问 text 时新建管道、emit 永远
-/// 对接最新一条——控制器想取消就取消，新控制器永远拿到活管道。
-private final class WOChatStreamSource: ObservableObject, StreamedMarkdownSource {
-    /// 当前管道（每次 text 访问被最新 controller 接管；MainActor 串行无锁）。
-    private var continuation: AsyncStream<String>.Continuation?
-
-    /// StreamedMarkdownSource 协议要求。计算属性：每个消费方 start 时
-    /// 访问一次 = 开一条新管道（旧管道随旧 controller 的 end 终结，互不影响）。
-    var text: AsyncStream<String> {
-        AsyncStream { self.continuation = $0 }
-    }
-
-    /// 追加一次全文累积快照（调用方保证非空——emit 空串会清空渲染）。
-    /// 无消费者时（liveTail 卸载窗口）可选链静默丢弃，重挂后恢复投递。
-    func emit(_ snapshot: String) { continuation?.yield(snapshot) }
-
-    /// 保留兼容（当前无调用方；终结当前管道）。
-    func finish() { continuation?.finish() }
-}
+// 流式渲染官方化（2026-10-04）：原 WOChatStreamSource 流桥（批12 T7 可重启
+// 管道 + 批12+回归九校-B/C 终身单例修复链）整体退役——直播正文改用与落盘正文
+// 同一个 MarkdownView(text:)（库内 .task(id: text) 块级 diff 原地更新），VM 层
+// liveText 槽 33Hz 直供文本，不再需要 AsyncStream 桥接与控制器生命周期管理。
 
 /// 批12+回归七校：入场决策诊断（首次工具调用双重动画/消息连带动画定位）。
 /// 仅未 seen 节点落一行（转拆级频率，非 body 热路径——已 seen 节点静默）；
