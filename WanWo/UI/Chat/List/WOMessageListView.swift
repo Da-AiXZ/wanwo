@@ -180,7 +180,7 @@ final class WOMessageListLayout: UICollectionViewLayout {
 // MARK: - Core（列表生命周期与同步全量逻辑）
 
 @MainActor
-final class WOMessageListCore: UIViewController {
+final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     private enum Section: Hashable { case main }
 
@@ -499,7 +499,9 @@ final class WOMessageListCore: UIViewController {
         }
         let node = syncedNodes[itemID]
             ?? currentItems.first(where: { $0.id == itemID })
-            ?? WOMListNode(id: itemID, kind: .note(""))
+            // 不可达防御（itemID 恒来自 snapshot；CI修47：枚举无 .note case，
+            // 用最无害的 .loading 占位）。
+            ?? WOMListNode(id: itemID, kind: .loading)
         cell.configure(content: AnyView(
             WONodeItemContent(node: node, context: context).id(itemID)))
         return cell

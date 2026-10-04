@@ -39,6 +39,8 @@ final class WOToastCenter {
 
     private var window: WOPassThroughWindow?
     private var hostController: UIHostingController<AnyView>?
+    private var hostWidthConstraint: NSLayoutConstraint?
+    private var hostHeightConstraint: NSLayoutConstraint?
     /// 展示代际（同窗连发时旧 Toast 的 onDone 定时器不得提前收掉新 Toast
     /// ——present 递增，settle 校验代际后才隐藏窗口）。
     private var generation = 0
@@ -109,15 +111,17 @@ final class WOToastCenter {
         if let host = hostController {
             // 复用宿主：换根即换内容（代际令牌防旧 onDone 误收）。
             host.rootView = root
+            refitHost(host, width: window.frame.width)
         } else {
             let host = UIHostingController(rootView: root)
             host.view.backgroundColor = .clear
-            // intrinsic 尺寸：宿主视图 = Toast 卡片实际大小（不整窗铺盖，
-            // 命中面最小化——lody 卡片级 hitTest 穿透的万我等价）。
-            host.sizingOptions = [.intrinsicSize]
             rootVC.addChild(host)
             rootVC.view.addSubview(host.view)
             host.view.translatesAutoresizingMaskIntoConstraints = false
+            // intrinsic 尺寸：宿主视图 = Toast 卡片实际大小（不整窗铺盖，
+            // 命中面最小化——lody 卡片级 hitTest 穿透的万我等价）。
+            // 【CI修47】sizingOptions(.intrinsicSize) 在 CI SDK 报 no member，
+            // 改 systemLayoutSizeFitting 手动量内容尺寸 + 固定宽高约束（等价）。
             NSLayoutConstraint.activate([
                 host.view.centerXAnchor.constraint(
                     equalTo: rootVC.view.centerXAnchor),
@@ -125,11 +129,32 @@ final class WOToastCenter {
                     equalTo: rootVC.view.safeAreaLayoutGuide.topAnchor,
                     constant: 8),
             ])
+            let widthC = host.view.widthAnchor
+                .constraint(equalToConstant: 0)
+            let heightC = host.view.heightAnchor
+                .constraint(equalToConstant: 0)
+            NSLayoutConstraint.activate([widthC, heightC])
+            hostWidthConstraint = widthC
+            hostHeightConstraint = heightC
+            refitHost(host, width: window.frame.width)
             host.didMove(toParent: rootVC)
             hostController = host
         }
         window.isHidden = false
         window.layoutIfNeeded()
+    }
+
+    /// 【CI修47】手动量内容尺寸并更新宿主宽高约束（sizingOptions 等价实现）。
+    /// SwiftUI 内容经 hosting view 的 systemLayoutSizeFitting 同步取值；
+    /// 宽度 = min(窗宽−32, 420)，纵向 fittingSizeLevel 取自然高。
+    private func refitHost(_ host: UIHostingController<AnyView>, width: CGFloat) {
+        let targetWidth = max(120, min(width - 32, 420))
+        let fit = host.view.systemLayoutSizeFitting(
+            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .defaultHigh,
+            verticalFittingPriority: .fittingSizeLevel)
+        hostWidthConstraint?.constant = ceil(fit.width)
+        hostHeightConstraint?.constant = ceil(fit.height)
     }
 
     /// 惰性挂窗（lody attachIfNeeded 同构：前景活跃场景优先，兜底首场景 /
