@@ -75,10 +75,14 @@ final class StreamingOfficialRefactorTests: XCTestCase {
         // turnUsage/note 不算步进（回合尾自身产物，与补打目标同帧落盘）。
         XCTAssertFalse(ChatViewModel.hasPostSettlingStepNode(in: [assistant, usage]))
         XCTAssertFalse(ChatViewModel.hasPostSettlingStepNode(in: [assistant, note]))
-        // 多节点混合：以最后一条 assistant 为基线。
+        // 多节点混合：以最后一条 assistant 为基线（其后步进才算步进）。
+        // 【CI 修46 勘误】原输入 [assistant, tool, assistant2] 的最后 assistant
+        // = assistant2，其后无步进证据 → 恒 False（源码正确），期望值写反。
+        // True 场景应为"最后 assistant 之后有 tool"：[assistant, tool, reasoning]
+        //（最后 assistant=a10-b1，其后 tool=步进）。
         let assistant2 = ChatViewModel.Bubble(id: "a12-b0", kind: .assistant("第二步"))
         XCTAssertTrue(ChatViewModel.hasPostSettlingStepNode(
-            in: [assistant, tool, assistant2]))
+            in: [assistant, tool, reasoning]))
         XCTAssertFalse(ChatViewModel.hasPostSettlingStepNode(
             in: [assistant, tool, reasoning, assistant2]))
     }
