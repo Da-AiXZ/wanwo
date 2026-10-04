@@ -30,4 +30,4 @@
 
 ## License
 
-GPL-3.0（因静态链接 [ish-arm64](https://github.com/OpenMinis/ish-arm64)）。详见 LICENSE。
+AGPL-3.0（2026-10-05 由 GPL-3.0 升级：整体以 AGPL-3.0 发布；因静态链接 [ish-arm64](https://github.com/OpenMinis/ish-arm64)（GPL-3.0）与复用 lody-ios（AGPL-3.0）组件，AGPL-3.0 条款同时满足两者的传染义务——GPL-3.0 代码并入 AGPL 项目为 AGPL-3.0 §13 明文允许）。详见 LICENSE。
