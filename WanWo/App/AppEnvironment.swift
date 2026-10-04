@@ -143,7 +143,7 @@ final class AppEnvironment: ObservableObject {
     /// →用户消息直达；非发布，消费方 WOChatView 读后清）。
     var pendingAutoSubmit = false
     /// 新会话挂组 toast（digest-H「已挂到工作区「X」」；消费方 WORootFrame
-    /// 底部 overlay，WOToast onDone 清）。
+    /// onChange → 独立 UIWindow Toast（WOToastCenter，批0 件2），消费后清）。
     @Published var attachToast: String?
 
     /// 全方位诊断统一入口：任意组件的打点写进对应会话的事件流

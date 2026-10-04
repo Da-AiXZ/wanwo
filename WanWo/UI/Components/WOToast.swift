@@ -78,14 +78,18 @@ public struct WOUndoToast: View {
     public let undoLabel: String
     public let onUndo: () -> Void
     public let onDone: () -> Void
+    /// 停留时长（【批0 件2】独立窗口宿主可传长 hold——询问条需更长决策
+    /// 时间；默认 4.0 = 既有页签关闭撤销条节奏不变）。
+    public var hold: TimeInterval = 4.0
 
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(text: String, undoLabel: String = "撤销",
+    public init(text: String, undoLabel: String = "撤销", hold: TimeInterval = 4.0,
                 onUndo: @escaping () -> Void, onDone: @escaping () -> Void) {
         self.text = text
         self.undoLabel = undoLabel
+        self.hold = hold
         self.onUndo = onUndo
         self.onDone = onDone
     }
@@ -118,7 +122,7 @@ public struct WOUndoToast: View {
         .offset(y: shown ? 0 : 8)
         .onAppear {
             withAnimation(.easeOut(duration: 0.18)) { shown = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold) {
                 withAnimation(.easeInOut(duration: 0.5)) { shown = false }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { onDone() }
             }

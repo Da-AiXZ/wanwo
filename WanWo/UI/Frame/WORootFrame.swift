@@ -188,13 +188,14 @@ struct WORootFrame: View {
         .overlay { deleteModal }
         // 新会话挂组 toast（digest-H 文案「已挂到工作区「X」」；发射点=
         // AppEnvironment.createSession(inWorkspace:) 挂成功处）。
-        .overlay(alignment: .bottom) {
-            if let toast = environment.attachToast {
-                WOToast(text: toast, icon: Image(systemName: "checkmark.circle"),
-                        onDone: { environment.attachToast = nil })
-                    .padding(.bottom, 96)
-                    .zIndex(90)
-            }
+        // 【批0 件2】迁移至独立 UIWindow（WOToastCenter——盖过 sheet/
+        // fullScreenCover）；状态语义不变：attachToast 仍为发射载体，
+        // onChange 消费后清位。
+        .onChange(of: environment.attachToast) { toast in
+            guard let toast else { return }
+            WOToastCenter.shared.show(text: toast,
+                                      icon: Image(systemName: "checkmark.circle"))
+            environment.attachToast = nil
         }
     }
 
@@ -609,7 +610,7 @@ struct WOSlotPlaceholder: View {
 ///     UIViewRepresentable 黑屏+锚点错乱 → 预案落地：UIKit
 ///     UILongPressGestureRecognizer（began 取锚点）+ 自绘浮层菜单
 ///     （菜单开着时单击=收菜单；✕ 关闭钮 zIndex 压过菜单层）。
-///   ③ 存相册结果经既有 WOToast 呈现（菜单形态无原件顶栏按钮位承载
+///   ③ 存相册结果经 WOToastCenter（独立 UIWindow）呈现（菜单形态无原件顶栏按钮位承载
 ///     saveStatus；PHPhotoLibrary 授权/写入语义不变，saved 2s 复位同原件）。
 struct ImageFullScreenPreview: View {
     let hostPath: String
@@ -761,16 +762,16 @@ struct ImageFullScreenPreview: View {
             }
             .zIndex(10)
         }
-        // 存相册结果 toast（拍板③）。
-        .overlay(alignment: .bottom) {
-            if let toast = saveToast {
-                WOToast(text: toast,
-                        icon: Image(systemName: saveStatus == .saved
-                                        ? "checkmark.circle"
-                                        : "exclamationmark.triangle"),
-                        onDone: { saveToast = nil })
-                    .padding(.bottom, 96)
-            }
+        // 存相册结果 toast（拍板③）——【批0 件2】迁独立 UIWindow
+        // （lightbox 全屏期间 Toast 亦可见，原 overlay 被盖病灶即此）。
+        .onChange(of: saveToast) { toast in
+            guard let toast else { return }
+            WOToastCenter.shared.show(
+                text: toast,
+                icon: Image(systemName: saveStatus == .saved
+                                ? "checkmark.circle"
+                                : "exclamationmark.triangle"))
+            saveToast = nil
         }
         // 分享=原件 :506-510 形态：png 临时文件 → WOShareSheet。
         .sheet(isPresented: $showShareSheet) {

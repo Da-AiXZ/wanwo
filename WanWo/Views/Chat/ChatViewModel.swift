@@ -71,7 +71,7 @@ final class ChatViewModel: ObservableObject {
     /// 直播思考槽（nil = 无在途思考；镜像 streamingReasoning 缓冲——思考无打
     /// 字机，LED 尾行跟随即模型出字节奏）。
     @Published private(set) var liveReasoning: String?
-    /// 直播正文槽（nil = 无在途正文；打字机演示值 = typeTarget.prefix(typeCursor)）。
+    /// 直播正文槽（nil = 无在途正文；打字机演示值 = textReveal.shown）。
     @Published private(set) var liveText: String?
     /// 落盘补打期（打字机积压未清；displayNodes 过滤补打目标落盘节点，live 槽
     /// 把剩余字打完后同帧结算——原 View 层 isSettling 迁入）。
@@ -88,9 +88,11 @@ final class ChatViewModel: ObservableObject {
     private var liveReasoningGeneration = 0
     private var liveTextGeneration = 0
     /// 打字机数据侧全文（当前段落累积快照；flushTextNow 同步，settle 后重置）。
-    private var typeTarget = ""
-    /// 打字机显示侧游标（33Hz 步进；段间不重置，仅新目标短于游标时归零）。
-    private var typeCursor = 0
+    /// 打字机数据侧节奏引擎（批 2 件 5：CKTextReveal 万我形态 WOTextReveal
+    /// ——只管"每帧显示多少字"；"何时结算"仍由 settleDecision/finishSettling
+    /// 原语义承担。权威内容同步在 receive（flush 快车道/慢车道/回合尾），
+    /// 显示推进在 33Hz 节奏器 revealStep）。
+    private var textReveal = WOTextReveal()
     /// 33Hz 节奏器（open 启动 / close 取消；仅在有打字目标时产生写面）。
     private var typewriterTask: Task<Void, Never>?
     @Published private(set) var resumeBanner: String?
@@ -113,8 +115,52 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var draftImages: [DraftImage] = []
     /// 附件拒绝横幅（intake 预检/提交失败文案——dsh showToast → 横幅）。
     @Published var attachmentBanner: String?
+    // MARK: 批0 件4 粘贴长文本提升（监听版；lody ChatAttachment.
+    // shouldPromotePastedText 规格钉死——SwiftUI TextField 无粘贴拦截钩子，
+    // 由 draft onChange surge 检测近似，转换去向 = 工作区 .md 文件 + @ 引用）
+    /// 待决粘贴提升提案（非 nil = 询问条在场；新 surge 到来整条替换）。
+    /// 刻意非 @Published：呈现面 = 独立窗口 Toast（WOToastCenter），
+    /// 无 View 消费此镜像——批0 不上 composer 内嵌询问条（批1/2 UIKit
+    /// 重构时按需升格）。
+    struct PastePromotionProposal: Equatable { let pastedText: String }
+    private var pendingPastePromotion: PastePromotionProposal?
+    /// 最近一次转换记录（撤销回滚数据源；撤销/重转后置 nil）。
+    struct PastePromotionRecord: Equatable {
+        let filePath: String
+        /// 转换前整稿（回填原文来源）。
+        let originalDraft: String
+        /// 插入的引用 token（`@路径 `，撤销时稿中定位）。
+        let reference: String
+    }
+    private var lastPastePromotion: PastePromotionRecord?
+    /// 程序化 draft 写入抑制旗（清空/回填/引用替换各写一次置位；下一次
+    /// noteDraftChanged 观察消费——防程序化写入被 surge 检测误判为粘贴）。
+    private var suppressPasteSurgeOnce = false
+    /// 上一次观察到的 draft（View onChange 单参形态的旧值镜像）。
+    private var lastObservedDraft = ""
     /// 附件存储缝（open() 时装配；nil = 会话未打开——intake fail closed）。
     @Published private(set) var attachmentStore: AttachmentStore?
+    // MARK: 批1 件3 历史分页窗口（lody prepareHistory 50 窗口 + 4ms 预算切片
+    // 的 VM 侧状态；切片量高/锚定恢复在 UIKit 列表 core——WOMessageListCore）
+    /// 窗口起点（displayNodes 节点序；0 = 全量在列）。刻意非 @Published：
+    /// 消费面 = UIKit 列表 core（representable updateUIView 显式传参快照），
+    /// 无 SwiftUI 观察面——@Published 新增与消费一一对账纪律。
+    private(set) var historyWindowStart = 0
+    /// 窗口页大小（lody 同参 50）。
+    let historyPageSize = 50
+    /// 窗口之上还有更早历史（「载入更早」列表头挂载条件）。
+    var hasEarlierHistory: Bool { historyWindowStart > 0 }
+    /// 窗口重置（open() 全量重投影后调用；初载窗口 = 尾部 pageSize 节点——
+    /// lody `max(0, count - 50)` 同参）。
+    func resetHistoryWindow() {
+        historyWindowStart = WOMessageListSupport.historyWindowBounds(
+            total: displayNodes.count, start: 0,
+            pageSize: historyPageSize).initialStart
+    }
+    /// 扩窗提交（core 4ms 预算切片量高完成后调用；clamp 防越界）。
+    func commitHistoryWindowExpansion(to newStart: Int) {
+        historyWindowStart = max(0, min(newStart, displayNodes.count))
+    }
     // MARK: T2.4 P1-3 会话级模型选择（dsh ModelSelect per-session
     // ModelSelection：选择随会话，不落盘、不落事件；App 级缺省=活动端点）。
     // T2.6 件2：宿主从本类实例属性升格 App 级 per-session 字典——ChatView
@@ -190,6 +236,8 @@ final class ChatViewModel: ObservableObject {
         // 草稿种子（dsh mount 种子草稿语义：缓存草稿跨切换跟回；
         // hero 交接文本经宿主以 initialDraft 注入）。
         if !initialDraft.isEmpty { self.draft = initialDraft }
+        // 件4：观察镜像与种子同步（首个 onChange 的旧值 = 种子稿）。
+        self.lastObservedDraft = self.draft
     }
 
     // MARK: - 打开（resume + AgentLoop 装配）
@@ -244,6 +292,9 @@ final class ChatViewModel: ObservableObject {
                     self.resumeBanner = "未配置模型：\(stack.failureReason ?? "未知原因") 请到「设置 · Providers」检查"
                 }
                 self.reproject()
+                // 批1 件3：全量重投影后重置历史窗口（writer.events 已加载，
+                // 初载窗口 = 尾部 50 节点）。
+                self.resetHistoryWindow()
                 self.phase = .idle
             } catch {
                 self.phase = .failed("打开会话失败：\(String(describing: error))")
@@ -294,6 +345,17 @@ final class ChatViewModel: ObservableObject {
         guard canSendFromPhase, let loop = agentLoop else { return }
         let images = draftImages
         guard !text.isEmpty || !images.isEmpty else { return }
+        // 【批0 件1】发送前快照（lody ChatComposerView pendingDraft →
+        // restoreDraft 回填语义的万我简化形态：纯文本/draftImages 快照，
+        // 无 Lexical 状态）。清空后原稿只存于此，失败路径经
+        // finishSendFailure 回填；决策矩阵见 draftRestoreAfterSendFailure。
+        let failedDraft = draft
+        let failedImages = images
+        // 【批0 件4 · P2-2 修】发送即消费粘贴提升提案 + 撤销记录一并失效：
+        // 正文已进发送通道，若 6s 撤销条仍在场可点 → 删文件 → 已发消息的
+        // @ 引用悬空（AI 收不到 <file> 内容）——发送后撤销窗口必须关闭。
+        pendingPastePromotion = nil
+        lastPastePromotion = nil
         draft = ""
         draftImages = []
 
@@ -319,9 +381,12 @@ final class ChatViewModel: ObservableObject {
             if !images.isEmpty {
                 guard let store else {
                     await MainActor.run { [weak self] in
-                        self?.attachmentBanner =
-                            "附件功能未就绪，请重新打开会话后再试"
-                        self?.phase = .idle
+                        // 【批0 件1】失败回填（原只置横幅+idle，draft 已被
+                        // 清空且经 onChange 链把空串写进 draftCache 覆盖
+                        // 原稿——现统一走 finishSendFailure 回填快照）。
+                        self?.finishSendFailure(
+                            failedDraft: failedDraft, failedImages: failedImages,
+                            banner: "附件功能未就绪，请重新打开会话后再试")
                     }
                     return
                 }
@@ -332,9 +397,11 @@ final class ChatViewModel: ObservableObject {
                     })
                 } catch let error as AttachmentError {
                     await MainActor.run { [weak self] in
-                        self?.attachmentBanner = ChatViewModel.attachmentErrorText(
-                            code: error.code, limits: store.imageLimits)
-                        self?.phase = .idle
+                        // 【批0 件1】准入失败整批拒绝——横幅照旧 + 快照回填。
+                        self?.finishSendFailure(
+                            failedDraft: failedDraft, failedImages: failedImages,
+                            banner: ChatViewModel.attachmentErrorText(
+                                code: error.code, limits: store.imageLimits))
                     }
                     return
                 }
@@ -462,6 +529,8 @@ final class ChatViewModel: ObservableObject {
         guard !candidates.isEmpty else { return }
         guard let limits = attachmentStore?.imageLimits else {
             attachmentBanner = "附件功能未就绪，请重新打开会话后再试"
+            // 【批0 件3】intake 拒绝触觉（横幅出现即真实事件）。
+            WOHaptics.shared.notify(.error)
             return
         }
         if let rejected = Self.intakeRejection(
@@ -470,6 +539,8 @@ final class ChatViewModel: ObservableObject {
                 existingBytes: draftImages.reduce(0) { $0 + $1.data.count },
                 limits: limits) {
             attachmentBanner = rejected
+            // 【批0 件3】intake 拒绝触觉。
+            WOHaptics.shared.notify(.error)
             return
         }
         draftImages.append(contentsOf: candidates.map {
@@ -482,6 +553,173 @@ final class ChatViewModel: ObservableObject {
     /// 移除待发送图（dsh onRemoveImage；rail 移除钮）。
     func removeDraftImage(id: UUID) {
         draftImages.removeAll { $0.id == id }
+    }
+
+    // MARK: - 批0 件4 粘贴长文本提升为附件（监听版）
+
+    /// 粘贴提升阈值（lody ChatAttachments.swift:116-125 / verification/
+    /// composer/main.swift:339-347 断言矩阵钉死：≥2000 字符 或 ≥16 行）。
+    nonisolated static let pastePromotionCharacterThreshold = 2_000
+    nonisolated static let pastePromotionLineThreshold = 16
+
+    /// 阈值判定（lody shouldPromotePastedText 1:1：字符数 ≥2000，或按换行
+    /// 符计行——15 个换行即 16 行）。
+    nonisolated static func shouldPromotePastedText(_ text: String) -> Bool {
+        if text.count >= pastePromotionCharacterThreshold { return true }
+        var lines = 1
+        for character in text where character.isNewline {
+            lines += 1
+            if lines > pastePromotionLineThreshold - 1 { return true }
+        }
+        return false
+    }
+
+    /// 单次突增检测（纯函数，单测直呼）：取新旧稿公共前缀/后缀夹出本次
+    /// 插入片段（监听版适配——无粘贴拦截钩子，以 onChange 插入量近似粘贴
+    /// 原文）；插入片段过阈值 → 返回待提升文本，否则 nil。
+    nonisolated static func pastedSurge(old: String, new: String) -> String? {
+        guard new != old else { return nil }
+        let oldChars = Array(old)
+        let newChars = Array(new)
+        let commonBound = min(oldChars.count, newChars.count)
+        var prefix = 0
+        while prefix < commonBound, oldChars[prefix] == newChars[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < commonBound - prefix,
+              oldChars[oldChars.count - 1 - suffix] == newChars[newChars.count - 1 - suffix] {
+            suffix += 1
+        }
+        let start = prefix
+        let end = newChars.count - suffix
+        guard end > start else { return nil }
+        let inserted = String(newChars[start..<end])
+        guard shouldPromotePastedText(inserted) else { return nil }
+        return inserted
+    }
+
+    /// 件4：draft 观察入口（WOChatView .onChange(of: viewModel.draft) 唯一
+    /// 调用）。单次突增过阈值且可发送 → 置提案 + 弹询问条（lody
+    /// onPasteLongText 的监听版等价；流式/命令在途不弹——零打扰纪律）。
+    func noteDraftChanged(to newValue: String) {
+        let oldValue = lastObservedDraft
+        lastObservedDraft = newValue
+        if suppressPasteSurgeOnce {
+            suppressPasteSurgeOnce = false
+            return
+        }
+        guard let surge = Self.pastedSurge(old: oldValue, new: newValue),
+              canSendFromPhase else { return }
+        pendingPastePromotion = PastePromotionProposal(pastedText: surge)
+        WOToastCenter.shared.showAction(
+            text: "粘贴内容较长（\(surge.count) 字符），转为附件？",
+            actionTitle: "转为附件",
+            hold: 6.0) { [weak self] in self?.convertPendingPastePromotion() }
+    }
+
+    /// 件4：确认转换（询问条动作）。转存工作区 `.wanwo/pastes/` 临时 .md
+    /// → draft 原文替换为 `@路径 ` 引用（F040 expandFileReferences 既有
+    /// 注入通道——AI 侧收到 <file> 块；**不新造文本附件类型**，批0 范围
+    /// 裁定）→ 弹撤销条。
+    func convertPendingPastePromotion() {
+        guard let proposal = pendingPastePromotion else { return }
+        pendingPastePromotion = nil
+        guard let loop = agentLoop else {
+            attachmentBanner = "模型未就绪，暂不能转为附件，请装配后再试"
+            WOHaptics.shared.notify(.error)
+            return
+        }
+        let workspace = AgentLoop.workspaceAccess(sessionId: sessionID,
+                                                  cwd: loop.deps.sessionCwd)
+        let path = Self.pastePromotionPath()
+        do {
+            try workspace.writeText(path, content: proposal.pastedText,
+                                    mode: .workspaceWrite)
+        } catch {
+            // 【批0 件4 · P2-3 修】raw error（英文直出）折为用户可解固定文案
+            // ——与其余横幅风格一致；错误细节走诊断通道（F060 自解释纪律
+            // 针对 AI 错误，UI 横幅面向用户，二者分立）。
+            attachmentBanner = "转为附件失败：文件写入受限，请稍后重试"
+            WOHaptics.shared.notify(.error)
+            return
+        }
+        let reference = "@\(path) "
+        guard let replaced = Self.promotionReplacement(draft: draft,
+                                                       pasted: proposal.pastedText,
+                                                       reference: reference) else {
+            // 稿中已找不到粘贴原文（用户已改写）——不强行替换，清理已写
+            // 文件后明示（fail closed，不留孤儿文件）。
+            if let url = workspace.resolve(path) {
+                try? FileManager.default.removeItem(at: url)
+            }
+            WOToastCenter.shared.show(text: "输入框中已找不到粘贴原文，未转换")
+            return
+        }
+        let draftBefore = draft
+        suppressPasteSurgeOnce = true
+        draft = replaced
+        lastPastePromotion = PastePromotionRecord(filePath: path,
+                                                  originalDraft: draftBefore,
+                                                  reference: reference)
+        WOToastCenter.shared.showAction(
+            text: "已转为附件 \(path)",
+            actionTitle: "撤销",
+            hold: 6.0) { [weak self] in self?.undoLastPastePromotion() }
+    }
+
+    /// 件4：撤销回滚（撤销条动作）：删除转存文件 + draft 回填原文
+    /// （决策见 undoReplacement——引用在稿中换回 / 稿空全量回填 / 否则
+    /// 原文前置拼接防覆盖用户新输入）。
+    func undoLastPastePromotion() {
+        guard let record = lastPastePromotion else { return }
+        lastPastePromotion = nil
+        if let loop = agentLoop {
+            let workspace = AgentLoop.workspaceAccess(sessionId: sessionID,
+                                                      cwd: loop.deps.sessionCwd)
+            if let url = workspace.resolve(record.filePath) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        let restored = Self.undoReplacement(draft: draft,
+                                            original: record.originalDraft,
+                                            reference: record.reference)
+        suppressPasteSurgeOnce = true
+        draft = restored
+    }
+
+    /// 转存路径（纯函数，时间戳可注入便于测试；`.wanwo/pastes/` 下 UTC
+    /// 毫秒戳命名防碰撞）。
+    nonisolated static func pastePromotionPath(at date: Date = Date()) -> String {
+        ".wanwo/pastes/paste-\(stampedUTCMillis(date)).md"
+    }
+
+    /// UTC 毫秒戳（DateFormatter 非 Sendable 不落 @MainActor 存储——每次
+    /// 现场构造；转换/撤销均为低频用户动作，开销可忽略）。
+    private nonisolated static func stampedUTCMillis(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        return formatter.string(from: date)
+    }
+
+    /// 引用替换（纯函数，单测直呼）：draft 中找到粘贴原文 → 换成引用
+    /// token；找不到（用户已改写）返回 nil——调用方不强行替换。
+    nonisolated static func promotionReplacement(draft: String, pasted: String,
+                                                 reference: String) -> String? {
+        guard let range = draft.range(of: pasted) else { return nil }
+        return draft.replacingCharacters(in: range, with: reference)
+    }
+
+    /// 撤销回填决策（纯函数，单测直呼）：引用 token 在稿中 → 换回原文；
+    /// 稿为空 → 全量回填原文；否则原文前置拼接（防覆盖用户新输入）。
+    nonisolated static func undoReplacement(draft: String, original: String,
+                                            reference: String) -> String {
+        if draft.contains(reference) {
+            return draft.replacingOccurrences(of: reference, with: original)
+        }
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return original }
+        return original + " " + draft
     }
 
     /// 附件拒绝文案（dsh ui-conversation image-labels.ts:28-56
@@ -523,6 +761,56 @@ final class ChatViewModel: ObservableObject {
 
     func cancel() {
         Task { await agentLoop?.cancel(cause: .user) }
+    }
+
+    // MARK: - 批0 件1 发送失败草稿回填（lody pendingDraft/restoreDraft 万我形态）
+
+    /// 发送失败统一收口：横幅 + 回 idle + 草稿/图片快照回填 + error 触觉。
+    /// 回填决策见 draftRestoreAfterSendFailure（纯函数，单测矩阵直呼）。
+    /// 回填走 draft/draftImages @Published 赋值 → WOChatView onChange 链把
+    /// 回填稿写回 WOAppState.draftCache（原稿跨会话缓存不再被空串覆盖）。
+    private func finishSendFailure(failedDraft: String, failedImages: [DraftImage],
+                                   banner: String) {
+        attachmentBanner = banner
+        phase = .idle
+        if let restore = Self.draftRestoreAfterSendFailure(
+            failedDraft: failedDraft, failedImages: failedImages,
+            currentDraft: draft, currentImages: draftImages) {
+            // 程序化写入：置抑制旗（下一次 noteDraftChanged 观察消费，
+            // 防回填长稿被 surge 检测误判为粘贴）。
+            suppressPasteSurgeOnce = true
+            draft = restore.draft
+            draftImages = restore.images
+        }
+        // 【批0 件3】操作失败触觉（横幅出现即真实事件，不在按钮处）。
+        WOHaptics.shared.notify(.error)
+    }
+
+    /// 回合结束触觉决策（P2-1 修，纯函数单测直呼）：仅 .completed 与 .error
+    /// 发声；aborted（用户自己取消）/blocked/maxTokens（输出截断，未尽）/
+    /// interrupted（resume 孤儿收尾）返回 nil 静默。
+    nonisolated static func turnEndHaptic(_ reason: TurnEndReason) -> WOHaptics.Kind? {
+        switch reason {
+        case .completed: return .success
+        case .error: return .error
+        case .aborted, .blocked, .maxTokens, .interrupted: return nil
+        }
+    }
+
+    /// 回填决策（纯函数，单测矩阵直呼）：
+    ///   · 当前稿已被用户在失败窗口内改写（文本或图片非空）→ 不覆盖用户新
+    ///     输入（快照丢弃——横幅已提示失败，手头文本保留优先）；
+    ///   · 当前稿为空且快照非空 → 回填快照（文本/图片完整还原）；
+    ///   · 快照本身为空 → nil（无可回填，纯 no-op）。
+    nonisolated static func draftRestoreAfterSendFailure(
+        failedDraft: String, failedImages: [DraftImage],
+        currentDraft: String, currentImages: [DraftImage]
+    ) -> (draft: String, images: [DraftImage])? {
+        let currentEmpty = currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard currentEmpty, currentImages.isEmpty else { return nil }
+        let failedEmpty = failedDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !failedEmpty || !failedImages.isEmpty else { return nil }
+        return (failedDraft, failedImages)
     }
 
     // MARK: - M3 T2.2 GUI 命令通道（与手输同路）
@@ -669,6 +957,9 @@ final class ChatViewModel: ObservableObject {
             ? String(text.dropFirst(name.count + 2)) : nil
         if !confirmed, Self.isFullAccessCommand(name: name, args: rawArgs) {
             pendingPermissionConfirmation = text
+            // 【批0 件3】重要确认触觉（danger-full-access 门控拦下等待
+            // 用户裁决——确认请求出现即真实事件）。
+            WOHaptics.shared.notify(.warning)
             return
         }
         await executeSlashCommand(text)
@@ -760,6 +1051,15 @@ final class ChatViewModel: ObservableObject {
                         self.phase = .failed(Self.failureBanner(failure))
                     } else {
                         self.phase = .idle
+                    }
+                    // 【批0 件3 · P2-1 修】触觉跟事实走（决策纯函数，单测直呼）：
+                    // 仅 .completed→success / .error→error 两个"用户可感知的
+                    // 操作成败事实"发声；aborted（用户自己取消）/blocked/
+                    // maxTokens（输出截断未尽）/interrupted（孤儿收尾，无即时
+                    // 交互）静默——误报 success 比不发声更糟（旧 else 分支对
+                    // aborted/blocked/maxTokens 误发 success 已修）。
+                    if let haptic = Self.turnEndHaptic(reason) {
+                        WOHaptics.shared.notify(haptic)
                     }
                     self.maybeGenerateTitle()
                 }
@@ -1018,7 +1318,8 @@ final class ChatViewModel: ObservableObject {
         }
         // 流式官方化：live 槽结算（dsh assistant/message 落盘收敛语义——同一
         // 节点换最终 blocks，无换手）。须在 bubbles 更新后执行（steppedForward
-        // 判定读 bubbles；打字机积压读 typeTarget/typeTarget 已由 flush 同步）。
+        // 判定读 bubbles；打字机积压读 textReveal.hasPending（权威全文已由
+        // flush 的 receive 同步）。
         settleLiveSlots()
     }
 
@@ -1225,9 +1526,10 @@ final class ChatViewModel: ObservableObject {
 
     /// flush 后同步直播槽（快车道/慢车道/回合尾统一入口）：
     /// ①思考槽直接镜像缓冲（nil→非空时代际 +1，新 id = 入场动画天然一次）；
-    /// ②正文槽由打字机驱动，本函数只更新数据侧全文 typeTarget（段间游标连续，
-    /// 仅新目标短于游标时归零——九校④语义）并在补打中遇新 delta 时立即结算
-    /// 上段（立即结算+新段开槽）。
+    /// ②正文槽由打字机驱动，本函数把权威全文同步进节奏引擎（批 2 件 5：
+    /// receive 前缀扩展=累积打字、非前缀=权威修正直接全量——CK 语义），
+    /// 空缓冲守卫（九校④）与"补打中遇新 delta 强制 finish"（九校语义）
+    /// 原样保留。
     private func syncLiveSlots() {
         if !streamingReasoning.isEmpty {
             // 思考代际只随思考槽自身开合推进（P1-1：与正文槽分立，正文开槽
@@ -1235,14 +1537,24 @@ final class ChatViewModel: ObservableObject {
             if liveReasoning == nil { liveReasoningGeneration += 1 }
             liveReasoning = streamingReasoning
         }
-        // 空缓冲不清目标：reproject 清缓冲后的迟到 flush 定时器（textFlushTimer
-        // 0.04s 单发可能落在 reproject 之后）不得打断补打（幽灵回合同源防护
-        // ——空 flush 面对补打目标必须 no-op）。
-        guard !streamingText.isEmpty, streamingText != typeTarget else { return }
+        // 空缓冲守卫（九校④原样）：reproject 清缓冲后的迟到 flush 定时器
+        // （textFlushTimer 0.04s 单发可能落在 reproject 之后）不得打断补打
+        //（幽灵回合同源防护——空 flush 面对补打目标必须 no-op）。
+        guard !streamingText.isEmpty, streamingText != textReveal.source else { return }
+        // 补打中遇新 delta 强制 finish（九校语义原样保留——settle 依赖面，
+        // 节奏引擎不接管此判定）。
         if isSettling { finishSettling() }
-        typeTarget = streamingText
-        typeCursor = Self.cursorAfterTargetChange(
-            oldCursor: typeCursor, newTargetCount: typeTarget.count)
+        textReveal.receive(streamingText, animate: true, at: CACurrentMediaTime())
+        // 【批2-QA D3 修】权威修正帧即时发布：receive 非前缀修正 → 内部
+        // finish（hasPending 翻空）→ 33Hz 节奏器下帧早退不会再发布——若不
+        // 在此直发，修正文本要等下一个 delta 才上屏（旧链 33ms 内刷新语义
+        // 断裂）。结算面安全：isSettling 已被上方强制 finish 排除；liveText
+        // 置值后 reproject 的 settleLiveSlots 经 hasPending=false → .finish
+        // → finishSettling 闭环（同帧落盘显现，与正常打完帧同一路径）。
+        if !textReveal.hasPending, !isSettling, !textReveal.shown.isEmpty {
+            if liveText == nil { liveTextGeneration += 1 }
+            liveText = textReveal.shown
+        }
     }
 
     /// 节奏器启动（幂等；open 启动 / close 取消。Task 继承 @MainActor）。
@@ -1257,25 +1569,22 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// 打字机单步（原 View 层 typewriterLoop 循环体 1:1 迁移）：步长 =
-    /// max(1, min(4, backlog/3))；全新长积压（>140 字）快进只打尾部。
-    /// 补打打完即结算（finishSettling：落盘节点同帧显现，视觉无缝）。
+    /// 显示推进单步（批 2 件 5：节奏引擎 advance——CK 机制 speed=max(38,
+    /// arrivalRate×1.1, backlog/0.18)、elapsed clamp 0.12s、无输入 ≥0.45s 或
+    /// 积压>2048 全排。原"步长封顶 4 字+/3 指数收敛/>140 快进"退役——同目标
+    /// （恒速流式感+积压快排）由 CK 参数体系承担）。"打完"判定原样保留：
+    /// hasPending 翻空且补打期 → finishSettling（落盘节点同帧显现）。
     private func typewriterStep() {
-        if typeCursor == 0, typeTarget.count > 140 {
-            typeCursor = typeTarget.count - 140
-        }
-        guard typeCursor < typeTarget.count else {
+        guard textReveal.hasPending else {
             if isSettling { finishSettling() }
             return
         }
-        let backlog = typeTarget.count - typeCursor
-        let step = Self.typewriterStepLength(backlog: backlog)
-        typeCursor = min(typeTarget.count, typeCursor + step)
-        let prefix = String(typeTarget.prefix(typeCursor))
-        if !prefix.isEmpty {
+        textReveal.advance(at: CACurrentMediaTime())
+        let shown = textReveal.shown
+        if !shown.isEmpty {
             // 正文代际只随正文槽自身开合推进（P1-1：与思考槽分立）。
             if liveText == nil { liveTextGeneration += 1 }
-            liveText = prefix
+            liveText = shown
         }
     }
 
@@ -1287,7 +1596,7 @@ final class ChatViewModel: ObservableObject {
         let liveActive = liveReasoning != nil || liveText != nil || isSettling
         switch Self.settleDecision(
             liveActive: liveActive,
-            cursorBacklog: typeCursor < typeTarget.count,
+            cursorBacklog: textReveal.hasPending,
             steppedForward: Self.hasPostSettlingStepNode(in: bubbles)) {
         case .none:
             return
@@ -1328,14 +1637,15 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// 结算收口：落盘节点预登记（正文 + 同帧思考，不播入场动画——内容用户
-    /// 刚在直播看过）+ 槽清退 + 打字机数据面重置。
+    /// 刚在直播看过）+ 槽清退 + 节奏引擎全量重置（批 2 件 5：textReveal.reset()
+    /// = 全新实例——shown/pending/arrivalRate 一并归零，下段干净起步）。
+    /// 【批2-QA D4 修】注释与实码对齐（原"shown 保留全量"与 reset 实现不符）。
     private func finishSettling() {
         settledBubbleIDs.formUnion(Self.settledRegistrationIDs(in: bubbles))
         isSettling = false
         liveReasoning = nil
         liveText = nil
-        typeTarget = ""
-        typeCursor = 0
+        textReveal.reset()
     }
 
     /// View 渲染单一数据源（dsh conversation-nodes：流式 live 槽与落盘节点
@@ -1367,19 +1677,10 @@ final class ChatViewModel: ObservableObject {
         case keepSettling
     }
 
-    /// 打字机步长（纯函数，单测直呼；原 View 层 typewriterLoop 参数 1:1：
-    /// 步长封顶 4 字——/3 指数收敛在大积压时唰完全文="整块"观感的第二机制，
-    /// 恒速小步让长总结也有持续流式感）。
-    nonisolated static func typewriterStepLength(backlog: Int) -> Int {
-        max(1, min(4, backlog / 3))
-    }
-
-    /// 段间游标连续（纯函数，单测直呼；九校④：typeTarget 换源时 cursor 不
-    /// 重置，仅新目标短于游标时归零）。
-    nonisolated static func cursorAfterTargetChange(oldCursor: Int,
-                                                    newTargetCount: Int) -> Int {
-        newTargetCount < oldCursor ? 0 : oldCursor
-    }
+    /// 打字机步长纯函数（typewriterStepLength）与段间游标纯函数
+    ///（cursorAfterTargetChange）批 2 件 5 退役——步长/快进语义由
+    /// WOTextReveal（CKTextReveal 机制）承担，游标概念被 pending/offset
+    /// 取代；测试矩阵同步改造（StreamingOfficialRefactorTests + Batch2）。
 
     /// displayNodes 合成（纯函数，单测直呼；双代际——P1-1：思考/正文 id
     /// 各自独立推进，互不波及）。

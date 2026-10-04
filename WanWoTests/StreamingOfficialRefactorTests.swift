@@ -87,33 +87,10 @@ final class StreamingOfficialRefactorTests: XCTestCase {
             in: [assistant, tool, reasoning, assistant2]))
     }
 
-    // MARK: - C. 打字机步长（原 View 层 typewriterLoop 参数 1:1）
-
-    func testTypewriterStepLength() {
-        // 步长 = max(1, min(4, backlog / 3))。
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 0), 1)
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 1), 1)
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 2), 1)
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 9), 3)
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 12), 4)
-        // 封顶 4 字（九校-B：恒速小步让长总结也有持续流式感）。
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 300), 4)
-        XCTAssertEqual(ChatViewModel.typewriterStepLength(backlog: 10_000), 4)
-    }
-
-    // MARK: - D. 段间游标连续（九校④：typeTarget 换源 cursor 不重置）
-
-    func testCursorContinuityAcrossSegments() {
-        // 新目标不短于游标 → 游标保持（段间连续，显示无缝）。
-        XCTAssertEqual(ChatViewModel.cursorAfterTargetChange(
-            oldCursor: 480, newTargetCount: 500), 480)
-        // 新目标短于游标 → 归零（新段落从零起打）。
-        XCTAssertEqual(ChatViewModel.cursorAfterTargetChange(
-            oldCursor: 480, newTargetCount: 3), 0)
-        // 首段（游标 0）恒 0。
-        XCTAssertEqual(ChatViewModel.cursorAfterTargetChange(
-            oldCursor: 0, newTargetCount: 42), 0)
-    }
+    // MARK: - C/D.（批 2 件 5 改造）打字机步长/段间游标纯函数退役——
+    // pacing 语义由 WOTextReveal（CKTextReveal 万我形态）承担，用例迁
+    // Batch2FollowMotionTests（CK 机制矩阵：arrivalRate 平滑/速率/兜底全排/
+    // 权威修正）。settle 决策（settleDecision）签名与语义不变，用例保留。
 
     // MARK: - E. displayNodes 合成（live 槽 = 正式节点身份）
 

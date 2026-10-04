@@ -29,10 +29,9 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 // 流式渲染官方化（2026-10-04）：Markdown 渲染（SwiftStreamingMarkdown v0.7.0）
-// 仅本文件 import——落盘正文与直播正文（live 槽）用**同一个** MarkdownView
-// (text:)（换手帧前后同一组件类型；库内 .task(id: text) 块级 diff 原地更新，
-// 33Hz text 变化不重建视图）。原 StreamedMarkdownView 流桥退役。
-import SwiftStreamingMarkdown
+// 随批 1 件 1 迁至 UI/Chat/List/WONodeContent.swift（节点渲染链整链迁移——
+// settled 正文走 WOCachedMarkdown 文档缓存直喂，live 槽保持 MarkdownView
+// 块级 diff 原地更新；本文件不再持有 Markdown 面）。
 
 struct WOChatView: View {
     @StateObject private var viewModel: ChatViewModel
@@ -52,26 +51,8 @@ struct WOChatView: View {
     struct AgentHint: Equatable { let url: URL; let domain: String }
     private let sessionId: String
 
-    /// 批12+联动（2026-09-26）：聊天 Markdown 配置（settled 正文与流式直播
-    /// 共用）。①链接可辨识——库默认 linkTextAttributes 置空
-    /// （ParagraphUIView:200）=链接与正文同款不可辨识，经 withInlineStyle
-    /// 显式染主题蓝+下划线（点击链路库内置 onUrlTap→UIApplication.open，
-    /// wanwo:// 深链本就可用）；②shouldAnimateText=true（三校：逐字淡入，
-    /// 官方 Demo 同款）。
-    private static let chatMarkdownConfig: MarkdownRenderConfig = {
-        let inline = MarkdownRenderConfig.default.inlineStyle
-        return MarkdownRenderConfig.default
-            .withShouldAnimateText(value: true)
-            .withInlineStyle(value: .init(
-                boldTextColor: inline.boldTextColor,
-                linkTextFont: inline.linkTextFont,
-                linkTextColor: WOAlias.stateBusinessPrimary,
-                linkUnderlineStyle: [.single],
-                codeTextFont: inline.codeTextFont,
-                codeTextColor: inline.codeTextColor,
-                codeBackgroundColor: inline.codeBackgroundColor,
-                codeUnderlineColor: inline.codeUnderlineColor))
-    }()
+    // 批12+联动（2026-09-26）：聊天 Markdown 配置随批 1 件 1 迁至
+    // WONodeBubbleView.chatMarkdownConfig（1:1 同值；链接染色+逐字淡入）。
 
     /// 【P2-1c 修5 2026-09-28】保序切分：正文按 wanwo:// 图片出现位置切段
     /// ——每段文本 + 段尾可选图片，渲染时图片**跟随 AI 叙述位置**（"图1：
@@ -175,24 +156,13 @@ struct WOChatView: View {
     /// 批12+联动B：轻提示点击回调（展开右栏+AI 页签落点；真值在 WORootFrame）。
     var onOpenAgentBrowser: ((URL) -> Void)? = nil
 
-    /// 批C4：autoFollow 闸门（digest-K 6.3#1 清偿）——尾部探针可见（用户在
-    /// 底部附近）时内容变化才滚底；探针出上缘（用户在历史区）暂停；探针回
-    /// 视口（滚回底部）自动恢复。批C5-QA 修正：出下缘保持现态（内容增长推挤
-    /// 的瞬间出下缘不构成暂停，跟随中 scrollTo 会拉回）；暂停不再要求拖拽
-    /// 活性（惯性段出界也正确暂停）。
-    @State private var autoFollow = true
-    /// 曾到达底部（批C4-QA 修正：防打开历史会话首帧探针在视口上方被误判暂停
-    /// ——未到过底部前不允许"出上缘暂停"分支生效，打开即滚底）。
-    @State private var hasReachedTail = false
-    @State private var viewportGlobalFrame: CGRect = .zero
+    // 批1 件1（2026-10-）：autoFollow/hasReachedTail/viewportGlobalFrame/
+    // bottomAnchor/animatedIDs/entrySeeded/pendingUserSeen 全部随消息列表
+    // 迁入 UIKit core（WOMessageListCore.followsBottom 状态机 + WOEntryLedger
+    // 账本；头注见 WOMessageListView.swift）。本层仅保留 headScrolled
+    // （丝线判定结果，由 core onHeadScrolled 回调驱动）。
     /// 批C4：顶栏丝线判定（原型 .main-head.scrolled：scrollTop>4）。
     @State private var headScrolled = false
-    /// 简化自动跟随（批 1）：内容变化即滚底；治理=批C4 autoFollow 闸门。
-    @State private var bottomAnchor = "wo-chat-bottom"
-    /// 已播过入场动画的节点 id（一次性门；防 LazyVStack 滚动重建重播）。
-    @State private var animatedIDs: Set<String> = []
-    /// 历史种子位：open 完成后的首投影不播入场（历史/恢复静默呈现）。
-    @State private var entrySeeded = false
     /// slash 菜单关闭位（选中写回 claim token 后不再被 "/" 前缀拉起）。
     @State private var slashDismissed = false
     /// composer chrome 高度（座位 + dock；slash 菜单锚定用）。
@@ -203,16 +173,10 @@ struct WOChatView: View {
     /// 批A2：会话内 hero 芯片菜单的「添加工作区…」流（与 WOChatHero 共用
     /// 批10：添加工作区统一弹窗（共用件 WOAddWorkspaceModal）呈现位。
     @State private var showAddFlow = false
-    /// 批12+回归八校：用户消息哨兵交接旗——"u-pending"（乐观，mInR 入场）
-    /// 被 "u(seq)"（落盘投影）替换时，后者即时呈现不重播（日志 L1/L2 双身份
-    /// 实证）；onSeen 后归位，下一轮乐观气泡照常入场。
-    @State private var pendingUserSeen = false
     // 流式渲染官方化（2026-10-04）：原 View 层流式状态（streamSource 流桥 /
     // isSettling 补打期 / liveTailSeen 动画门 / typeTarget+typeCursor 打字机）
-    // 全部迁入 ChatViewModel 数据面（liveReasoning/liveText/isSettling/
-    // settledBubbleIDs/typeTarget/typeCursor/typewriterTask）——dsh assistant
-    // -step 零换手语义：直播槽与落盘节点同处一条节点流（viewModel.displayNodes），
-    // View 层不再持有换手状态机。
+    // 全部迁入 ChatViewModel 数据面。批1 件1：pendingUserSeen 哨兵交接旗迁
+    // WOEntryLedger（UIKit core 账本）。
 
     /// hero 附件交接消费标记（init 只读判定；消费在 onAppear 安全期执行——
     /// struct init 运行于父 body 求值中，彼时写 ObservableObject 属
@@ -280,10 +244,31 @@ struct WOChatView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // 批C3：对话态消息列表全高（ZStack 底层），composerSeat+StatsDock
-            // 悬浮底部——旧 VStack 渐隐带占位条退役（跟随滞后切边病灶根治）。
+            // 批1 件1：UIKit 消息列表骨架（UICollectionView + DiffableDataSource
+            // 承载既有 SwiftUI 节点视图——视觉零变化，渲染链 1:1 迁至
+            // WONodeContent）。body 仍求值 displayNodes/phase（33Hz live 驱动
+            // updateUIView → core.sync；全等帧零 apply）。
             if !heroMode {
-                messageList
+                WOMessageListView(
+                    viewModel: viewModel,
+                    nodes: viewModel.displayNodes,
+                    phase: viewModel.phase,
+                    sessionId: sessionId,
+                    // 批 2 件 3：composer 座位组超出旧链基准（137）的动态
+                    // 让位增量（旧链静态 189 由 sectionInset 承担，两者分立）。
+                    bottomAllowance: max(0, composerChromeHeight
+                        - WOMessageListSupport.dockBaselineHeight),
+                    onBackgroundTap: {
+                        // 菜单开着时点消息区 = 区外关闭（dsh MenuView
+                        // outside-click 语义的触屏形；原 messageList 内
+                        // onTapGesture 迁出）。
+                        if slashMenuOpen || mentionMenuOpen { slashDismissed = true }
+                    },
+                    onHeadScrolled: { scrolled in
+                        // 批C4 顶栏丝线（原探针链迁 core scrollViewDidScroll）。
+                        if headScrolled != scrolled { headScrolled = scrolled }
+                    },
+                    onImagePreview: { messagePreview = $0 })
                     .transition(.opacity)
             }
             // 批12+回归二校（2026-09-24 用户令）：dock 下方底部渐变衬罩——
@@ -444,6 +429,9 @@ struct WOChatView: View {
         // 草稿缓存（dsh draft 持久跨切换；切走再切回文本跟回）。
         .onChange(of: viewModel.draft) { text in
             appState.updateDraft(text, for: sessionId)
+            // 【批0 件4】粘贴长文本监听（VM 侧 surge 检测 → 询问转附件；
+            // 程序化写入由 VM 抑制旗消费，此处只做观察转发）。
+            viewModel.noteDraftChanged(to: text)
             // 【批2 F075】@ token 变化 → 刷新候选（cc-haha session 搜索 150ms
             // 防抖同义；此处同步算，枚举为一层目录、开销可控）。
             if mentionMenuOpen, let range = mentionTokenRange {
@@ -468,7 +456,8 @@ struct WOChatView: View {
         .background(WOAlias.bgBase)
         .onAppear {
             viewModel.open()
-            seedEntry()
+            // 批1 件1：seedEntry 语义迁 core（seedLedgerIfNeeded——首个非
+            // loading 相位帧补种 WOEntryLedger）。
             // F075：切回会话恢复草稿若带 @ token，菜单候选立即就位。
             if mentionMenuOpen, let range = mentionTokenRange {
                 mentionCandidates = viewModel.mentionCandidates(
@@ -493,17 +482,10 @@ struct WOChatView: View {
         }
         .onDisappear { viewModel.close() }
         .onChange(of: viewModel.phase) { phase in
-            seedEntry()
+            // 批1 件1：seedEntry/回合尾补种语义迁 core（seedLedgerIfNeeded——
+            // 相位变化落到非 .streaming 帧补种 WOEntryLedger）。
             // 批12+联动B：回合结束 → 轻提示胶囊淡出（浏览过程结束即消失）。
             if phase != .streaming { agentHint = nil }
-            // 流式官方化（2026-10-04）：原 typeTarget/typeCursor 流式种子与
-            // 换血帧 liveTailSeen 重置退役——live 槽/settle 决策/代际 id 全在
-            // VM 数据面（结算帧落盘节点免动画由 settledBubbleIDs 承担，见
-            // entryBubble）。回合边界补种保留（六校 RC1/RC4 语义）：turnUsage
-            // pill/系统纸条等回合尾新增节点即时呈现，不播入场动画。
-            if phase != .streaming {
-                animatedIDs.formUnion(viewModel.bubbles.map(\.id))
-            }
             // hero 一步发送：引擎装配完成即自动提交（draft 已由 init 种子带入；
             // 未就绪/装配失败时旗不消费——草稿保留，用户按指引恢复后手动发）。
             if autoSubmitArmed, viewModel.phase == .idle,
@@ -832,384 +814,19 @@ struct WOChatView: View {
         .onPreferenceChange(WOComposerChromeHeightKey.self) { composerChromeHeight = $0 }
     }
 
-    // MARK: - 消息流
+    // 批1 件1：消息流（LazyVStack + 滚动探针 + ScrollViewReader 跟随链）整块
+    // 退役——UIKit 列表骨架承载（WOMessageListView representable，见 body）。
+    // 元条目合成/loading/beam/failed 形态 1:1 迁 WONodeItemContent。
 
-    private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) { // digest-H .msgs gap 16
-                    // 批C4：顶部探针（1pt；global minY 与视口差 >4pt → 顶栏丝线）。
-                    Color.clear
-                        .frame(height: 1)
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: WOChatTopProbeKey.self,
-                                                   value: geo.frame(in: .global).minY)
-                        })
-                    if viewModel.phase == .loading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                        .padding(.top, 48)
-                    }
-                    // 流式渲染官方化（2026-10-04）：**单一渲染数据源**
-                    // viewModel.displayNodes——dsh conversation-nodes 语义：
-                    // 流式 live 槽与落盘节点同处一条节点流，View 层无换手。
-                    // 补打期过滤/合成在 VM 数据面完成；live 节点（live-r-N/
-                    // live-t-N 代际 id）与落盘节点同构渲染（思考=同一
-                    // ReasoningDisclosure 参数翻转 running→settled；正文=同一
-                    // MarkdownView 块级 diff 原地更新）。原 ForEach 外
-                    // liveTailNode 特殊分支拆除。
-                    ForEach(viewModel.displayNodes) { node in
-                        entryNode(node)
-                            .onTapGesture {
-                                // 菜单开着时点消息区 = 区外关闭（dsh MenuView
-                                // outside-click 语义的触屏形）。
-                                if slashMenuOpen { slashDismissed = true }
-                            }
-                    }
-                    if viewModel.phase == .streaming {
-                        // 流光换字状态行（批12+回归五校：用户参考件"流光换字·
-                        // 多文案循环"机制 1:1——光束扫过字符槽点亮并换字，hold
-                        // 后下一条；文案池每次出现洗牌轮换不重样）。仅真实流式
-                        // 期显示；收尾 hold（打字机补打）不显示。
-                        WOBeamSwapper()
-                            .padding(.top, 2)
-                    }
-                    if case .failed(let message) = viewModel.phase {
-                        Text(message)
-                            .font(.system(size: 13))
-                            .foregroundColor(WOAlias.stateErrorPrimary)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 12)
-                                .fill(WOAlias.stateErrorSecondary))
-                    }
-                    // 批12+回归三校（2026-09-24 用户令）：跟随锚点自带让位——
-                    // scrollTo(anchor, .bottom) 把锚点底边对齐视口底边，锚点
-                    // 高度=dock 悬浮区（卡+统计行）实测 137pt+余量 → 最新内容
-                    // 恰好落在 dock 卡上缘可见，不再停在物理屏幕边缘被
-                    // dock/底部渐变遮挡（首版锚点 8pt 贴底=输出位置被挡，
-                    // 用户令改）。往上划时内容照常从 dock/渐变底下穿过淡出。
-                    Color.clear.frame(height: 148).id(bottomAnchor)
-                    // 批C4：尾部探针（1pt；视口内可见性 → autoFollow 闸门）。
-                    Color.clear
-                        .frame(height: 1)
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: WOChatTailProbeKey.self,
-                                                   value: geo.frame(in: .global).maxY)
-                        })
-                }
-                // 批C3（原型 .msgs padding:14px 16px 140px 折算）：顶部 14+44
-                // （首条消息初始落在顶栏下）。批12+回归三校：底部 140 让位职责
-                // 移入跟随锚点（148pt，见上）——padding 退役改 8pt 收尾，否则
-                // 让位区排在锚点视口之外、跟随落点贴物理屏幕边缘（三校病根）。
-                .padding(.horizontal, 16)
-                .padding(.top, 58)
-                .padding(.bottom, 8)
-            }
-            // 批C4：视口 global 框（探针可见性判定的同一坐标系基准）。
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: WOChatViewportKey.self,
-                                           value: geo.frame(in: .global))
-                }
-            )
-            .onPreferenceChange(WOChatViewportKey.self) { viewportGlobalFrame = $0 }
-            .onPreferenceChange(WOChatTailProbeKey.self) { updateAutoFollow($0) }
-            .onPreferenceChange(WOChatTopProbeKey.self) { updateHeadScrolled($0) }
-            .onChange(of: viewModel.bubbles) { _ in
-                // 流式官方化：原 P1-2 立即换手分支（settling + 回合已步进 →
-                // 放弃补打）语义迁 VM（settleLiveSlots 的 steppedForward 判定
-                // ——reproject 后自检）。本处保留单次 follow（探针闸门内）。
-                follow(proxy)
-            }
-            .onChange(of: viewModel.phase) { _ in
-                // 批12+回归六校（RC3）：换血帧惰性高度未就绪，即时跟随会误
-                // 落点——延迟一拍跟随（原九校-E 三连补跟拆除：换手帧=同位同
-                // 内容同组件，跳位根源消除；真机观察残留再议）。
-                Task { @MainActor in follow(proxy) }
-            }
-            // 流式官方化：跟随挂到 live 槽/节点流变化——覆盖流式步进（33Hz
-            // 打字机驱动 liveText）与槽开合（段间切换/settle 帧节点流变化）。
-            // 原 onChange(streamingText) 换手状态机、onChange(isSettling)、
-            // onChange(typeCursor)、onChange(streamingReasoning) 全部拆除。
-            .onChange(of: viewModel.liveText) { _ in follow(proxy) }
-            .onChange(of: viewModel.liveReasoning) { _ in follow(proxy) }
-            .onChange(of: viewModel.displayNodes) { _ in follow(proxy) }
-        }
-    }
+    // 批1 件1：follow/updateAutoFollow/updateHeadScrolled/seedEntry 退役——
+    // 贴底=core viewDidLayoutSubviews stick（followsBottom 状态机）、丝线=
+    // core scrollViewDidScroll 回调、入场补种=core seedLedgerIfNeeded
+    //（WOEntryLedger）；头注见 WOMessageListView.swift。
 
-    /// 批C4：跟随判定——探针可见（用户在底部附近）才随内容变化滚底。
-    /// 批12：scrollTo 禁动画（Transaction(animation: nil)）——滚动跟随=dsh
-    /// follow-end 即时贴底语义；默认隐式动画在高频流式刷新下呈"滑动感"、
-    /// 回合收尾时呈"动一下"（用户 2026-09-23 反馈），全部根治。
-    private func follow(_ proxy: ScrollViewProxy) {
-        guard autoFollow else { return }
-        let transaction = Transaction(animation: nil)
-        withTransaction(transaction) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
-    }
-
-    /// 批C4：探针可见性 → autoFollow（批C4-QA 修正三分支）。
-    private func updateAutoFollow(_ tailY: CGFloat?) {
-        guard let tailY else { return } // LazyVStack 回收探针：保持上次判定
-        if tailY <= viewportGlobalFrame.maxY, tailY >= viewportGlobalFrame.minY {
-            // 探针在视口内（底部附近）：恢复跟随，并登记"曾到达底部"。
-            if !autoFollow { autoFollow = true }
-            if !hasReachedTail { hasReachedTail = true }
-        } else if tailY < viewportGlobalFrame.minY, hasReachedTail, autoFollow {
-            // 探针出上缘（用户在历史区）→ 暂停。不再要求 dragActive——
-            // 极小拖距+长惯性（手指抬起后探针才出界）也正确暂停。
-            autoFollow = false
-        }
-        // 探针出下缘：保持现态——跟随中 scrollTo 会拉回（内容增长推挤的
-        // 瞬间出下缘不构成暂停）；暂停中随内容增长远去，回视口才恢复。
-    }
-
-    /// 批C4：顶部探针 → 顶栏丝线（scrollTop>4；探针初位=视口顶+58 顶部
-    /// padding，滚过 4pt 即丝线现形；探针被 LazyVStack 回收后保持现态——
-    /// 深滚时丝线恒显=正确语义）。
-    private func updateHeadScrolled(_ topY: CGFloat?) {
-        guard let topY else { return }
-        let scrolled = topY < viewportGlobalFrame.minY + 58 - 4
-        if headScrolled != scrolled { headScrolled = scrolled }
-    }
-
-    // MARK: - 入场门（mInL/mInR；历史种子不播、滚动重建不重播）
-
-    private func seedEntry() {
-        guard !entrySeeded, viewModel.phase != .loading else { return }
-        entrySeeded = true
-        animatedIDs.formUnion(viewModel.bubbles.map(\.id))
-    }
-
-    @ViewBuilder
-    private func entryNode(_ node: ConversationProjector.DisplayNode) -> some View {
-        // 批12+回归五校（用户令）：思考/工具节点=fadeUp（.4s 自下 8px+淡入）；
-        // 过程组不再整块动画——组内节点逐个走入场门（组平铺内层原为直渲染
-        // 无动画=用户实测"思考/工具出现都没有动画"）；消息保持 mInL/mInR。
-        switch node {
-        case .plain(let bubble):
-            entryBubble(bubble)
-        case .process(let group):
-            ForEach(group.bubbles) { inner in
-                entryBubble(inner)
-            }
-        }
-    }
-
-    /// 单气泡入场（批12+回归七校重构：单一身份门——modifier 常驻、animate
-    /// 随 seen 翻转，消灭 onSeen 换枝的视图重建=二次动画嫌疑源）。
-    /// 曲线：思考/工具=fadeUp（自下 8px+淡入 0.4s，用户令；思考已从六校的
-    /// instantLive 名单移出——用户要思考出现有动画）；消息=mInL/mInR（.55s
-    /// 横移+缩放）；流式中落盘的回复正文=instant（用户刚在直播看过，打字机
-    /// 已接管其呈现节奏）。
-    /// 诊断：diag 参数经 WOEntryModifier.onAppear 落行（仅未 seen 时非 nil）。
-    private func entryBubble(_ bubble: ConversationProjector.Bubble) -> some View {
-        // 流式官方化：seen = animatedIDs ∪ settledBubbleIDs——结算帧落盘节点
-        // 由 VM 预登记（内容用户刚在直播看过，即时呈现不播动画；对应原
-        // :967/:1011/:1373 的 animatedIDs.insert 三处）。
-        let isLive = bubble.id.hasPrefix("live-")
-        let seen = animatedIDs.contains(bubble.id)
-            || viewModel.settledBubbleIDs.contains(bubble.id)
-        let kindTag: String = {
-            switch bubble.kind {
-            case .user: return "user"
-            case .assistant: return "assistant"
-            case .reasoning: return "reasoning"
-            case .tool: return "tool"
-            case .goalRound: return "goalRound"
-            default: return "other"
-            }
-        }()
-        // 批12+回归九校：思考落盘改 instant——动画已前移到直播思考行出现
-        // 时刻（段落开始时播），落盘不再重播（旧"思考完才补动画"=动画挂在
-        // 落盘节点所致）；正文保持 instant（同理由）。
-        // 批12+回归九校-B：justEndedStreaming——onTurnEnd 里 reproject 与
-        // phase=.idle 同帧，渲染时 phase 已非 .streaming，单看 phase 会漏判
-        // （收尾帧落盘思考节点多播一次 fadeUp=用户实测），旗标补上跨帧语义。
-        // 流式官方化：live 节点（live-r-N/live-t-N）不参与 instantLive——
-        // 直播段落的 fadeUp 正是它的入场（generation id 天然一次性，对应原
-        // liveTailSeen 门）。
-        let instantLive = !isLive
-            && (viewModel.phase == .streaming || viewModel.justEndedStreaming)
-            && (kindTag == "assistant" || kindTag == "reasoning")
-        // 流式官方化：live 节点强制 fadeUp（原 liveTailNode 的 WOEntryModifier
-        // 参数原样：offset(0,8) 0.4s scale 1）——与思考/工具入场同族。
-        let fadeUp = isLive || kindTag == "tool" || kindTag == "reasoning"
-            || kindTag == "goalRound"
-        let fromRight = kindTag == "user"
-        // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
-        // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
-        let animate = !seen && !instantLive
-            && !(kindTag == "user" && pendingUserSeen && bubble.id != "u-pending")
-        let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
-        let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
-            : CGSize(width: fromRight ? 16 : -16, height: 0)
-        let scale: CGFloat = fadeUp ? 1 : 0.95
-        let duration: Double = fadeUp ? 0.4 : 0.55
-        // 批12+回归八校（点4 手术）：同批落盘的思考（delay 0）与工具
-        // （delay 0.3s）错峰——视觉上"思考先上屏，工具随后各自入场"。
-        let entryDelay: Double = fadeUp && kindTag == "tool" ? 0.3 : 0
-        return bubbleView(bubble)
-            .modifier(WOEntryModifier(
-                offset: offset,
-                scale: scale,
-                duration: duration,
-                delay: entryDelay,
-                animate: animate,
-                diag: seen ? nil : "entry id=\(bubble.id) kind=\(kindTag) branch=\(branch) phase=\(String(describing: viewModel.phase))",
-                onSeen: {
-                    animatedIDs.insert(bubble.id)
-                    if kindTag == "user" { pendingUserSeen = (bubble.id == "u-pending") }
-                }))
-    }
-
-    // MARK: - 单气泡渲染（全事件类型可见）
-
-    @ViewBuilder
-    private func bubbleView(_ bubble: ConversationProjector.Bubble) -> some View {
-        switch bubble.kind {
-        case .user(let text, let images):
-            // 【批3 A1】goal_round 拦截分支移除——投影器已将注入文本特判为
-            // `.goalRound` 专卡（乐观路径同时被 marker 拦截，双卡不再可
-            // 能）；user case 回归纯用户消息渲染。
-            userBubble(text: text, images: images)
-
-        case .goalRound(let text):
-            // 【批3 A1】goal_round 续轮指令专卡（WOGoalRoundCard 形态保持
-            // 不变——E3 战场只引用不改；收敛渲染 = 乐观/落盘/结算三态同
-            // 一身份 gr(seq)，无整树刷新）。
-            HStack(alignment: .center, spacing: 0) {
-                WOGoalRoundCard(text: text)
-                    .frame(maxWidth: 620, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-
-        case .assistant(let text):
-            // 助手行：渐变头像 + 正文（digest-H Bot 行形态；13px 时间戳因
-            // 引擎气泡无墙钟字段缺席，登记报告）。
-            // 批12 T7：正文换 MarkdownView（SwiftStreamingMarkdown——标题/
-            // 列表/代码块/表格可渲染）。库自带 textSelection 配置——外层
-            // .textSelection 去掉避免双选区行为。
-            // 批12+联动（2026-09-26）：①config=chatMarkdownConfig（链接染色
-            // 可辨识——库默认 linkTextAttributes 置空=链接与正文同款）②正文
-            // 预处理提取 wanwo:// 截图（库 ImageConfig 三源均不支持自定义
-            // scheme 且默认 disabled）→ 气泡下方图片条渲染。
-            // 【P2-1c 修5】保序切分：图片跟随 AI 叙述位置原位插段（旧设计
-            // 抽取堆消息尾部，用户两轮实证排版不可接受）；图片视图点击 →
-            // 集中预览通道（sessionID 显式锚，不依赖挂载时序——P2-1b 语义）。
-            let segments = Self.splitAgentSegments(text)
-            HStack(alignment: .top, spacing: 8) {
-                WOAssistantAvatar()
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(segments) { segment in
-                        if !segment.text.isEmpty {
-                            MarkdownView(text: Self.autolinkBareURLs(segment.text),
-                                         config: Self.chatMarkdownConfig)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if let url = segment.image {
-                            WOInlineAgentImage(url: url,
-                                               sessionID: sessionId.isEmpty ? nil : sessionId)
-                        }
-                    }
-                }
-            }
-            .padding(.top, 1)
-
-        case .reasoning(let text):
-            // 思考披露：标题 + 首行预览 + chevron；展开体左缩进 22（digest-H .think）。
-            // 流式官方化：live 槽（live-r-N）= running 态（LED 尾行跟随+扫光），
-            // 落盘 = 同一组件参数翻转 running→settled，零视图重建（dsh 同节点
-            // 收敛语义；落盘思考节点 id=a(seq)-b(idx) 恒不撞 live-r- 前缀）。
-            ReasoningDisclosure(text: text,
-                                running: bubble.id.hasPrefix("live-r-"))
-
-        case .tool(let card):
-            // R2a：工具卡全型（digest-F §41；D6 清偿）。
-            WOToolCard(card: card, sessionID: sessionId.isEmpty ? nil : sessionId)
-
-        case .command(let kind, let text):
-            VStack(alignment: .leading, spacing: 2) {
-                Text(kind)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(WOAlias.labelTertiary)
-                Text(text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(WOAlias.labelSecondary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgModulePlatform))
-
-        case .note(let text):
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundColor(WOAlias.labelTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-        case .turnUsage(let summary):
-            // 轮次尾用量/用时 pill（引擎 TurnUsageSummary 在场 → 做）。
-            HStack {
-                WOTurnUsagePill(summary: summary)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 2)
-
-        default:
-            // 其余次要事件：视觉回合分隔（无假文案）。
-            VStack(spacing: 0) {
-                Divider().opacity(0.5)
-            }
-            .padding(.vertical, 2)
-        }
-    }
-
-    /// 用户气泡（原 case .user 主体原样抽出——goal_round 拦截分流的另一支；
-    /// 行内注释与形态逐项保持）。
-    private func userBubble(text: String, images: [ImageAttachmentRef]) -> some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 6) {
-                if !images.isEmpty {
-                    // 消息内图片（复用 MessageImagesView；单图 80pt=
-                    // 用户既定裁定 T2.6 件7，不改）。
-                    MessageImagesView(images: images,
-                                      store: viewModel.attachmentStore,
-                                      onPreview: { messagePreview = $0 })
-                }
-                if !text.isEmpty {
-                    // 纯图片消息不画气泡（dsh MessageItem 语义）。
-                    // 批C5（原型 :180 .user-bubble）：去 textSelection 改
-                    // contextMenu 拷贝；padding 10/16（宽度随字数，蓝底
-                    // 贴字细条根治）；lineSpacing 4（22px 行高目标）；
-                    // 圆角 22 + 蓝软底（WOSpecific.bubble）+ max-width 508
-                    // （620 列的 82%）保持。
-                    Text(text)
-                        .font(.system(size: 14))
-                        .foregroundColor(WOAlias.labelPrimary)
-                        .multilineTextAlignment(.trailing)
-                        .lineSpacing(4)
-                        .padding(.vertical, 10)
-                        .padding(.horizontal, 16)
-                        .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
-                        .frame(maxWidth: 508, alignment: .trailing)
-                        .contextMenu {
-                            Button {
-                                UIPasteboard.general.string = text
-                            } label: {
-                                Label("拷贝", systemImage: "doc.on.doc")
-                            }
-                        }
-                }
-            }
-            .frame(maxWidth: 620, alignment: .trailing)
-        }
-    }
+    // 批1 件1：entryNode/entryBubble/bubbleView/userBubble 整链迁
+    // UI/Chat/List/WONodeContent.swift（WONodeItemContent/WONodeBubbleView，
+    // 1:1 原样迁移；变化点仅两处——入场账本换 WOEntryLedger、settled 正文
+    // 切 WOCachedMarkdown，live 槽 MarkdownView 不动）。
 
     // 流式渲染官方化（2026-10-04）：原 liveTail 占位节点 / typewriterLoop
     // 打字机节奏器 / lastAssistantBubbleID / isSettlingAssistant /
@@ -1230,28 +847,9 @@ private struct WOComposerChromeHeightKey: PreferenceKey {
     }
 }
 
-/// 批C4 滚动探针 PreferenceKeys（Optional 单值——探针被 LazyVStack 回收时
-/// 不再产出，宿主保持上次判定）。
-private struct WOChatTailProbeKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        value = value ?? nextValue()
-    }
-}
-
-private struct WOChatTopProbeKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        value = value ?? nextValue()
-    }
-}
-
-private struct WOChatViewportKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
-    }
-}
+// 批1 件1：WOChatTailProbeKey/WOChatTopProbeKey/WOChatViewportKey 退役——
+// 探针链（跟随闸门/丝线/视口框）随消息列表迁 UIKit core（WOMessageListCore
+// scrollViewDidScroll + followsBottom 状态机）。
 
 // 流式渲染官方化（2026-10-04）：原 WOChatStreamSource 流桥（批12 T7 可重启
 // 管道 + 批12+回归九校-B/C 终身单例修复链）整体退役——直播正文改用与落盘正文
@@ -1481,7 +1079,9 @@ private struct WOThinkIcon: View {
 /// running 态仅 summary 来源不同 + 行上扫光；expanded 初值恒 false，running
 /// 也不自动展开）。settled：summary=首行（firstLine）；running：尾行（latestLine，
 /// 右对齐 flex-end 跟随）+ 扫光。展开体=全文（thinkBody 13px labelTertiary）。
-private struct ReasoningDisclosure: View {
+/// 批1 件1：批 1 起消费方=WONodeBubbleView（节点渲染链迁移），可见性放宽为
+/// 文件级 internal（WODisclosureRow 同款先例——登记报告）。
+struct ReasoningDisclosure: View {
     let text: String
     /// running：流式在途（summary=尾行跟随 + 扫光）；默认 settled。
     var running: Bool = false

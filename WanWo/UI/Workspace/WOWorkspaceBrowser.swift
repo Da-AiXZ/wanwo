@@ -121,13 +121,13 @@ struct WOWorkspaceBrowser: View {
             sectionHeader
             listBody
         }
-        .overlay(alignment: .top) {
-            if let text = toastText {
-                WOToast(text: text, icon: Image(systemName: "checkmark.circle"),
-                        onDone: { toastText = nil })
-                    .padding(.top, 8)
-                    .zIndex(80)
-            }
+        // 【批0 件2】迁独立 UIWindow（WOToastCenter——盖过 sheet/
+        // fullScreenCover）；状态语义不变：toastText 仍为发射载体。
+        .onChange(of: toastText) { text in
+            guard let text else { return }
+            WOToastCenter.shared.show(text: text,
+                                      icon: Image(systemName: "checkmark.circle"))
+            toastText = nil
         }
         .fullScreenCover(isPresented: $addWorkspaceOpen) {
             // 批10：共用自包含 Modal（蒙层透明化+状态机内聚）；侧栏语义=

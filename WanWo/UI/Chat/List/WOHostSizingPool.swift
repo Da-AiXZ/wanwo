@@ -1,0 +1,136 @@
+//
+//  WOHostSizingPool.swift
+//  WanWo
+//
+//  【批 1 · 件 2】hosting 视图复用池 + 行高缓存（lody ChatMarkdownStore
+//  池语义的万我泛化形态：池不按 markdown 一种内容，按"任意 SwiftUI 条目
+//  视图"工作——气泡/思考/工具卡/元条目统一走同池）。
+//
+//  lody 铁律逐条落地：
+//    · sizingLimit 24 的 LRU，**绝不逐出已挂载（superview != nil）的视图**
+//      （ChatMarkdownStore :118-127 注释同语义）；
+//    · height(id:) 只在内容/宽度变化时触碰量高（:129-136 同语义——flow
+//      布局每次 invalidation 都会问尺寸，未变行绝不重测）；
+//    · 宽度是缓存 key 的一部分（旋转/分栏自动失效）。
+//  【批1-QA P2-2 修·偏差如实登记】本池是**离屏量高池**（heights + 量高用
+//  host 视图），与列表显示面（WONodeCell 自持 UIHostingController）**分池**
+//  ——lody「可见行用的就是量过它的那个视图」的共池铁律在批 1 简化为：
+//  量高与显示共用同一**内容装配缝**（WONodeItemContent + .id(identity 锚)）
+//  而非同一视图实例（规避同一 host view 双父的手术风险）。批 2 逐帧引擎
+//  时做共池合体评估（team-lead 已在账）。
+//  批 1 高度精确直给（与 LazyVStack 现状行为对齐）；current/target 插值
+//  数学已在 WOMessageListSupport.advanceHeight 预置，批 2 displaylink 接管。
+//
+
+import SwiftUI
+import UIKit
+
+@MainActor
+final class WOHostSizingPool: NSObject {
+
+    /// 单池条目：承载任意 SwiftUI 内容的 hosting 控制器（内容以闭包重建，
+    /// identity 由调用方包 .id 强制——见 core 条目内容装配）。
+    private struct Entry {
+        let host: UIHostingController<AnyView>
+        /// 量高时记录的内容签名（调用方提供；内容变 → 重测）。
+        var signature: String
+    }
+
+    /// 行高缓存值（宽度绑定；lody Height 结构同形）。
+    struct HeightEntry: Equatable {
+        let height: CGFloat
+        let width: CGFloat
+        let signature: String
+    }
+
+    private static let sizingLimit = 24
+
+    /// id → 池条目（池即复用面：cell 显示与离屏量高共用同一实例）。
+    private var entries: [String: Entry] = [:]
+    /// LRU 近用序（lody recent 数组同构）。
+    private var recent: [String] = []
+    /// id → 量高（与 entries 分离——条目可被逐出而高度仍有效）。
+    private var heights: [String: HeightEntry] = [:]
+
+    /// 池规模（探针消费）。
+    var poolCount: Int { entries.count }
+    var heightCount: Int { heights.count }
+
+    // MARK: 量高（主线程；未变行直读缓存）
+
+    /// 量高：内容/宽度未变 → 缓存直读（零触碰池）；变化 → 池内视图重测。
+    /// makeContent 闭包仅在需要（重）装配时调用——测量与显示同一视图实例。
+    func height(id: String, width: CGFloat, signature: String,
+                makeContent: () -> AnyView) -> CGFloat {
+        let width = max(1, width)
+        if let cached = heights[id],
+           cached.width == width, cached.signature == signature {
+            return cached.height
+        }
+        let measured = measure(id: id, width: width, signature: signature,
+                               makeContent: makeContent)
+        heights[id] = HeightEntry(height: measured, width: width, signature: signature)
+        return measured
+    }
+
+    /// 强制重测（reconfigure 已知内容变化的行）。
+    @discardableResult
+    func remeasure(id: String, width: CGFloat, signature: String,
+                   makeContent: () -> AnyView) -> CGFloat {
+        let width = max(1, width)
+        let measured = measure(id: id, width: width, signature: signature,
+                               makeContent: makeContent)
+        heights[id] = HeightEntry(height: measured, width: width, signature: signature)
+        return measured
+    }
+
+    func cachedHeight(id: String, width: CGFloat) -> CGFloat? {
+        guard let cached = heights[id], cached.width == max(1, width) else { return nil }
+        return cached.height
+    }
+
+    /// 宽度变化 → 全量失效（高度缓存清空；池视图保留待重测时复用）。
+    func invalidateWidth() {
+        heights.removeAll()
+    }
+
+    /// 行移出数据集 → 高度随之清理（lody retain 过滤同语义）。
+    func retain(_ ids: Set<String>) {
+        heights = heights.filter { ids.contains($0.key) }
+        entries = entries.filter { ids.contains($0.key) }
+        recent.removeAll { !ids.contains($0) }
+    }
+
+    // MARK: 内部
+
+    private func measure(id: String, width: CGFloat, signature: String,
+                         makeContent: () -> AnyView) -> CGFloat {
+        let host: UIHostingController<AnyView>
+        if let entry = entries[id] {
+            host = entry.host
+            // 内容装配统一走同一缝：core 传入的 AnyView 内含 .id(id)，
+            // 内容变则 SwiftUI 状态随 identity 重置（复用正确性锚）。
+            host.rootView = makeContent()
+        } else {
+            host = UIHostingController(rootView: makeContent())
+            host.view.backgroundColor = .clear
+            entries[id] = Entry(host: host, signature: signature)
+        }
+        // LRU 近用 + 池上限（不逐出已挂载视图——lody 铁律）。
+        recent.removeAll { $0 == id }
+        recent.append(id)
+        while recent.count > Self.sizingLimit,
+              let index = recent.firstIndex(where: { $0 != id && entries[$0]?.host.view.superview == nil }) {
+            let evicted = recent.remove(at: index)
+            entries[evicted] = nil
+        }
+        // SwiftUI 量高：定宽 + 竖向 fitting 探测（hosting view 标准测法）。
+        host.view.frame = CGRect(origin: .zero,
+                                 size: CGSize(width: width, height: 1))
+        let size = host.view.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        return ceil(size.height)
+    }
+}

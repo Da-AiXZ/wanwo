@@ -137,11 +137,14 @@ struct ProvidersSectionView: View {
                 .padding(.bottom, 44)
             }
 
-            // 顶部轻提示（saved / 凭据透出 / 删除失败）。
-            if let toast {
-                WOToast(text: toast, onDone: { self.toast = nil })
-                    .padding(.top, 8)
-            }
+            // 顶部轻提示（saved / 凭据透出 / 删除失败）——【批0 件2】迁
+            // 独立 UIWindow（WOToastCenter）；状态语义不变：toast 仍为
+            // 发射载体，onChange 消费后清位。
+        }
+        .onChange(of: toast) { value in
+            guard let value else { return }
+            WOToastCenter.shared.show(text: value)
+            self.toast = nil
         }
         // 删除确认弹窗（清单13；确认后先 unset 凭据再出场折叠移除）。
         .confirmationDialog("删除端点", isPresented: Binding(
