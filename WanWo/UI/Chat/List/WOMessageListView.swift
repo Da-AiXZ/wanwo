@@ -332,6 +332,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 生命周期铁律（会话切换路径）：display link 停 + 在途量高切片作废。
         stopMotion()
         expansionGeneration += 1
+        // 【CI修49】在途 stale 重测切片作废（新会话重来；pool.retain([])
+        // 同步清 pending 锚/队列）。
+        remeasureGen += 1
+        remeasureQueue.removeAll()
+        remeasureActive = false
         pool.retain([])
         ledger.reset()
         syncedNodes = [:]
@@ -360,13 +365,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     private func sync(forceUnfreeze: Set<String> = []) {
         guard let viewModel, dataSource != nil else { return }
-        seedLedgerIfNeeded(viewModel)
         // 批 2 件 4：离屏冻结评估先行（跟随中恒不冻；回带解冻集在变更检测
         // 中强制追平）。滚动驱动的回带（无内容变化帧）另经 scrollViewDid
         // Scroll 调本评估——【批2-QA D2 修】解冻集经 forceUnfreeze 透传并在
         // 内部评估中排除：解冻后立即按 80 带再评估会把刚解冻行（d>80）秒回
         // 冻，打穿 160 迟滞带（抖动根源）；透传行本帧跳过再评估，下一滚动帧
         // 才按 80 带参与。
+        // 【CI修49 拍板②】seedLedgerIfNeeded 挪至插入检测处（返回 justSeeded
+        // 供动画排除；原 sync 开头的独立调用删除——幂等保护会让同帧二次调
+        // 用恒 false，justSeeded 判定失效）。
         let unfrozen = updateFrozenStreams(excluding: forceUnfreeze)
             .union(forceUnfreeze)
         let (slice, _) = WOMessageListSupport.windowedSlice(
@@ -375,7 +382,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             nodes: slice, phase: phase,
             hasEarlierHistory: viewModel.hasEarlierHistory,
             historyLoading: historyLoading)
-        context = makeContext()
+        // 【CI修49 拍板②】插入检测先行（context 需要本帧新插入集——SwiftUI
+        // 入场豁免面）。首屏/扩窗/非跟随帧的新行同样进集（豁免 instant 无
+        // 害——本来无人看动画/已被 seen 门静默），但**插入动画**只在跟随态。
+        let previousIDsPre = Set(currentItems.map(\.id))
+        let insertedIDs = Set(items.map(\.id)).subtracting(previousIDsPre)
+        // 本帧是否刚补种（首屏 seed / 相位变化补种）——同帧插入动画排除
+        // （首屏历史静默呈现 + 回合尾落盘节点 instantLive"刚看过不重播"
+        // 语义都靠它保住；同出动画主场景=streaming 中新 live 节点帧）。
+        let justSeeded = seedLedgerIfNeeded(viewModel)
+        context = makeContext(freshlyInserted: insertedIDs)
 
         // 33Hz no-op 守卫：条目全等且无解冻行 → 零 apply。有解冻行 → 追平
         // （基线同步到最新 + 单次 reconfigure，"内容照常累积、显示一次性追"）。
@@ -427,7 +443,20 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         snapshot.appendSections([.main])
         snapshot.appendItems(ids)
         if !changed.isEmpty { snapshot.reconfigureItems(changed) }
-        applySnapshot(snapshot, changedCount: changed.count)
+        // 【CI修49 拍板②】插入动画判定：跟随态 + 首屏/补种已完成（seeded 且
+        // 非本帧刚 seed——首屏历史静默 + 回合尾落盘 instantLive 语义）+ 非扩
+        // 窗中 + 插入含 non-user 行（纯 user 插入帧=mInR 原型语义独演，不加
+        // UIKit fade 叠加）。
+        let insertedHasNonUser = items.contains { item in
+            guard insertedIDs.contains(item.id) else { return false }
+            if case .bubble(let bubble) = item.kind,
+               case .user = bubble.kind { return false }
+            return true
+        }
+        let animatedInsert = followsBottom && !expanding && ledger.seeded
+            && !justSeeded && insertedHasNonUser
+        applySnapshot(snapshot, changedCount: changed.count,
+                      animatedInsert: animatedInsert)
         // 行移出数据集 → 池/高度随行清理。扩窗量高进行中跳过——被测节点
         // 尚未入库，不可清（提交后 sync 自然覆盖）。
         if !expanding {
@@ -437,11 +466,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     /// apply 收口（探针 + 贴底触发：批 2 件 1——apply 完成后内容可能增长，
     /// followsBottom 时经 scrollToBottom 唤醒/维持 display link 收敛贴底）。
+    /// 【CI修49 拍板②】animatedInsert：有新行插入且处于跟随态 → 动画化
+    /// apply（UICollectionView 插入动画 = 周围 cell 平移"推开" + 新 cell
+    /// 淡入**同时**——用户裁决的同出形态）；纯 reconfigure/首屏/扩窗/
+    /// 非跟随帧保持无动画（既有语义）。
     private func applySnapshot(_ snapshot: NSDiffableDataSourceSnapshot<Section, String>,
-                               changedCount: Int) {
+                               changedCount: Int,
+                               animatedInsert: Bool = false) {
         let startTime = CACurrentMediaTime()
         let itemCount = snapshot.itemIdentifiers.count
-        dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+        dataSource.apply(snapshot, animatingDifferences: animatedInsert) { [weak self] in
             guard let self else { return }
             WOChatProbe.shared.record(
                 durationMs: (CACurrentMediaTime() - startTime) * 1000,
@@ -467,19 +501,26 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 非 .streaming → 回合尾新增节点即时呈现不播动画。
     /// 只在相位变化帧补种（非每帧）——idle 期新入场节点（乐观 u-pending）
     /// 不被误种，mInR 动画保持。
-    private func seedLedgerIfNeeded(_ viewModel: ChatViewModel) {
-        guard phase != lastPhase else { return }
+    /// 【CI修49 拍板②】返回本帧是否刚补种（同帧插入动画排除依据——首屏
+    /// 历史静默 + 回合尾落盘 instantLive"刚看过不重播"）。
+    @discardableResult
+    private func seedLedgerIfNeeded(_ viewModel: ChatViewModel) -> Bool {
+        guard phase != lastPhase else { return false }
+        var justSeeded = false
         if !ledger.seeded, phase != .loading {
             ledger.seedAll(viewModel.bubbles.map(\.id))
             ledger.markSeeded()
+            justSeeded = true
         }
         if phase != .streaming {
             ledger.seedAll(viewModel.bubbles.map(\.id))
+            justSeeded = true
         }
         lastPhase = phase
+        return justSeeded
     }
 
-    private func makeContext() -> WONodeContext {
+    private func makeContext(freshlyInserted: Set<String>) -> WONodeContext {
         WONodeContext(
             phase: phase,
             justEndedStreaming: viewModel?.justEndedStreaming ?? false,
@@ -487,7 +528,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             sessionId: sessionId,
             attachmentStore: viewModel?.attachmentStore,
             ledger: ledger,
-            onImagePreview: { [weak self] ref in self?.onImagePreview?(ref) })
+            onImagePreview: { [weak self] ref in self?.onImagePreview?(ref) },
+            freshlyInsertedIDs: freshlyInserted)
     }
 
     private func cellProvider(_ collectionView: UICollectionView,
@@ -536,20 +578,30 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 防风暴 = 池内 0.5pt 死区 + 量值一致后同值吞掉。签名随上报传入
     /// 【QA P1-2】（当前内容版本——heights 被清空后首写即真签名，杜绝
     /// "" 签名条目被空态重测覆盖 → 永久溢出窗口）。
-    /// 非跟随态先抓视口锚（复用扩窗锚定机制——高度修正引发的 frame 重排
-    /// 不漂移用户视线）；【QA P2-2】expanding 中让位（不覆写扩窗锚）；
-    /// 跟随态贴底收敛自会追新。
     func nodeHeightChanged(id: String, height: CGFloat) {
         guard let cv = collectionView, cv.window != nil else { return }
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: contentWidth(), height: height,
                                 signature: signature) else { return }
+        commitHeightChange(id: id, height: height, collectionView: cv)
+    }
+
+    /// 高度提交公共体【QA P1-2 拆分】：锚定 + 动画 invalidate + 贴底。
+    /// 回传路径（池死区门后）与切片重测路径（remeasure 已直写 cache，绕过
+    /// updateHeight 死区门——门会因 cache 已是新值恒 false 吞掉提交，真机
+    /// 病灶=动画尾帧/一次性宽度变化后修正不上屏）共用。
+    private func commitHeightChange(id: String, height: CGFloat,
+                                    collectionView cv: UICollectionView) {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
                 oldContentHeight: cv.contentSize.height)
         }
-        messageLayout.invalidateLayout()
+        UIView.animate(withDuration: 0.22, delay: 0,
+                       options: [.allowUserInteraction, .beginFromCurrentState]) {
+            self.messageLayout.invalidateLayout()
+            self.view.layoutIfNeeded()
+        }
         if followsBottom {
             scrollToBottom()
         }
@@ -586,6 +638,80 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     }
 
     // MARK: 件 3 历史扩窗（顶部预取 + 4ms 预算切片 + 锚定恢复）
+
+    /// 【CI修49】宽度变化 stale 重测切片（右栏开合/旋转根治第二半）：
+    /// 列宽动画逐帧变化 → prepare 逐帧 stale 收集 → drain 追加队列 →
+    /// 4ms 预算 + 8ms 让位（lody prepareHistorySlice 同参）后台重测 →
+    /// 经 nodeHeightChanged 提交（回传链：锚定+动画 invalidate）。
+    /// 队列模式：新 batch 追加不中断在途切片（pendingRemasure 去重防
+    /// 重复入队）；单条执行时校验宽度仍等于当前 contentWidth——不等
+    /// （动画还在变）丢弃，宽度稳定后的问询重新入队。
+    private var remeasureQueue: [WOHostSizingPool.StaleEntry] = []
+    private var remeasureActive = false
+    /// 切片代际（会话切换/视图拆解作废）。
+    private var remeasureGen = 0
+
+    private func drainStaleSweep() {
+        let batch = pool.drainStaleSweep()
+        guard !batch.isEmpty else { return }
+        remeasureQueue.append(contentsOf: batch)
+        guard !remeasureActive else { return }
+        remeasureActive = true
+        runRemeasureSlice(generation: remeasureGen, index: 0)
+    }
+
+    private func runRemeasureSlice(generation: Int, index: Int) {
+        guard generation == remeasureGen else {
+            remeasureActive = false
+            return
+        }
+        let sliceStart = CACurrentMediaTime()
+        var cursor = index
+        // 视图已拆（会话页离场）→ 队列清空退出（shutdown 已 bump 代际，
+        // 本防御兜底 window 已 nil 的窗口期；【QA R1】逐条释放去重锚——
+        // 瞬态离场不经 retain([]) 时该批行后续宽度变化不被锚挡）。
+        guard let cv = collectionView, cv.window != nil else {
+            for entry in remeasureQueue { pool.cancelPendingRemasure(id: entry.id) }
+            remeasureQueue.removeAll()
+            remeasureActive = false
+            return
+        }
+        while cursor < remeasureQueue.count,
+              (CACurrentMediaTime() - sliceStart) < 0.004 {
+            let entry = remeasureQueue[cursor]
+            cursor += 1
+            // 【QA P1-3】丢弃路径（宽度又变/行已移除）必须释放去重锚——
+            // 否则该行后续所有宽度变化永不重新入队（stale 自愈链失效）。
+            guard entry.width == contentWidth(),
+                  let item = currentItems.first(where: { $0.id == entry.id }) else {
+                pool.cancelPendingRemasure(id: entry.id)
+                continue
+            }
+            // 【QA P1-2】remeasure 已直写 cache——提交走 commitHeightChange
+            // 绕过 updateHeight 死区门（同值恒 false 会吞掉上屏）；仅高度
+            // 真变（含首知 previous=nil）才提交。
+            let previous = pool.cachedHeight(id: entry.id, width: entry.width)
+            let height = pool.remeasure(
+                id: entry.id, width: entry.width,
+                signature: "v\(contentVersions[entry.id] ?? 0)",
+                makeContent: { [weak self] in
+                    guard let self else { return AnyView(Color.clear) }
+                    return self.makeNodeContent(item, reportsHeight: false)
+                })
+            if previous != height {
+                commitHeightChange(id: entry.id, height: height, collectionView: cv)
+            }
+        }
+        remeasureQueue.removeFirst(cursor)
+        if remeasureQueue.isEmpty {
+            remeasureActive = false
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+            guard let self, self.remeasureActive, generation == self.remeasureGen else { return }
+            self.runRemeasureSlice(generation: generation, index: 0)
+        }
+    }
 
     private func maybeExpandHistory() {
         guard let viewModel, viewModel.hasEarlierHistory,
@@ -698,6 +824,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // 【CI修49】stale 重测切片调度（prepare 期间收集的宽度变化行——
+        // 空队列时零成本）。
+        drainStaleSweep()
         if let restore = pendingAnchorRestore {
             pendingAnchorRestore = nil
             restoreTopAnchor(restore)
@@ -797,6 +926,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     func shutdown() {
         stopMotion()
         expansionGeneration += 1 // 在途量高切片作废
+        // 【CI修49】stale 重测切片作废。
+        remeasureGen += 1
+        remeasureQueue.removeAll()
+        remeasureActive = false
     }
 
     deinit {
@@ -826,33 +959,43 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     /// 右下悬浮回底钮：距底 > resumeDistance(80) 且非跟随态现形（lody
     /// updateBottomButton :256-259 判定同型）；点击 = 恢复跟随 + 贴底。
+    /// 【CI修49 视觉改造（用户规格）】：白底+阴影（旧 blur 灰底太弱）、
+    /// 54pt（1.5×36）、左移 48（≈两个字间距）、高度抬到 dock 上方
+    /// （dockBaseline 137+20；键盘避让=SwiftUI 缩视口自动跟随）。
     private func installBackToBottomButton(on container: UIView) {
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
-        blur.translatesAutoresizingMaskIntoConstraints = false
-        blur.layer.cornerRadius = 18
-        blur.clipsToBounds = true
+        let disc = UIView()
+        disc.translatesAutoresizingMaskIntoConstraints = false
+        disc.backgroundColor = .systemBackground
+        disc.layer.cornerRadius = 27
+        disc.layer.shadowColor = UIColor.black.cgColor
+        disc.layer.shadowOpacity = 0.16
+        disc.layer.shadowRadius = 10
+        disc.layer.shadowOffset = CGSize(width: 0, height: 4)
         let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: "arrow.down"),
+        button.setImage(UIImage(systemName: "arrow.down",
+                                withConfiguration: UIImage.SymbolConfiguration(
+                                    pointSize: 20, weight: .medium)),
                         for: .normal)
-        button.tintColor = .secondaryLabel
+        button.tintColor = .label
         button.translatesAutoresizingMaskIntoConstraints = false
         button.accessibilityLabel = "回到最新消息"
         button.addTarget(self, action: #selector(backToBottomTapped), for: .touchUpInside)
-        blur.contentView.addSubview(button)
-        container.addSubview(blur)
+        disc.addSubview(button)
+        container.addSubview(disc)
         NSLayoutConstraint.activate([
-            blur.trailingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            blur.bottomAnchor.constraint(equalTo: container.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            blur.widthAnchor.constraint(equalToConstant: 36),
-            blur.heightAnchor.constraint(equalToConstant: 36),
-            button.centerXAnchor.constraint(equalTo: blur.contentView.centerXAnchor),
-            button.centerYAnchor.constraint(equalTo: blur.contentView.centerYAnchor),
+            disc.trailingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.trailingAnchor, constant: -48),
+            disc.bottomAnchor.constraint(equalTo: container.safeAreaLayoutGuide.bottomAnchor,
+                                         constant: -(WOMessageListSupport.dockBaselineHeight + 20)),
+            disc.widthAnchor.constraint(equalToConstant: 54),
+            disc.heightAnchor.constraint(equalToConstant: 54),
+            button.centerXAnchor.constraint(equalTo: disc.centerXAnchor),
+            button.centerYAnchor.constraint(equalTo: disc.centerYAnchor),
         ])
-        blur.alpha = 0
-        blur.isHidden = true
+        disc.alpha = 0
+        disc.isHidden = true
         backToBottomShown = false
         backToBottomButton = button
-        backToBottomContainer = blur
+        backToBottomContainer = disc
     }
 
     @objc private func backToBottomTapped() {

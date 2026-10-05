@@ -1107,10 +1107,13 @@ struct ReasoningDisclosure: View {
                         sweepActive: running) {
             // thinkBody：padding 4/0/4/22，13px/20px 行高（lineSpacing 2），
             // labelTertiary，pre-wrap 语义（digest-H .think 正文左缩进 22px）。
+            // 【CI修49】fixedSize(vertical:)：展开态长文本拒绝高度压缩
+            // （可压缩 Text 回传死区同治）。
             Text(text)
                 .font(.system(size: 13))
                 .foregroundColor(WOAlias.labelTertiary)
                 .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
                 .padding(.bottom, 4)

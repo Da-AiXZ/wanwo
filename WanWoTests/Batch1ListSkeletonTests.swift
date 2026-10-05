@@ -298,6 +298,60 @@ final class Batch1ListSkeletonTests: XCTestCase {
         XCTAssertEqual(remeasured, 888)
     }
 
+    // MARK: CI修49 池宽度变化 stale 顶替（右栏开合卡顿根治）
+
+    @MainActor
+    func testPoolStaleSweepOnWidthChange() {
+        let pool = WOHostSizingPool()
+        _ = pool.height(id: "s1", width: 300, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 80)) })
+        // 宽度变化 + 签名未变 → 旧高先顶（不触发同步重测——哨兵 999 不被调）
+        // + 记入 staleSweep 待异步重测。
+        let stale = pool.height(id: "s1", width: 500, signature: "v1",
+                                makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(stale, 80)
+        XCTAssertEqual(pool.staleSweep, [WOHostSizingPool.StaleEntry(id: "s1", width: 500)])
+        // 重复问询去重（pendingRemasure 锚）——不重复入队。
+        _ = pool.height(id: "s1", width: 500, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(pool.staleSweep.count, 1)
+        // drain 取走队列。
+        let batch = pool.drainStaleSweep()
+        XCTAssertEqual(batch.count, 1)
+        XCTAssertTrue(pool.staleSweep.isEmpty)
+        // remeasure 完成释放去重锚 → 宽度再变可重新入队。
+        _ = pool.remeasure(id: "s1", width: 500, signature: "v1",
+                           makeContent: { AnyView(Color.clear.frame(height: 120)) })
+        _ = pool.height(id: "s1", width: 600, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(pool.staleSweep, [WOHostSizingPool.StaleEntry(id: "s1", width: 600)])
+    }
+
+    @MainActor
+    func testPoolSignatureChangeStillSyncRemasures() {
+        // 签名变化（内容更新面）保持同步重测语义——不进 stale 队列。
+        let pool = WOHostSizingPool()
+        _ = pool.height(id: "s2", width: 300, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 80)) })
+        let remeasured = pool.height(id: "s2", width: 300, signature: "v2",
+                                     makeContent: { AnyView(Color.clear.frame(height: 140)) })
+        XCTAssertEqual(remeasured, 140)
+        XCTAssertTrue(pool.staleSweep.isEmpty)
+    }
+
+    @MainActor
+    func testPoolRetainClearsStaleBookkeeping() {
+        let pool = WOHostSizingPool()
+        _ = pool.height(id: "s3", width: 300, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 80)) })
+        _ = pool.height(id: "s3", width: 500, signature: "v1",
+                        makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertFalse(pool.staleSweep.isEmpty)
+        pool.retain(["other"])
+        XCTAssertTrue(pool.staleSweep.isEmpty)
+        XCTAssertNil(pool.cachedHeight(id: "s3", width: 500))
+    }
+
     // MARK: 入场账本（WOEntryLedger；@MainActor）
 
     @MainActor

@@ -69,6 +69,30 @@ struct WONodeContext {
     let ledger: WOEntryLedger
     /// 消息气泡图片原图预览回调（原 messagePreview @State binding 的闭包形）。
     let onImagePreview: (ImageAttachmentRef) -> Void
+    /// 【CI修49 拍板②】本帧新插入的行 id（sync 插入检测；仅插入帧非空，
+    /// 每帧重建 context 自动清空）——这些行的 SwiftUI 入场动画豁免
+    /// （non-user），入场视觉全权交给 UIKit 插入动画（周围 cell 平移
+    /// "推开" + 新 cell 淡入**同时**——用户裁决的同出形态；旧 fadeUp
+    /// "先上移占位再出现"的两步观感退役）。
+    let freshlyInsertedIDs: Set<String>
+
+    init(phase: ChatViewModel.Phase,
+         justEndedStreaming: Bool,
+         settledBubbleIDs: Set<String>,
+         sessionId: String,
+         attachmentStore: AttachmentStore?,
+         ledger: WOEntryLedger,
+         onImagePreview: @escaping (ImageAttachmentRef) -> Void,
+         freshlyInsertedIDs: Set<String> = []) {
+        self.phase = phase
+        self.justEndedStreaming = justEndedStreaming
+        self.settledBubbleIDs = settledBubbleIDs
+        self.sessionId = sessionId
+        self.attachmentStore = attachmentStore
+        self.ledger = ledger
+        self.onImagePreview = onImagePreview
+        self.freshlyInsertedIDs = freshlyInsertedIDs
+    }
 }
 
 // MARK: - 内容高度上报桥（CI修48：SwiftUI 异步高度 → UIKit 列表回传）
@@ -128,13 +152,20 @@ struct WONodeItemContent: View {
             .padding(.top, 48)
         case .beam:
             // 原 :875-882 流光换字状态行（形态原样）。
+            // 【CI修49】左对齐：根视图=内容尺寸，hosting 内默认居中
+            // （旧链 LazyVStack 行容器 leading 语义的等价补偿）。
             WOBeamSwapper()
                 .padding(.top, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         case .failed(let message):
             // 原 :883-891 错误横幅（形态原样）。
+            // 【CI修49】fixedSize(vertical:)：Text 拒绝高度压缩（量高/回传
+            // 闭环的不可压缩前提——可压缩 Text 被 proposal 截断后回传量到
+            // 被压值，死区吞掉 → 永久截断）。
             Text(message)
                 .font(.system(size: 13))
                 .foregroundColor(WOAlias.stateErrorPrimary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 12)
@@ -234,7 +265,10 @@ struct WONodeBubbleView: View {
         let fromRight = kindTag == "user"
         // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
         // 即时呈现不重播；onSeen 归位旗标。
-        let animate = !seen && !instantLive
+        // 【CI修49 拍板②】插入帧豁免（non-user）：本帧新插入行的入场交给
+        // UIKit 插入动画（推开+淡入同出）；user 行保留 mInR（原型语义）。
+        let fresh = context.freshlyInsertedIDs.contains(bubble.id) && kindTag != "user"
+        let animate = !seen && !instantLive && !fresh
             && !(kindTag == "user" && context.ledger.pendingUserSeen
                  && bubble.id != "u-pending")
         let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
@@ -323,15 +357,20 @@ struct WONodeBubbleView: View {
                 Text(text)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(WOAlias.labelSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgModulePlatform))
 
         case .note(let text):
+            // 【CI修49】fixedSize(vertical:)：变更纸条等多行文本被 cell
+            // proposal 截断成"…"（可压缩 Text 回传死区）的根治——拒绝高度
+            // 压缩后 GeometryReader 量到理想高，回传修正闭环自愈。
             Text(text)
                 .font(.system(size: 12))
                 .foregroundColor(WOAlias.labelTertiary)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .turnUsage(let summary):
@@ -367,6 +406,7 @@ struct WONodeBubbleView: View {
                         .foregroundColor(WOAlias.labelPrimary)
                         .multilineTextAlignment(.trailing)
                         .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 10)
                         .padding(.horizontal, 16)
                         .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))

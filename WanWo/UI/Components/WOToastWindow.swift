@@ -11,8 +11,8 @@
 //      空白区域触摸穿透到下层窗口，只让 Toast 卡片区域接触摸；
 //    · 空窗即隐藏（无 Toast 时窗口不拦截任何事件）。
 //  视觉复用既有 WOToast / WOUndoToast SwiftUI 视图（不重画），经
-//  UIHostingController 承载；锚定窗口顶部安全区——键盘弹出/收起不影响
-//  顶部锚位（键盘只改底部安全区）。
+//  UIHostingController 承载；【CI修49】锚定 keyboardLayoutGuide 上方
+//  （屏幕中下、dock 之上）——键盘弹出自动避让（旧链视图树挂载的视觉位）。
 //
 
 import SwiftUI
@@ -45,6 +45,11 @@ final class WOToastCenter {
     /// ——present 递增，settle 校验代际后才隐藏窗口）。
     private var generation = 0
 
+    /// 【CI修49】Toast 锚位=keyboardLayoutGuide 上方 148pt（键盘弹出自动
+    /// 避让；未弹时 guide 吸附安全区底——148 ≈ dock 基准 137+12，落位在
+    /// dock 上方 ≈ 屏幕中下，旧链 WOToast 挂视图树的视觉位）。
+    private static let bottomClearance: CGFloat = 148
+
     private init() {}
 
     // MARK: 公共 API
@@ -66,7 +71,6 @@ final class WOToastCenter {
             // 侧接管视图内部计时，复杂度不值）。
             .id(token)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 8)
         ))
     }
 
@@ -85,7 +89,6 @@ final class WOToastCenter {
             // 【P2-4 修】同 show——代际 identity 强制重挂载。
             .id(token)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 8)
         ))
     }
 
@@ -125,9 +128,12 @@ final class WOToastCenter {
             NSLayoutConstraint.activate([
                 host.view.centerXAnchor.constraint(
                     equalTo: rootVC.view.centerXAnchor),
-                host.view.topAnchor.constraint(
-                    equalTo: rootVC.view.safeAreaLayoutGuide.topAnchor,
-                    constant: 8),
+                // 【CI修49】底部锚位（键盘避让）：keyboardLayoutGuide 跨窗
+                // 跟随系统键盘 frame；未弹键盘时吸附安全区底（home indicator
+                // 上方）——constant 抬 148 落 dock 上方。
+                host.view.bottomAnchor.constraint(
+                    equalTo: rootVC.view.keyboardLayoutGuide.topAnchor,
+                    constant: -Self.bottomClearance),
             ])
             let widthC = host.view.widthAnchor
                 .constraint(equalToConstant: 0)
@@ -144,16 +150,24 @@ final class WOToastCenter {
         window.layoutIfNeeded()
     }
 
-    /// 【CI修47】手动量内容尺寸并更新宿主宽高约束（sizingOptions 等价实现）。
-    /// SwiftUI 内容经 hosting view 的 systemLayoutSizeFitting 同步取值；
-    /// 宽度 = min(窗宽−32, 420)，纵向 fittingSizeLevel 取自然高。
+    /// 【CI修47→修49】手动量内容尺寸并更新宿主宽高约束。
+    /// 修49 量测修正（真机病灶：Toast 只剩图标无文字）：
+    ///   · 宽度**固定**为 min(窗宽−32, 420)（旧 hPriority .defaultHigh 下
+    ///     fitting 求解可把可压缩的 Text 压没——真机胶囊只剩 16pt 图标）；
+    ///   · 量高前 setNeedsLayout+layoutIfNeeded 强制 SwiftUI 完成首帧
+    ///     render（rootView 刚设即量 = 量到未渲染中间态）；
+    ///   · hPriority .required 定宽求解，纵向 fittingSizeLevel 取自然高。
+    ///   胶囊视觉不受影响：WOToast 的 Capsule 背景挂内容 HStack（不贪婪），
+    ///   固定宽容器内仍按内容自适应宽 + 居中。
     private func refitHost(_ host: UIHostingController<AnyView>, width: CGFloat) {
         let targetWidth = max(120, min(width - 32, 420))
+        hostWidthConstraint?.constant = targetWidth
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
         let fit = host.view.systemLayoutSizeFitting(
             CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .defaultHigh,
+            withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel)
-        hostWidthConstraint?.constant = ceil(fit.width)
         hostHeightConstraint?.constant = ceil(fit.height)
     }
 

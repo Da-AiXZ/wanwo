@@ -598,8 +598,10 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// 件4：draft 观察入口（WOChatView .onChange(of: viewModel.draft) 唯一
-    /// 调用）。单次突增过阈值且可发送 → 置提案 + 弹询问条（lody
-    /// onPasteLongText 的监听版等价；流式/命令在途不弹——零打扰纪律）。
+    /// 调用）。单次突增过阈值且可发送 → **直接转附件**【CI修49 拍板①
+    /// 2026-10-05 用户裁决："不留询问条，长内容粘贴直接转成附件"】——
+    /// 转换成功弹「已转为附件·撤销」条（后悔药保留）；失败路径（模型未
+    /// 就绪/写文件失败）横幅照旧、文本不丢。流式/命令在途不转（零打扰纪律）。
     func noteDraftChanged(to newValue: String) {
         let oldValue = lastObservedDraft
         lastObservedDraft = newValue
@@ -610,13 +612,11 @@ final class ChatViewModel: ObservableObject {
         guard let surge = Self.pastedSurge(old: oldValue, new: newValue),
               canSendFromPhase else { return }
         pendingPastePromotion = PastePromotionProposal(pastedText: surge)
-        WOToastCenter.shared.showAction(
-            text: "粘贴内容较长（\(surge.count) 字符），转为附件？",
-            actionTitle: "转为附件",
-            hold: 6.0) { [weak self] in self?.convertPendingPastePromotion() }
+        convertPendingPastePromotion()
     }
 
-    /// 件4：确认转换（询问条动作）。转存工作区 `.wanwo/pastes/` 临时 .md
+    /// 件4：转换执行（原询问条动作；拍板①后由 noteDraftChanged 直调）。
+    /// 转存工作区 `.wanwo/pastes/` 临时 .md
     /// → draft 原文替换为 `@路径 ` 引用（F040 expandFileReferences 既有
     /// 注入通道——AI 侧收到 <file> 块；**不新造文本附件类型**，批0 范围
     /// 裁定）→ 弹撤销条。
@@ -657,21 +657,27 @@ final class ChatViewModel: ObservableObject {
         let draftBefore = draft
         suppressPasteSurgeOnce = true
         draft = replaced
-        lastPastePromotion = PastePromotionRecord(filePath: path,
-                                                  originalDraft: draftBefore,
-                                                  reference: reference)
+        let record = PastePromotionRecord(filePath: path,
+                                          originalDraft: draftBefore,
+                                          reference: reference)
+        lastPastePromotion = record
+        // 【QA P2-6】撤销按条捕获 record（闭包持本条，不读当下
+        // lastPastePromotion）——直转版连发两次大粘贴时，第一条的撤销条
+        // 不再误吞第二条记录（删错文件语义）。
         WOToastCenter.shared.showAction(
             text: "已转为附件 \(path)",
             actionTitle: "撤销",
-            hold: 6.0) { [weak self] in self?.undoLastPastePromotion() }
+            hold: 6.0) { [weak self] in self?.undoPastePromotion(record) }
     }
 
-    /// 件4：撤销回滚（撤销条动作）：删除转存文件 + draft 回填原文
-    /// （决策见 undoReplacement——引用在稿中换回 / 稿空全量回填 / 否则
-    /// 原文前置拼接防覆盖用户新输入）。
-    func undoLastPastePromotion() {
-        guard let record = lastPastePromotion else { return }
-        lastPastePromotion = nil
+    /// 件4：撤销回滚（撤销条动作；【QA P2-6】record 按条捕获形态——闭包
+    /// 持本条 record，lastPastePromotion 仅等值时清位，连续直转互不误伤）：
+    /// 删除转存文件 + draft 回填原文（决策见 undoReplacement——引用在稿中
+    /// 换回 / 稿空全量回填 / 否则原文前置拼接防覆盖用户新输入）。
+    func undoPastePromotion(_ record: PastePromotionRecord) {
+        if lastPastePromotion?.filePath == record.filePath {
+            lastPastePromotion = nil
+        }
         if let loop = agentLoop {
             let workspace = AgentLoop.workspaceAccess(sessionId: sessionID,
                                                       cwd: loop.deps.sessionCwd)

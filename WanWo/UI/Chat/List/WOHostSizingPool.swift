@@ -51,6 +51,18 @@ final class WOHostSizingPool: NSObject {
     private var recent: [String] = []
     /// id → 量高（与 entries 分离——条目可被逐出而高度仍有效）。
     private var heights: [String: HeightEntry] = [:]
+    /// 【CI修49】宽度变化 stale 顶替：宽度已变但旧高先顶的行（异步重测
+    /// 队列去重锚）。
+    private var pendingRemasure: Set<String> = []
+
+    /// stale 顶替条目（core 异步切片重测的消费单元）。
+    struct StaleEntry: Equatable {
+        let id: String
+        let width: CGFloat
+    }
+    /// 本轮问询中 stale 顶替的行（layout prepare 期间收集；core 经
+    /// drainStaleSweep 取走并切片重测）。
+    private(set) var staleSweep: [StaleEntry] = []
 
     /// 池规模（探针消费）。
     var poolCount: Int { entries.count }
@@ -60,12 +72,24 @@ final class WOHostSizingPool: NSObject {
 
     /// 量高：内容/宽度未变 → 缓存直读（零触碰池）；变化 → 池内视图重测。
     /// makeContent 闭包仅在需要（重）装配时调用——测量与显示同一视图实例。
+    /// 【CI修49 宽度变化分支】：签名未变、宽度变（旋转/分栏/右栏开合）→
+    /// **旧高先顶（stale）**并记入 staleSweep 待异步切片重测——同步重测
+    /// 会让列宽动画（0.42s 逐帧变宽）每帧全量量高 = 动画帧全丢（真机
+    /// 病灶：右栏开合瞬跳）。stale 高度由切片重测/显示面回传修正。
     func height(id: String, width: CGFloat, signature: String,
                 makeContent: () -> AnyView) -> CGFloat {
         let width = max(1, width)
-        if let cached = heights[id],
-           cached.width == width, cached.signature == signature {
-            return cached.height
+        if let cached = heights[id] {
+            if cached.width == width, cached.signature == signature {
+                return cached.height
+            }
+            if cached.signature == signature {
+                if !pendingRemasure.contains(id) {
+                    pendingRemasure.insert(id)
+                    staleSweep.append(StaleEntry(id: id, width: width))
+                }
+                return cached.height
+            }
         }
         let measured = measure(id: id, width: width, signature: signature,
                                makeContent: makeContent)
@@ -73,7 +97,23 @@ final class WOHostSizingPool: NSObject {
         return measured
     }
 
-    /// 强制重测（reconfigure 已知内容变化的行）。
+    /// 取走 stale 顶替队列（core 切片重测消费；pending 去重锚保留至
+    /// remeasure 完成时移除——重复问询不重复入队）。
+    func drainStaleSweep() -> [StaleEntry] {
+        let batch = staleSweep
+        staleSweep = []
+        return batch
+    }
+
+    /// 【QA P1-3】stale 重测丢弃路径释放去重锚（切片中宽度失配/行已移除
+    /// 而跳过的条目——不释放则该行后续所有宽度变化永不重新入队，stale
+    /// 自愈链对该行失效）。释放后宽度稳定时的下一次问询重新入队。
+    func cancelPendingRemasure(id: String) {
+        pendingRemasure.remove(id)
+    }
+
+    /// 强制重测（reconfigure 已知内容变化的行；【CI修49】完成时释放该行
+    /// 的 stale 去重锚——后续宽度再变可重新入队）。
     @discardableResult
     func remeasure(id: String, width: CGFloat, signature: String,
                    makeContent: () -> AnyView) -> CGFloat {
@@ -81,6 +121,7 @@ final class WOHostSizingPool: NSObject {
         let measured = measure(id: id, width: width, signature: signature,
                                makeContent: makeContent)
         heights[id] = HeightEntry(height: measured, width: width, signature: signature)
+        pendingRemasure.remove(id)
         return measured
     }
 
@@ -119,11 +160,14 @@ final class WOHostSizingPool: NSObject {
         heights.removeAll()
     }
 
-    /// 行移出数据集 → 高度随之清理（lody retain 过滤同语义）。
+    /// 行移出数据集 → 高度随之清理（lody retain 过滤同语义；
+    /// 【CI修49】stale 去重锚/队列同步清理——会话切换不残留）。
     func retain(_ ids: Set<String>) {
         heights = heights.filter { ids.contains($0.key) }
         entries = entries.filter { ids.contains($0.key) }
         recent.removeAll { !ids.contains($0) }
+        pendingRemasure = pendingRemasure.filter { ids.contains($0) }
+        staleSweep.removeAll { !ids.contains($0.id) }
     }
 
     // MARK: 内部
