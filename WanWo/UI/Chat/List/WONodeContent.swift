@@ -21,9 +21,48 @@ import SwiftStreamingMarkdown
 
 // MARK: - 节点渲染上下文（装配缝值快照）
 
-/// 渲染所需的宿主状态快照。批 2 最小集（宿主身份/附件存储/图片预览回调）；
-/// 批 4 引擎接入时按 tag WONodeContext 扩展 phase/settledBubbleIDs 等
-/// 引擎消费字段（struct 加属性+init 默认值，破坏面为零）。
+/// 入场账本（tag backup-ci50-20261006 版原样；批 3 随引擎 core 引入——
+/// 引擎 cell 复用/重建不丢 seen 门。批 3 阶段 WOChatView 旧列表动画仍走
+/// 自有 @State 账本（animatedIDs），本账本由引擎 core 持有、批 4 接入时
+/// 成为一结算算真值源——双轨期互不干扰（引擎不上屏））。
+@MainActor
+final class WOEntryLedger {
+    /// 已播过/已豁免入场动画的节点 id（原 animatedIDs）。
+    private(set) var seenIDs: Set<String> = []
+    /// 用户消息哨兵交接旗（原 pendingUserSeen）——"u-pending"（乐观 mInR）
+    /// 被 "u(seq)"（落盘投影）替换时后者即时呈现不重播；onSeen 归位。
+    var pendingUserSeen = false
+    /// 历史种子位（原 entrySeeded）：open 完成后的首投影不播入场。
+    private(set) var seeded = false
+
+    /// 入场完成登记（原 WOEntryModifier.onSeen 闭包体）。
+    func markSeen(_ id: String, kindTag: String) {
+        seenIDs.insert(id)
+        if kindTag == "user" { pendingUserSeen = (id == "u-pending") }
+    }
+
+    /// 补种（幂等 formUnion）。
+    func seedAll(_ ids: some Sequence<String>) {
+        seenIDs.formUnion(ids)
+    }
+
+    func markSeeded() { seeded = true }
+
+    /// 会话切换全量重置（core reset）。
+    func reset() {
+        seenIDs = []
+        pendingUserSeen = false
+        seeded = false
+    }
+}
+
+/// 渲染所需的宿主状态快照。
+/// 【重做批 2】最小集（sessionId/attachmentStore/onImagePreview）。
+/// 【重做批 3 扩展】引擎 core 消费字段（phase/justEndedStreaming/
+/// settledBubbleIDs/ledger/freshlyInsertedIDs）——均带默认值，批 2 调用点
+/// （WOChatView.nodeContext）不破；batch 4 接入时 WONodeBubbleView 的
+/// seen 判定切换到 ledger（本阶段双轨期：旧列表走自有 @State 账本，
+/// 引擎不上屏无冲突）。
 struct WONodeContext {
     let sessionId: String
     /// 附件存储缝（MessageImagesView 图片源；open() 装配后非 nil）。
@@ -31,6 +70,33 @@ struct WONodeContext {
     /// 消息气泡图片原图预览回调（原 messagePreview @State binding 的闭包形
     /// ——lightbox 状态仍在 WOChatView 宿主层）。
     let onImagePreview: (ImageAttachmentRef) -> Void
+    // MARK: 引擎 core 消费字段（批 3 扩展；渲染层 batch 4 起消费）
+    let phase: ChatViewModel.Phase
+    let justEndedStreaming: Bool
+    let settledBubbleIDs: Set<String>
+    /// 入场账本（引用型——onSeen 写面跨 cell 生命周期共享；core 持有）。
+    let ledger: WOEntryLedger
+    /// 本帧新插入的行 id（sync 插入检测；批 6 同出动画的 SwiftUI 豁免缝——
+    /// 本阶段恒空集透传）。
+    let freshlyInsertedIDs: Set<String>
+
+    init(sessionId: String,
+         attachmentStore: AttachmentStore?,
+         onImagePreview: @escaping (ImageAttachmentRef) -> Void,
+         phase: ChatViewModel.Phase = .loading,
+         justEndedStreaming: Bool = false,
+         settledBubbleIDs: Set<String> = [],
+         ledger: WOEntryLedger = WOEntryLedger(),
+         freshlyInsertedIDs: Set<String> = []) {
+        self.sessionId = sessionId
+        self.attachmentStore = attachmentStore
+        self.onImagePreview = onImagePreview
+        self.phase = phase
+        self.justEndedStreaming = justEndedStreaming
+        self.settledBubbleIDs = settledBubbleIDs
+        self.ledger = ledger
+        self.freshlyInsertedIDs = freshlyInsertedIDs
+    }
 }
 
 // MARK: - 单气泡渲染（全事件类型可见；原 WOChatView.bubbleView/userBubble 原样迁移）
@@ -506,14 +572,122 @@ private struct ReasoningDisclosure: View {
                         sweepActive: running) {
             // thinkBody：padding 4/0/4/22，13px/20px 行高（lineSpacing 2），
             // labelTertiary，pre-wrap 语义（digest-H .think 正文左缩进 22px）。
-            Text(text)
-                .font(.system(size: 13))
-                .foregroundColor(WOAlias.labelTertiary)
-                .lineSpacing(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-                .padding(.bottom, 4)
-                .padding(.leading, 22)
+            // 【重做批3 附带·用户拍板 2026-10-06】展开体限高 12 行（≈240pt）
+            // 内滚——超长思考展开只增长固定高度：治 ①LazyVStack 长内容展开
+            // 主线程量高卡顿 ②展开/收起时周围行（总结等）位置瞬移闪跳
+            // （行高变化超出动画同步范围，用户真机实证"总结先闪后对接"）；
+            // 参照工具卡展开体同款 ScrollView(maxHeight:) 模式
+            // （WOToolCards.swift:300-304）。短内容不受影响（maxHeight 弹性）。
+            ScrollView(.vertical) {
+                Text(text)
+                    .font(.system(size: 13))
+                    .foregroundColor(WOAlias.labelTertiary)
+                    .lineSpacing(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 240)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+            .padding(.leading, 22)
         }
+    }
+}
+
+// MARK: - 列表条目装配（重做批 3：WOMListNode 层——引擎 cell 的 SwiftUI 面；
+// tag backup WONodeItemContent 的元条目 case 原样 + .bubble 转批 2 的
+// WONodeBubbleView 单一装配源）
+
+/// 列表 cell 的 SwiftUI 面：气泡走批 2 渲染原子件；四类元条目（历史头/
+/// 装配 spinner/流光/失败横幅）为原 messageList 附属视图的原样迁移。
+struct WONodeItemContent: View {
+    let node: WOMListNode
+    let context: WONodeContext
+
+    var body: some View {
+        switch node.kind {
+        case .bubble(let bubble):
+            WONodeBubbleView(bubble: bubble, context: context)
+        case .history(let loading):
+            historyHeader(loading: loading)
+        case .loading:
+            // 原 messageList 装配 spinner（形态原样）。
+            HStack {
+                Spacer()
+                ProgressView()
+                Spacer()
+            }
+            .padding(.top, 48)
+        case .beam:
+            // 原 流光换字状态行（形态原样）。
+            // 【CI修49】左对齐：根视图=内容尺寸，hosting 内默认居中
+            // （旧链 LazyVStack 行容器 leading 语义的等价补偿）。
+            WOBeamSwapper()
+                .padding(.top, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .failed(let message):
+            // 原 错误横幅（形态原样）。
+            // 【CI修49】fixedSize(vertical:)：Text 拒绝高度压缩（量高/回传
+            // 闭环的不可压缩前提——可压缩 Text 被 proposal 截断后回传量到
+            // 被压值，死区吞掉 → 永久截断）。
+            Text(message)
+                .font(.system(size: 13))
+                .foregroundColor(WOAlias.stateErrorPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12)
+                    .fill(WOAlias.stateErrorSecondary))
+        }
+    }
+
+    /// 「载入更早」列表头（lody ChatHistoryHeader 语义的万我形态——新元素，
+    /// 无既有视觉包袱；量高切片进行中 = spinner）。
+    private func historyHeader(loading: Bool) -> some View {
+        HStack(spacing: 6) {
+            if loading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(loading ? "正在载入更早消息…" : "查看更早消息")
+                .font(.system(size: 12))
+                .foregroundColor(WOAlias.labelTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - 内容高度上报桥（CI修48 机制原样：SwiftUI 异步高度 → 引擎回传）
+
+/// PreferenceKey 载体（单 cell 子树仅一个 reporter，dict 单 key 无归并冲突）。
+private struct WOContentHeightKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] { [:] }
+    static func reduce(value: inout [String: CGFloat],
+                       nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+/// 内容实测高度上报（background GeometryReader 不影响布局；值变即回传）。
+/// 治：Markdown task 异步解析完成、图片异步加载完成、折叠组件展开等
+/// "高度事后变化"——显示 cell 实测高度 → core 更新池缓存 + invalidateLayout。
+/// 离屏量高 host（未挂窗）不触发渲染循环，此桥恒静默（安全面）。
+struct WOHeightReporting: ViewModifier {
+    let id: String
+    let onChange: (String, CGFloat) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: WOContentHeightKey.self,
+                                           value: [id: geo.size.height])
+                }
+            )
+            .onPreferenceChange(WOContentHeightKey.self) { values in
+                for (key, height) in values where height > 0 {
+                    onChange(key, height)
+                }
+            }
     }
 }
