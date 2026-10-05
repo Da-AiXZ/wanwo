@@ -75,23 +75,24 @@ struct WONodeContext {
     let justEndedStreaming: Bool
     let settledBubbleIDs: Set<String>
     /// 入场账本（引用型——onSeen 写面跨 cell 生命周期共享；core 持有）。
-    let ledger: WOEntryLedger
+    let ledger: WOEntryLedger?
     /// 本帧新插入的行 id（sync 插入检测；批 6 同出动画的 SwiftUI 豁免缝——
     /// 本阶段恒空集透传）。
     let freshlyInsertedIDs: Set<String>
 
-    /// 【重做批3 CI 实证修】init 标 @MainActor——ledger 默认参数表达式
-    /// `WOEntryLedger()`（:89）在非隔离上下文求值报 main-actor-isolated
-    /// error（Xcode 16.4 实证）；全部调用点均在 MainActor 域（WOChatView
-    /// body / 引擎 core @MainActor class 存储默认值 / 测试 @MainActor）。
-    @MainActor
+    /// 【重做批3 CI 实证修 · 二轮】ledger 改 Optional——默认参数表达式
+    /// `WOEntryLedger()` 以**声明处** nonisolated 上下文做隔离检查（首轮
+    /// @MainActor init 标注不改变该规则，CI :94 同错实证）。nil 默认值零
+    /// 隔离面；引擎 core 构造点显式传真账本（非 Optional 自动包装），批 2
+    /// 调用点不传（nil——批 3 阶段渲染层无 ledger 消费方，批 4 接入时由
+    /// core 保证非 nil 或消费侧判空）。
     init(sessionId: String,
          attachmentStore: AttachmentStore?,
          onImagePreview: @escaping (ImageAttachmentRef) -> Void,
          phase: ChatViewModel.Phase = .loading,
          justEndedStreaming: Bool = false,
          settledBubbleIDs: Set<String> = [],
-         ledger: WOEntryLedger = WOEntryLedger(),
+         ledger: WOEntryLedger? = nil,
          freshlyInsertedIDs: Set<String> = []) {
         self.sessionId = sessionId
         self.attachmentStore = attachmentStore
