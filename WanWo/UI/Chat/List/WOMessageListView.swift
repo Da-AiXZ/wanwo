@@ -502,9 +502,57 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 不可达防御（itemID 恒来自 snapshot；CI修47：枚举无 .note case，
             // 用最无害的 .loading 占位）。
             ?? WOMListNode(id: itemID, kind: .loading)
-        cell.configure(content: AnyView(
-            WONodeItemContent(node: node, context: context).id(itemID)))
+        cell.configure(content: makeNodeContent(node))
         return cell
+    }
+
+    /// 条目内容统一装配缝（CI修48 收口三处重复构造：cellProvider /
+    /// measureNode / listLayout 量高闭包）。WONodeItemContent + .id（identity
+    /// 锚，复用语义不动）；reportsHeight=true 时外包 WOHeightReporting
+    /// 【QA P1-1 收窄】上报桥只属于显示面（cellProvider 默认）——两处量高
+    /// 闭包传 false：离屏 host 的 preference 若在 layout prepare 重入现场
+    /// 触发（systemLayoutSizeFitting 同步布局的版本分歧行为面），会在
+    /// itemFrames 半重建态执行 invalidateLayout/captureTopAnchor（未定义
+    /// 行为面），摘除即封死。
+    private func makeNodeContent(_ item: WOMListNode,
+                                 reportsHeight: Bool = true) -> AnyView {
+        if reportsHeight {
+            return AnyView(
+                WONodeItemContent(node: item, context: context)
+                    .modifier(WOHeightReporting(id: item.id) { [weak self] id, height in
+                        self?.nodeHeightChanged(id: id, height: height)
+                    })
+                    .id(item.id)
+            )
+        }
+        return AnyView(WONodeItemContent(node: item, context: context).id(item.id))
+    }
+
+    /// SwiftUI 内容实测高度回传（CI修48）。
+    /// 时序：cell 挂载 → 异步内容就绪（Markdown 解析/图片加载/展开）→
+    /// GeometryReader 值变 → 上报 → 池缓存修正 → invalidateLayout 重排。
+    /// 防线【QA P2-1 注释纠偏】：window guard 只确认显示面已挂窗（桥已
+    /// 经 reportsHeight=false 收窄到显示面，离屏 host 无上报面）；真正
+    /// 防风暴 = 池内 0.5pt 死区 + 量值一致后同值吞掉。签名随上报传入
+    /// 【QA P1-2】（当前内容版本——heights 被清空后首写即真签名，杜绝
+    /// "" 签名条目被空态重测覆盖 → 永久溢出窗口）。
+    /// 非跟随态先抓视口锚（复用扩窗锚定机制——高度修正引发的 frame 重排
+    /// 不漂移用户视线）；【QA P2-2】expanding 中让位（不覆写扩窗锚）；
+    /// 跟随态贴底收敛自会追新。
+    func nodeHeightChanged(id: String, height: CGFloat) {
+        guard let cv = collectionView, cv.window != nil else { return }
+        let signature = contentVersions[id].map { "v\($0)" }
+        guard pool.updateHeight(id: id, width: contentWidth(), height: height,
+                                signature: signature) else { return }
+        if !followsBottom, !expanding {
+            pendingAnchorRestore = AnchorRestore(
+                anchor: captureTopAnchor(),
+                oldContentHeight: cv.contentSize.height)
+        }
+        messageLayout.invalidateLayout()
+        if followsBottom {
+            scrollToBottom()
+        }
     }
 
     // MARK: 件 2 高度问池（layout delegate）
@@ -531,9 +579,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                         signature: "v\(contentVersions[item.id] ?? 0)",
                         makeContent: { [weak self] in
                             guard let self else { return AnyView(Color.clear) }
-                            return AnyView(WONodeItemContent(node: item,
-                                                             context: self.context)
-                                .id(item.id))
+                            // QA P1-1：量高路径不挂上报桥（离屏 host 无上报面）。
+                            return self.makeNodeContent(item, reportsHeight: false)
                         })
         }
     }
@@ -966,14 +1013,14 @@ extension WOMessageListCore: WOMessageListLayoutDelegate {
         guard indexPath.item < currentItems.count else { return 44 }
         let item = currentItems[indexPath.item]
         // 三级缓存：签名/宽度未变 → 高度直读；变 → 池视图重测（量高与显示
-        // 同一内容装配缝——identity 锚 .id(item.id)）。
+        // 同一内容装配缝——identity 锚 .id(item.id)；CI修48：装配统一走
+        // makeNodeContent，量高路径 reportsHeight=false 不挂上报桥）。
         return pool.height(id: item.id, width: width,
                            signature: "v\(contentVersions[item.id] ?? 0)",
                            makeContent: { [weak self] in
                                guard let self else { return AnyView(Color.clear) }
-                               return AnyView(WONodeItemContent(node: item,
-                                                                context: self.context)
-                                   .id(item.id))
+                               // QA P1-1：量高路径不挂上报桥（离屏 host 无上报面）。
+                               return self.makeNodeContent(item, reportsHeight: false)
                            })
     }
 }

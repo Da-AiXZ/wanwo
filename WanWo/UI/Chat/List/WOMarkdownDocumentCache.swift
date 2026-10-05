@@ -74,10 +74,19 @@ struct WOCachedMarkdown: View {
 
     @State private var document: RenderableDocument?
 
+    /// 【CI修48】缓存命中同步初始化：首帧即真文档（量高一次到位，滚回场景
+    /// 消灭"空态→内容"的高度跳变）。未命中保持 nil 起步（.empty 占位），
+    /// task 解析完成后经 WOHeightReporting 高度回传修正 cell frame。
+    init(text: String, config: MarkdownRenderConfig) {
+        self.text = text
+        self.config = config
+        _document = State(initialValue: WOMarkdownDocumentCache.shared.document(for: text))
+    }
+
     var body: some View {
         DocumentView(renderableDocument: document ?? .empty, config: config)
             .task(id: text) {
-                if let cached = WOMarkdownDocumentCache.shared.document(for: text) {
+                if document == nil, let cached = WOMarkdownDocumentCache.shared.document(for: text) {
                     document = cached
                     return
                 }

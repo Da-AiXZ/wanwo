@@ -9,6 +9,7 @@
 //
 
 import XCTest
+import SwiftUI
 import SwiftStreamingMarkdown
 @testable import WanWo
 
@@ -236,6 +237,65 @@ final class Batch1ListSkeletonTests: XCTestCase {
         // 再次 parseAndStore = 缓存直回（同实例语义，等值断言）。
         let again = await cache.parseAndStore(text, config: .default)
         XCTAssertEqual(again, parsed)
+    }
+
+    // MARK: CI修48 池高度回传缝（updateHeight）
+
+    @MainActor
+    func testPoolUpdateHeightRules() {
+        let pool = WOHostSizingPool()
+        // 首写生效（无缓存条目 → 写入返回 true）。
+        XCTAssertTrue(pool.updateHeight(id: "h1", width: 300, height: 88.4))
+        XCTAssertEqual(pool.cachedHeight(id: "h1", width: 300), 89) // ceil
+        // 差 ≤0.5pt 视为无变化（防 33Hz 微增量风暴）→ no-op 返回 false。
+        XCTAssertFalse(pool.updateHeight(id: "h1", width: 300, height: 88.6))
+        XCTAssertEqual(pool.cachedHeight(id: "h1", width: 300), 89)
+        // 超差更新（真实内容膨胀场景）→ 返回 true 且缓存修正。
+        XCTAssertTrue(pool.updateHeight(id: "h1", width: 300, height: 240))
+        XCTAssertEqual(pool.cachedHeight(id: "h1", width: 300), 240)
+        // 宽度变化 = 覆盖语义【QA P0-1 纠偏】（池单 id 单条目，宽度是失效
+        // 判定而非多宽度存储——lody 同型）：500 宽首写覆盖 300 宽条目，
+        // 旧宽直读失效返回 nil。
+        XCTAssertTrue(pool.updateHeight(id: "h1", width: 500, height: 100))
+        XCTAssertEqual(pool.cachedHeight(id: "h1", width: 500), 100)
+        XCTAssertNil(pool.cachedHeight(id: "h1", width: 300))
+        // 未知 id 直读 nil（retention 清理后的迟到上报不伪造可读高度）。
+        XCTAssertNil(pool.cachedHeight(id: "ghost", width: 300))
+    }
+
+    @MainActor
+    func testPoolUpdateHeightKeepsSignature() {
+        // 高度修正不改内容签名：量高入库（签名 v3）→ 回传修正后，同签名
+        // 问询不再重测（直读修正值），签名 bump 后照常失效重测。
+        let pool = WOHostSizingPool()
+        _ = pool.height(id: "h2", width: 300, signature: "v3",
+                        makeContent: { AnyView(Text("x").frame(height: 50)) })
+        _ = pool.updateHeight(id: "h2", width: 300, height: 120)
+        // 同签名 + 已修正高度 → 高度问询直读（makeContent 不再被调——
+        // 用哨兵闭包断言：若被调用会返回 999 的高度）。
+        let probed = pool.height(id: "h2", width: 300, signature: "v3",
+                                 makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(probed, 120)
+        // 签名 bump → 缓存失效 → 重测路径接管（返回新内容实测高度）。
+        let remeasured = pool.height(id: "h2", width: 300, signature: "v4",
+                                     makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(remeasured, 999)
+    }
+
+    @MainActor
+    func testPoolUpdateHeightFirstWriteAdoptsSignature() {
+        // 【QA P1-2 封口】heights 清空后（retain/invalidateWidth）回传迟到
+        // 首写：带调用方签名写入 → 同签名问询直读修正值（不被空态重测
+        // 覆盖——防永久溢出窗口）；签名 bump 后照常重测。
+        let pool = WOHostSizingPool()
+        XCTAssertTrue(pool.updateHeight(id: "h3", width: 300, height: 200,
+                                        signature: "v2"))
+        let probed = pool.height(id: "h3", width: 300, signature: "v2",
+                                 makeContent: { AnyView(Color.clear.frame(height: 999)) })
+        XCTAssertEqual(probed, 200)
+        let remeasured = pool.height(id: "h3", width: 300, signature: "v3",
+                                     makeContent: { AnyView(Color.clear.frame(height: 888)) })
+        XCTAssertEqual(remeasured, 888)
     }
 
     // MARK: 入场账本（WOEntryLedger；@MainActor）

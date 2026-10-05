@@ -84,6 +84,31 @@ final class WOHostSizingPool: NSObject {
         return measured
     }
 
+    /// 【CI修48】显示面实测高度回传（业界标准方案：GeometryReader 高度上报
+    /// 桥——Stack Overflow 58399123/62263294 形态。根因：异步渲染组件
+    /// （Markdown task 解析/图片异步加载/折叠展开）首量只有空态高度，挂载
+    /// 后内容膨胀而 cell frame 已定死 → 溢出叠印）。
+    /// 差 ≤0.5pt 为亚像素死区（吞同值/抖动；真实增长 >0.5pt 照常上报生效，
+    /// 含 33Hz live 行逐帧增长）→ 返回是否实际更新（true = 调用方需
+    /// invalidateLayout）。
+    /// 签名规则：已存在条目保留原签名（内容版本面由 sync 重测路径管理，
+    /// 回传只修高度）；**首写**采用调用方传入签名（core 传当前内容版本——
+    /// QA P1-2 封口：防 heights 被清空后 "" 签名条目被下一轮空态重测覆盖
+    /// 回传修正值，且内容 ideal 高不再变化 → 永久溢出）。
+    @discardableResult
+    func updateHeight(id: String, width: CGFloat, height: CGFloat,
+                      signature: String? = nil) -> Bool {
+        let width = max(1, width)
+        let rounded = ceil(height)
+        if let cached = heights[id],
+           cached.width == width, abs(cached.height - rounded) <= 0.5 {
+            return false
+        }
+        heights[id] = HeightEntry(height: rounded, width: width,
+                                  signature: heights[id]?.signature ?? signature ?? "")
+        return true
+    }
+
     func cachedHeight(id: String, width: CGFloat) -> CGFloat? {
         guard let cached = heights[id], cached.width == max(1, width) else { return nil }
         return cached.height

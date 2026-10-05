@@ -71,6 +71,41 @@ struct WONodeContext {
     let onImagePreview: (ImageAttachmentRef) -> Void
 }
 
+// MARK: - 内容高度上报桥（CI修48：SwiftUI 异步高度 → UIKit 列表回传）
+
+/// PreferenceKey 载体（单 cell 子树仅一个 reporter，dict 单 key 无归并冲突）。
+private struct WOContentHeightKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] { [:] }
+    static func reduce(value: inout [String: CGFloat],
+                       nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+/// 内容实测高度上报（background GeometryReader 不影响布局；值变即回传）。
+/// 治：Markdown task 异步解析完成、图片异步加载完成、折叠组件展开等
+/// "高度事后变化"——显示 cell 实测高度 → core 更新池缓存 + invalidateLayout。
+/// 离屏量高 host（未挂窗）不触发渲染循环，此桥恒静默（安全面）。
+struct WOHeightReporting: ViewModifier {
+    let id: String
+    let onChange: (String, CGFloat) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: WOContentHeightKey.self,
+                                           value: [id: geo.size.height])
+                }
+            )
+            .onPreferenceChange(WOContentHeightKey.self) { values in
+                for (key, height) in values where height > 0 {
+                    onChange(key, height)
+                }
+            }
+    }
+}
+
 // MARK: - 条目内容（列表 cell 的 SwiftUI 面：气泡 + 四类元条目）
 
 struct WONodeItemContent: View {
