@@ -115,6 +115,26 @@ final class ChatViewModel: ObservableObject {
     @Published var attachmentBanner: String?
     /// 附件存储缝（open() 时装配；nil = 会话未打开——intake fail closed）。
     @Published private(set) var attachmentStore: AttachmentStore?
+    // MARK: 重做批 1 数据缝（聊天区重做 analysis/chat-rework-plan-20261006.md）
+    //  UIKit 列表引擎的历史窗口状态（纯数据面）。本批无消费方 = R0 行为
+    //  零变化；resetHistoryWindow 的调用点与窗口切片消费随批 4 引擎接入。
+    /// 历史窗口起点（displayNodes 层下标；0 = 全量在列）。
+    private(set) var historyWindowStart = 0
+    /// 窗口页大小（lody prepareHistory `max(0, count - 50)` 同参 50）。
+    let historyPageSize = 50
+    /// 窗口之上还有更早历史（「载入更早」列表头挂载条件）。
+    var hasEarlierHistory: Bool { historyWindowStart > 0 }
+    /// 窗口重置（引擎接入后于 open() 全量重投影收尾调用；初载窗口 =
+    /// 尾部 pageSize 节点）。
+    func resetHistoryWindow() {
+        historyWindowStart = WOMessageListSupport.historyWindowBounds(
+            total: displayNodes.count, start: 0,
+            pageSize: historyPageSize).initialStart
+    }
+    /// 扩窗提交（引擎顶部预取切片量高完成后调；防越界 clamp）。
+    func commitHistoryWindowExpansion(to newStart: Int) {
+        historyWindowStart = max(0, min(newStart, displayNodes.count))
+    }
     // MARK: T2.4 P1-3 会话级模型选择（dsh ModelSelect per-session
     // ModelSelection：选择随会话，不落盘、不落事件；App 级缺省=活动端点）。
     // T2.6 件2：宿主从本类实例属性升格 App 级 per-session 字典——ChatView
