@@ -80,6 +80,11 @@ struct WONodeContext {
     /// 本阶段恒空集透传）。
     let freshlyInsertedIDs: Set<String>
 
+    /// 【重做批3 CI 实证修】init 标 @MainActor——ledger 默认参数表达式
+    /// `WOEntryLedger()`（:89）在非隔离上下文求值报 main-actor-isolated
+    /// error（Xcode 16.4 实证）；全部调用点均在 MainActor 域（WOChatView
+    /// body / 引擎 core @MainActor class 存储默认值 / 测试 @MainActor）。
+    @MainActor
     init(sessionId: String,
          attachmentStore: AttachmentStore?,
          onImagePreview: @escaping (ImageAttachmentRef) -> Void,
