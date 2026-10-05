@@ -690,6 +690,13 @@ final class ChatViewModel: ObservableObject {
                                             reference: record.reference)
         suppressPasteSurgeOnce = true
         draft = restored
+        // 【CI修50】撤销确认反馈（兼诊断叉——真机反馈"点撤销没反应"：
+        // 数据链各环均有守卫、输入框为双向绑定；本条落地后若用户点了撤销
+        // 却看不到此条 = 窗口触摸路由问题，一眼分叉定位）。在 onUndo 与
+        // onDone 之间发出：本条 generation 更新，旧条 settle 因代际校验
+        // no-op，确认条不被旧条收口吞掉。
+        WOToastCenter.shared.show(text: "已撤销，原文已回填输入框",
+                                  holdMs: 2.0)
     }
 
     /// 转存路径（纯函数，时间戳可注入便于测试；`.wanwo/pastes/` 下 UTC

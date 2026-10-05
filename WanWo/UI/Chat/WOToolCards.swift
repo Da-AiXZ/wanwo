@@ -20,6 +20,12 @@
 //    不动）；wanwo:// 资源行保持；琥珀状态行（statusNote）恒显不随折叠；
 //    左缩进 .padding(.leading, 30) 保持；长按菜单不加（dsh 无）
 //
+//  【CI修50 守恒约束】summary 必须保持 lineLimit(1) 单行（:192 附近）——
+//  运动源归一规则只豁免 "live-" 前缀行（WOMessageListCore.nodeHeightChanged），
+//  工具行 id 非 live-*：summary 改多行后其原位逐帧增高会在跟随态走 0.45s
+//  行高动画 × 贴底收敛 × 插入动画三源叠加 = beam 抽搐病灶复发。若未来需要
+//  多行 summary，须同步把该行纳入免动画豁免面或改走插入动画语义。
+//
 
 
 import SwiftUI

@@ -110,6 +110,10 @@ public struct WOUndoToast: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
                     .background(Capsule().fill(WOAlias.buttonPrimaryFill))
+                    // 【CI修50】命中面加固（独立窗口宿主里 SwiftUI plain
+                    // button 的标签命中面按内容收窄的防御——含 padding 全域
+                    // 可点）。
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }

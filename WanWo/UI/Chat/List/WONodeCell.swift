@@ -29,14 +29,21 @@ final class WONodeCell: UICollectionViewCell {
             host.view.backgroundColor = .clear
             contentView.addSubview(host.view)
             host.view.translatesAutoresizingMaskIntoConstraints = false
+            // 【CI修50】top/leading/trailing 三边钉 + intrinsic 高（旧四边
+            // 钉：行高动画时 host 被约束拉伸挤压内容 = 真机展开"残影/抽搐"
+            // 根因之一——内容是被捏变形而非被揭示）；cell frame 动画时
+            // host 保持目标全高，由 contentView 裁剪渐进揭示 = 参考件
+            // 《设置模型配置原型》.collapsible overflow:hidden 语义。
             NSLayoutConstraint.activate([
                 host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
                 host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
                 host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
-                host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             ])
             self.host = host
         }
+        // 【CI修50】揭示裁剪（复用分支也要重申——复用不重建约束但 clipped
+        // 属性可能被系统复用池重置）。
+        contentView.clipsToBounds = true
         isAccessibilityElement = false
         contentView.isAccessibilityElement = true
     }

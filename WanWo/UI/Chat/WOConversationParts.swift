@@ -473,24 +473,22 @@ struct WOInlineAgentImage: View {
 // MARK: - AI 浏览轻提示胶囊（批12+联动B 2026-09-27 用户参考件 1:1）
 
 /// AI 自主干活时的轻提示（dock 上方一行，不展开右栏不弹卡——两路展开语义的
-/// "不打扰"路）。动画=用户参考件（网页加载动效.txt）1:1：闪烁圆点（1.4s
-/// opacity 呼吸）+ 静态文案 + 域名逐字符波浪（translateY -8px、相邻延迟
-/// 0.13s、单字符周期 1.2s、hold 0.5s、总周期 2.87s、cubic-bezier(0.45,0,
-/// 0.55,1) 近似、等宽字体）。TimelineView 驱动（30fps 足够；字符数=域名长度，
-/// 非热路径）。reduceMotion=静态直出。
+/// "不打扰"路）。【CI修50】动画换版（用户 2026-10-05 参考件
+/// 《网页加载动效.html》1:1，替换旧 translateY 位移波浪）：
+///   · 圆点闪烁：1.4s 周期，opacity 1→0.2→1（ease-in-out ≈ 余弦）；
+///   · 字符透明度波浪：2s 周期 1→0→1、相邻字符步进 0.1s、**序号跨文案/
+///     域名连号**（光波从"A"一路流到域名末字符，参考件 --i 连续）、
+///     ease-in-out ≈ 余弦平滑、等宽域名。
+/// TimelineView 驱动（30fps 足够；字符数=文案+域名长度，非热路径）。
+/// reduceMotion=静态直出。
 struct WOAgentHintPill: View {
     let title: String
     let domain: String
 
     /// 参考件节拍（秒）。
-    private static let charDelay = 0.13
-    private static let charRise = 1.20
-    private static let hold = 0.50
-    /// 总周期 = 9×0.13 + 1.20 + 0.50（域名字符数决定；实例计算——参考件
-    /// 域名 10 字符 ≈ 2.87s）。
-    private var totalCycle: Double {
-        Double(max(0, domain.count - 1)) * Self.charDelay + Self.charRise + Self.hold
-    }
+    private static let cycle: Double = 2.0
+    private static let charStep: Double = 0.1
+    private static let dotCycle: Double = 1.4
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -500,16 +498,15 @@ struct WOAgentHintPill: View {
             } else {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
-                        .truncatingRemainder(dividingBy: 1.4) / 1.4
-                    let opacity = 1.0 - 0.8 * abs(sin(t * .pi))
+                        .truncatingRemainder(dividingBy: Self.dotCycle)
+                    // 1→0.2→1 余弦：0.6 + 0.4·cos(2πt/T)，t=0→1、T/2→0.2。
+                    let opacity = 0.6 + 0.4 * cos(t / Self.dotCycle * 2 * .pi)
                     Circle().frame(width: 5, height: 5)
                         .foregroundStyle(WOAlias.labelSecondary.opacity(opacity))
                 }
             }
-            Text(title)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            waveText
+            waveCharacters(title, indexStart: 0, mono: false)
+            waveCharacters(domain, indexStart: title.count, mono: true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
@@ -520,45 +517,34 @@ struct WOAgentHintPill: View {
         .accessibilityLabel("\(title)\(domain)")
     }
 
-    /// 域名逐字符波浪（参考件 keyframes：0→0 / 21%→-8px / 42%→0 / 100%→0；
-    /// 相位 = 全局时间 − i×0.13 对总周期取模）。SwiftUI Text 逐字符独立渲染
-    /// （monospaced 防抖动）。
+    /// 字符透明度波浪（参考件 pass keyframes 0%:1 → 50%:0 → 100%:1，
+    /// ease-in-out ≈ 余弦 0.5+0.5·cos(2πp)；相位 = 全局时间 − 序号×0.1s
+    /// 对 2s 取模）。逐字符独立 Text（monospaced 域名防抖动）。
     @ViewBuilder
-    private var waveText: some View {
+    private func waveCharacters(_ text: String, indexStart: Int,
+                                mono: Bool) -> some View {
+        let font: Font = mono ? .system(size: 12, design: .monospaced)
+                              : .system(size: 12)
         if reduceMotion {
-            Text(domain)
-                .font(.system(size: 12, design: .monospaced))
+            Text(text)
+                .font(font)
                 .foregroundStyle(.secondary)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                 let now = context.date.timeIntervalSinceReferenceDate
-                HStack(spacing: 1) {
-                    ForEach(Array(domain.enumerated()), id: \.offset) { index, ch in
-                        let phase = (now - Double(index) * Self.charDelay)
-                            .truncatingRemainder(dividingBy: totalCycle)
-                        let offset = waveOffset(phase: phase < 0 ? phase + totalCycle : phase)
+                HStack(spacing: 0.5) {
+                    ForEach(Array(text.enumerated()), id: \.offset) { offset, ch in
+                        let phase = now - Double(indexStart + offset) * Self.charStep
+                        let p = (phase.truncatingRemainder(dividingBy: Self.cycle)
+                                 + Self.cycle)
+                            .truncatingRemainder(dividingBy: Self.cycle) / Self.cycle
+                        let opacity = 0.5 + 0.5 * cos(p * 2 * .pi)
                         Text(String(ch))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .offset(y: offset)
+                            .font(font)
+                            .foregroundStyle(.secondary.opacity(opacity))
                     }
                 }
             }
-        }
-    }
-
-    /// 参考件单字符位移曲线（秒→px；21% 到顶 -8px，42% 回落，其后保持）。
-    private func waveOffset(phase: Double) -> CGFloat {
-        let p = phase / totalCycle
-        switch p {
-        case 0..<0.21:
-            let k = p / 0.21
-            return CGFloat(-8 * sin(k * .pi / 2))
-        case 0.21..<0.42:
-            let k = (p - 0.21) / 0.21
-            return CGFloat(-8 * cos(k * .pi / 2))
-        default:
-            return 0
         }
     }
 }

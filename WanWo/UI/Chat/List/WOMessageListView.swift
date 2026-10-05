@@ -215,6 +215,27 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// id → 内容版本（内容变 → bump → 池高度签名失效 → 重测）。
     private var contentVersions: [String: Int] = [:]
     private var lastPhase: ChatViewModel.Phase?
+    /// 【CI修50】apply 重入防护簿记（真机 12:24 闪退根治——.ips 栈：apply
+    /// 的更新块内 UIKit 触发 _notifyDidScroll → scrollViewDidScroll →
+    /// maybeExpandHistory/sync → 再 apply，diffing 队列 barrier_sync 断言
+    /// abort）。在途期 sync 只记待办，completion 后链式补发（diffable 官方
+    /// 合法续发点）。
+    private var applyInFlight = false
+    private var syncPending = false
+    /// 【QA P1-1 修】挂起期累积的解冻透传集：scrollViewDidScroll 回带链的
+    /// sync(forceUnfreeze:) 若被在途 apply 挂起，drain 补发无参 sync 会让
+    /// 内部评估以"未冻 80 带"把刚解冻行（d∈80~160）秒回冻——D2 迟滞带
+    /// 修复打穿（基线永不追平+逐帧 churn）。挂起时并集累积，drain 透传。
+    private var syncPendingUnfreeze: Set<String> = []
+    /// 【CI修50】扩窗锚定的延迟入位：finishHistoryExpansion 的 sync 若被
+    /// 在途 apply 挂起，锚定不能直写 pendingAnchorRestore（会被下一次
+    /// layout pass 对**旧帧**提前消费 = 扩窗跳位）——先寄存，apply 落地
+    /// （completion）后转移。
+    private var deferredExpansionAnchor: AnchorRestore?
+    /// 【CI修50】列宽动画期推迟重测切片（右栏开合丝滑化）：宽度仍在变的
+    /// layout pass 不 drain（prepare 照常收集 stale），宽度稳定后的第一个
+    /// pass 一次清账——重测工作量挪出动画帧。
+    private var lastStableWidth: CGFloat = 0
 
     // MARK: 件 2/批 2 簿记
 
@@ -337,6 +358,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         remeasureGen += 1
         remeasureQueue.removeAll()
         remeasureActive = false
+        // 【CI修50】apply 待办/解冻累积一并清（旧会话的挂起请求对新会话
+        // 无意义；drain 侧补发的 sync 用新会话状态自然重放）。
+        syncPending = false
+        syncPendingUnfreeze = []
         pool.retain([])
         ledger.reset()
         syncedNodes = [:]
@@ -347,6 +372,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         expanding = false
         followsBottom = true
         pendingAnchorRestore = nil
+        // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
+        deferredExpansionAnchor = nil
         frozenLiveIDs = []
         // 批 2 件 2：按钮状态位复位（会话切换不残留隐藏中断态）。
         backToBottomShown = false
@@ -355,9 +382,21 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             container.alpha = 0
         }
         if dataSource != nil {
-            var snapshot = NSDiffableDataSourceSnapshot<Section, String>()
-            snapshot.appendSections([.main])
-            dataSource.apply(snapshot, animatingDifferences: false)
+            if applyInFlight {
+                // 【QA P0-R2 修】在途 apply → 只挂待办（落地后 drain 用新
+                // 会话状态重放全量快照）。此处若并发提交第二个 apply，单布尔
+                // applyInFlight 必然错账（completion 清位时序与 UIKit 内部
+                // apply 串行化顺序耦合），.ips 同栈崩溃面重开——不变量
+                // 「任一时刻至多一个 apply 在途」必须由本守卫维持。
+                syncPending = true
+            } else {
+                // 【QA P1-2 修】清空走 applySnapshot 统一收口（applyInFlight
+                // 簿记 + completion drain 同套——裸 apply 在更新块内触发
+                // _notifyDidScroll → sync 再 apply 的 .ips 同类崩溃面封死）；
+                // 空快照下附加动作（probe/贴底/按钮判定）均无害。
+                applySnapshot(NSDiffableDataSourceSnapshot<Section, String>(),
+                              changedCount: 0)
+            }
         }
     }
 
@@ -365,6 +404,13 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     private func sync(forceUnfreeze: Set<String> = []) {
         guard let viewModel, dataSource != nil else { return }
+        // 【CI修50】apply 在途 → 只记待办（completion 后 drain 补发）；
+        // 解冻集并集累积【QA P1-1】（挂起丢集=回带行被 80 带秒回冻）。
+        if applyInFlight {
+            syncPending = true
+            syncPendingUnfreeze.formUnion(forceUnfreeze)
+            return
+        }
         // 批 2 件 4：离屏冻结评估先行（跟随中恒不冻；回带解冻集在变更检测
         // 中强制追平）。滚动驱动的回带（无内容变化帧）另经 scrollViewDid
         // Scroll 调本评估——【批2-QA D2 修】解冻集经 forceUnfreeze 透传并在
@@ -475,13 +521,26 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                                animatedInsert: Bool = false) {
         let startTime = CACurrentMediaTime()
         let itemCount = snapshot.itemIdentifiers.count
+        // 【CI修50】重入防护：置位 → apply → completion 清位 + 补发在途
+        // sync（非动画 apply 的 completion 同步回调，链式续发为官方合法点；
+        // 动画 apply 的 completion 在动画落地后回调，期间一切 sync 请求
+        // 只挂 pending 不重入——闪退面封死）。
+        applyInFlight = true
         dataSource.apply(snapshot, animatingDifferences: animatedInsert) { [weak self] in
             guard let self else { return }
+            self.applyInFlight = false
             WOChatProbe.shared.record(
                 durationMs: (CACurrentMediaTime() - startTime) * 1000,
                 itemCount: itemCount,
                 reconfigureCount: changedCount,
                 poolCount: self.pool.poolCount)
+            self.drainPendingSync()
+            // 【CI修50】寄存的扩窗锚定随快照落地入位（下一次 layout pass
+            // 对新帧消费）。
+            if let restore = self.deferredExpansionAnchor {
+                self.deferredExpansionAnchor = nil
+                self.pendingAnchorRestore = restore
+            }
         }
         // 内容变 → 行高可能变 → 失效 layout（prepare 重问池：签名 bump 的
         // 行重测，其余行缓存直读零触碰）。
@@ -494,6 +553,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             scrollToBottom()
         }
         updateBottomButton()
+    }
+
+    /// 【CI修50】apply 落地后补发在途 sync（每次 drain 只消费一个待办位；
+    /// 补发的 sync 若再遇在途会重新挂起，链自然终止）。挂起期累积的解冻
+    /// 集一并透传【QA P1-1】。
+    private func drainPendingSync() {
+        guard syncPending else { return }
+        syncPending = false
+        let unfreeze = syncPendingUnfreeze
+        syncPendingUnfreeze = []
+        sync(forceUnfreeze: unfreeze)
     }
 
     /// 入场账本补种（原 seedEntry + onChange(phase) 补种语义逐帧对齐）：
@@ -583,24 +653,43 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: contentWidth(), height: height,
                                 signature: signature) else { return }
-        commitHeightChange(id: id, height: height, collectionView: cv)
+        // 【CI修50】运动源归一：跟随态的 live 行增长**不动画**（display
+        // link 贴底收敛独占运动——旧版行高 0.22s 动画 × 贴底收敛 × 插入
+        // 动画三源叠加 = 真机"上下抽搐"根因）；其余路径（阅读态修正、用户
+        // 展开折叠 settled 行）走参考件曲线动画。
+        let animated = !(followsBottom && id.hasPrefix("live-"))
+        commitHeightChange(id: id, height: height, collectionView: cv,
+                           animated: animated)
     }
 
-    /// 高度提交公共体【QA P1-2 拆分】：锚定 + 动画 invalidate + 贴底。
-    /// 回传路径（池死区门后）与切片重测路径（remeasure 已直写 cache，绕过
-    /// updateHeight 死区门——门会因 cache 已是新值恒 false 吞掉提交，真机
-    /// 病灶=动画尾帧/一次性宽度变化后修正不上屏）共用。
+    /// 高度提交公共体【QA P1-2 拆分；CI修50 动画化改造】：锚定 + invalidate
+    /// + 贴底。回传路径与切片重测路径共用；animated 由调用方按运动源归一
+    /// 规则给出（见 nodeHeightChanged / runRemeasureSlice）。
+    /// 动画参数 = 用户参考件《设置模型配置原型》.collapsible 缓动
+    /// cubic-bezier(.22,1,.36,1)（0.58s 的聊天节奏折中 0.45s）；内容揭示由
+    /// cell 裁剪（WONodeCell clipsToBounds）完成 = 参考件 overflow:hidden。
     private func commitHeightChange(id: String, height: CGFloat,
-                                    collectionView cv: UICollectionView) {
+                                    collectionView cv: UICollectionView,
+                                    animated: Bool) {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
                 oldContentHeight: cv.contentSize.height)
         }
-        UIView.animate(withDuration: 0.22, delay: 0,
-                       options: [.allowUserInteraction, .beginFromCurrentState]) {
-            self.messageLayout.invalidateLayout()
-            self.view.layoutIfNeeded()
+        if animated {
+            let animator = UIViewPropertyAnimator(
+                duration: 0.45,
+                timingParameters: UICubicTimingParameters(
+                    controlPoint1: CGPoint(x: 0.22, y: 1),
+                    controlPoint2: CGPoint(x: 0.36, y: 1)))
+            animator.addAnimations { [weak self] in
+                guard let self else { return }
+                self.messageLayout.invalidateLayout()
+                self.view.layoutIfNeeded()
+            }
+            animator.startAnimation()
+        } else {
+            messageLayout.invalidateLayout()
         }
         if followsBottom {
             scrollToBottom()
@@ -640,9 +729,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     // MARK: 件 3 历史扩窗（顶部预取 + 4ms 预算切片 + 锚定恢复）
 
     /// 【CI修49】宽度变化 stale 重测切片（右栏开合/旋转根治第二半）：
-    /// 列宽动画逐帧变化 → prepare 逐帧 stale 收集 → drain 追加队列 →
-    /// 4ms 预算 + 8ms 让位（lody prepareHistorySlice 同参）后台重测 →
-    /// 经 nodeHeightChanged 提交（回传链：锚定+动画 invalidate）。
+    /// 列宽动画逐帧变化 → prepare 逐帧 stale 收集 →【CI修50】动画中只收集
+    /// 不清账，稳定后 drain 追加队列 → 4ms 预算 + 8ms 让位（lody
+    /// prepareHistorySlice 同参）后台重测 → 经 commitHeightChange(免动画)
+    /// 提交（锚定恢复保视线）。
     /// 队列模式：新 batch 追加不中断在途切片（pendingRemasure 去重防
     /// 重复入队）；单条执行时校验宽度仍等于当前 contentWidth——不等
     /// （动画还在变）丢弃，宽度稳定后的问询重新入队。
@@ -652,6 +742,20 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private var remeasureGen = 0
 
     private func drainStaleSweep() {
+        // 【CI修50】列宽动画中不 drain（只收集）：右栏开合 0.42s 内每帧
+        // prepare 都在收集 stale，宽度稳定后的第一个 layout pass 一次清账
+        // ——把切片重测工作量挪出动画帧（真机反馈"还是有些卡卡的"）。
+        // 高度在动画期间由 stale 顶替机制先顶着（旧高不改，布局连续）。
+        // 60ms 复查自愈：万一宽度只变一帧没有后续 pass，也能在半帧后清账。
+        let width = collectionView.bounds.width
+        if width != lastStableWidth {
+            lastStableWidth = width
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                guard let self, self.collectionView?.window != nil else { return }
+                self.drainStaleSweep()
+            }
+            return
+        }
         let batch = pool.drainStaleSweep()
         guard !batch.isEmpty else { return }
         remeasureQueue.append(contentsOf: batch)
@@ -699,7 +803,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                     return self.makeNodeContent(item, reportsHeight: false)
                 })
             if previous != height {
-                commitHeightChange(id: entry.id, height: height, collectionView: cv)
+                // 【CI修50】宽度修正提交免动画（锚定恢复保视线稳定；逐条
+                // 动画 = 真机右栏"内容上下抽搐"根因之一）。
+                commitHeightChange(id: entry.id, height: height,
+                                   collectionView: cv, animated: false)
             }
         }
         remeasureQueue.removeFirst(cursor)
@@ -773,8 +880,14 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         }
         historyLoading = false
         viewModel.commitHistoryWindowExpansion(to: expandedStart)
-        pendingAnchorRestore = AnchorRestore(anchor: anchor,
-                                             oldContentHeight: oldContentHeight)
+        let restore = AnchorRestore(anchor: anchor,
+                                    oldContentHeight: oldContentHeight)
+        if applyInFlight {
+            // 【CI修50】在途 apply：锚定寄存，落地后入位（防旧帧提前消费）。
+            deferredExpansionAnchor = restore
+        } else {
+            pendingAnchorRestore = restore
+        }
         expanding = false
         sync() // 扩窗后的新窗口快照（量高已入库——prepare 全缓存命中）
     }

@@ -945,9 +945,13 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                // 批12：披露展开 .32s（dsh grid-template-rows 0fr↔1fr .32s；
-                // WOMotion bezier 域，思考披露同族曲线）。
-                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+                // 【CI修50】单动画源改造（参考件《设置模型配置原型》唯一
+                // 几何驱动=容器高度）：展开切换不再带 SwiftUI 动画——cell
+                // 内 withAnimation(.32s) 让内容逐帧长高逐帧上报，UIKit 侧
+                // commitHeightChange 又放 0.45s 行高动画，两个动画系统拉扯
+                // 同一块几何 = 真机"残影+抽搐"根因。现：展开体瞬时全高就
+                // 位，揭示由 cell 裁剪 + UIKit 行高动画（参考件曲线）完成。
+                expanded.toggle()
             } label: {
                 HStack(spacing: 6) {
                     // 16×16 leading 盒：收起=调用方图标（14px），展开=chevron.down。
@@ -997,9 +1001,10 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
             }
             .buttonStyle(.plain)
             if expanded {
+                // 【CI修50】transition 移除（单动画源——揭示由 UIKit 裁剪
+                // 动画完成；本修饰符在无 withAnimation 上下文为死代码，留着
+                // 反有被其他隐式动画上下文意外驱动的风险面）。
                 content
-                    // 批12：展开体过渡 = opacity + 垂直微量位移 8pt（.32s 同族）。
-                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
