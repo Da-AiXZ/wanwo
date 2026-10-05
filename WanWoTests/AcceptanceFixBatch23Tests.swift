@@ -232,7 +232,7 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
     /// "图1：→图1、图2：→图2、尾段"的顺序保持（真机实证堆尾部形态的反例）。
     func testSplitAgentSegmentsPreservesOrder() {
         let text = "图1：\n\n![a](wanwo://browser/1.jpg)\n\n图2：\n\n![b](wanwo://browser/2.jpg)\n\n收尾文字"
-        let segments = WOChatView.splitAgentSegments(text)
+        let segments = WONodeBubbleView.splitAgentSegments(text)
         XCTAssertEqual(segments.map { $0.image?.absoluteString ?? "text" },
                        ["text", "wanwo://browser/1.jpg",
                         "text", "wanwo://browser/2.jpg", "text"])
@@ -243,11 +243,11 @@ final class AcceptanceFixBatch23Tests: XCTestCase {
 
     /// 无图 → 单段原文；连续图片 → 空文本段跳过；空串 → 空数组。
     func testSplitAgentSegmentsEdges() {
-        XCTAssertEqual(WOChatView.splitAgentSegments("plain text").count, 1)
-        XCTAssertTrue(WOChatView.splitAgentSegments("").isEmpty)
+        XCTAssertEqual(WONodeBubbleView.splitAgentSegments("plain text").count, 1)
+        XCTAssertTrue(WONodeBubbleView.splitAgentSegments("").isEmpty)
 
         let consecutive = "![a](wanwo://browser/1.jpg)\n\n![b](wanwo://browser/2.jpg)"
-        let segments = WOChatView.splitAgentSegments(consecutive)
+        let segments = WONodeBubbleView.splitAgentSegments(consecutive)
         XCTAssertEqual(segments.compactMap(\.image).count, 2)
         XCTAssertTrue(segments.filter { $0.text.isEmpty }.count >= 2)
     }
