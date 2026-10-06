@@ -176,6 +176,10 @@ final class WOMessageListLayout: UICollectionViewLayout {
         // 宽度变化（旋转/分栏/键盘挤压）才整体失效；高度变化不动。
         collectionView.map { $0.bounds.size.width != newBounds.size.width } ?? false
     }
+
+    /// 【批4 真机诊断】itemFrames 只读快照（dumpLayoutSnapshot 消费——
+    /// 空白洞/偏移定位：frame 与池高、视口范围三者对账）。
+    func snapshotFrames() -> [CGRect] { itemFrames }
 }
 
 // MARK: - Core（列表生命周期与同步全量逻辑）
@@ -367,6 +371,65 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             if previous != height {
                 commitHeightChange(id: item.id, height: height, collectionView: cv)
             }
+        }
+    }
+
+    // MARK: 【批4 真机诊断】布局快照落文件（空白洞/偏移定位取证）
+
+    /// 布局快照 dump（限频 1.5s）：视口 ±1200pt 内每行的 frame / 池高 /
+    /// 内容版本三元对账 + 全局 offset/contentSize/inset。文件
+    /// Documents/list-diag.log（文件 App 可见可分享，WOEntryDiag 同款形态
+    /// +256KB 截半守护）。判定口径：
+    ///   · 空白区「无行 frame」（相邻 frame.minY 间隔 > 行高）→ 布局 y 累加洞
+    ///   · 「frame 高 ≫ pool 高」→ layout 未按池刷新（invalidate 链断）
+    ///   · 「pool 高大 + 渲染空」→ cell 内容渲染问题（非布局）
+    ///   · 「pool 高 ≈ 0」→ 量高低值固化（Markdown/图片异步链）
+    private var lastDiagDump = TimeInterval(0)
+
+    func dumpLayoutSnapshot(reason: String) {
+        guard let cv = collectionView, !currentItems.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastDiagDump >= 1.5 else { return }
+        lastDiagDump = now
+        var lines: [String] = []
+        lines.append("===== \(reason) phase=\(String(describing: phase)) =====")
+        lines.append(String(format: "offset=%.0f contentH=%.0f viewport=%.0f adjT=%.0f adjB=%.0f follows=%d items=%d width=%.0f",
+                            cv.contentOffset.y, cv.contentSize.height, cv.bounds.height,
+                            cv.adjustedContentInset.top, cv.adjustedContentInset.bottom,
+                            followsBottom ? 1 : 0, currentItems.count,
+                            cv.bounds.width - messageLayout.sectionInset.left
+                                - messageLayout.sectionInset.right))
+        let frames = messageLayout.snapshotFrames()
+        let top = cv.contentOffset.y - 1200
+        let bottom = cv.contentOffset.y + cv.bounds.height + 1200
+        let width = contentWidth()
+        for (index, frame) in frames.enumerated()
+        where frame.maxY >= top && frame.minY <= bottom {
+            guard index < currentItems.count else { break }
+            let item = currentItems[index]
+            let poolH = pool.cachedHeight(id: item.id, width: width) ?? -1
+            lines.append(String(format: "  #%-3d %@ %@ y=%.0f h=%.0f pool=%.0f v%d",
+                                index, item.id, Self.describeKind(item.kind),
+                                frame.minY, frame.height, poolH,
+                                contentVersions[item.id] ?? 0))
+        }
+        WOLayoutDiag.write(lines.joined(separator: "\n"))
+    }
+
+    private static func describeKind(_ kind: WOMListNodeKind) -> String {
+        switch kind {
+        case .bubble(let bubble):
+            switch bubble.kind {
+            case .assistant(let text): return "assistant(\(text.count)ch)"
+            case .reasoning(let text): return "reasoning(\(text.count)ch)"
+            case .user: return "user"
+            case .tool: return "tool"
+            default: return String(describing: bubble.kind).prefix(20).description
+            }
+        case .history: return "history"
+        case .loading: return "loading"
+        case .beam: return "beam"
+        case .failed: return "failed"
         }
     }
 
@@ -588,6 +651,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             if let restore = self.deferredExpansionAnchor {
                 self.deferredExpansionAnchor = nil
                 self.pendingAnchorRestore = restore
+            }
+            // 【批4 真机诊断】apply 落地 3s 后布局快照（打开会话稳态取证；
+            // 限频器挡高频 apply 的重复排程）。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.dumpLayoutSnapshot(reason: "apply+3s")
             }
         }
         // 内容变 → 行高可能变 → 失效 layout（prepare 重问池：签名 bump 的
@@ -1248,6 +1316,38 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
 // MARK: - UIScrollViewDelegate（丝线 / 拖拽断开状态机 / 预取 / 冻结驱动）
 
+/// 【批4 真机诊断】布局快照文件日志（Documents/list-diag.log，文件 App
+/// 可见可分享；256KB 截半守护——WOEntryDiag 同款形态）。
+enum WOLayoutDiag {
+    static let logger = AppLogger(category: "LayoutDiag")
+    private static let queue = DispatchQueue(label: "com.wanwo.layout-diag")
+
+    static func write(_ text: String) {
+        logger.info("layout dump \(text.prefix(120), privacy: .public)")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) | \(text)\n"
+        queue.async {
+            let url = FileManager.default.urls(for: .documentDirectory,
+                                               in: .userDomainMask)[0]
+                .appendingPathComponent("list-diag.log")
+            let fm = FileManager.default
+            guard let data = line.data(using: .utf8) else { return }
+            if fm.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                let size = (try? handle.seekToEnd()) ?? 0
+                if size > 256 * 1024 {
+                    try? handle.truncate(atOffset: size / 2)
+                    _ = try? handle.seek(toOffset: size / 2)
+                }
+                _ = try? handle.seekToEnd()
+                _ = try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+}
+
 extension WOMessageListCore: UIScrollViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         // 顶栏丝线（原探针链等效：scrollTop > 4）。
@@ -1289,11 +1389,14 @@ extension WOMessageListCore: UIScrollViewDelegate {
         guard !decelerate else { return }
         flushScrollEndExpansion()
         resumeTrackingAtBottom()
+        // 【批4 真机诊断】滚动静止布局快照（空白洞/偏移取证）。
+        dumpLayoutSnapshot(reason: "scroll-end")
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         flushScrollEndExpansion()
         resumeTrackingAtBottom()
+        dumpLayoutSnapshot(reason: "scroll-end")
     }
 
     /// 惯性被触摸截断（didEndDecelerating 不来的路径）也要补发。
