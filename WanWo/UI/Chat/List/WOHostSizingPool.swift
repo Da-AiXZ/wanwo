@@ -160,6 +160,21 @@ final class WOHostSizingPool: NSObject {
         heights.removeAll()
     }
 
+    /// 【重做批4·四修】账本宽度对齐（高度维持原值）：可见行跳过离屏重测时
+    /// 调用——显示 cell 在新宽度下重排后经回传桥回报真值，期间账本宽度先
+    /// 对齐（防同宽度问询反复入 stale 队列）；释放 pendingRemasure 去重锚
+    /// （回传 updateHeight 不经锚；若回传因死区未至，后续宽度变化仍可重新
+    /// 入队=自愈链不断）。
+    func rekeyWidth(id: String, width: CGFloat) {
+        guard let entry = heights[id] else {
+            pendingRemasure.remove(id)
+            return
+        }
+        heights[id] = HeightEntry(height: entry.height, width: max(1, width),
+                                  signature: entry.signature)
+        pendingRemasure.remove(id)
+    }
+
     /// 行移出数据集 → 高度随之清理（lody retain 过滤同语义；
     /// 【CI修49】stale 去重锚/队列同步清理——会话切换不残留）。
     func retain(_ ids: Set<String>) {

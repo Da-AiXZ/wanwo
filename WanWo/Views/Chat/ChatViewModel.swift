@@ -264,6 +264,12 @@ final class ChatViewModel: ObservableObject {
                     self.resumeBanner = "未配置模型：\(stack.failureReason ?? "未知原因") 请到「设置 · Providers」检查"
                 }
                 self.reproject()
+                // 【重做批4·四修】全量重投影后重置历史窗口（批 1 预留缝，
+                // tag backup:296 同位接线；批 4 漏接=「载入更早」从未出现：
+                // historyWindowStart 恒 0 → 全量节点直进列表 → hasEarlierHistory
+                // 恒 false → 头部条与扩窗触发双双断线）。初载窗口 = 尾部
+                // 50 节点，上滑触顶走 startHistoryExpansion 渐进放开。
+                self.resetHistoryWindow()
                 self.phase = .idle
             } catch {
                 self.phase = .failed("打开会话失败：\(String(describing: error))")

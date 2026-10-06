@@ -224,6 +224,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 数秒/停在半路）。lody 首次定位同为直写语义；流式跟随仍走 display
     /// link 不受影响）。
     private var needInitialPositioning = false
+    /// 【重做批4·四修】打开会话初始稳定期（首次贴底直写起 2s）：期间行高
+    /// 修正（Markdown 解析/富格式切换）免动画直写——逐行动画叠加收敛链 =
+    /// 真机"加载完后整个对话从头滚一遍到底部"的观感根源；直写=打开即稳。
+    private var initialStabilizingUntil: CFTimeInterval = 0
     /// id → 内容版本（内容变 → bump → 池高度签名失效 → 重测）。
     private var contentVersions: [String: Int] = [:]
     private var lastPhase: ChatViewModel.Phase?
@@ -248,6 +252,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// layout pass 不 drain（prepare 照常收集 stale），宽度稳定后的第一个
     /// pass 一次清账——重测工作量挪出动画帧。
     private var lastStableWidth: CGFloat = 0
+    /// 【重做批4·四修】宽度变化后的待重摆标志（稳定分支消费一次，防每
+    /// pass invalidate 死循环）。
+    private var needsStableRelayout = false
 
     // MARK: 件 2/批 2 簿记
 
@@ -513,6 +520,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         followsBottom = true
         // 【批4 诊断实证修】新会话首次定位直写位（首个非空 apply 落地贴底）。
         needInitialPositioning = true
+        initialStabilizingUntil = 0
+        // 【重做批4·四修】稳定宽度门同步复位（0 初值会把首个 apply 后的
+        // 第一波回传修正全丢——门判定 bounds.width != lastStableWidth）。
+        lastStableWidth = collectionView?.bounds.width ?? 0
+        needsStableRelayout = false
         pendingAnchorRestore = nil
         // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
         deferredExpansionAnchor = nil
@@ -688,6 +700,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 保留给流式跟随与后续内容变化）。
             if needInitialPositioning, followsBottom, itemCount > 0 {
                 needInitialPositioning = false
+                initialStabilizingUntil = CACurrentMediaTime() + 2.0
                 let bottom = self.bottomOffset
                 self.collectionView?.setContentOffset(
                     CGPoint(x: 0, y: bottom), animated: false)
@@ -815,21 +828,68 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: contentWidth(), height: height,
                                 signature: signature) else { return }
-        // 【重做批3 · 验证记录 R3】行高变化恒免动画提交——旧 0.45s
-        // UIViewPropertyAnimator 与贴底 display link 双轨并存=真机"上下抽搐"
-        // 根因（lody 单运动源对照实锤）；批 5 行高插值队列（display link 单
-        // tick 先行高后贴底）接棒运动职责。
-        commitHeightChange(id: id, height: height, collectionView: cv)
+        // 【重做批4·四修 2026-10-07】回传桥三分流（账本已更新，以下只决定
+        // "何时/如何提交布局"）：
+        // ①宽度不稳（右栏开合动画中，bounds.width != lastStableWidth）→
+        //   **只更新账本不提交布局**——动画中每帧中间宽度的高度入格子 =
+        //   真机"宽度变化内容上下抽搐"根因（list-diag 帧3 实锤：全体行
+        //   高度跳大 621pt 次帧回落）。稳定后 drainStaleSweep 稳定分支一次
+        //   invalidate 全量重摆（stale 顶替机制保证动画期间格子旧高连续）。
+        // ②打开会话初始稳定期（首次贴底直写后 2s）→ 免动画直写——解析
+        //   修正逐行 0.32s 动画 = 真机"加载完后整个对话从头滚一遍"的观感
+        //   （每行修正触发一轮收敛动画叠加）。直写+直写贴底=打开即稳。
+        // ③流式 live 行（贴底收敛独占，CI修50 运动源归一）→ 免动画直写。
+        // ④其余回传（思考/工具展开收起、Markdown 解析修正）→ 0.32s 行高
+        //   动画（R0 时长 + 参考件《设置模型配置原型》bezier(.22,1,.36,1)
+        //   曲线；内容在 WODisclosureRow 已去自主动画=单动画源，格子长开
+        //   裁剪揭示+下方行平滑推=参考件单几何驱动语义）。
+        let widthUnstable = collectionView?.bounds.width != lastStableWidth
+        let initialStabilizing = CACurrentMediaTime() < initialStabilizingUntil
+        let liveStreaming = followsBottom && id.hasPrefix("live-")
+        if widthUnstable { return }
+        if initialStabilizing || liveStreaming {
+            commitHeightChange(id: id, height: height, collectionView: cv,
+                               animated: false)
+        } else {
+            commitHeightChange(id: id, height: height, collectionView: cv,
+                               animated: true)
+        }
     }
 
     /// 高度提交公共体【QA P1-2 拆分】：锚定 + invalidate + 贴底。回传路径与
     /// 切片重测路径共用。
+    /// 【重做批4·四修】animated：展开/收起与解析修正的回传走 0.32s 行高
+    /// 动画（R0 时长 + 参考件 bezier(.22,1,.36,1)；内容已瞬时翻转=单动画
+    /// 源，格子长开裁剪揭示+下方行平滑推+贴底走既有收敛链）；直写路径
+    /// （打开稳定期/live 流式/切片重测/宽度修正）保持 invalidate+补标。
     private func commitHeightChange(id: String, height: CGFloat,
-                                    collectionView cv: UICollectionView) {
+                                    collectionView cv: UICollectionView,
+                                    animated: Bool = false) {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
                 oldContentHeight: cv.contentSize.height)
+        }
+        if animated {
+            // 参考件《设置模型配置原型》.collapsible：单几何驱动 + 裁剪揭示。
+            // 时长 0.32s = 用户拍板的 R0 观感（WOMotion.bezier 同族）。
+            let animator = UIViewPropertyAnimator(
+                duration: 0.32,
+                timingParameters: UICubicTimingParameters(
+                    controlPoint1: CGPoint(x: 0.22, y: 1),
+                    controlPoint2: CGPoint(x: 0.36, y: 1)))
+            animator.addAnimations { [weak self] in
+                guard let self else { return }
+                self.messageLayout.invalidateLayout()
+                cv.layoutIfNeeded()
+            }
+            animator.startAnimation()
+            // 贴底仍走既有收敛链（scrollToBottom→startMotion 逐帧 tick）——
+            // 布局动画与贴底收敛同向不冲突（CI修50 同构组合）。
+            if followsBottom {
+                scrollToBottom()
+            }
+            return
         }
         messageLayout.invalidateLayout()
         // 【批4 诊断实证修】异步补标一次（幂等）：SwiftUI 的 onPreference
@@ -904,11 +964,21 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let width = collectionView.bounds.width
         if width != lastStableWidth {
             lastStableWidth = width
+            // 【重做批4·四修】宽度变化标记：稳定后需要一次全量重摆（消化
+            // 回传桥稳定门期间只入账本未提交布局的积压修正）。
+            needsStableRelayout = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
                 guard let self, self.collectionView?.window != nil else { return }
                 self.drainStaleSweep()
             }
             return
+        }
+        // 【重做批4·四修】稳定后的第一个 pass：一次 invalidate 消化积压
+        // （仅宽度变化后执行一次——本函数每 pass 被调，无条件 invalidate
+        // = 布局死循环）。
+        if needsStableRelayout {
+            needsStableRelayout = false
+            messageLayout.invalidateLayout()
         }
         let batch = pool.drainStaleSweep()
         guard !batch.isEmpty else { return }
@@ -943,6 +1013,20 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             guard entry.width == contentWidth(),
                   let item = currentItems.first(where: { $0.id == entry.id }) else {
                 pool.cancelPendingRemasure(id: entry.id)
+                continue
+            }
+            // 【重做批4·四修】可见行跳过离屏重测——显示 cell 在新宽度下
+            // SwiftUI 自动重排并经回传桥回报真值（回传桥是显示环境的独家
+            // 真值源）。离屏量高环境与显示环境 @State 独立（展开态行被离屏
+            // 量出收起高度会把真值写回假值=宽度变化横跳源之一）；rekeyWidth
+            // 把账本宽度对齐当前宽度（高度暂维持旧值，回传修正随之而来），
+            // 并释放去重锚防 stale 积压。
+            let visibleIDs = Set(cv.indexPathsForVisibleItems.compactMap { path -> String? in
+                guard path.item < currentItems.count else { return nil }
+                return currentItems[path.item].id
+            })
+            if visibleIDs.contains(entry.id) {
+                pool.rekeyWidth(id: entry.id, width: contentWidth())
                 continue
             }
             // 【QA P1-2】remeasure 已直写 cache——提交走 commitHeightChange

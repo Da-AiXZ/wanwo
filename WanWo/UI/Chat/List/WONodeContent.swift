@@ -516,9 +516,13 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                // 批12：披露展开 .32s（dsh grid-template-rows 0fr↔1fr .32s；
-                // WOMotion bezier 域，思考披露同族曲线）。
-                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+                // 【重做批4·四修】瞬时翻转（去 withAnimation）——单动画源=
+                // 格子（commitHeightChange 0.32s 行高动画，参考件《设置模型
+                // 配置原型》单几何驱动+裁剪揭示语义）：SwiftUI 内容动画与
+                // 格子行高动画双源并存 = 真机"展开收起动画不对/上下抽搐"
+                // 根因（R3 空窗期内容自主动画+格子瞬跳跟随）。展开体可见性
+                // 由 cell contentView.clipsToBounds 渐进揭示。
+                expanded.toggle()
             } label: {
                 HStack(spacing: 6) {
                     // 16×16 leading 盒：收起=调用方图标（14px），展开=chevron.down。
@@ -568,9 +572,10 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
             }
             .buttonStyle(.plain)
             if expanded {
+                // 【重做批4·四修】去 transition——展开体瞬时全量呈现，揭示
+                // 由格子行高动画的 contentView 裁剪完成（单动画源；transition
+                // 的 opacity/位移在裁剪揭示下观感重复且与格子动画双源）。
                 content
-                    // 批12：展开体过渡 = opacity + 垂直微量位移 8pt（.32s 同族）。
-                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
