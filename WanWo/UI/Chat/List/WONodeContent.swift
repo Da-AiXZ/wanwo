@@ -22,9 +22,9 @@ import SwiftStreamingMarkdown
 // MARK: - 节点渲染上下文（装配缝值快照）
 
 /// 入场账本（tag backup-ci50-20261006 版原样；批 3 随引擎 core 引入——
-/// 引擎 cell 复用/重建不丢 seen 门。批 3 阶段 WOChatView 旧列表动画仍走
-/// 自有 @State 账本（animatedIDs），本账本由引擎 core 持有、批 4 接入时
-/// 成为一结算算真值源——双轨期互不干扰（引擎不上屏））。
+/// 引擎 cell 复用/重建不丢 seen 门。【重做批4】引擎上屏后成为入场 seen
+/// 的唯一真值源（WOChatView 旧列表 @State 账本 animatedIDs 随容器退役，
+/// WONodeBubbleView.entryBubble 经 onSeen → markSeen 写本账本））。
 @MainActor
 final class WOEntryLedger {
     /// 已播过/已豁免入场动画的节点 id（原 animatedIDs）。
@@ -75,24 +75,27 @@ struct WONodeContext {
     let justEndedStreaming: Bool
     let settledBubbleIDs: Set<String>
     /// 入场账本（引用型——onSeen 写面跨 cell 生命周期共享；core 持有）。
-    let ledger: WOEntryLedger?
+    /// 【重做批4】改非 Optional 无默认值——引擎上屏后 WONodeBubbleView 的
+    /// seen 门真值源（批 2 的 Optional 是 CI 隔离根修的过渡形态；默认参数
+    /// `WOEntryLedger()` 的隔离检查问题随"引擎显式传账本"消解，批 2 的
+    /// WOChatView.nodeContext 调用点随旧列表退役删除）。
+    let ledger: WOEntryLedger
     /// 本帧新插入的行 id（sync 插入检测；批 6 同出动画的 SwiftUI 豁免缝——
     /// 本阶段恒空集透传）。
     let freshlyInsertedIDs: Set<String>
 
-    /// 【重做批3 CI 实证修 · 二轮】ledger 改 Optional——默认参数表达式
-    /// `WOEntryLedger()` 以**声明处** nonisolated 上下文做隔离检查（首轮
-    /// @MainActor init 标注不改变该规则，CI :94 同错实证）。nil 默认值零
-    /// 隔离面；引擎 core 构造点显式传真账本（非 Optional 自动包装），批 2
-    /// 调用点不传（nil——批 3 阶段渲染层无 ledger 消费方，批 4 接入时由
-    /// core 保证非 nil 或消费侧判空）。
+    /// 【重做批4】ledger 改非 Optional 无默认值——引擎上屏后本 context 由
+    /// core 构造（显式传真账本），WONodeBubbleView 的 seen 门真值源；
+    /// 批 3 的 Optional 过渡形态与"默认参数 WOEntryLedger() 隔离检查报错"
+    /// （CI 实证：默认参数按声明处 nonisolated 上下文检查）一并消解——
+    /// init 无默认参数表达式，core（@MainActor 类）存储初始化在隔离域构造。
     init(sessionId: String,
          attachmentStore: AttachmentStore?,
          onImagePreview: @escaping (ImageAttachmentRef) -> Void,
          phase: ChatViewModel.Phase = .loading,
          justEndedStreaming: Bool = false,
          settledBubbleIDs: Set<String> = [],
-         ledger: WOEntryLedger? = nil,
+         ledger: WOEntryLedger,
          freshlyInsertedIDs: Set<String> = []) {
         self.sessionId = sessionId
         self.attachmentStore = attachmentStore
@@ -131,6 +134,19 @@ struct WONodeBubbleView: View {
                 codeBackgroundColor: inline.codeBackgroundColor,
                 codeUnderlineColor: inline.codeUnderlineColor))
     }()
+
+    /// 批 1 遗留清偿（滚回淡入观察预案）：WOCachedMarkdown 直喂 DocumentView
+    /// 路径的 config 分叉开关——真机若见滚动回看重淡入（shouldAnimateText 在
+    /// DocumentView 首挂载重放），翻转本位即切 settled 静态直出，不需新批次。
+    /// 默认 false（与 live 同 config = 视觉零变化基线）。
+    static var settledDisableTextAnimation = false
+
+    /// settled 正文渲染 config（分叉缝；live 槽恒用 chatMarkdownConfig）。
+    static var settledMarkdownConfig: MarkdownRenderConfig {
+        settledDisableTextAnimation
+            ? chatMarkdownConfig.withShouldAnimateText(value: false)
+            : chatMarkdownConfig
+    }
 
     /// 【P2-1c 修5 2026-09-28】保序切分：正文按 wanwo:// 图片出现位置切段
     /// ——每段文本 + 段尾可选图片，渲染时图片**跟随 AI 叙述位置**（"图1：
@@ -229,6 +245,78 @@ struct WONodeBubbleView: View {
     }
 
     var body: some View {
+        entryBubble
+    }
+
+    // MARK: 入场决策（tag WONodeBubbleView 逐行迁移；状态源=context/ledger
+    // ——引擎 cell 复用/重建不丢 seen 门；WOChatView 旧列表随批 4 退役）
+
+    private var entryBubble: some View {
+        // 批12+回归五校（用户令）：思考/工具节点=fadeUp（.4s 自下 8px+淡入）；
+        // 过程组不再整块动画——组内节点逐个走入场门；消息保持 mInL/mInR。
+        // seen = ledger.seenIDs ∪ settledBubbleIDs——结算帧落盘节点由 VM 预登记
+        // （内容用户刚在直播看过，即时呈现不播动画）。
+        let isLive = bubble.id.hasPrefix("live-")
+        let seen = context.ledger.seenIDs.contains(bubble.id)
+            || context.settledBubbleIDs.contains(bubble.id)
+        let kindTag: String = {
+            switch bubble.kind {
+            case .user: return "user"
+            case .assistant: return "assistant"
+            case .reasoning: return "reasoning"
+            case .tool: return "tool"
+            case .goalRound: return "goalRound"
+            default: return "other"
+            }
+        }()
+        // 批12+回归九校：思考落盘改 instant——动画已前移到直播思考行出现
+        // 时刻；正文保持 instant（同理由）。
+        // 批12+回归九校-B：justEndedStreaming——onTurnEnd 里 reproject 与
+        // phase=.idle 同帧，单看 phase 会漏判，旗标补上跨帧语义。
+        // live 节点（live-r-N/live-t-N）不参与 instantLive——直播段落的
+        // fadeUp 正是它的入场（generation id 天然一次性）。
+        let instantLive = !isLive
+            && (context.phase == .streaming || context.justEndedStreaming)
+            && (kindTag == "assistant" || kindTag == "reasoning")
+        // live 节点强制 fadeUp（原 liveTailNode 的 WOEntryModifier 参数原样）。
+        let fadeUp = isLive || kindTag == "tool" || kindTag == "reasoning"
+            || kindTag == "goalRound"
+        let fromRight = kindTag == "user"
+        // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
+        // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
+        // 【CI修49 拍板②】插入帧豁免（non-user）：本帧新插入行的入场交给
+        // UIKit 插入动画（推开+淡入同出）；user 行保留 mInR（原型语义）。
+        // 【重做批3 · R2】本阶段恒无 UIKit 插入动画，fresh 豁免空转无害
+        // （批 6 行高生长的同出形态落地后生效）。
+        let fresh = context.freshlyInsertedIDs.contains(bubble.id) && kindTag != "user"
+        let animate = !seen && !instantLive && !fresh
+            && !(kindTag == "user" && context.ledger.pendingUserSeen
+                 && bubble.id != "u-pending")
+        let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
+        let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
+            : CGSize(width: fromRight ? 16 : -16, height: 0)
+        let scale: CGFloat = fadeUp ? 1 : 0.95
+        let duration: Double = fadeUp ? 0.4 : 0.55
+        // 批12+回归八校（点4 手术）：同批落盘的思考（delay 0）与工具
+        // （delay 0.3s）错峰。
+        let entryDelay: Double = fadeUp && kindTag == "tool" ? 0.3 : 0
+        return bubbleView
+            .modifier(WOEntryModifier(
+                offset: offset,
+                scale: scale,
+                duration: duration,
+                delay: entryDelay,
+                animate: animate,
+                diag: seen ? nil : "entry id=\(bubble.id) kind=\(kindTag) branch=\(branch) phase=\(String(describing: context.phase))",
+                onSeen: {
+                    context.ledger.markSeen(bubble.id, kindTag: kindTag)
+                }))
+    }
+
+    // MARK: 单气泡渲染（原 bubbleView 逐 case 迁移）
+
+    @ViewBuilder
+    private var bubbleView: some View {
         switch bubble.kind {
         case .user(let text, let images):
             // 【批3 A1】goal_round 拦截分支移除——投影器已将注入文本特判为
@@ -247,27 +335,29 @@ struct WONodeBubbleView: View {
             }
 
         case .assistant(let text):
-            // 助手行：渐变头像 + 正文（digest-H Bot 行形态；13px 时间戳因
-            // 引擎气泡无墙钟字段缺席，登记报告）。
-            // 批12 T7：正文换 MarkdownView（SwiftStreamingMarkdown——标题/
-            // 列表/代码块/表格可渲染）。库自带 textSelection 配置——外层
-            // .textSelection 去掉避免双选区行为。
-            // 批12+联动（2026-09-26）：①config=chatMarkdownConfig（链接染色
-            // 可辨识——库默认 linkTextAttributes 置空=链接与正文同款）②正文
-            // 预处理提取 wanwo:// 截图（库 ImageConfig 三源均不支持自定义
-            // scheme 且默认 disabled）→ 气泡下方图片条渲染。
-            // 【P2-1c 修5】保序切分：图片跟随 AI 叙述位置原位插段（旧设计
-            // 抽取堆消息尾部，用户两轮实证排版不可接受）；图片视图点击 →
-            // 集中预览通道（sessionID 显式锚，不依赖挂载时序——P2-1b 语义）。
+            // 助手行：渐变头像 + 正文（digest-H Bot 行形态）。
+            // 批12 T7：正文换 MarkdownView（SwiftStreamingMarkdown）。
+            // 【批1 件4】settled（落盘非流式）正文 → WOCachedMarkdown（NSCache
+            // 文档直喂，滚回秒出）；live 槽（live-t-N）保持 MarkdownView(text:)
+            // （块级 diff 原地更新流式语义红线不动）。两者同一 BlockView 渲染
+            // 管线（DocumentView 与 MarkdownView body 同源）——视觉零变化。
+            // 【P2-1c 修5】保序切分：图片跟随 AI 叙述位置原位插段。
             let segments = Self.splitAgentSegments(text)
+            let isLive = bubble.id.hasPrefix("live-")
             HStack(alignment: .top, spacing: 8) {
                 WOAssistantAvatar()
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(segments) { segment in
                         if !segment.text.isEmpty {
-                            MarkdownView(text: Self.autolinkBareURLs(segment.text),
-                                         config: Self.chatMarkdownConfig)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if isLive {
+                                MarkdownView(text: Self.autolinkBareURLs(segment.text),
+                                             config: Self.chatMarkdownConfig)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                WOCachedMarkdown(text: Self.autolinkBareURLs(segment.text),
+                                                 config: Self.settledMarkdownConfig)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                         if let url = segment.image {
                             WOInlineAgentImage(url: url,
@@ -298,15 +388,20 @@ struct WONodeBubbleView: View {
                 Text(text)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(WOAlias.labelSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(WOAlias.bgModulePlatform))
 
         case .note(let text):
+            // 【CI修49】fixedSize(vertical:)：变更纸条等多行文本被 cell
+            // proposal 截断成"…"（可压缩 Text 回传死区）的根治——拒绝高度
+            // 压缩后 GeometryReader 量到理想高，回传修正闭环自愈。
             Text(text)
                 .font(.system(size: 12))
                 .foregroundColor(WOAlias.labelTertiary)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .turnUsage(let summary):
@@ -346,11 +441,14 @@ struct WONodeBubbleView: View {
                     // 贴字细条根治）；lineSpacing 4（22px 行高目标）；
                     // 圆角 22 + 蓝软底（WOSpecific.bubble）+ max-width 508
                     // （620 列的 82%）保持。
+                    // 【CI修49】fixedSize(vertical:)：拒绝高度压缩（量高回传
+                    // 闭环——长文本用户消息不被 cell proposal 截断成"…"）。
                     Text(text)
                         .font(.system(size: 14))
                         .foregroundColor(WOAlias.labelPrimary)
                         .multilineTextAlignment(.trailing)
                         .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 10)
                         .padding(.horizontal, 16)
                         .background(RoundedRectangle(cornerRadius: 22).fill(WOSpecific.bubble))
