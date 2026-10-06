@@ -95,19 +95,18 @@ struct WOCachedMarkdown: View {
     }
 
     var body: some View {
-        // 【批4 真机修复 2026-10-06】未命中近似态 = Text 原文（同步渲染）。
-        // 根因链（IMG_2596-2599 真机实证）：旧版 miss 渲染 .empty（≈0 高）
-        // → layout prepare 首量 ≈0 高入库**固化**（池签名/宽度不变即永远
-        // 直读假值，量高 host 的 task 完成只写渲染缓存不写池）→ 未显示区
-        // 行高全错 → 贴底落点漂移 + 滚动中逐行"瞬现+撑开" = 空白洞/内容
-        // 向上偏移。lody 无此病：量高 TextKit 同步（LodyChatView+Scroll
-        // .measure → store.height，与渲染同源，打开会话首量即真值）。
-        // 修复：量高与显示**同一 Text 内容**（装配缝一致性——近似高度 ≈
-        // 真值：17pt/行高 26/lineSpacing 4 贴库 Typography.baseTextFonts），
-        // 内容立即可读（原文形态，对照 lody 流式原文→落盘富格式的渐进
-        // 观感）；解析完成后切换富格式 + 小差值回传修正。
-        if let document {
-            DocumentView(renderableDocument: document, config: config)
+        // 【批4 诊断实证修 2026-10-06】每帧求值**同步查缓存**（NSCache 读
+        // 微秒级；list-diag.log 实证两态分叉：#130 同一行 23→946→横跳、
+        // "最后一轮总结正常"=恰在缓存命中）。缓存优先于 @State，治三态：
+        // ①量高 host 的 .task 永不执行（离屏无 appearance）→ State 恒 nil
+        // → stale 重测/宽度重测恒量近似值，把显示面已修正的真值**写回假值**
+        // （高度横跳根源）；②NSCache 内存逐出后显示 cell 重建 State(nil)
+        // 而同文本行已被别的 cell 解析入库；③State 保留陷阱（.id 不变时
+        // State(initialValue:) 不再求值）。@State 降级为"缓存 miss 后的
+        // 异步解析承接位"。
+        let resolved = WOMarkdownDocumentCache.shared.document(for: text) ?? document
+        if let resolved {
+            DocumentView(renderableDocument: resolved, config: config)
         } else {
             Text(text)
                 .font(.system(size: 17))

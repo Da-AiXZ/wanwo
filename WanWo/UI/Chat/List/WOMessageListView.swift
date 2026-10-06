@@ -801,6 +801,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 oldContentHeight: cv.contentSize.height)
         }
         messageLayout.invalidateLayout()
+        // 【批4 诊断实证修】异步补标一次（幂等）：SwiftUI 的 onPreference
+        // Change 常嵌在 hosting 布局链（= collectionView layout pass 内）
+        // ——pass 内 invalidate 存在被 UIKit 忽略的面（list-diag.log 实锤
+        // frame=23/pool=47 脱钩，后续行整体错位 24pt=真机"上偏"）。若首个
+        // invalidate 已生效，此处为无变化的空标记；循环终止=池值稳定
+        // （updateHeight 0.5pt 死区）。
+        DispatchQueue.main.async { [weak self] in
+            self?.messageLayout.invalidateLayout()
+        }
         if followsBottom {
             scrollToBottom()
         }
