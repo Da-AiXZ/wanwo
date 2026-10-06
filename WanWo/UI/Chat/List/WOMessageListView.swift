@@ -343,6 +343,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             }
     }
 
+    /// 【批4 真机诊断】保底触发（completion+3s 之外的兜底——列表首次出现在
+    /// 屏幕后 3s 必有一次快照；用户复现"打开即空白"的最稳取证点）。
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.dumpLayoutSnapshot(reason: "appear+3s")
+        }
+    }
+
     /// 【批4 真机修复】解析完成 → 匹配行重测自愈（照 runRemeasureSlice 的
     /// 提交模式：remeasure 已直写 cache，previous 比对后 commitHeightChange
     /// 绕过 updateHeight 死区门）。文本匹配口径与渲染一致（autolink 后的
@@ -1317,12 +1326,18 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 // MARK: - UIScrollViewDelegate（丝线 / 拖拽断开状态机 / 预取 / 冻结驱动）
 
 /// 【批4 真机诊断】布局快照文件日志（Documents/list-diag.log，文件 App
-/// 可见可分享；256KB 截半守护——WOEntryDiag 同款形态）。
+/// 可见可分享；256KB 截半守护——WOEntryDiag 同款形态）+ UI 通道（lastDump
+/// 静态持有，侧栏「列表诊断」sheet 直接展示——文件 App 取证不可靠时的
+/// 主通道，用户截图/一键复制即可回传）。
 enum WOLayoutDiag {
     static let logger = AppLogger(category: "LayoutDiag")
     private static let queue = DispatchQueue(label: "com.wanwo.layout-diag")
+    /// 最近一次 dump 全文（主线程写——dumpLayoutSnapshot 调用域；侧栏
+    /// sheet 打开时读取，无需刷新驱动）。
+    static private(set) var lastDump: String?
 
     static func write(_ text: String) {
+        lastDump = text
         logger.info("layout dump \(String(text.prefix(120)))")
         let line = "\(ISO8601DateFormatter().string(from: Date())) | \(text)\n"
         queue.async {

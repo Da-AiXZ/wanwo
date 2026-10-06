@@ -52,6 +52,8 @@ struct WORootFrame: View {
     @State private var renameTarget: R3Target?
     @State private var renameField = ""
     @State private var deleteTarget: R3Target?
+    /// 【批4 真机诊断】列表布局诊断 sheet 开关（侧栏 footer 入口）。
+    @State private var showListDiag = false
 
     // MARK: - Body（只组装）
 
@@ -300,29 +302,91 @@ struct WORootFrame: View {
                 footerBar(wide: wide)
             }
         )
+        // 【批4 真机诊断】列表布局诊断 sheet（侧栏 footer 入口——布局快照
+        // 直接展示/复制，不依赖文件 App）。
+        .sheet(isPresented: $showListDiag) {
+            WOListDiagSheet()
+        }
     }
 
-    /// 侧栏 footer：设置真入口（齿轮 → 全窗设置面板；dsh SettingsRoot 语义）。
-    private func footerBar(wide: Bool) -> some View {
-        Button {
-            environment.openSettings()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13))
-                if wide {
-                    Text("设置")
-                        .font(.system(size: 13))
+    /// 【批4 真机诊断】布局快照 sheet（WOLayoutDiag.lastDump 全文展示 +
+    /// 一键复制；用户在会话页滚动后打开侧栏点入即得最新快照）。
+    private struct WOListDiagSheet: View {
+        @Environment(\.dismiss) private var dismiss
+        /// 打开时刻快照（WOLayoutDiag.lastDump 主线程写，此处主线程读）。
+        private var dump: String { WOLayoutDiag.lastDump ?? "尚无快照（请先进任意会话并滚动几下，再打开本页）" }
+
+        var body: some View {
+            NavigationStack {
+                ScrollView {
+                    Text(dump)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .textSelection(.enabled)
                 }
-                Spacer(minLength: 0)
+                .navigationTitle("列表布局诊断")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("关闭") { dismiss() }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            UIPasteboard.general.string = dump
+                        } label: {
+                            Label("复制全部", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
             }
-            .foregroundColor(WOAlias.labelSecondary)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) // 批D3：38→44
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("打开设置")
+    }
+
+    /// 侧栏 footer：设置真入口（齿轮 → 全窗设置面板；dsh SettingsRoot 语义）
+    /// +【批4 真机诊断】列表布局诊断入口（取证期临时行，定位后移除）。
+    private func footerBar(wide: Bool) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                showListDiag = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "stethoscope")
+                        .font(.system(size: 13))
+                    if wide {
+                        Text("列表诊断")
+                            .font(.system(size: 13))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(WOAlias.labelSecondary)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("打开列表布局诊断")
+            Divider().opacity(0.3)
+            Button {
+                environment.openSettings()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13))
+                    if wide {
+                        Text("设置")
+                            .font(.system(size: 13))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(WOAlias.labelSecondary)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) // 批D3：38→44
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("打开设置")
+        }
     }
 
     // MARK: - 中栏（Hero / 聊天）
