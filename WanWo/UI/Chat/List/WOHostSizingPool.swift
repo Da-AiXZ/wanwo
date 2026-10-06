@@ -183,6 +183,11 @@ final class WOHostSizingPool: NSObject {
         } else {
             host = UIHostingController(rootView: makeContent())
             host.view.backgroundColor = .clear
+            // 【批4 渲染层根修】与显示 cell（WONodeCell）同源：显式剥离
+            // safe area——离屏 host 无 window 本无 safeAreaInsets，显式声明
+            // 保证量高/显示两环境布局参数一致（ZOZOTOWN 实证同修法）。
+            host.safeAreaRegions.remove(.all)
+            host.view.insetsLayoutMarginsFromSafeArea = false
             entries[id] = Entry(host: host, signature: signature)
         }
         // LRU 近用 + 池上限（不逐出已挂载视图——lody 铁律）。

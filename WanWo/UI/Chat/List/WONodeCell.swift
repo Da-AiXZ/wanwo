@@ -45,18 +45,24 @@ final class WONodeCell: UICollectionViewCell {
         } else {
             let host = UIHostingController(rootView: content)
             host.view.backgroundColor = .clear
+            // 【批4 渲染层根修 2026-10-07】剥离 safe area——业界实证（Apple
+            // Forums 官方："Embedding a UIHostingController inside of cells
+            // is not officially supported"；ZOZOTOWN 实战：cell 内 SwiftUI
+            // 内容因 safeAreaInsets 被意外继承而不渲染/布局错位，修法=
+            // safeAreaRegions.remove(.all)）。离屏量高 host 无 window →
+            // safeAreaInsets 恒 0；显示 cell 挂窗 → 继承 iPad 状态栏/home 条
+            // ~44pt——同一内容两环境布局参数不同=量高与显示分叉的结构性
+            // 来源之一。部署目标 16.6 > 16.4，API 无需可用性分支。
+            host.safeAreaRegions.remove(.all)
+            host.view.insetsLayoutMarginsFromSafeArea = false
             contentView.addSubview(host.view)
-            host.view.translatesAutoresizingMaskIntoConstraints = false
-            // 【CI修50】top/leading/trailing 三边钉 + intrinsic 高（旧四边
-            // 钉：行高动画时 host 被约束拉伸挤压内容 = 真机展开"残影/抽搐"
-            // 根因之一——内容是被捏变形而非被揭示）；cell frame 动画时
-            // host 保持目标全高，由 contentView 裁剪渐进揭示 = 参考件
-            // 《设置模型配置原型》.collapsible overflow:hidden 语义。
-            NSLayoutConstraint.activate([
-                host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
-            ])
+            // 【批4 渲染层根修·主修】lody ChatMarkdownCell 同款 frame 直设
+            // 布局：host 不挂约束，frame 由 layoutSubviews 每 pass 按 cell
+            // 内容区强制直设。旧三边钉依赖 intrinsicContentSize 驱动高度，
+            // 而 UIHostingController 无 sizingOptions 维护时不自动更新——
+            // list-diag CELL 实证：复用换身份后 host frame 停留旧值（总结
+            // 行 layoutH=946/drawH=46、26pt 胶囊行 drawH=362 三帧不动），
+            // 新内容被旧高度裁剪=真机"格子占位正确、内容只画一角"的根因。
             self.host = host
         }
         // 【CI修50】揭示裁剪（复用分支也要重申——复用不重建约束但 clipped
@@ -64,6 +70,18 @@ final class WONodeCell: UICollectionViewCell {
         contentView.clipsToBounds = true
         isAccessibilityElement = false
         contentView.isAccessibilityElement = true
+    }
+
+    /// 【批4 渲染层根修·主修】每 pass 强制内容框=cell 内容区（lody
+    /// ChatMarkdownCell.layoutSubviews 的 markdown.measure→frame 同语义：
+    /// 显示与测量永远同步，复用残留旧框从机制上消灭）。SwiftUI 内容垂直
+    /// 不贪婪（顶对齐排列），cell 高度由 layout 按账本给——内容完整呈现、
+    /// 差值部分留白在底部（几 pt 级）。揭示动画（cell frame 渐进）时
+    /// layoutSubviews 逐帧跟随 = 裁剪揭示语义保持。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let host, contentView.bounds.width > 1, contentView.bounds.height > 1 else { return }
+        host.view.frame = CGRect(origin: .zero, size: contentView.bounds.size)
     }
 
     override func prepareForReuse() {
