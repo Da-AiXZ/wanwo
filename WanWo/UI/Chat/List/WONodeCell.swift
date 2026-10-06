@@ -17,6 +17,24 @@ final class WONodeCell: UICollectionViewCell {
 
     private var host: UIHostingController<AnyView>?
 
+    /// 【批4 真机诊断】host 实际渲染框（dumpLayoutSnapshot 对拍"布局 frame
+    /// vs 内容实画"——渲染层空白/半画定位）。
+    var hostViewFrame: CGRect {
+        host?.view.frame ?? .zero
+    }
+
+    /// SwiftUI 内容的理想高度（systemLayoutSizeFitting 同款探测，显示环境
+    /// 实测——与账本/布局高三方对拍）。
+    var hostIntrinsicHeight: CGFloat {
+        guard let host else { return -1 }
+        let size = host.view.systemLayoutSizeFitting(
+            CGSize(width: host.view.bounds.width,
+                   height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        return ceil(size.height)
+    }
+
     /// 内容装配（cellProvider 每次 dequeue/reconfigure 调；AnyView 内含
     /// .id(item.id)——内容变则 SwiftUI 状态随 identity 重置）。
     /// 同 cell 实例换内容 = rootView 替换（SwiftUI 桥一次性建好，复用零重建）。

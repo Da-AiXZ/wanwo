@@ -428,6 +428,20 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                                 frame.minY, frame.height, poolH,
                                 contentVersions[item.id] ?? 0))
         }
+        // 【批4 真机诊断·渲染层】可见 cell 的"实际内容绘制高度"对拍——
+        // hostViewFrame=SwiftUI 视图在 cell 内的实际框；hostIntrinsicHeight=
+        // 内容理想高。三者关系：账本 h≈布局 frame.h 应成立；若
+        // intrinsic ≪ frame → cell 占位大内容画不满 = 用户看到的"空白"。
+        for case let cell as WONodeCell in cv.visibleCells {
+            guard let indexPath = cv.indexPath(for: cell),
+                  indexPath.item < currentItems.count else { continue }
+            let frame = indexPath.item < frames.count
+                ? frames[indexPath.item] : .zero
+            lines.append(String(format: "  CELL #%d %@ layoutH=%.0f drawH=%.0f intrinsic=%.0f",
+                                indexPath.item, currentItems[indexPath.item].id,
+                                frame.height, cell.hostViewFrame.height,
+                                cell.hostIntrinsicHeight))
+        }
         WOLayoutDiag.write(lines.joined(separator: "\n"))
     }
 
