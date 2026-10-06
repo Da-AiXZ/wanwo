@@ -1323,7 +1323,7 @@ enum WOLayoutDiag {
     private static let queue = DispatchQueue(label: "com.wanwo.layout-diag")
 
     static func write(_ text: String) {
-        logger.info("layout dump \(text.prefix(120), privacy: .public)")
+        logger.info("layout dump \(String(text.prefix(120)))")
         let line = "\(ISO8601DateFormatter().string(from: Date())) | \(text)\n"
         queue.async {
             let url = FileManager.default.urls(for: .documentDirectory,
