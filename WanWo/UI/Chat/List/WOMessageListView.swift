@@ -45,6 +45,7 @@
 
 import SwiftUI
 import UIKit
+import os
 
 // MARK: - Representable（WOChatView 宿主面）
 
@@ -324,6 +325,49 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         tap.cancelsTouchesInView = false
         tap.delegate = self
         cv.addGestureRecognizer(tap)
+        // 【批4 真机修复】Markdown 解析完成订阅（行高自愈）：量高 host 与
+        // 未显示行的池高度停留 Text 近似值——解析完成广播后此处 remeasure
+        //（缓存已命中 → 同步真文档 → 真值）+ 提交修正，contentSize 不再
+        // 依赖"行滚进视口→显示 cell 回传"才收敛。
+        markdownParsedObserver = NotificationCenter.default.addObserver(
+            forName: WOMarkdownDocumentCache.documentParsedNotification,
+            object: nil, queue: .main) { [weak self] note in
+                let text = note.userInfo?["text"] as? String
+                MainActor.assumeIsolated {
+                    self?.handleMarkdownParsed(text)
+                }
+            }
+    }
+
+    /// 【批4 真机修复】解析完成 → 匹配行重测自愈（照 runRemeasureSlice 的
+    /// 提交模式：remeasure 已直写 cache，previous 比对后 commitHeightChange
+    /// 绕过 updateHeight 死区门）。文本匹配口径与渲染一致（autolink 后的
+    /// 段文本）；同文本多行全量 remeasure（幂等）；频率=解析完成一次一行，
+    /// 线性扫描 50 条成本可忽略。
+    private func handleMarkdownParsed(_ text: String?) {
+        guard let text, !text.isEmpty,
+              let cv = collectionView, cv.window != nil else { return }
+        let width = contentWidth()
+        for item in currentItems {
+            guard case .bubble(let bubble) = item.kind,
+                  case .assistant(let body) = bubble.kind else { continue }
+            let matches = WONodeBubbleView.splitAgentSegments(body).contains { segment in
+                !segment.text.isEmpty
+                    && WONodeBubbleView.autolinkBareURLs(segment.text) == text
+            }
+            guard matches else { continue }
+            let previous = pool.cachedHeight(id: item.id, width: width)
+            let height = pool.remeasure(
+                id: item.id, width: width,
+                signature: "v\(contentVersions[item.id] ?? 0)",
+                makeContent: { [weak self] in
+                    guard let self else { return AnyView(Color.clear) }
+                    return self.makeNodeContent(item, reportsHeight: false)
+                })
+            if previous != height {
+                commitHeightChange(id: item.id, height: height, collectionView: cv)
+            }
+        }
     }
 
     // MARK: 输入入口（representable updateUIViewController →）
@@ -654,6 +698,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// "" 签名条目被空态重测覆盖 → 永久溢出窗口）。
     func nodeHeightChanged(id: String, height: CGFloat) {
         guard let cv = collectionView, cv.window != nil else { return }
+        // 【批4 真机诊断】大跳变落行（|Δ|>150pt）——空白/偏移残余问题的
+        // 真机定位探针（修复后理论无此量级跳变；出现即证据）。
+        if let previous = pool.cachedHeight(id: id, width: contentWidth()),
+           abs(previous - height) > 150 {
+            heightJumpLog.error("wo-height-jump id=\(id, privacy: .public) old=\(previous, format: .fixed(precision: 0)) new=\(height, format: .fixed(precision: 0))")
+        }
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: contentWidth(), height: height,
                                 signature: signature) else { return }
@@ -723,6 +773,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private var remeasureActive = false
     /// 切片代际（会话切换/视图拆解作废）。
     private var remeasureGen = 0
+    /// 【批4 真机修复】Markdown 解析完成广播订阅（viewDidLoad 建，deinit 撤）。
+    private var markdownParsedObserver: NSObjectProtocol?
+    /// 【批4 真机诊断】行高大跳变落行（Console 过滤 category=height）。
+    private let heightJumpLog = Logger(subsystem: "WanWo", category: "height")
 
     private func drainStaleSweep() {
         // 【CI修50】列宽动画中不 drain（只收集）：右栏开合 0.42s 内每帧
@@ -1043,6 +1097,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     deinit {
         // @MainActor 存储属性在 deinit 的直接存储访问（minimal 并发下合法）。
         motionLink?.invalidate()
+        // 【批4 真机修复】block-based observer 显式移除。
+        if let markdownParsedObserver {
+            NotificationCenter.default.removeObserver(markdownParsedObserver)
+        }
     }
 
     // MARK: 批 2 件 3 让位（lody updateBottomInset :10-27 万我形态）

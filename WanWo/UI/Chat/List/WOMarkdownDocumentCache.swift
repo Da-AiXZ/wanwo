@@ -27,6 +27,13 @@ import SwiftStreamingMarkdown
 final class WOMarkdownDocumentCache: @unchecked Sendable {
     static let shared = WOMarkdownDocumentCache()
 
+    /// 【批4 真机修复】解析完成广播名——core 订阅后对匹配行 remeasure
+    ///（量高 host / 未显示行的池高度从 Text 近似值收敛到真文档值，
+    /// contentSize 稳定、贴底落点准；修复前该收敛只能靠"行滚进视口
+    /// → 显示 cell 回传"驱动，未滚到的行高度假值固化 = 空白洞/偏移）。
+    static let documentParsedNotification =
+        Notification.Name("WOMarkdownDocumentParsed")
+
     private final class Box {
         let document: RenderableDocument
         init(_ document: RenderableDocument) { self.document = document }
@@ -61,6 +68,10 @@ final class WOMarkdownDocumentCache: @unchecked Sendable {
         let parser = MarkdownParserImpl()
         let document = await parser.parse(text: text, config: config)
         cache.setObject(Box(document), forKey: key, cost: text.utf8.count)
+        // 【批4 真机修复】解析完成广播（见 documentParsedNotification 注）。
+        NotificationCenter.default.post(
+            name: Self.documentParsedNotification, object: nil,
+            userInfo: ["text": text])
         return document
     }
 }
@@ -84,18 +95,30 @@ struct WOCachedMarkdown: View {
     }
 
     var body: some View {
-        DocumentView(renderableDocument: document ?? .empty, config: config)
-            .task(id: text) {
-                if document == nil, let cached = WOMarkdownDocumentCache.shared.document(for: text) {
-                    document = cached
-                    return
+        // 【批4 真机修复 2026-10-06】未命中近似态 = Text 原文（同步渲染）。
+        // 根因链（IMG_2596-2599 真机实证）：旧版 miss 渲染 .empty（≈0 高）
+        // → layout prepare 首量 ≈0 高入库**固化**（池签名/宽度不变即永远
+        // 直读假值，量高 host 的 task 完成只写渲染缓存不写池）→ 未显示区
+        // 行高全错 → 贴底落点漂移 + 滚动中逐行"瞬现+撑开" = 空白洞/内容
+        // 向上偏移。lody 无此病：量高 TextKit 同步（LodyChatView+Scroll
+        // .measure → store.height，与渲染同源，打开会话首量即真值）。
+        // 修复：量高与显示**同一 Text 内容**（装配缝一致性——近似高度 ≈
+        // 真值：17pt/行高 26/lineSpacing 4 贴库 Typography.baseTextFonts），
+        // 内容立即可读（原文形态，对照 lody 流式原文→落盘富格式的渐进
+        // 观感）；解析完成后切换富格式 + 小差值回传修正。
+        if let document {
+            DocumentView(renderableDocument: document, config: config)
+        } else {
+            Text(text)
+                .font(.system(size: 17))
+                .lineSpacing(4)
+                .task(id: text) {
+                    let parsed = await WOMarkdownDocumentCache.shared
+                        .parseAndStore(text, config: config)
+                    // 任务竞态防御：文本已变/视图已离场时丢弃过期解析结果。
+                    guard !Task.isCancelled else { return }
+                    document = parsed
                 }
-                let parsed = await WOMarkdownDocumentCache.shared.parseAndStore(
-                    text, config: config)
-                // 【批1-QA P2-3 修】任务竞态防御实装：文本已变/视图已离场
-                // （复用重挂载）时丢弃过期解析结果，不污染新身份的 @State。
-                guard !Task.isCancelled else { return }
-                document = parsed
-            }
+        }
     }
 }
