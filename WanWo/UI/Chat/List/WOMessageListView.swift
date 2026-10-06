@@ -218,6 +218,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private var currentItems: [WOMListNode] = []
     /// id → 最近入库条目（变更检测；33Hz no-op 守卫的比对基线）。
     private var syncedNodes: [String: WOMListNode] = [:]
+    /// 【批4 诊断实证修】首次定位直写位（bindIfNeeded 置位；首个非空 apply
+    /// 完成时直写贴底——旧链 display link 收敛在"行高陆续修正"期被持续
+    /// 推远，真机 apply+3s 实证 offset 差 1425pt 未到位（打开后内容上掠
+    /// 数秒/停在半路）。lody 首次定位同为直写语义；流式跟随仍走 display
+    /// link 不受影响）。
+    private var needInitialPositioning = false
     /// id → 内容版本（内容变 → bump → 池高度签名失效 → 重测）。
     private var contentVersions: [String: Int] = [:]
     private var lastPhase: ChatViewModel.Phase?
@@ -491,6 +497,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         historyLoading = false
         expanding = false
         followsBottom = true
+        // 【批4 诊断实证修】新会话首次定位直写位（首个非空 apply 落地贴底）。
+        needInitialPositioning = true
         pendingAnchorRestore = nil
         // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
         deferredExpansionAnchor = nil
@@ -660,6 +668,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             if let restore = self.deferredExpansionAnchor {
                 self.deferredExpansionAnchor = nil
                 self.pendingAnchorRestore = restore
+            }
+            // 【批4 诊断实证修】首次定位直写（首个非空 apply 落地即贴底，
+            // 消灭"收敛追着行高修正跑"的数秒上掠/半路停顿；display link
+            // 保留给流式跟随与后续内容变化）。
+            if needInitialPositioning, followsBottom, itemCount > 0 {
+                needInitialPositioning = false
+                let bottom = self.bottomOffset
+                self.collectionView?.setContentOffset(
+                    CGPoint(x: 0, y: bottom), animated: false)
             }
             // 【批4 真机诊断】apply 落地 3s 后布局快照（打开会话稳态取证；
             // 限频器挡高频 apply 的重复排程）。
@@ -1378,6 +1395,11 @@ extension WOMessageListCore: UIScrollViewDelegate {
         onHeadScrolled?(scrollView.contentOffset.y > 4)
         // 批 2 件 2：回底按钮现形判定 + 冻结回带评估（无内容变化的滚动帧）。
         updateBottomButton()
+        // 【批4 真机诊断】拖拽/惯性中的动态快照（限频 1.5s）——静止帧 dump
+        // 全对但用户体感"拖拽中偏移"，补齐动态盲区取证。
+        if scrollView.isTracking || scrollView.isDecelerating {
+            dumpLayoutSnapshot(reason: "dragging")
+        }
         if !frozenLiveIDs.isEmpty || phase == .streaming {
             let pendingUnfreeze = updateFrozenStreams()
             if !pendingUnfreeze.isEmpty {
