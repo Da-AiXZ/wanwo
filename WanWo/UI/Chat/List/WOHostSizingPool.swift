@@ -155,6 +155,46 @@ final class WOHostSizingPool: NSObject {
         return cached.height
     }
 
+    /// 【重做批5·宽度解耦】纯量高（结果**不落池**）——宽度切换流程的预重测
+    /// 用：侧栏动画期间按新宽度批量量高存 side table，切换时一次落池。与
+    /// measure 同款 fitting 流程（复用池视图），只差不写 heights。
+    func measureOnly(id: String, width: CGFloat, makeContent: () -> AnyView) -> CGFloat {
+        let width = max(1, width)
+        let host: UIHostingController<AnyView>
+        if let entry = entries[id] {
+            host = entry.host
+            host.rootView = makeContent()
+        } else {
+            host = UIHostingController(rootView: makeContent())
+            host.view.backgroundColor = .clear
+            host.safeAreaRegions.remove(.all)
+            host.view.insetsLayoutMarginsFromSafeArea = false
+            entries[id] = Entry(host: host, signature: "")
+        }
+        recent.removeAll { $0 == id }
+        recent.append(id)
+        while recent.count > Self.sizingLimit,
+              let index = recent.firstIndex(where: { $0 != id && entries[$0]?.host.view.superview == nil }) {
+            let evicted = recent.remove(at: index)
+            entries[evicted] = nil
+        }
+        host.view.frame = CGRect(origin: .zero,
+                                 size: CGSize(width: width, height: 1))
+        let size = host.view.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        return ceil(size.height)
+    }
+
+    /// 【重做批5·宽度解耦】直写条目（绕过 0.5pt 死区与签名保留规则）——
+    /// 宽度切换时批量落预重测值用（预重测已按切换时刻内容实量）。
+    func forceHeight(id: String, width: CGFloat, height: CGFloat, signature: String) {
+        heights[id] = HeightEntry(height: ceil(height), width: max(1, width),
+                                  signature: signature)
+        pendingRemasure.remove(id)
+    }
+
     /// 宽度变化 → 全量失效（高度缓存清空；池视图保留待重测时复用）。
     func invalidateWidth() {
         heights.removeAll()

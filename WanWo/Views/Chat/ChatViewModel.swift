@@ -270,10 +270,58 @@ final class ChatViewModel: ObservableObject {
                 // 恒 false → 头部条与扩窗触发双双断线）。初载窗口 = 尾部
                 // 50 节点，上滑触顶走 startHistoryExpansion 渐进放开。
                 self.resetHistoryWindow()
+                // 【重做批6 · QQ 时序】首屏 Markdown 预解析——在 loading 态
+                // 内把全部正文段并发解析进文档缓存，引擎首 prepare 量高即
+                // 富格式真值 → 首帧定位贴底 = 最终形态（业界成熟做法：位置
+                // 在布局确定阶段定死，而非显示后滚动；消除"先显示近似高→
+                // 逐行修正→滚动"的中间态）。上限 0.8s 兜底不拖首屏。
+                await self.prewarmMarkdownParsing()
                 self.phase = .idle
             } catch {
                 self.phase = .failed("打开会话失败：\(String(describing: error))")
             }
+        }
+    }
+
+    /// 【重做批6 · QQ 时序】首屏 Markdown 预解析。
+    /// 收集当前投影里全部 assistant 正文段（含过程组），并发喂给文档缓存
+    /// （WOCachedMarkdown 显示时同步查缓存命中→富格式→引擎首 prepare 量高
+    /// 即真值）。与 0.8s 兜底计时器竞速，先到先走（超时也要放行进 idle——
+    /// 剩余解析在后台继续，显示面按既有回传链收敛）。
+    private func prewarmMarkdownParsing() async {
+        var texts = Set<String>()
+        for node in displayNodes {
+            let bubbles: [ConversationProjector.Bubble]
+            switch node {
+            case .plain(let bubble):
+                bubbles = [bubble]
+            case .process(let group):
+                bubbles = group.bubbles
+            }
+            for bubble in bubbles {
+                if case .assistant(let text) = bubble.kind {
+                    for segment in WONodeBubbleView.splitAgentSegments(text)
+                    where !segment.text.isEmpty {
+                        texts.insert(WONodeBubbleView.autolinkBareURLs(segment.text))
+                    }
+                }
+            }
+        }
+        guard !texts.isEmpty else { return }
+        let config = WONodeBubbleView.settledMarkdownConfig
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for text in texts {
+                    _ = await WOMarkdownDocumentCache.shared.parseAndStore(
+                        text, config: config)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+            }
+            // 解析完或超时，先到先走；取消余下任务（缓存继续填充无害）。
+            _ = await group.next()
+            group.cancelAll()
         }
     }
 
