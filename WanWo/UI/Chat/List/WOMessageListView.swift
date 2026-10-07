@@ -173,8 +173,15 @@ final class WOMessageListLayout: UICollectionViewLayout {
     }
 
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
-        // 宽度变化（旋转/分栏/键盘挤压）才整体失效；高度变化不动。
-        collectionView.map { $0.bounds.size.width != newBounds.size.width } ?? false
+        // 【重做批5 · 宽度冻结 2026-10-07】恒 false：bounds 逐帧变化（右栏
+        // 开合/旋转/分栏的中间态）不触发布局重算——cell frame 绝对定位保持
+        // 旧宽形态（内容静止不 reflow 不跳变，仅可视区域变化）；宽度稳定后
+        // 由 drainStaleSweep 稳定分支一次 invalidate 重摆+切片重测渐进修正。
+        // 旧实现"宽度变→true"=prepare 每帧跑→池按宽度取值 miss→同步量高
+        // （离屏环境与显示环境状态分叉）+fallback 跳变+stale 切片+回传桥
+        // 多路写入——真机"宽度变化内容上下抽搐/叠影"根因（list-diag 帧 3
+        // 实锤：全体行跳大 621pt 次帧回落）。滚动 origin 变化本就 false。
+        return false
     }
 
     /// 【批4 真机诊断】itemFrames 只读快照（dumpLayoutSnapshot 消费——
@@ -265,6 +272,67 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 【重做批3 · R1】扩窗完成落在滚动中 → 静止后补提交（finishHistoryExpansion
     /// 置位；didEnd 系列消费）。
     private var scrollEndExpansionPending = false
+
+    // MARK: 【重做批6】同出生长插值（新行入场几何侧——参考件《同出丝滑效果》）
+
+    /// 单行生长动画参数（from→to 高度插值；start=驱动 tick 时刻基准）。
+    private struct GrowthAnim {
+        let from: CGFloat
+        let to: CGFloat
+        let start: CFTimeInterval
+        let duration: TimeInterval
+    }
+    /// 行 id → 生长动画（池=数据真值瞬时入库；layout 查询经 growthDisplay
+    /// 高度覆盖——显示层从 0 长到真值，物理顶开旧行+内容淡入=同出）。
+    private var growthAnims: [String: GrowthAnim] = [:]
+    /// 参考件时长：新行 0→真值 0.66s，与 SwiftUI 侧纯淡入（WOEntryModifier
+    /// duration 0.66）同步——同一参考件参数。
+    private static let growthDuration: TimeInterval = 0.66
+
+    /// 新插入 non-user 行入队生长（applyUpdate 检测后调；seen/instantLive 行
+    /// 跳过=历史静默/刚看过语义不生长）。to=同步量高入池取真值（插入帧格子
+    /// 高 0，首帧 prepare 命中池值被插值覆盖）。
+    private func enqueueGrowthIfEligible(_ item: WOMListNode) {
+        guard case .bubble(let bubble) = item.kind else { return }
+        if case .user = bubble.kind { return } // user 行=mInR 横移（无生长）
+        let id = item.id
+        // 后台/未挂窗不入队（display link 无法驱动=行停在 0 高不可见）——
+        // 直接以池值呈现（后台无动画语义正确）。
+        guard collectionView?.window != nil,
+              growthAnims[id] == nil,
+              !ledger.seenIDs.contains(id),
+              !(viewModel?.settledBubbleIDs ?? []).contains(id) else { return }
+        // instantLive（流式中落盘的 assistant/reasoning=刚在直播看过）不生长。
+        let kindTag: String = {
+            switch bubble.kind {
+            case .assistant: return "assistant"
+            case .reasoning: return "reasoning"
+            default: return "other"
+            }
+        }()
+        if id.hasPrefix("live-") == false,
+           (phase == .streaming || (viewModel?.justEndedStreaming ?? false)),
+           kindTag == "assistant" || kindTag == "reasoning" { return }
+        let width = contentWidth()
+        let target = pool.height(id: id, width: width,
+                                 signature: "v\(contentVersions[id] ?? 0)",
+                                 makeContent: { [weak self] in
+                                     guard let self else { return AnyView(Color.clear) }
+                                     return self.makeNodeContent(item, reportsHeight: false)
+                                 })
+        growthAnims[id] = GrowthAnim(from: 0, to: target,
+                                     start: CACurrentMediaTime(),
+                                     duration: Self.growthDuration)
+    }
+
+    /// 生长插值当前显示高度（layout 查询覆盖；nil=无动画/已完成→用池值）。
+    fileprivate func growthDisplayHeight(id: String) -> CGFloat? {
+        guard let anim = growthAnims[id] else { return nil }
+        let elapsed = CACurrentMediaTime() - anim.start
+        guard elapsed < anim.duration else { return nil }
+        let x = Double(max(0, elapsed / anim.duration))
+        return anim.from + (anim.to - anim.from) * CGFloat(WOMessageListSupport.coGrowEase(x))
+    }
 
     // MARK: 批 2 件 1 display link（贴底唯一执行点）
 
@@ -511,6 +579,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         syncPendingUnfreeze = []
         pool.retain([])
         ledger.reset()
+        growthAnims = [:] // 【重做批6】会话切换清生长队列（旧会话动画作废）
         syncedNodes = [:]
         contentVersions = [:]
         currentItems = []
@@ -598,6 +667,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 要再接回）。
         _ = seedLedgerIfNeeded(viewModel)
         context = makeContext(freshlyInserted: insertedIDs)
+        // 【重做批6 · 同出生长】新插入行几何侧入队（格子 0→真值 0.66s 生长，
+        // SwiftUI 侧同出淡入经 freshlyInsertedIDs 传递——both 参考件同步）。
+        // seen/instantLive/user 行不入队（历史静默/刚看过/mInR 语义）。
+        if !insertedIDs.isEmpty {
+            for item in items where insertedIDs.contains(item.id) {
+                enqueueGrowthIfEligible(item)
+            }
+            if !growthAnims.isEmpty { startMotion() }
+        }
 
         // 33Hz no-op 守卫：条目全等且无解冻行 → 零 apply。有解冻行 → 追平
         // （基线同步到最新 + 单次 reconfigure，"内容照常累积、显示一次性追"）。
@@ -819,8 +897,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// "" 签名条目被空态重测覆盖 → 永久溢出窗口）。
     func nodeHeightChanged(id: String, height: CGFloat) {
         guard let cv = collectionView, cv.window != nil else { return }
-        // 【批4 真机诊断】大跳变落行（|Δ|>150pt）——空白/偏移残余问题的
-        // 真机定位探针（修复后理论无此量级跳变；出现即证据）。
+        // 【重做批5 · 冻结期丢弃前置 2026-10-07】宽度不稳（布局冻结中）→
+        // 丢弃上报（不写账本——旧宽实测值写成新宽条目=账本污染，稳定后
+        // prepare 读到错误固化高度）。稳定后显示 cell 会重新上报真值。
+        guard collectionView?.bounds.width == lastStableWidth else { return }
+        // 【批4 真机诊断】大跳变落行（|Δ|>150pt）——残余问题定位探针。
         if let previous = pool.cachedHeight(id: id, width: contentWidth()),
            abs(previous - height) > 150 {
             heightJumpLog.error("wo-height-jump id=\(id, privacy: .public) old=\(previous, format: .fixed(precision: 0)) new=\(height, format: .fixed(precision: 0))")
@@ -828,81 +909,49 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: contentWidth(), height: height,
                                 signature: signature) else { return }
-        // 【重做批4·四修 2026-10-07】回传桥三分流（账本已更新，以下只决定
-        // "何时/如何提交布局"）：
-        // ①宽度不稳（右栏开合动画中，bounds.width != lastStableWidth）→
-        //   **只更新账本不提交布局**——动画中每帧中间宽度的高度入格子 =
-        //   真机"宽度变化内容上下抽搐"根因（list-diag 帧3 实锤：全体行
-        //   高度跳大 621pt 次帧回落）。稳定后 drainStaleSweep 稳定分支一次
-        //   invalidate 全量重摆（stale 顶替机制保证动画期间格子旧高连续）。
-        // ②打开会话初始稳定期（首次贴底直写后 2s）→ 免动画直写——解析
-        //   修正逐行 0.32s 动画 = 真机"加载完后整个对话从头滚一遍"的观感
-        //   （每行修正触发一轮收敛动画叠加）。直写+直写贴底=打开即稳。
-        // ③流式 live 行（贴底收敛独占，CI修50 运动源归一）→ 免动画直写。
-        // ④其余回传（思考/工具展开收起、Markdown 解析修正）→ 0.32s 行高
-        //   动画（R0 时长 + 参考件《设置模型配置原型》bezier(.22,1,.36,1)
-        //   曲线；内容在 WODisclosureRow 已去自主动画=单动画源，格子长开
-        //   裁剪揭示+下方行平滑推=参考件单几何驱动语义）。
-        let widthUnstable = collectionView?.bounds.width != lastStableWidth
-        let initialStabilizing = CACurrentMediaTime() < initialStabilizingUntil
-        let liveStreaming = followsBottom && id.hasPrefix("live-")
-        if widthUnstable { return }
-        if initialStabilizing || liveStreaming {
-            commitHeightChange(id: id, height: height, collectionView: cv,
-                               animated: false)
-        } else {
-            commitHeightChange(id: id, height: height, collectionView: cv,
-                               animated: true)
-        }
+        // 【重做批6 · 运动单源化 2026-10-07】回传直写格子（无 UIView 动画）：
+        // ①展开/收起期 = SwiftUI withAnimation 逐帧上报，直写=格子与内容同
+        //   一时钟逐帧跟随（R0 语义，下方行平滑推）；
+        // ②打开稳定期（initialStabilizingUntil 2s）/流式 live 行 = 直写+贴底
+        //   直写钉底（打开即稳，无收敛动画滚动感）；
+        // ③一次性修正（Markdown 解析完成）= 直写瞬调（与 R0 LazyVStack 行高
+        //   瞬变一致）。
+        // 四修的 UIViewPropertyAnimator 布局动画已删——布局系统永不处于
+        // "动画中"态（invalidate→prepare 瞬时完成）= 撕裂/叠影根治。
+        commitHeightChange(id: id, height: height, collectionView: cv)
     }
 
     /// 高度提交公共体【QA P1-2 拆分】：锚定 + invalidate + 贴底。回传路径与
     /// 切片重测路径共用。
-    /// 【重做批4·四修】animated：展开/收起与解析修正的回传走 0.32s 行高
-    /// 动画（R0 时长 + 参考件 bezier(.22,1,.36,1)；内容已瞬时翻转=单动画
-    /// 源，格子长开裁剪揭示+下方行平滑推+贴底走既有收敛链）；直写路径
-    /// （打开稳定期/live 流式/切片重测/宽度修正）保持 invalidate+补标。
+    /// 【重做批6 · 运动单源化 2026-10-07】恒直写（animated 参数删除）：
+    /// 几何运动只许一个驱动者——展开期=SwiftUI 时钟（逐帧上报驱动格子），
+    /// 同出生长=display link 插值队列，贴底=display link 收敛。布局永不
+    /// 动画化（UIViewPropertyAnimator 已删=撕裂/叠影根治）。打开稳定期贴底
+    /// 直写钉底（无收敛动画=无"打开后滚动播放"感）。
     private func commitHeightChange(id: String, height: CGFloat,
-                                    collectionView cv: UICollectionView,
-                                    animated: Bool = false) {
+                                    collectionView cv: UICollectionView) {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
                 oldContentHeight: cv.contentSize.height)
         }
-        if animated {
-            // 参考件《设置模型配置原型》.collapsible：单几何驱动 + 裁剪揭示。
-            // 时长 0.32s = 用户拍板的 R0 观感（WOMotion.bezier 同族）。
-            let animator = UIViewPropertyAnimator(
-                duration: 0.32,
-                timingParameters: UICubicTimingParameters(
-                    controlPoint1: CGPoint(x: 0.22, y: 1),
-                    controlPoint2: CGPoint(x: 0.36, y: 1)))
-            animator.addAnimations { [weak self] in
-                guard let self else { return }
-                self.messageLayout.invalidateLayout()
-                cv.layoutIfNeeded()
-            }
-            animator.startAnimation()
-            // 贴底仍走既有收敛链（scrollToBottom→startMotion 逐帧 tick）——
-            // 布局动画与贴底收敛同向不冲突（CI修50 同构组合）。
-            if followsBottom {
-                scrollToBottom()
-            }
-            return
-        }
         messageLayout.invalidateLayout()
         // 【批4 诊断实证修】异步补标一次（幂等）：SwiftUI 的 onPreference
         // Change 常嵌在 hosting 布局链（= collectionView layout pass 内）
         // ——pass 内 invalidate 存在被 UIKit 忽略的面（list-diag.log 实锤
-        // frame=23/pool=47 脱钩，后续行整体错位 24pt=真机"上偏"）。若首个
-        // invalidate 已生效，此处为无变化的空标记；循环终止=池值稳定
-        // （updateHeight 0.5pt 死区）。
+        // frame=23/pool=47 脱钩）。若首个 invalidate 已生效，此处为无变化
+        // 的空标记；循环终止=池值稳定（updateHeight 0.5pt 死区）。
         DispatchQueue.main.async { [weak self] in
             self?.messageLayout.invalidateLayout()
         }
         if followsBottom {
-            scrollToBottom()
+            if CACurrentMediaTime() < initialStabilizingUntil {
+                // 打开会话初始稳定期：瞬写贴底（钉底，修正推高 contentSize
+                // 时视口跟随——无收敛动画=无"从中部滚到底"播放感）。
+                cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+            } else {
+                scrollToBottom()
+            }
         }
     }
 
@@ -1249,6 +1298,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         }
         let elapsed = min(1.0 / 30, max(0, link.targetTimestamp - motionTime))
         motionTime = link.targetTimestamp
+        // 【重做批6 · 同出生长 tick】先插值（过期清理）→ invalidate → 贴底
+        // 收敛同 tick（单运动源：生长与贴底同一 display link 同一帧，几何
+        // 连续无叠加冲突）。生长完成行自动落回池值（growthDisplayHeight nil）。
+        if !growthAnims.isEmpty {
+            let now = CACurrentMediaTime()
+            growthAnims = growthAnims.filter { _, anim in
+                now < anim.start + anim.duration
+            }
+            messageLayout.invalidateLayout()
+        }
         let bottom = bottomOffset
         let tracking = followsBottom && !cv.isDragging && !cv.isDecelerating
         if tracking {
@@ -1263,8 +1322,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             cv.setContentOffset(CGPoint(x: 0, y: y), animated: false)
         }
         updateBottomButton()
-        // lody 自停条件 :322-325（万我无行高插值队列，条件简化为跟随/收敛位）。
-        if !tracking || abs(cv.contentOffset.y - bottom) <= 0.5 {
+        // lody 自停条件 :322-325 + 生长队列未清空不停车（同出动画几何驱动
+        // 需要 link 存活；生长完成后回归贴底收敛自停判定）。
+        if growthAnims.isEmpty, !tracking || abs(cv.contentOffset.y - bottom) <= 0.5 {
             link.invalidate()
             motionLink = nil
         }
@@ -1285,6 +1345,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 生命周期铁律收口（representable dismantle 调）。
     func shutdown() {
         stopMotion()
+        growthAnims = [:] // 【重做批6】拆解清生长队列
         expansionGeneration += 1 // 在途量高切片作废
         // 【重做批3 · R1】滚动停止门待办一并清（QA P2-1：dismantle 后 didEnd
         // 系列仍可能触发，防在已拆解 core 上空跑 sync）。
@@ -1583,6 +1644,9 @@ extension WOMessageListCore: WOMessageListLayoutDelegate {
                     width: CGFloat) -> CGFloat {
         guard indexPath.item < currentItems.count else { return 44 }
         let item = currentItems[indexPath.item]
+        // 【重做批6 · 同出生长覆盖】生长动画中的行显示插值中间值（从 0 长到
+        // 池真值——物理顶开旧行+内容淡入=参考件同出）。
+        if let growing = growthDisplayHeight(id: item.id) { return growing }
         // 三级缓存：签名/宽度未变 → 高度直读；变 → 池视图重测（量高与显示
         // 同一内容装配缝——identity 锚 .id(item.id)；CI修48：装配统一走
         // makeNodeContent，量高路径 reportsHeight=false 不挂上报桥）。

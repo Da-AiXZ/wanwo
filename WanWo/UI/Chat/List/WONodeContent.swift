@@ -284,22 +284,26 @@ struct WONodeBubbleView: View {
         let fromRight = kindTag == "user"
         // 批12+回归八校：用户消息哨兵交接——落盘投影（非哨兵）在乐观入场后
         // 即时呈现不重播（日志 L1/L2 双身份实证）；onSeen 归位旗标。
-        // 【CI修49 拍板②】插入帧豁免（non-user）：本帧新插入行的入场交给
-        // UIKit 插入动画（推开+淡入同出）；user 行保留 mInR（原型语义）。
-        // 【重做批3 · R2】本阶段恒无 UIKit 插入动画，fresh 豁免空转无害
-        // （批 6 行高生长的同出形态落地后生效）。
+        // 【重做批6 · 同出淡入 2026-10-07】fresh 行（本帧新插入 non-user）=
+        // 参考件《同出丝滑效果》形态：格子高度 0→真值生长（引擎行高插值
+        // 队列 0.66s bezier(.22,1,.36,1) 驱动，位移感由物理顶开承担）+ 内容
+        // 纯淡入（0.66s 同步，无位移无缩放）。旧代码 fresh 豁免=animate=false
+        // 直接瞬现（注释写"恒空集"但 makeContext 传了真实 insertedIDs）——
+        // 工具/思考入场动画消失根因（批 6 同出未落地前的动画真空）。
         let fresh = context.freshlyInsertedIDs.contains(bubble.id) && kindTag != "user"
-        let animate = !seen && !instantLive && !fresh
+        let animate = !seen && !instantLive
             && !(kindTag == "user" && context.ledger.pendingUserSeen
                  && bubble.id != "u-pending")
-        let branch = animate ? (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL")) : "instant"
-        let offset: CGSize = fadeUp ? CGSize(width: 0, height: 8)
-            : CGSize(width: fromRight ? 16 : -16, height: 0)
-        let scale: CGFloat = fadeUp ? 1 : 0.95
-        let duration: Double = fadeUp ? 0.4 : 0.55
+        let isFreshEntry = fresh
+        let offset: CGSize = isFreshEntry ? .zero
+            : (fadeUp ? CGSize(width: 0, height: 8)
+               : CGSize(width: fromRight ? 16 : -16, height: 0))
+        let scale: CGFloat = isFreshEntry ? 1 : (fadeUp ? 1 : 0.95)
+        let duration: Double = isFreshEntry ? 0.66 : (fadeUp ? 0.4 : 0.55)
         // 批12+回归八校（点4 手术）：同批落盘的思考（delay 0）与工具
-        // （delay 0.3s）错峰。
-        let entryDelay: Double = fadeUp && kindTag == "tool" ? 0.3 : 0
+        // （delay 0.3s）错峰——同出淡入统一无错峰（生长动画不可拆）。
+        let entryDelay: Double = isFreshEntry ? 0 : (fadeUp && kindTag == "tool" ? 0.3 : 0)
+        let branch = animate ? (isFreshEntry ? "coGrow" : (fadeUp ? "fadeUp" : (fromRight ? "mInR" : "mInL"))) : "instant"
         return bubbleView
             .modifier(WOEntryModifier(
                 offset: offset,
@@ -516,13 +520,13 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                // 【重做批4·四修】瞬时翻转（去 withAnimation）——单动画源=
-                // 格子（commitHeightChange 0.32s 行高动画，参考件《设置模型
-                // 配置原型》单几何驱动+裁剪揭示语义）：SwiftUI 内容动画与
-                // 格子行高动画双源并存 = 真机"展开收起动画不对/上下抽搐"
-                // 根因（R3 空窗期内容自主动画+格子瞬跳跟随）。展开体可见性
-                // 由 cell contentView.clipsToBounds 渐进揭示。
-                expanded.toggle()
+                // 【重做批6 · 恢复 R0 原文 2026-10-07】withAnimation 包展开
+                // 切换（0.32s bezier 同族）——R0 的单一动画时钟语义：SwiftUI
+                // 动画布局高度逐帧插值 → GeometryReader 逐帧上报 → 引擎格子
+                // 逐帧直写跟随（格子与内容同一时钟，下方行平滑推=LazyVStack
+                // 观感）。四修的"内容瞬时+格子 UIViewPropertyAnimator"双时
+                // 钟观感不符 R0 且布局动画撕裂（真机叠影残影），已删。
+                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     // 16×16 leading 盒：收起=调用方图标（14px），展开=chevron.down。
@@ -572,10 +576,11 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
             }
             .buttonStyle(.plain)
             if expanded {
-                // 【重做批4·四修】去 transition——展开体瞬时全量呈现，揭示
-                // 由格子行高动画的 contentView 裁剪完成（单动画源；transition
-                // 的 opacity/位移在裁剪揭示下观感重复且与格子动画双源）。
                 content
+                    // 【重做批6 · 恢复 R0 原文】展开体过渡 = opacity + 垂直
+                    // 微量位移 8pt（.32s 同族）——withAnimation 事务内 transition
+                    // 生效，与格子逐帧跟随（同一 SwiftUI 时钟）合成 R0 观感。
+                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

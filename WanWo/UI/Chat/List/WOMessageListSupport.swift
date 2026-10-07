@@ -158,6 +158,27 @@ enum WOMessageListSupport {
         max(-topInset, contentHeight - viewportHeight + bottomInset)
     }
 
+    /// 【重做批6 · 同出动画】参考件缓动曲线采样：cubic-bezier(.22,1,.36,1)
+    /// （《同出丝滑效果》.new-msg height 曲线，与《设置模型配置原型》同族）。
+    /// CSS 缓动同款语义：给定进度 x∈[0,1]，二分求 t 使 BezierX(t)=x，返回
+    /// BezierY(t)。控制点 P1=(0.22,1) P2=(0.36,1)（y 恒 1→强 ease-out 形）。
+    /// 纯函数（单测直呼）；x 越界原样返回（0/1 端点无插值）。
+    static func coGrowEase(_ x: Double) -> Double {
+        guard x > 0, x < 1 else { return x }
+        var lo = 0.0
+        var hi = 1.0
+        var t = x
+        for _ in 0..<24 {
+            t = (lo + hi) / 2
+            let bx = 3 * (1 - t) * (1 - t) * t * 0.22
+                + 3 * (1 - t) * t * t * 0.36
+                + t * t * t
+            if bx < x { lo = t } else { hi = t }
+        }
+        // y 控制点均 1.0：by(t) = 3(1-t)²t + 3(1-t)t² + t³
+        return 3 * (1 - t) * (1 - t) * t + 3 * (1 - t) * t * t + t * t * t
+    }
+
     /// 回底按钮出现距离（lody ChatScroll.resumeDistance :81 = 80——简报
     /// 「240 或 lody 等价值」，实码为准取 80）。
     static let resumeDistance: Double = 80

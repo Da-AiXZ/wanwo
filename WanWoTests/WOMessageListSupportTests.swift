@@ -281,4 +281,28 @@ final class WOMessageListSupportTests: XCTestCase {
         XCTAssertTrue(line.contains("max=100.00ms"))
         XCTAssertTrue(line.contains("maxItems=20"))
     }
+
+    // MARK: - 【重做批6】同出缓动曲线（cubic-bezier(.22,1,.36,1) 采样）
+
+    func testCoGrowEaseEndpoints() {
+        // 端点恒等：x=0→0、x=1→1、越界原样返回（无插值面）。
+        XCTAssertEqual(WOMessageListSupport.coGrowEase(0), 0, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.coGrowEase(1), 1, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.coGrowEase(-0.5), -0.5, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.coGrowEase(1.5), 1.5, accuracy: 1e-9)
+    }
+
+    func testCoGrowEaseMonotonicAndShape() {
+        // 单调不减 + 值域 [0,1]。
+        var previous = -1.0
+        for step in 1...99 {
+            let x = Double(step) / 100.0
+            let y = WOMessageListSupport.coGrowEase(x)
+            XCTAssertTrue(y >= previous - 1e-9, "x=\(x) 非单调")
+            XCTAssertTrue(y >= 0 && y <= 1, "x=\(x) 越界")
+            previous = y
+        }
+        // 强 ease-out 形（P1y=P2y=1）：半程进度输出显著过半（>0.7）。
+        XCTAssertGreaterThan(WOMessageListSupport.coGrowEase(0.5), 0.7)
+    }
 }
