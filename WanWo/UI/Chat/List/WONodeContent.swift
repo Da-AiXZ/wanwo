@@ -490,6 +490,9 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     private let icon: Icon
     private let title: String
     @Binding private var expanded: Bool
+    /// 收起沉没层开关（【重做批6-R3】收起后保持内容渲染 0.4s 供格子裁剪
+    /// 逐行沉没；cell 复用经 .id(identity) 重建 @State 无残留）。
+    @State private var keepRendered = false
     private let summary: String
     private let summaryFollowEnd: Bool
     private let sweepActive: Bool
@@ -575,15 +578,51 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // 【重做批6-R3 · 揭示机制定案 2026-10-08（真机录屏逐帧+R0 git 考证）】
+            // R0 真身=WOChatView.swift 批12 T5 节（ReasoningRowView.swift 是
+            // 旧死代码，勿再误读）。两版自创差异已删：显式 .opacity+offset(8)
+            // 的 8pt 位移与格子插值产生相位差="空白窗+整块浮现"（NOW 2.60s 帧
+            // 实证：bash 已下移内容 alpha≈0）。
+            //   展开：content 挂载即全布局+默认 opacity（R0 同款），树高瞬至
+            //         终值 → preference 上报 → 引擎 growth 插值格子 →
+            //         clipsToBounds 裁剪揭示=行错峰露出、出现即深（R0 同款）。
+            //   收起：content 转 overlay 沉没层（见 body 尾），树高正常塌缩
+            //         上报 24 → 格子 growth 收缩裁剪 overlay = 逐行沉没（R0
+            //         实证：行逐条沉入裁剪线），0.4s 后卸载（此时已全被裁，
+            //         无视觉跳变；旧版 if 瞬删=收缩期空白窗）。
             if expanded {
                 content
-                    // 【重做批6 · 恢复 R0 原文】展开体过渡 = opacity + 垂直
-                    // 微量位移 8pt（.32s 同族）——withAnimation 事务内 transition
-                    // 生效，与格子逐帧跟随（同一 SwiftUI 时钟）合成 R0 观感。
-                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 收起沉没层：不占布局（树高/上报口径不变），从标题行下 24pt 起按
+        // 原位渲染，随格子 growth 收缩被 clipsToBounds 逐行裁掉。
+        .overlay(alignment: .topLeading) {
+            if keepRendered && !expanded {
+                content
+                    // 【QA b8-P1 修】overlay 向子视图提案的是被修饰视图尺寸
+                    // （收起后 base 高 24 − padding 24 ≈ 0），柔性 content
+                    // （思考 ScrollView maxHeight/工具卡 ScrollView）会接受
+                    // 小提案塌缩至 0 = 沉没层空白。fixedSize 锁理想高度。
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 24) // 标题行高（dsh 行高 24px）
+                    .allowsHitTesting(false) // 沉没中不截胡下方行点击
+            }
+        }
+        .onChange(of: expanded) { isExpanded in
+            if isExpanded {
+                keepRendered = false
+            } else {
+                // 【QA b8-P0 修】收起时武装沉没层（此前漏写=overlay 恒假死
+                // 代码，收起逐行沉没完全未生效）；growth 插值 0.32s 期间保持
+                // 渲染，收完卸载。
+                keepRendered = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    if !expanded { keepRendered = false }
+                }
+            }
+        }
         .modifier(WOSweepModifier(active: sweepActive))
     }
 }

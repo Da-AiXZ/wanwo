@@ -515,12 +515,13 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         lastDiagDump = now
         var lines: [String] = []
         lines.append("===== \(reason) phase=\(String(describing: phase)) =====")
-        lines.append(String(format: "offset=%.0f contentH=%.0f viewport=%.0f adjT=%.0f adjB=%.0f follows=%d items=%d width=%.0f",
+        lines.append(String(format: "offset=%.0f contentH=%.0f viewport=%.0f adjT=%.0f adjB=%.0f follows=%d items=%d width=%.0f layoutW=%.0f stableW=%.0f pendingW=%.0f",
                             cv.contentOffset.y, cv.contentSize.height, cv.bounds.height,
                             cv.adjustedContentInset.top, cv.adjustedContentInset.bottom,
                             followsBottom ? 1 : 0, currentItems.count,
                             cv.bounds.width - messageLayout.sectionInset.left
-                                - messageLayout.sectionInset.right))
+                                - messageLayout.sectionInset.right,
+                            messageLayout.layoutWidth, stableLayoutWidth, pendingWidth))
         let frames = messageLayout.snapshotFrames()
         let top = cv.contentOffset.y - 1200
         let bottom = cv.contentOffset.y + cv.bounds.height + 1200
@@ -944,7 +945,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 门判定对象 = stableLayoutWidth（只在切换时更新——旧实现每帧被
         // drainStaleSweep 刷成中间宽，门恒开 = 动画期间修正直接穿透 = 逐帧
         // reflow 抖动根因，list-diag 帧 3 实锤 621pt 跳变）。
-        guard cv.bounds.width == stableLayoutWidth, stableLayoutWidth > 0 else { return }
+        // 【重做批5-R2 · 容差 2026-10-08】精确 == 与上报死区口径差（见
+        // trySwitchLayoutWidth 注）→ 0~0.5pt 残差永久关门无自愈 = 展开/收起
+        // 回传被吞（真机"展开打不开"）。0.5pt 容差与上报口径对齐；宽度真变
+        // 时差值远大于死区，门语义（动画期丢弃污染上报）不变。
+        guard abs(cv.bounds.width - stableLayoutWidth) <= 0.5,
+              stableLayoutWidth > 0 else { return }
         let width = contentWidth()
         let previous = pool.cachedHeight(id: id, width: width)
         // 【批4 真机诊断】大跳变落行（|Δ|>150pt）——残余问题定位探针。
@@ -1165,7 +1171,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private func trySwitchLayoutWidth() {
         guard let cv = collectionView, cv.window != nil else { return }
         let current = cv.bounds.width
-        guard current == pendingWidth, pendingWidth != stableLayoutWidth,
+        // 【重做批5-R2 · 容差 2026-10-08】精确 == 与 prepare 上报死区 0.5pt
+        // 口径不一致（上报 |bounds-layoutWidth|>0.5）→ 动画末帧 bounds 与最后
+        // 一次上报值差 0~0.5pt 时本 guard 永假 = 切换永久卡死带（且无自愈）。
+        // 改 0.5pt 容差与上报口径对齐。
+        guard abs(current - pendingWidth) <= 0.5, pendingWidth != stableLayoutWidth,
               pendingWidth > 1 else { return }
         guard !premeasureActive, premeasuredContainerWidth == pendingWidth else { return }
         // 预重测覆盖不全（期间有新行/扩窗等）→ 按成员集对账补测一轮（幂等
@@ -1399,6 +1409,20 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // 【重做批5-R2 · 宽度切换链救活 2026-10-08】shouldInvalidateLayout 恒
+        // false 后，纯容器 resize（侧栏开合）不再触发 prepare 重跑（标准
+        // UICollectionViewLayout 行为：false 即不 invalidate）→ onLiveWidth
+        // Change 死火 → 预重测/一次切换整链成为死代码（list-diag 实锤：右栏
+        // 开合 width 706→1106 而 contentH 恒 4410、41 行高度全同=排版宽没切；
+        // 连带冻结门 == 恒假 → 展开回传被丢 = "展开打不开"）。
+        // 修=布局 pass 主动巡检宽度差（动画中每帧幂等：handleLiveWidthChange
+        // 内部 width != pendingWidth 才重启预重测 + generation 作废 + 0.1s
+        // 去抖，原设计节奏不变），切换链与原 prepare 被动上报完全同路径。
+        if let cv = collectionView, cv.window != nil,
+           abs(cv.bounds.width - stableLayoutWidth) > 0.5,
+           abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
+            handleLiveWidthChange(cv.bounds.width)
+        }
         // 【CI修49】stale 重测切片调度（prepare 期间收集的宽度变化行——
         // 空队列时零成本）。
         drainStaleSweep()
@@ -1409,9 +1433,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         }
         // 键盘弹出等诱发的 layout pass：不直接写 offset（单一驱动点红线），
         // 只唤醒 display link（距底 >0.5 且跟随态）——收敛由 tick 完成。
+        // 【重做批6-R2 · 稳定期例外 2026-10-08】打开稳定期内直写钉底（用户
+        // 拍板"打开会话直线呈现"=零可见运动；见 scrollToBottom 注）。
         if followsBottom, motionLink == nil, let cv = collectionView,
            cv.window != nil, abs(cv.contentOffset.y - bottomOffset) > 0.5 {
-            startMotion()
+            if CACurrentMediaTime() < initialStabilizingUntil {
+                cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+            } else {
+                startMotion()
+            }
         }
         updateBottomButton()
     }
@@ -1429,10 +1459,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     /// lody scrollToBottom :261-268 同型：拖拽/惯性中不抢；reduceMotion 或
     /// 未挂窗直接落位；距底 >0.5 才启动逐帧收敛。
+    /// 【重做批6-R2 · 稳定期直写 2026-10-08】用户拍板"打开会话直线呈现"：
+    /// 打开稳定期（首贴底起 2s）内贴底一律瞬写钉底（无收敛动画=零可见运
+    /// 动）——稳定期残余修正（图片加载/兜底超时段落）经本函数与 layout
+    /// pass 旁路时不可见。收敛动画只属于流式跟随与用户操作后的场景。
     private func scrollToBottom() {
         guard let cv = collectionView, !cv.isDragging, !cv.isDecelerating else { return }
         let bottom = bottomOffset
         if cv.window == nil || UIAccessibility.isReduceMotionEnabled {
+            cv.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+        } else if CACurrentMediaTime() < initialStabilizingUntil {
             cv.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
         } else if abs(cv.contentOffset.y - bottom) > 0.5 {
             startMotion()

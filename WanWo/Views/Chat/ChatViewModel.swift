@@ -286,8 +286,12 @@ final class ChatViewModel: ObservableObject {
     /// 【重做批6 · QQ 时序】首屏 Markdown 预解析。
     /// 收集当前投影里全部 assistant 正文段（含过程组），并发喂给文档缓存
     /// （WOCachedMarkdown 显示时同步查缓存命中→富格式→引擎首 prepare 量高
-    /// 即真值）。与 0.8s 兜底计时器竞速，先到先走（超时也要放行进 idle——
-    /// 剩余解析在后台继续，显示面按既有回传链收敛）。
+    /// 即真值）。
+    /// 【重做批6-R2 · 全量等待 2026-10-08 用户拍板】"打开会话直线呈现"——
+    /// 首屏必须等**全部段落**解析完成才上屏（首 prepare 量高全真值→首帧
+    /// 贴底=最终形态，之后零修正零运动）。原 0.8s 竞速放行会留下未完成段
+    /// 落，显示后修正=可见滚动（视频3 实证）。3s 为病态兜底（超长文本防
+    /// 卡死；正常会话解析数百 ms 级）。代价=loading 期略长，换首帧即终态。
     private func prewarmMarkdownParsing() async {
         var texts = Set<String>()
         for node in displayNodes {
@@ -309,17 +313,25 @@ final class ChatViewModel: ObservableObject {
         }
         guard !texts.isEmpty else { return }
         let config = WONodeBubbleView.settledMarkdownConfig
-        await withTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 for text in texts {
+                    // 【QA b8-P1 修】3s 兜底取消后循环必须响应取消退出——
+                    // TaskGroup 结构化并发会隐式等待全部子任务，不检查取消
+                    // = 病态会话 loading 无上限（兜底注释形同虚设）。取消后
+                    // 剩余段落按既有回传链收敛（稳定期直写钉底不可见）。
+                    if Task.isCancelled { break }
                     _ = await WOMarkdownDocumentCache.shared.parseAndStore(
                         text, config: config)
                 }
+                return true
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 800_000_000)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                return false
             }
-            // 解析完或超时，先到先走；取消余下任务（缓存继续填充无害）。
+            // 全部解析完成→正常放行；3s 病态兜底→放行（残余段落按既有
+            // 回传链收敛，稳定期直写钉底不可见）。
             _ = await group.next()
             group.cancelAll()
         }
