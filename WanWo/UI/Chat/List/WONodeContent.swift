@@ -486,6 +486,14 @@ struct WONodeBubbleView: View {
 /// 扩展（简报 init 签名之外的必有缝，均带默认值不改调用形）：
 ///   titleColor——T6 工具行 title=labelPrimary（默认 labelSecondary=思考行）；
 ///   summaryColor——T6 错误摘要=stateErrorPrimary（默认 labelTertiary）。
+/// 披露动画常量（file-scope——CI 实证：泛型类型不允许 static stored
+/// properties，WODisclosureRow<Icon, Content> 内放 static let 编译失败）。
+private enum WODisclosureMotion {
+    static let revealDuration: Double = 0.32
+    /// overlay 锚位补偿=行头高（dsh 行高 24px，frame(minHeight:24) 实测绑定值）。
+    static let headerRowHeight: CGFloat = 24
+}
+
 struct WODisclosureRow<Icon: View, Content: View>: View {
     private let icon: Icon
     private let title: String
@@ -516,9 +524,6 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     /// 【QA P2-2 修】收起清理 Task 的代次守卫：0.4s 内"收起→展开→再收起"
     /// 时，旧 Task 到点不得摘除新一轮收起刚挂上的 overlay（淡出被打断瞬消）。
     @State private var collapseGeneration = 0
-    private static let revealDuration: Double = 0.32
-    /// overlay 锚位补偿=行头高（dsh 行高 24px，frame(minHeight:24) 实测绑定值）。
-    private static let headerRowHeight: CGFloat = 24
 
     init(icon: Icon,
          title: String,
@@ -627,7 +632,7 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                 // =无动画上下文，淡出/淡入会落空（瞬消/瞬现）。图标交叉淡变与
                 // 预览行淡出淡入统一由此驱动；行高两侧均 24 固定，无布局高度
                 // 动画面。真机复验项：淡变观感（SwiftUI 版本敏感）。
-                .animation(WOMotion.bezier(duration: Self.revealDuration),
+                .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
                            value: headerCommitted)
             }
             .buttonStyle(.plain)
@@ -637,7 +642,7 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                     // 与引擎格子插值同曲线同时长——用户判定保留的正常内容动画）。
                     .opacity(contentAppeared ? 1 : 0)
                     .offset(y: contentAppeared ? 0 : 8)
-                    .animation(WOMotion.bezier(duration: Self.revealDuration),
+                    .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
                                value: contentAppeared)
                     .onAppear {
                         guard !contentAppeared else { return }
@@ -657,10 +662,10 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                     // 柔性 content（思考/工具卡的 ScrollView maxHeight）会接受
                     // 小提案塌缩至 0 = 沉没层空白。fixedSize 锁理想高度。
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, Self.headerRowHeight)
+                    .padding(.top, WODisclosureMotion.headerRowHeight)
                     .opacity(overlayVisible ? 1 : 0)
                     .offset(y: overlayVisible ? 0 : 8)
-                    .animation(WOMotion.bezier(duration: Self.revealDuration),
+                    .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
                                value: overlayVisible)
                     .onAppear { overlayVisible = false }
                     .allowsHitTesting(false)
