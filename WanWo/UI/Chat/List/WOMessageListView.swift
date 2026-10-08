@@ -303,12 +303,24 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     // MARK: 【重做批6】同出生长插值（新行入场几何侧——参考件《同出丝滑效果》）
 
+    /// 生长动画种类（2026-10-09 披露/入场分家）：
+    /// - .entrance：新行入场同出生长——coGrowEase 0.66s（既有验收行为原样）。
+    /// - .disclosure：思考/工具行展开收起——disclosureEase(0.4,0,0.2,1) 0.32s
+    ///   （参考件曲线，与 Motion.swift 全库唯一曲线同款），且动画期间**不做
+    ///   贴底重钉**（表头钉死语义，用户拍板 2026-10-09：底部展开时下方内容
+    ///   被推出屏不拉回）。
+    private enum GrowthKind {
+        case entrance
+        case disclosure
+    }
+
     /// 单行生长动画参数（from→to 高度插值；start=驱动 tick 时刻基准）。
     private struct GrowthAnim {
         let from: CGFloat
         let to: CGFloat
         let start: CFTimeInterval
         let duration: TimeInterval
+        var kind: GrowthKind = .entrance
     }
     /// 行 id → 生长动画（池=数据真值瞬时入库；layout 查询经 growthDisplay
     /// 高度覆盖——显示层从 0 长到真值，物理顶开旧行+内容淡入=同出）。
@@ -354,12 +366,21 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     }
 
     /// 生长插值当前显示高度（layout 查询覆盖；nil=无动画/已完成→用池值）。
+    /// 曲线按种类分派：.disclosure=disclosureEase（参考件 0.4,0,0.2,1）；
+    /// .entrance=coGrowEase（既有同出曲线，不动）。
     fileprivate func growthDisplayHeight(id: String) -> CGFloat? {
         guard let anim = growthAnims[id] else { return nil }
         let elapsed = CACurrentMediaTime() - anim.start
         guard elapsed < anim.duration else { return nil }
         let x = Double(max(0, elapsed / anim.duration))
-        return anim.from + (anim.to - anim.from) * CGFloat(WOMessageListSupport.coGrowEase(x))
+        let eased: Double
+        switch anim.kind {
+        case .disclosure:
+            eased = WOMessageListSupport.disclosureEase(x)
+        case .entrance:
+            eased = WOMessageListSupport.coGrowEase(x)
+        }
+        return anim.from + (anim.to - anim.from) * CGFloat(eased)
     }
 
     // MARK: 批 2 件 1 display link（贴底唯一执行点）
@@ -960,29 +981,48 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: width, height: height,
                                 signature: signature) else { return }
-        // 运动分流（CI修50 归一 + 重做批6 插值）：
+        // 运动分流（CI修50 归一 + 重做批6 插值 + 2026-10-09 披露单时钟）：
         // ①打开稳定期 / 流式 live 行 → 直写（打开即稳 / 贴底收敛独占）。
-        // ②大幅变化（|Δ|≥20pt：思考/工具展开收起、大块修正）→ 0.32s 引擎
-        //   插值（growth 队列，bezier(.22,1,.36,1)）——SwiftUI 动画期间
-        //   preference 不逐帧上报（录屏实测单帧瞬跳），格子必须由引擎自驱
-        //   才有连续过程；池已写终值，显示层经 growthDisplayHeight 插值覆盖。
+        // ②大幅变化（|Δ|≥20pt）→ 引擎插值，按种类分派：
+        //   - live-* 行（未跟随态流式）→ .entrance（既有行为原样）。
+        //   - 思考/工具披露（非 live）→ .disclosure（disclosureEase 0.32s，
+        //     参考件曲线）。from 取**当前显示高**（插值在途时反向切换连续，
+        //     不回跳）。
+        //   披露动画期间不做贴底重钉（:979 旧补偿已删——表头钉死语义：
+        //   布局为自上而下累计，格子高度变化本就不动自身 origin，唯一能
+        //   拖走表头的是 contentOffset 变化）；底部展开时按用户拍板断开
+        //   跟随（下方内容被推出屏不拉回，回底钮接管）。
         // ③小修正 → 直写瞬调（与 R0 LazyVStack 行高瞬变一致）。
         let initialStabilizing = CACurrentMediaTime() < initialStabilizingUntil
-        let liveStreaming = followsBottom && id.hasPrefix("live-")
+        let isLiveRow = id.hasPrefix("live-")
+        let liveStreaming = followsBottom && isLiveRow
         if initialStabilizing || liveStreaming {
             commitHeightChange(id: id, height: height, collectionView: cv)
             return
         }
         if let prev = previous, abs(prev - height) >= 20 {
-            growthAnims[id] = GrowthAnim(from: prev, to: height,
+            let kind: GrowthKind = isLiveRow ? .entrance : .disclosure
+            let display = growthDisplayHeight(id: id) ?? prev
+            // 时长恒 0.32（QA P1-2）：本分支新旧两路由历史时长均为 0.32；
+            // 0.66 只属于 enqueueGrowthIfEligible 的新行入场路径，不得外溢。
+            growthAnims[id] = GrowthAnim(from: display, to: height,
                                          start: CACurrentMediaTime(),
-                                         duration: 0.32)
+                                         duration: 0.32,
+                                         kind: kind)
             messageLayout.invalidateLayout()
             // 【QA P1-1 修】无条件启动驱动（growth tick 不依赖 tracking；自停
             // 条件 growthAnims 非空保活）——非跟随态此前不 startMotion=插值
             // 停在首帧。
             startMotion()
-            if followsBottom { scrollToBottom() }
+            switch kind {
+            case .entrance:
+                if followsBottom { scrollToBottom() }
+            case .disclosure:
+                if followsBottom {
+                    followsBottom = false
+                    updateBottomButton()
+                }
+            }
             return
         }
         commitHeightChange(id: id, height: height, collectionView: cv)
@@ -1503,15 +1543,28 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【重做批6 · 同出生长 tick】先插值（过期清理）→ invalidate → 贴底
         // 收敛同 tick（单运动源：生长与贴底同一 display link 同一帧，几何
         // 连续无叠加冲突）。生长完成行自动落回池值（growthDisplayHeight nil）。
+        // 【2026-10-09 披露收尾】披露收起动画到期的行：若视口恰好落回贴底
+        // （内容收缩被 UIKit clamp 回贴底），恢复跟随——后续流式钉底语义
+        // 不断（liveStreaming 判定依赖 followsBottom）。
+        var expiredDisclosureCollapse = false
         if !growthAnims.isEmpty {
             let now = CACurrentMediaTime()
             growthAnims = growthAnims.filter { _, anim in
-                now < anim.start + anim.duration
+                if now < anim.start + anim.duration { return true }
+                if anim.kind == .disclosure, anim.to < anim.from {
+                    expiredDisclosureCollapse = true
+                }
+                return false
             }
             messageLayout.invalidateLayout()
         }
+        // 【2026-10-09 披露单时钟】披露动画在途 → 暂停贴底收敛：收敛的
+        // setContentOffset 是唯一能拖走表头的运动（布局自上而下累计不动
+        // origin），与"表头钉死"语义冲突；同出生长（.entrance）不受影响。
+        let disclosureActive = growthAnims.values.contains { $0.kind == .disclosure }
         let bottom = bottomOffset
         let tracking = followsBottom && !cv.isDragging && !cv.isDecelerating
+            && !disclosureActive
         if tracking {
             let scale = cv.traitCollection.displayScale > 0
                 ? Double(cv.traitCollection.displayScale) : 3.0
@@ -1524,6 +1577,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             cv.setContentOffset(CGPoint(x: 0, y: y), animated: false)
         }
         updateBottomButton()
+        if expiredDisclosureCollapse,
+           abs(cv.contentOffset.y - bottom) <= 1 {
+            followsBottom = true
+            updateBottomButton()
+        }
         // lody 自停条件 :322-325 + 生长队列未清空不停车（同出动画几何驱动
         // 需要 link 存活；生长完成后回归贴底收敛自停判定）。
         if growthAnims.isEmpty, !tracking || abs(cv.contentOffset.y - bottom) <= 0.5 {

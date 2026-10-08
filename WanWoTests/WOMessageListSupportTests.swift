@@ -305,4 +305,34 @@ final class WOMessageListSupportTests: XCTestCase {
         // 强 ease-out 形（P1y=P2y=1）：半程进度输出显著过半（>0.7）。
         XCTAssertGreaterThan(WOMessageListSupport.coGrowEase(0.5), 0.7)
     }
+
+    // MARK: - 【披露缓动 2026-10-09】cubic-bezier(0.4,0,0.2,1)（参考件同款）
+
+    func testDisclosureEaseEndpoints() {
+        // 端点恒等：x=0→0、x=1→1、越界原样返回（无插值面）。
+        XCTAssertEqual(WOMessageListSupport.disclosureEase(0), 0, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.disclosureEase(1), 1, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.disclosureEase(-0.5), -0.5, accuracy: 1e-9)
+        XCTAssertEqual(WOMessageListSupport.disclosureEase(1.5), 1.5, accuracy: 1e-9)
+    }
+
+    func testDisclosureEaseMonotonicAndShape() {
+        // 单调不减 + 值域 [0,1]。
+        var previous = -1.0
+        for step in 1...99 {
+            let x = Double(step) / 100.0
+            let y = WOMessageListSupport.disclosureEase(x)
+            XCTAssertTrue(y >= previous - 1e-9, "x=\(x) 非单调")
+            XCTAssertTrue(y >= 0 && y <= 1, "x=\(x) 越界")
+            previous = y
+        }
+        // 慢起-快中-缓落形（P1y=0 慢起，与 coGrowEase(0.5)=0.96 强 ease-out
+        // 形成形状区分）：半程进度 ≈0.78（QA 数值复算口径）。
+        let half = WOMessageListSupport.disclosureEase(0.5)
+        XCTAssertGreaterThan(half, 0.7)
+        XCTAssertLessThan(half, 0.85)
+        // 前段渐进（治"瞬跳"的关键形状）：前 10% 时间进度 <15%
+        //（旧曲线同刻约 40%——回归哨兵，防止误改回强 ease-out）。
+        XCTAssertLessThan(WOMessageListSupport.disclosureEase(0.1), 0.15)
+    }
 }

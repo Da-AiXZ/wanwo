@@ -94,7 +94,9 @@ struct WOToolCard: View {
             WODisclosureRow(icon: leadingIcon,
                             title: card.title.isEmpty ? card.name : card.title,
                             expanded: $expanded,
-                            summary: expanded ? "" : summaryText,
+                            // 【2026-10-09】summary 恒传原值——预览淡出/淡入改由
+                            // WODisclosureRow 内部 headerCommitted 承担。
+                            summary: summaryText,
                             sweepActive: card.isRunning,
                             titleColor: WOAlias.labelPrimary,
                             summaryColor: card.isError

@@ -179,6 +179,31 @@ enum WOMessageListSupport {
         return 3 * (1 - t) * (1 - t) * t + 3 * (1 - t) * t * t + t * t * t
     }
 
+    /// 【披露缓动 2026-10-09】展开/收起专用：cubic-bezier(0.4,0,0.2,1)——
+    /// 四份动画参考件（analysis/anim-ref-20261009/1~4.html）与 Motion.swift
+    /// 全库唯一曲线同款：快起步缓落地、落地即停（无回弹无弹簧）。
+    /// 取代披露路径沿用 coGrowEase 强 ease-out 的做法——该曲线前 10% 时间
+    /// 走约 40% 进度，是真机"展开一帧瞬跳"的几何根因（同曲线同时长下，
+    /// 格子跑到 40% 时格内内容（Motion.bezier 同为 0.4,0,0.2,1）仅 0.6%，
+    /// 中段大空白=用户截图 IMG_2625 实证）。结构与 coGrowEase 同（二分求
+    /// t 使 BezierX(t)=x，返回 BezierY(t)）；控制点 P1=(0.4,0) P2=(0.2,1)。
+    /// 纯函数（单测直呼）；x 越界原样返回（0/1 端点无插值）。
+    static func disclosureEase(_ x: Double) -> Double {
+        guard x > 0, x < 1 else { return x }
+        var lo = 0.0
+        var hi = 1.0
+        var t = x
+        for _ in 0..<24 {
+            t = (lo + hi) / 2
+            let bx = 3 * (1 - t) * (1 - t) * t * 0.4
+                + 3 * (1 - t) * t * t * 0.2
+                + t * t * t
+            if bx < x { lo = t } else { hi = t }
+        }
+        // y(t) = 3(1-t)²t·P1y + 3(1-t)t²·P2y + t³；P1y=0 → 首项恒 0。
+        return 3 * (1 - t) * t * t + t * t * t
+    }
+
     /// 回底按钮出现距离（lody ChatScroll.resumeDistance :81 = 80——简报
     /// 「240 或 lody 等价值」，实码为准取 80）。
     static let resumeDistance: Double = 80

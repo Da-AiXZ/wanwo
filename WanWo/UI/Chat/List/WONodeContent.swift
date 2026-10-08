@@ -490,15 +490,35 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     private let icon: Icon
     private let title: String
     @Binding private var expanded: Bool
-    /// 收起沉没层开关（【重做批6-R3】收起后保持内容渲染 0.4s 供格子裁剪
-    /// 逐行沉没；cell 复用经 .id(identity) 重建 @State 无残留）。
-    @State private var keepRendered = false
     private let summary: String
     private let summaryFollowEnd: Bool
     private let sweepActive: Bool
     private let titleColor: Color
     private let summaryColor: Color
     private let content: Content
+
+    // 【披露动画 2026-10-09】几何单时钟改造（机制定罪与用户规格见
+    // analysis/expand-collapse-mechanism-20261009.md）：SwiftUI 侧不再做
+    // 任何布局高度动画（toggle 不包 withAnimation）——展开/收起的格子高度
+    // 插值由引擎 display link 独家驱动（disclosureEase 0.32s，参考件曲线
+    // 0.4,0,0.2,1）。本组件只承担三类呈现级动画（均不涉布局高度，互不抢
+    // 时钟）：
+    // - headerCommitted：图标⇄∨交叉淡变、预览行淡出/淡入（用户规格行三
+    //   部分中的①③；.animation(value:) 域内动画，杜绝事务泄漏到布局）。
+    // - contentAppeared：展开体淡入+8pt 上移（用户判定保留的正常内容动画）。
+    // - collapsing/overlayVisible：收起过渡 0.4s 内内容以 overlay 存活——
+    //   流内内容摘除后布局瞬到收起态（高度回传终值→引擎收缩格子），overlay
+    //   不参与布局量测、被收缩中的格子自底部裁剪揭示+淡出=展开的完全反向。
+    @State private var headerCommitted = false
+    @State private var contentAppeared = false
+    @State private var collapsing = false
+    @State private var overlayVisible = true
+    /// 【QA P2-2 修】收起清理 Task 的代次守卫：0.4s 内"收起→展开→再收起"
+    /// 时，旧 Task 到点不得摘除新一轮收起刚挂上的 overlay（淡出被打断瞬消）。
+    @State private var collapseGeneration = 0
+    private static let revealDuration: Double = 0.32
+    /// overlay 锚位补偿=行头高（dsh 行高 24px，frame(minHeight:24) 实测绑定值）。
+    private static let headerRowHeight: CGFloat = 24
 
     init(icon: Icon,
          title: String,
@@ -523,18 +543,37 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                // 【重做批6 · 恢复 R0 原文 2026-10-07】withAnimation 包展开
-                // 切换（0.32s bezier 同族）——R0 的单一动画时钟语义：SwiftUI
-                // 动画布局高度逐帧插值 → GeometryReader 逐帧上报 → 引擎格子
-                // 逐帧直写跟随（格子与内容同一时钟，下方行平滑推=LazyVStack
-                // 观感）。四修的"内容瞬时+格子 UIViewPropertyAnimator"双时
-                // 钟观感不符 R0 且布局动画撕裂（真机叠影残影），已删。
-                withAnimation(WOMotion.bezier(duration: 0.32)) { expanded.toggle() }
+                if expanded {
+                    // 收起：流内内容同一帧摘除（布局瞬到收起态，高度回传终值
+                    // →引擎单时钟收缩格子）；overlay 同帧挂上保留内容供裁剪
+                    // 揭示+淡出；图标/预览 scoped 动画渐变还原（∨⇄图案、
+                    // 预览从空白淡入=用户规格）。
+                    overlayVisible = true
+                    collapsing = true
+                    expanded.toggle()
+                    headerCommitted = false
+                    collapseGeneration += 1
+                    let generation = collapseGeneration
+                    Task {
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        guard generation == collapseGeneration else { return }
+                        collapsing = false
+                    }
+                } else {
+                    // 展开：布局瞬到展开态（高度回传终值→引擎单时钟生长，
+                    // 下方行被连续推开）；淡入+8pt 由 contentAppeared 承担
+                    //（onAppear 触发，首帧不可见防闪现）。
+                    contentAppeared = false
+                    collapsing = false
+                    expanded.toggle()
+                    headerCommitted = true
+                }
             } label: {
                 HStack(spacing: 6) {
                     // 16×16 leading 盒：收起=调用方图标（14px），展开=chevron.down。
+                    // 交叉淡变（用户规格"图案渐变成∨"）——scoped 动画不涉布局。
                     Group {
-                        if expanded {
+                        if headerCommitted {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundColor(WOAlias.labelSecondary)
@@ -543,84 +582,88 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                         }
                     }
                     .frame(width: 16, height: 16)
+                    .transition(.opacity)
                     Text(title)
                         .font(.system(size: 13)) // weight 400
                         .foregroundColor(titleColor)
                         .lineLimit(1)
-                    if !summary.isEmpty {
-                        if summaryFollowEnd {
-                            // dsh running 态：summary 右对齐 flex-end 跟随。
-                            Spacer(minLength: 0)
+                    let shownSummary = headerCommitted ? "" : summary
+                    if !shownSummary.isEmpty {
+                        Group {
+                            if summaryFollowEnd {
+                                // dsh running 态：summary 右对齐 flex-end 跟随。
+                                Spacer(minLength: 0)
+                            }
+                            // 2×2 分隔点（labelCaption；dsh margin: 0 8px——外加
+                            // HStack gap6 两侧各 6，间距=14 与 CSS gap+margin 一致）。
+                            Circle()
+                                .fill(WOAlias.labelCaption)
+                                .frame(width: 2, height: 2)
+                                .padding(.horizontal, 8)
+                            if summaryFollowEnd {
+                                // 批12+回归五校（用户令：LED 走字式跟随，四校的
+                                // 截头显尾判废=窗口跳变不丝滑）：思考流式末端在行内
+                                // 右缘进字、左缘滑出，滑动速度=模型思考出字速度。
+                                WOLedTail(text: shownSummary, color: summaryColor)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else {
+                                Text(shownSummary)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(summaryColor)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Spacer(minLength: 0)
+                            }
                         }
-                        // 2×2 分隔点（labelCaption；dsh margin: 0 8px——外加
-                        // HStack gap6 两侧各 6，间距=14 与 CSS gap+margin 一致）。
-                        Circle()
-                            .fill(WOAlias.labelCaption)
-                            .frame(width: 2, height: 2)
-                            .padding(.horizontal, 8)
-                        if summaryFollowEnd {
-                            // 批12+回归五校（用户令：LED 走字式跟随，四校的
-                            // 截头显尾判废=窗口跳变不丝滑）：思考流式末端在行内
-                            // 右缘进字、左缘滑出，滑动速度=模型思考出字速度。
-                            WOLedTail(text: summary, color: summaryColor)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            Text(summary)
-                                .font(.system(size: 13))
-                                .foregroundColor(summaryColor)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer(minLength: 0)
-                        }
+                        // 预览行淡出/淡入（用户规格：展开=淡出消失、收起=从
+                        // 空白淡入）；行高固定 24 不涉布局。
+                        .transition(.opacity)
                     }
                 }
                 .frame(minHeight: 24) // dsh 行高 24px
                 .contentShape(Rectangle())
+                // 【QA P1-3 修 2026-10-09】headerCommitted 的域内动画挂**常驻**
+                // HStack——挂在被条件插入/移除的子树自身上，对侧树不存在修饰器
+                // =无动画上下文，淡出/淡入会落空（瞬消/瞬现）。图标交叉淡变与
+                // 预览行淡出淡入统一由此驱动；行高两侧均 24 固定，无布局高度
+                // 动画面。真机复验项：淡变观感（SwiftUI 版本敏感）。
+                .animation(WOMotion.bezier(duration: Self.revealDuration),
+                           value: headerCommitted)
             }
             .buttonStyle(.plain)
-            // 【重做批6-R3 · 揭示机制定案 2026-10-08（真机录屏逐帧+R0 git 考证）】
-            // R0 真身=WOChatView.swift 批12 T5 节（ReasoningRowView.swift 是
-            // 旧死代码，勿再误读）。两版自创差异已删：显式 .opacity+offset(8)
-            // 的 8pt 位移与格子插值产生相位差="空白窗+整块浮现"（NOW 2.60s 帧
-            // 实证：bash 已下移内容 alpha≈0）。
-            //   展开：content 挂载即全布局+默认 opacity（R0 同款），树高瞬至
-            //         终值 → preference 上报 → 引擎 growth 插值格子 →
-            //         clipsToBounds 裁剪揭示=行错峰露出、出现即深（R0 同款）。
-            //   收起：content 转 overlay 沉没层（见 body 尾），树高正常塌缩
-            //         上报 24 → 格子 growth 收缩裁剪 overlay = 逐行沉没（R0
-            //         实证：行逐条沉入裁剪线），0.4s 后卸载（此时已全被裁，
-            //         无视觉跳变；旧版 if 瞬删=收缩期空白窗）。
             if expanded {
                 content
+                    // 展开体淡入+8pt 上移（呈现级：opacity/offset 不参与布局，
+                    // 与引擎格子插值同曲线同时长——用户判定保留的正常内容动画）。
+                    .opacity(contentAppeared ? 1 : 0)
+                    .offset(y: contentAppeared ? 0 : 8)
+                    .animation(WOMotion.bezier(duration: Self.revealDuration),
+                               value: contentAppeared)
+                    .onAppear {
+                        guard !contentAppeared else { return }
+                        contentAppeared = true
+                    }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // 收起沉没层：不占布局（树高/上报口径不变），从标题行下 24pt 起按
-        // 原位渲染，随格子 growth 收缩被 clipsToBounds 逐行裁掉。
+        // 收起过渡 overlay：内容以不参与布局的方式存活 0.4s（>引擎 0.32s），
+        // 被收缩中的格子（contentView clipsToBounds）自底部裁剪揭示+淡出=
+        // 展开的完全反向；锚位=行头顶缘（padding 补偿行高 24）。
         .overlay(alignment: .topLeading) {
-            if keepRendered && !expanded {
+            if collapsing {
                 content
-                    // 【QA b8-P1 修】overlay 向子视图提案的是被修饰视图尺寸
-                    // （收起后 base 高 24 − padding 24 ≈ 0），柔性 content
-                    // （思考 ScrollView maxHeight/工具卡 ScrollView）会接受
+                    // 【采 eb19d7e QA b8-P1 修 2026-10-10】overlay 向子视图提案
+                    // 的是被修饰视图尺寸（收起后 base 高 24 − padding 24 ≈ 0），
+                    // 柔性 content（思考/工具卡的 ScrollView maxHeight）会接受
                     // 小提案塌缩至 0 = 沉没层空白。fixedSize 锁理想高度。
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 24) // 标题行高（dsh 行高 24px）
-                    .allowsHitTesting(false) // 沉没中不截胡下方行点击
-            }
-        }
-        .onChange(of: expanded) { isExpanded in
-            if isExpanded {
-                keepRendered = false
-            } else {
-                // 【QA b8-P0 修】收起时武装沉没层（此前漏写=overlay 恒假死
-                // 代码，收起逐行沉没完全未生效）；growth 插值 0.32s 期间保持
-                // 渲染，收完卸载。
-                keepRendered = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    if !expanded { keepRendered = false }
-                }
+                    .padding(.top, Self.headerRowHeight)
+                    .opacity(overlayVisible ? 1 : 0)
+                    .offset(y: overlayVisible ? 0 : 8)
+                    .animation(WOMotion.bezier(duration: Self.revealDuration),
+                               value: overlayVisible)
+                    .onAppear { overlayVisible = false }
+                    .allowsHitTesting(false)
             }
         }
         .modifier(WOSweepModifier(active: sweepActive))
@@ -720,7 +763,10 @@ private struct ReasoningDisclosure: View {
     var body: some View {
         WODisclosureRow(icon: WOThinkIcon(), title: "思考",
                         expanded: $expanded,
-                        summary: expanded ? "" : (running ? latestLine : firstLine),
+                        // 【2026-10-09】summary 恒传原值——展开态的预览隐藏与
+                        // 淡出改由 WODisclosureRow 内部 headerCommitted 承担
+                        //（scoped 淡出/淡入，取代原先 expanded 三元的瞬变）。
+                        summary: running ? latestLine : firstLine,
                         summaryFollowEnd: running,
                         sweepActive: running) {
             // thinkBody：padding 4/0/4/22，13px/20px 行高（lineSpacing 2），
