@@ -251,6 +251,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 【重做批4·四修】打开会话初始稳定期（首次贴底直写起 2s）：期间行高
     /// 修正（Markdown 解析/富格式切换）免动画直写——逐行动画叠加收敛链 =
     /// 真机"加载完后整个对话从头滚一遍到底部"的观感根源；直写=打开即稳。
+    /// 【2026-10-09】trySwitchLayoutWidth 亦复用此窗（切换结算窗 1s，后写
+    /// 者赢）——切换后首批回报/stale 切片重测走直写，防"收尾反复抽动"。
     private var initialStabilizingUntil: CFTimeInterval = 0
     /// 【打开定位 修复3-e】稳定期结束兜底校准挂位（tryInitialPositioning
     /// 置位；settleSnapIfDue 到期一次性消费——任何交错把贴底弄丢时强制
@@ -1245,27 +1247,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
         // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
         fluidReflowActive = true
-        if fluidAnchor == nil {
-            if let captured = captureTopAnchor() {
-                fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
-            }
-            // 【QA P2-1 修】fluid 置位帧对当帧可见行一次性量真值预热
-            // fluidHeights（~5-10 行、一次性 ~4ms）——首帧即真值，消顶缘
-            // 近似裁剪闪烁；后续帧由显示面回传接管。
-            let warmupWidth = width - messageLayout.sectionInset.left
-                - messageLayout.sectionInset.right
-            if warmupWidth > 1, let cv = collectionView {
-                for path in cv.indexPathsForVisibleItems {
-                    guard path.item < currentItems.count else { continue }
-                    let item = currentItems[path.item]
-                    fluidHeights[item.id] = pool.measureOnly(
-                        id: item.id, width: warmupWidth,
-                        makeContent: { [weak self] in
-                            guard let self else { return AnyView(Color.clear) }
-                            return self.makeNodeContent(item, reportsHeight: false)
-                        })
-                }
-            }
+        if fluidAnchor == nil, let captured = captureTopAnchor() {
+            fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
         }
         // 【QA P0-1 修·冷启动收养】首次挂载 loadViewIfNeeded 不触发布局 →
         // bindIfNeeded 采到 bounds=0 → stableLayoutWidth/layoutWidth 恒 0 →
@@ -1315,6 +1298,14 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                              signature: "v\(contentVersions[id] ?? 0)")
         }
         fluidHeights = [:]
+        // 【抽动根修 2026-10-09】切换结算窗 1s：动画期回传高度与终宽真值存在
+        // 残余差（高度早停报的行停留在中间宽实测值），切换后首批回报与 stale
+        // 切片重测若走 ≥20 披露路由 = 可见行逐行 0.32s 动画 + followsBottom
+        // 被断 + 锚定恢复交错 = 收尾后"上下反复抽动"（真机实证：重排完约
+        // 0.2s 起持续抽动）。窗口内一切修正走直写（follow 钉底/非 follow
+        // 锚定恢复）视觉零扰动；窗口结束 settle snap 兜底校准。
+        initialStabilizingUntil = CACurrentMediaTime() + 1.0
+        stabilizingSnapPending = true
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
@@ -1538,8 +1529,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 开合 width 706→1106 而 contentH 恒 4410、41 行高度全同=排版宽没切；
         // 连带冻结门 == 恒假 → 展开回传被丢 = "展开打不开"）。
         // 修=布局 pass 主动巡检宽度差（动画中每帧幂等：handleLiveWidthChange
-        // 内部 width != pendingWidth 才重启预重测 + generation 作废 + 0.1s
-        // 去抖，原设计节奏不变），切换链与原 prepare 被动上报完全同路径。
+        // 刷 pendingWidth + 0.1s 去抖；v2.1 起预重测已退役，动画期由同帧双
+        // 排版逐帧 live 重排——见 fluid 重排块注），切换链与原 prepare 被动
+        // 上报完全同路径。
         if let cv = collectionView, cv.window != nil {
             if abs(cv.bounds.width - stableLayoutWidth) > 0.5,
                abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
@@ -1559,14 +1551,21 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 messageLayout.layoutWidth = stableLayoutWidth
                 messageLayout.invalidateLayout()
             }
-            // 【流体重排 v2】fluid 期每帧：排版宽跟手并**立即重排**
-            // （invalidate + layoutIfNeeded 本帧生效）。旧实现等下一个 pass=
-            // 钉底永远滞后一帧，追不上变高的真底=动画期全程显示上方内容+
-            // 收尾才跳回（图8-10）、关闭方向被夹持拉走（图14-16）的根因。
-            // 重入安全：layoutIfNeeded 触发的嵌套 pass 宽度差已归零，各块幂等。
+            // 【流体重排 v2.1 · 同帧双排版】fluid 期每帧：排版宽跟手后**同帧
+            // 排两遍**——第一遍按上一帧高度排 + cells 以新宽 reflow（回传桥
+            // 在布局链内同步回报**当帧真高**入 fluidHeights）；紧接着第二遍
+            // 用刚到的真高定格。高度从"慢一帧"变"当帧精确"=用户拍板的锚点
+            // 挤压方案（钉视口顶缘锚点、下方实时挤压）真正成立：锚点下方
+            // 行不再被逐帧修正推挤（v2 实测"非贴底开/关都乱动"根因）。
+            // 同时删预热（P2-1 反噬：表格/重排版行单价 1-5ms×15 行=开合瞬间
+            // 卡一下——真机会话实证），双排版以零量高成本达到当帧精度。
+            // 重入安全：layoutIfNeeded 的嵌套 pass 宽度差已归零各块幂等；
+            // 第二遍后回传值不变（host 宽不变、intrinsic 同值）→ 无循环。
             if fluidReflowActive,
                abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
                 messageLayout.layoutWidth = cv.bounds.width
+                messageLayout.invalidateLayout()
+                cv.layoutIfNeeded()
                 messageLayout.invalidateLayout()
                 cv.layoutIfNeeded()
             }

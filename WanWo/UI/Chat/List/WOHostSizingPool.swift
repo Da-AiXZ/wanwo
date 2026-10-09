@@ -155,8 +155,8 @@ final class WOHostSizingPool: NSObject {
         return cached.height
     }
 
-    /// 【重做批5·宽度解耦】纯量高（结果**不落池**）——流体重排的预热/兜底
-    /// 量高（fluidHeights 置位帧预热与首帧新行兜底）。与
+    /// 【重做批5·宽度解耦】纯量高（结果**不落池**）——流体重排的兜底
+    /// 量高（fluid 期首帧新行兜底）。与
     /// measure 同款 fitting 流程（复用池视图），只差不写 heights。
     func measureOnly(id: String, width: CGFloat, makeContent: () -> AnyView) -> CGFloat {
         let width = max(1, width)
