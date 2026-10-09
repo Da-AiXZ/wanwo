@@ -417,6 +417,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private struct AnchorRestore {
         let anchor: (id: String, viewportY: CGFloat)?
         let oldContentHeight: CGFloat
+        /// 【修复批 C】恢复来源门：true=切换收尾 trySwitchLayoutWidth（锚位
+        /// 跳变超阈值=排版态异常，保险丝放弃直写）；false=扩窗/常规路径
+        /// （上方插入内容的大位移是正常语义，不钳制）。
+        let strict: Bool
     }
     private var pendingAnchorRestore: AnchorRestore?
 
@@ -427,6 +431,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     // 离屏行近似（不可见；收尾 trySwitchLayoutWidth 落全量真值兜底）。
     /// 容器宽逐帧变化中（巡检置位；trySwitch 成功或宽度归位熄灭）。
     private var fluidReflowActive = false
+    /// 【修复批 2026-10-09】流体起点时钟（首次宽度变化采样）——切换的动画时长门基准。
+    private var fluidStartedAt: CFTimeInterval = 0
+    /// 【修复批 B】双排版进行中旗标——两次 layoutIfNeeded 的重入 layout pass
+    /// 里跳过逐帧锚定补偿，只在最外层收口时统一补偿一次（真机实证同帧三写）。
+    private var isInsideDualPass = false
     /// 流体锚：最上可见行 (条目id, 视口Y)——逐帧补偿把该行钉在原屏幕位。
     private var fluidAnchor: (id: String, viewportY: CGFloat)?
 
@@ -686,6 +695,14 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         messageLayout.layoutWidth = stableLayoutWidth
         pendingWidth = 0
         fluidHeights = [:]
+        // 【修复批 A】会话切换清流体时钟（旧会话的动画时长门基准对新会话无意义）。
+        fluidStartedAt = 0
+        isInsideDualPass = false
+        // 【QA SHIP 跟进】罕见交叠（侧栏动画中切会话）：熄灭流体态并清旧锚
+        // ——live- 前缀 id 跨会话复用，旧锚残入新 episode 会把逐帧补偿钉到
+        // 错行（同 shutdown 的流体收口语义）。
+        fluidReflowActive = false
+        fluidAnchor = nil
         // 【流体诊断】探针簿记清零（live- 前缀 id 跨会话复用——旧会话残留
         // 会让新会话同 id 高度差 <1pt 的回报被防刷屏过滤误吞，污染取证）。
         fluidDiagLastH = [:]
@@ -1189,7 +1206,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
-                oldContentHeight: cv.contentSize.height)
+                oldContentHeight: cv.contentSize.height,
+                strict: false)
         }
         messageLayout.invalidateLayout()
         // 【批4 诊断实证修】异步补标一次（幂等）：SwiftUI 的 onPreference
@@ -1318,6 +1336,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         WOFluidDiag.record("LIVE-CHANGE w=\(width) stable=\(stableLayoutWidth) anchor=\(fluidAnchor != nil)")
         // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
         // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
+        // 【修复批 A】首次进入流体（收养分支早退不重置时钟）采样起点，
+        // 供 trySwitch 的动画时长门（0.55s）判定。
+        if !fluidReflowActive {
+            fluidStartedAt = CACurrentMediaTime()
+        }
         fluidReflowActive = true
         if fluidAnchor == nil, let captured = captureTopAnchor() {
             fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
@@ -1335,6 +1358,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【流体重排 v2】预重测退役：动画期高度由显示面回传真值收敛
         // （fluidHeights），无需后台切片；pendingWidth 每帧刷新供去抖收尾。
         pendingWidth = width
+        // 【修复批 A】去抖重试收口单一来源（原手工 timer 四行等价替换）。
+        scheduleWidthSwitchRetry()
+    }
+
+    /// 【修复批 A】去抖重试调度（0.1s 后再问一次 trySwitch——幂等，成功路径自熄）。
+    private func scheduleWidthSwitchRetry() {
         widthSwitchTimer?.cancel()
         let timer = DispatchWorkItem { [weak self] in self?.trySwitchLayoutWidth() }
         widthSwitchTimer = timer
@@ -1346,12 +1375,24 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private func trySwitchLayoutWidth() {
         guard let cv = collectionView, cv.window != nil else { return }
         let current = cv.bounds.width
+        // 【修复批 A】动画时长门：列宽动画 0.42s 的 ease 尾段帧差 <0.5pt 会误骗
+        // 0.1s 去抖（真机 fluid-diag 实证：假切换 pendingW=905.21/667.90 中间值、
+        // 一次开合切 2-3 段）。首次宽度变化起 0.55s 内（动画+余量）绝不切换。
+        if CACurrentMediaTime() - fluidStartedAt < 0.55 {
+            scheduleWidthSwitchRetry()
+            return
+        }
         // 【重做批5-R2 · 容差 2026-10-08】精确 == 与 prepare 上报死区 0.5pt
         // 口径不一致（上报 |bounds-layoutWidth|>0.5）→ 动画末帧 bounds 与最后
         // 一次上报值差 0~0.5pt 时本 guard 永假 = 切换永久卡死带（且无自愈）。
         // 改 0.5pt 容差与上报口径对齐。
         guard abs(current - pendingWidth) <= 0.5, pendingWidth != stableLayoutWidth,
-              pendingWidth > 1 else { return }
+              pendingWidth > 1 else {
+            // 【修复批 A】宽度未达 pending（尾段慢爬/尚未稳定）→ 续期去抖重试，
+            // 防 timer 一次性消费后陷入僵尸态（480ms 空窗实证）。
+            if fluidReflowActive { scheduleWidthSwitchRetry() }
+            return
+        }
         // 【流体重排 v2】预重测门拆除：动画期高度已由显示面回传真值收敛
         // （fluidHeights），收尾=落池+全量重摆；离屏行旧值经既有 stale 切片
         // 渐进重测自愈——不再等全量预重测（"停 0.5s+两连跳"根因）。
@@ -1365,6 +1406,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 交给下方既有 pendingAnchorRestore/钉底路径收尾）。
         fluidReflowActive = false
         fluidAnchor = nil
+        // 【修复批 A】成功切换=流体结束，动画时长门时钟归零。
+        fluidStartedAt = 0
         let contentWidth = pendingWidth - messageLayout.sectionInset.left
             - messageLayout.sectionInset.right
         // 动画期显示面回报的真值批量落池（量测宽=收尾前最后帧宽≈终宽；微差
@@ -1385,7 +1428,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
-                oldContentHeight: cv.contentSize.height)
+                oldContentHeight: cv.contentSize.height,
+                strict: true)
         }
         messageLayout.invalidateLayout()
         if followsBottom {
@@ -1533,7 +1577,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         historyLoading = false
         viewModel.commitHistoryWindowExpansion(to: expandedStart)
         let restore = AnchorRestore(anchor: anchor,
-                                    oldContentHeight: oldContentHeight)
+                                    oldContentHeight: oldContentHeight,
+                                    strict: false)
         if applyInFlight {
             // 【CI修50】在途 apply：锚定寄存，落地后入位（防旧帧提前消费）。
             deferredExpansionAnchor = restore
@@ -1590,7 +1635,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             WOFluidDiag.note(String(format: "ANCHOR-RESTORE id=%@ off=%.1f -> %.1f",
                                     anchor.id, collectionView.contentOffset.y,
                                     attrs.frame.minY - anchor.viewportY))
-            collectionView.contentOffset.y = attrs.frame.minY - anchor.viewportY
+            let targetY = attrs.frame.minY - anchor.viewportY
+            // 【修复批 C】保险丝：切换收尾恢复（strict）的锚位跳变超阈值 = 排版态
+            // 异常（真机实证假切换期 ANCHOR-RESTORE 拉跳 -730/-835pt）——放弃直写，
+            // 保持当前 offset（下一帧补偿/钉底收敛自愈）。扩窗路径（strict=false）
+            // 不钳制：上方插入内容的大位移是正常语义。
+            if restore.strict, abs(targetY - collectionView.contentOffset.y) > 300,
+               !collectionView.isDragging, !collectionView.isDecelerating {
+                return
+            }
+            collectionView.contentOffset.y = targetY
         } else {
             // 锚点被换出（如视口内只剩历史头）：按内容高度差兜底平移。
             // 【流体诊断】锚定兜底探针（低频 note 必落盘；纯记录）。
@@ -1627,6 +1681,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 // 由池与回传链重建）。
                 fluidReflowActive = false
                 fluidAnchor = nil
+                // 【修复批 A】归位结束流体，动画时长门时钟一并归零。
+                fluidStartedAt = 0
                 fluidHeights = [:]
                 // 【QA P2-5 修】归位同时清去抖残留（pendingWidth/timer——
                 // 守卫本可拦，清掉防脏值滞留）。
@@ -1647,6 +1703,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 第二遍后回传值不变（host 宽不变、intrinsic 同值）→ 无循环。
             if fluidReflowActive,
                abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
+                // 【修复批 B】双排版进行中：抑制重入 layout pass 的逐帧锚定
+                // 补偿，最外层收口统一补一次（真机实证同帧 PASS1→ANCHOR-COMP
+                // →PASS2 三写 offset）。该块无早退，直接首尾两行赋值。
+                isInsideDualPass = true
                 messageLayout.layoutWidth = cv.bounds.width
                 messageLayout.invalidateLayout()
                 cv.layoutIfNeeded()
@@ -1656,6 +1716,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 cv.layoutIfNeeded()
                 // 【流体诊断】第二遍排版快照（纯记录，只读）。
                 WOFluidDiag.record("PASS2 " + fluidFrameSnapshot())
+                isInsideDualPass = false
             }
         }
         // 【修复3-c】推迟的首帧定位每帧重试（几何就绪即消耗；本 pass 布局
@@ -1673,7 +1734,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 非贴底态把锚行钉在原屏幕位（"位置不变"语义=重排只有排版在变，
         // 眼前内容不跳）。拖拽/惯性中不抢（用户手优先）。pendingAnchor
         // Restore 消费帧让位（上方 return）不双写。
-        if fluidReflowActive, let cv = collectionView, cv.window != nil,
+        if fluidReflowActive, !isInsideDualPass, let cv = collectionView, cv.window != nil,
            !cv.isDragging, !cv.isDecelerating {
             if followsBottom {
                 // 【流体诊断】钉底探针（纯记录：落点变 >0.5pt 才记，防每帧
