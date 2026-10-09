@@ -494,6 +494,15 @@ private enum WODisclosureMotion {
     static let headerRowHeight: CGFloat = 24
 }
 
+/// 展开体实测高度回传（修复1 沉没副本定框用）——挂于展开体 background
+/// GeometryReader，量的是**显示环境实际布局高**（含贪婪滚动窗撑满效果）。
+private struct WODisclosureBodyHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct WODisclosureRow<Icon: View, Content: View>: View {
     private let icon: Icon
     private let title: String
@@ -524,6 +533,14 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
     /// 【QA P2-2 修】收起清理 Task 的代次守卫：0.4s 内"收起→展开→再收起"
     /// 时，旧 Task 到点不得摘除新一轮收起刚挂上的 overlay（淡出被打断瞬消）。
     @State private var collapseGeneration = 0
+    /// 【2026-10-09 修复1】展开体在**显示环境**的实际布局高（背景 GeometryReader
+    /// 实测）——收起沉没副本按此高度定框渲染，提案与正片逐像素一致。
+    /// 机制：in-flow 渲染 = host 以自身实高为具体提案（intrinsic 自持三边钉）
+    /// → VStack 对带上限的滚动窗做均分（短输入撑出空膛/长输出被截）；
+    /// 副本只有拿到**同一个具体提案**才复刻同一版式（fixedSize 的理想提案
+    /// 是另一套排版=洗牌真凶）。收起瞬间分支拔除后 preference 归零，
+    /// 故只在 >1 时采纳（保留最后实高供 overlay 用）。
+    @State private var expandedBodyHeight: CGFloat = 0
 
     init(icon: Icon,
          title: String,
@@ -656,9 +673,23 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                         guard !contentAppeared else { return }
                         contentAppeared = true
                     }
+                    // 【修复1】显示环境实高实测（收起副本定框基准）——
+                    // opacity/offset 不影响布局，量得的即正片渲染框。
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: WODisclosureBodyHeightKey.self,
+                                value: geo.size.height)
+                        }
+                    )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 【修复1】展开体实高采集（>1 才采纳——收起瞬间分支拔除 preference
+        // 归零，保留最后实高供沉没副本定框）。
+        .onPreferenceChange(WODisclosureBodyHeightKey.self) { value in
+            if value > 1, value != expandedBodyHeight { expandedBodyHeight = value }
+        }
         .modifier(WOSweepModifier(active: sweepActive))
         // 收起过渡 overlay（【真机根修 2026-10-09】必须挂在 WOSweepModifier
         // **之后**：其 body 末尾有无条件 .clipped()（WOConversationParts:154），
@@ -667,14 +698,25 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
         // contentView.clipsToBounds 承担 = 逐行裁掉按设计生效。
         .overlay(alignment: .topLeading) {
             if collapsing {
-                content
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, WODisclosureMotion.headerRowHeight)
-                    .opacity(overlayVisible ? 1 : 0)
-                    .offset(y: overlayVisible ? 0 : 8)
-                    .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
-                               value: overlayVisible)
-                    .allowsHitTesting(false)
+                // 【2026-10-09 修复1】沉没副本按"展开期显示环境实测高"定框
+                // ——提案与正片完全一致=版式逐像素复刻。根治点收起瞬间
+                // 卡内洗牌（毛病一：上限 9 行的输入多露一行；毛病二：短输入
+                // 的空膛消失+输出多露两行）。fixedSize（eb19d7e 防塌缩）
+                // 提案的是理想高=另一套排版，正是走样真凶，弃用；实高未
+                // 捕获过（理论兜底）才回退 fixedSize 防塌缩。
+                Group {
+                    if expandedBodyHeight > 1 {
+                        content.frame(height: expandedBodyHeight)
+                    } else {
+                        content.fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, WODisclosureMotion.headerRowHeight)
+                .opacity(overlayVisible ? 1 : 0)
+                .offset(y: overlayVisible ? 0 : 8)
+                .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
+                           value: overlayVisible)
+                .allowsHitTesting(false)
             }
         }
     }

@@ -252,6 +252,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 修正（Markdown 解析/富格式切换）免动画直写——逐行动画叠加收敛链 =
     /// 真机"加载完后整个对话从头滚一遍到底部"的观感根源；直写=打开即稳。
     private var initialStabilizingUntil: CFTimeInterval = 0
+    /// 【打开定位 修复3-e】稳定期结束兜底校准挂位（tryInitialPositioning
+    /// 置位；settleSnapIfDue 到期一次性消费——任何交错把贴底弄丢时强制
+    /// 归位，用户已拖拽则不动作）。
+    private var stabilizingSnapPending = false
     /// id → 内容版本（内容变 → bump → 池高度签名失效 → 重测）。
     private var contentVersions: [String: Int] = [:]
     private var lastPhase: ChatViewModel.Phase?
@@ -613,6 +617,18 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                      onImagePreview: @escaping (ImageAttachmentRef) -> Void) {
         loadViewIfNeeded() // updateUIView 早于视图挂载的防御（dataSource 就位）
         bindIfNeeded(viewModel)
+        // 【打开定位 修复3-a】会话身份变化也重新武装首帧定位——bindIfNeeded
+        // 只认 VM 实例身份（!==），VM 复用换 sessionId 的切换路径下
+        // needInitialPositioning 永不置位 = 打开零定位停顶（通路B 封口）。
+        // 【QA P2-2 修】上一会话若停在拖拽断跟随态，定位 guard 会被拦——
+        // 换会话即重新跟随（WORootFrame .id(sessionId) 整树重建时本块不可达，
+        // bindIfNeeded 已全量重置；本块属纯防御路径，仍补齐）。
+        if sessionId != self.sessionId {
+            needInitialPositioning = true
+            initialStabilizingUntil = 0
+            stabilizingSnapPending = false
+            followsBottom = true
+        }
         self.nodes = nodes
         self.phase = phase
         self.sessionId = sessionId
@@ -851,25 +867,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 消灭"收敛追着行高修正跑"的数秒上掠/半路停顿；display link
             // 保留给流式跟随与后续内容变化）。
             // 【真机根修 2026-10-09】消耗条件收紧到"首个含正文(bubble)的
-            // apply"：旧条件 itemCount>0 对 loading 占位条目（flatten 在
-            // phase==.loading 恒插 1 条 spinner）恒成立 → 首帧定位在纯
-            // spinner 帧被消耗、2s 稳定期从 loading 起算 → prewarm（最长
-            // 3s）后真正内容上屏时只能走 scrollToBottom 收敛 = 用户实证的
-            // "加载后再回底"。loading 帧不再消耗；稳定期改从内容首帧起算。
-            if needInitialPositioning, followsBottom,
-               self.currentItems.contains(where: { item in
-                   if case .bubble = item.kind { return true }
-                   return false
-               }) {
-                needInitialPositioning = false
-                initialStabilizingUntil = CACurrentMediaTime() + 2.0
-                // 先强制一轮布局（新数据的 prepare 跑完、contentSize 真值）
-                // 再取贴底落点——diffable apply 完成回调不保证 layout 已跑。
-                self.collectionView?.layoutIfNeeded()
-                let bottom = self.bottomOffset
-                self.collectionView?.setContentOffset(
-                    CGPoint(x: 0, y: bottom), animated: false)
-            }
+            // apply"：loading 占位帧不再消耗，稳定期从内容首帧起算。
+            // 【打开定位 修复3-b/c】几何就绪门 + 推迟重试——stableLayoutWidth
+            // ==0（bind 冷启动采到 bounds=0 的帧）时 prepare 按 width<1 排版
+            // 排不出真高度，落点≈顶=机会白烧（通路A）；未就绪推迟不消耗，
+            // viewDidLayoutSubviews 每帧重试（tryInitialPositioning 双入口）。
+            self.tryInitialPositioning(forceLayout: true)
             // 【批4 真机诊断】apply 落地 3s 后布局快照（打开会话稳态取证；
             // 限频器挡高频 apply 的重复排程）。
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -898,6 +901,46 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let unfreeze = syncPendingUnfreeze
         syncPendingUnfreeze = []
         sync(forceUnfreeze: unfreeze)
+    }
+
+    // MARK: 【打开定位 2026-10-09 修复3】首帧贴底（不变量：打开后首个含正文
+    // 的帧 + 几何就绪 → 直写贴底；2s 稳定期结束兜底校准）
+
+    /// 首帧定位（双补跑入口：apply completion / viewDidLayoutSubviews）。
+    /// 几何未就绪（stableLayoutWidth==0——bind 冷启动采到 bounds=0 的帧）
+    /// 时**推迟不消耗**（通路A 封口：layoutWidth=0 的 prepare 排不出真高度，
+    /// 落点≈顶=机会白烧）；推迟后每帧由 viewDidLayoutSubviews 重试直至
+    /// 就绪消耗。写前强制布局保证 contentSize 真值（completion 路径）。
+    private func tryInitialPositioning(forceLayout: Bool) {
+        guard needInitialPositioning, followsBottom,
+              stableLayoutWidth > 0,
+              let cv = collectionView, cv.bounds.width > 1,
+              currentItems.contains(where: { item in
+                  if case .bubble = item.kind { return true }
+                  return false
+              }) else { return }
+        needInitialPositioning = false
+        initialStabilizingUntil = CACurrentMediaTime() + 2.0
+        stabilizingSnapPending = true
+        // completion 路径新数据的 prepare 可能还没跑 → 先强制一轮再取贴底
+        // 落点；viewDidLayoutSubviews 路径 prepare 刚跑过（contentSize 本帧
+        // 真值）→ 不重复强制（防布局重入）。
+        if forceLayout { cv.layoutIfNeeded() }
+        let bottom = self.bottomOffset
+        cv.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+    }
+
+    /// 稳定期结束兜底（修复3-e）：打开后 2s 校准——仍跟随、未拖拽、距底
+    /// >1pt（任何交错把贴底弄丢）→ 一次直写归位。一次性消费；用户已拖拽
+    /// （followsBottom=false）绝不动作。
+    private func settleSnapIfDue() {
+        guard stabilizingSnapPending,
+              CACurrentMediaTime() >= initialStabilizingUntil else { return }
+        stabilizingSnapPending = false
+        guard followsBottom, let cv = collectionView,
+              !cv.isDragging, !cv.isDecelerating,
+              abs(cv.contentOffset.y - bottomOffset) > 1 else { return }
+        cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
     }
 
     /// 入场账本补种（原 seedEntry + onChange(phase) 补种语义逐帧对齐）：
@@ -1004,6 +1047,26 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let signature = contentVersions[id].map { "v\($0)" }
         guard pool.updateHeight(id: id, width: width, height: height,
                                 signature: signature) else { return }
+        // 【2026-10-09 修复2】动画在途时同行的后续回报**并入在途动画**（从
+        // 当前显示位续跑剩余时长、更新终点）——不许重起/直写插队打断，收缩
+        // 动画保持单向单速（用户实测"正常播→跳过一段→继续正常播"=时间驱动
+        // 插值被中途打断的面，双保险之一）。
+        if growthAnims[id] != nil {
+            if let display = growthDisplayHeight(id: id) {
+                let active = growthAnims[id]!
+                let remaining = max(0.08, active.start + active.duration
+                    - CACurrentMediaTime())
+                growthAnims[id] = GrowthAnim(from: display, to: height,
+                                             start: CACurrentMediaTime(),
+                                             duration: remaining,
+                                             kind: active.kind)
+                messageLayout.invalidateLayout()
+                return
+            }
+            // 【QA P2-1 修】动画已过期（display link 清理前的窗口期）→ 摘除
+            // 条目走下方正常路由——防 entrance 行以 from=0 重生长一闪。
+            growthAnims[id] = nil
+        }
         // 运动分流（CI修50 归一 + 重做批6 插值 + 2026-10-09 披露单时钟）：
         // ①打开稳定期 / 流式 live 行 → 直写（打开即稳 / 贴底收敛独占）。
         // ②大幅变化（|Δ|≥20pt）→ 引擎插值，按种类分派：
@@ -1042,8 +1105,18 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 if followsBottom { scrollToBottom() }
             case .disclosure:
                 if followsBottom {
-                    followsBottom = false
-                    updateBottomButton()
+                    // 【修复3-d】只有该行当前**在视口内**才断跟随（用户正看
+                    // 着它展开=下方内容被推出屏的语义，用户拍板的取舍）；离
+                    // 屏行的高度修正不许偷走跟随状态——打开期"永不回底"的
+                    // 开关误关通道封口。
+                    let rowVisible = cv.indexPathsForVisibleItems.contains { path in
+                        path.item < currentItems.count
+                            && currentItems[path.item].id == id
+                    }
+                    if rowVisible {
+                        followsBottom = false
+                        updateBottomButton()
+                    }
                 }
             }
             return
@@ -1512,6 +1585,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 messageLayout.invalidateLayout()
             }
         }
+        // 【修复3-c】推迟的首帧定位每帧重试（几何就绪即消耗；本 pass 布局
+        // 刚跑过 → 不强制 layoutIfNeeded）。
+        tryInitialPositioning(forceLayout: false)
         // 【CI修49】stale 重测切片调度（prepare 期间收集的宽度变化行——
         // 空队列时零成本）。
         drainStaleSweep()
@@ -1551,6 +1627,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 startMotion()
             }
         }
+        // 【修复3-e】稳定期结束兜底校准（一次性；用户已拖拽不动作）。
+        settleSnapIfDue()
         updateBottomButton()
     }
 
