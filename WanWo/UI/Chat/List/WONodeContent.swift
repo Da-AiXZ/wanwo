@@ -560,7 +560,15 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
                     collapseGeneration += 1
                     let generation = collapseGeneration
                     Task {
-                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        // 淡出起点显式后移 50ms（~3 帧）：onAppear 与插入同帧
+                        // 合并时首帧即 opacity 0（淡出整体不可见的另一嫌疑），
+                        // 显式错开保证先全显再渐隐；总存活 50+350=400ms 不变。
+                        // 【QA P2-2 修】翻转也挂代次守卫——50ms 内"收→展→收"
+                        // 连点时旧 Task 不得提前结束新 overlay 的全显保持期。
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard generation == collapseGeneration else { return }
+                        overlayVisible = false
+                        try? await Task.sleep(nanoseconds: 350_000_000)
                         guard generation == collapseGeneration else { return }
                         collapsing = false
                     }
@@ -651,27 +659,24 @@ struct WODisclosureRow<Icon: View, Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // 收起过渡 overlay：内容以不参与布局的方式存活 0.4s（>引擎 0.32s），
-        // 被收缩中的格子（contentView clipsToBounds）自底部裁剪揭示+淡出=
-        // 展开的完全反向；锚位=行头顶缘（padding 补偿行高 24）。
+        .modifier(WOSweepModifier(active: sweepActive))
+        // 收起过渡 overlay（【真机根修 2026-10-09】必须挂在 WOSweepModifier
+        // **之后**：其 body 末尾有无条件 .clipped()（WOConversationParts:154），
+        // 挂在它前面 = 收起瞬间行身塌到 24pt 时 overlay 被一刀裁没 = "内容
+        // 直接消失"（用户真机实证）。挪到裁剪链外后，沉没裁剪只由格子
+        // contentView.clipsToBounds 承担 = 逐行裁掉按设计生效。
         .overlay(alignment: .topLeading) {
             if collapsing {
                 content
-                    // 【采 eb19d7e QA b8-P1 修 2026-10-10】overlay 向子视图提案
-                    // 的是被修饰视图尺寸（收起后 base 高 24 − padding 24 ≈ 0），
-                    // 柔性 content（思考/工具卡的 ScrollView maxHeight）会接受
-                    // 小提案塌缩至 0 = 沉没层空白。fixedSize 锁理想高度。
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, WODisclosureMotion.headerRowHeight)
                     .opacity(overlayVisible ? 1 : 0)
                     .offset(y: overlayVisible ? 0 : 8)
                     .animation(WOMotion.bezier(duration: WODisclosureMotion.revealDuration),
                                value: overlayVisible)
-                    .onAppear { overlayVisible = false }
                     .allowsHitTesting(false)
             }
         }
-        .modifier(WOSweepModifier(active: sweepActive))
     }
 }
 

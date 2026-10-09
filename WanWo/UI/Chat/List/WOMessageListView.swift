@@ -418,6 +418,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     }
     private var pendingAnchorRestore: AnchorRestore?
 
+    // MARK: 【流体重排 2026-10-09】侧栏动画期逐帧 live 重排（用户拍板：
+    // 连续挤压重排+位置稳定，取代纯冻结）。历史抖动两病根=①重排无锚定
+    // 补偿②动画期量高被污染后事后修正风暴；本方案分别堵死：可见行当帧
+    // 同环境量真值（无事后修正）、逐帧锚定补偿（锚行恒在原屏幕位）、
+    // 离屏行近似（不可见；收尾 trySwitchLayoutWidth 落全量真值兜底）。
+    /// 容器宽逐帧变化中（巡检置位；trySwitch 成功或宽度归位熄灭）。
+    private var fluidReflowActive = false
+    /// 流体锚：最上可见行 (条目id, 视口Y)——逐帧补偿把该行钉在原屏幕位。
+    private var fluidAnchor: (id: String, viewportY: CGFloat)?
+
     // MARK: 生命周期
 
     override func loadView() {
@@ -840,9 +850,22 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 【批4 诊断实证修】首次定位直写（首个非空 apply 落地即贴底，
             // 消灭"收敛追着行高修正跑"的数秒上掠/半路停顿；display link
             // 保留给流式跟随与后续内容变化）。
-            if needInitialPositioning, followsBottom, itemCount > 0 {
+            // 【真机根修 2026-10-09】消耗条件收紧到"首个含正文(bubble)的
+            // apply"：旧条件 itemCount>0 对 loading 占位条目（flatten 在
+            // phase==.loading 恒插 1 条 spinner）恒成立 → 首帧定位在纯
+            // spinner 帧被消耗、2s 稳定期从 loading 起算 → prewarm（最长
+            // 3s）后真正内容上屏时只能走 scrollToBottom 收敛 = 用户实证的
+            // "加载后再回底"。loading 帧不再消耗；稳定期改从内容首帧起算。
+            if needInitialPositioning, followsBottom,
+               self.currentItems.contains(where: { item in
+                   if case .bubble = item.kind { return true }
+                   return false
+               }) {
                 needInitialPositioning = false
                 initialStabilizingUntil = CACurrentMediaTime() + 2.0
+                // 先强制一轮布局（新数据的 prepare 跑完、contentSize 真值）
+                // 再取贴底落点——diffable apply 完成回调不保证 layout 已跑。
+                self.collectionView?.layoutIfNeeded()
                 let bottom = self.bottomOffset
                 self.collectionView?.setContentOffset(
                     CGPoint(x: 0, y: bottom), animated: false)
@@ -1134,6 +1157,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 且预重测完成后一次切换（layoutWidth=新宽+批量落池+invalidate+锚定）。
     private func handleLiveWidthChange(_ width: CGFloat) {
         guard width != stableLayoutWidth, width > 1 else { return }
+        // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
+        // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
+        fluidReflowActive = true
+        if fluidAnchor == nil, let captured = captureTopAnchor() {
+            fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
+        }
         // 【QA P0-1 修·冷启动收养】首次挂载 loadViewIfNeeded 不触发布局 →
         // bindIfNeeded 采到 bounds=0 → stableLayoutWidth/layoutWidth 恒 0 →
         // prepare 的上报门永不触发 → 列表永久空白。layoutWidth 为 0 时直接
@@ -1226,6 +1255,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         }
         stableLayoutWidth = pendingWidth
         messageLayout.layoutWidth = pendingWidth
+        // 【流体重排】一次切换落地=全量真值就位 → 流体模式熄灯（锚定补偿
+        // 交给下方既有 pendingAnchorRestore/钉底路径收尾）。
+        fluidReflowActive = false
+        fluidAnchor = nil
         let contentWidth = pendingWidth - messageLayout.sectionInset.left
             - messageLayout.sectionInset.right
         for (id, h) in premeasuredHeights {
@@ -1458,10 +1491,26 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 修=布局 pass 主动巡检宽度差（动画中每帧幂等：handleLiveWidthChange
         // 内部 width != pendingWidth 才重启预重测 + generation 作废 + 0.1s
         // 去抖，原设计节奏不变），切换链与原 prepare 被动上报完全同路径。
-        if let cv = collectionView, cv.window != nil,
-           abs(cv.bounds.width - stableLayoutWidth) > 0.5,
-           abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
-            handleLiveWidthChange(cv.bounds.width)
+        if let cv = collectionView, cv.window != nil {
+            if abs(cv.bounds.width - stableLayoutWidth) > 0.5,
+               abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
+                handleLiveWidthChange(cv.bounds.width)
+            } else if fluidReflowActive,
+                      abs(cv.bounds.width - stableLayoutWidth) <= 0.5 {
+                // 【流体重排】宽度回到稳定值（快速开合未触发切换）：直接归位
+                // 结束流体，排版宽回稳定值。
+                fluidReflowActive = false
+                fluidAnchor = nil
+                messageLayout.layoutWidth = stableLayoutWidth
+                messageLayout.invalidateLayout()
+            }
+            // 【流体重排】fluid 期每帧：排版宽跟手（prepare 按实时宽重排；
+            // 本 pass 之后的下一个 pass 生效，滞后一帧不可感知）。
+            if fluidReflowActive,
+               abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
+                messageLayout.layoutWidth = cv.bounds.width
+                messageLayout.invalidateLayout()
+            }
         }
         // 【CI修49】stale 重测切片调度（prepare 期间收集的宽度变化行——
         // 空队列时零成本）。
@@ -1471,11 +1520,30 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             restoreTopAnchor(restore)
             return
         }
+        // 【流体重排】逐帧锚定补偿：贴底态钉底（底缘随内容高度平滑移动）；
+        // 非贴底态把锚行钉在原屏幕位（"位置不变"语义=重排只有排版在变，
+        // 眼前内容不跳）。拖拽/惯性中不抢（用户手优先）。pendingAnchor
+        // Restore 消费帧让位（上方 return）不双写。
+        if fluidReflowActive, let cv = collectionView, cv.window != nil,
+           !cv.isDragging, !cv.isDecelerating {
+            if followsBottom {
+                cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+            } else if let anchor = fluidAnchor,
+                      let index = currentItems.firstIndex(where: { $0.id == anchor.id }),
+                      let attrs = collectionView.collectionViewLayout
+                          .layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
+                let targetY = attrs.frame.minY - anchor.viewportY
+                if abs(cv.contentOffset.y - targetY) > 0.5 {
+                    cv.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
+                }
+            }
+        }
         // 键盘弹出等诱发的 layout pass：不直接写 offset（单一驱动点红线），
         // 只唤醒 display link（距底 >0.5 且跟随态）——收敛由 tick 完成。
+        // （fluid 期跳过：钉底由上方逐帧补偿直写，收敛链不参与防打架。）
         // 【重做批6-R2 · 稳定期例外 2026-10-08】打开稳定期内直写钉底（用户
         // 拍板"打开会话直线呈现"=零可见运动；见 scrollToBottom 注）。
-        if followsBottom, motionLink == nil, let cv = collectionView,
+        if followsBottom, !fluidReflowActive, motionLink == nil, let cv = collectionView,
            cv.window != nil, abs(cv.contentOffset.y - bottomOffset) > 0.5 {
             if CACurrentMediaTime() < initialStabilizingUntil {
                 cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
@@ -1561,10 +1629,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【2026-10-09 披露单时钟】披露动画在途 → 暂停贴底收敛：收敛的
         // setContentOffset 是唯一能拖走表头的运动（布局自上而下累计不动
         // origin），与"表头钉死"语义冲突；同出生长（.entrance）不受影响。
+        // 【流体重排】fluid 期同样暂停（钉底由 viewDidLayoutSubviews 逐帧
+        // 直写承担，收敛链 0.10s 追移动目标会滞后打架）。
         let disclosureActive = growthAnims.values.contains { $0.kind == .disclosure }
         let bottom = bottomOffset
         let tracking = followsBottom && !cv.isDragging && !cv.isDecelerating
-            && !disclosureActive
+            && !disclosureActive && !fluidReflowActive
         if tracking {
             let scale = cv.traitCollection.displayScale > 0
                 ? Double(cv.traitCollection.displayScale) : 3.0
@@ -1606,6 +1676,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     func shutdown() {
         stopMotion()
         growthAnims = [:] // 【重做批6】拆解清生长队列
+        // 【流体重排】拆解清流体状态（防跨会话残留锚行 id）。
+        fluidReflowActive = false
+        fluidAnchor = nil
         // 【重做批5 · 解耦】宽度状态机收口（去抖计时/预重测切片作废）。
         widthSwitchTimer?.cancel()
         widthSwitchTimer = nil
@@ -1851,6 +1924,10 @@ extension WOMessageListCore: UIScrollViewDelegate {
     /// lody pauseTracking :179-185 同语义：手指一碰即断（绝不 yank）。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         followsBottom = false
+        // 【QA P2-1 修 2026-10-09】fluid 期用户拖拽=接管滚动位置：清流体锚
+        // （否则拖拽让位结束后下一帧补偿把 offset 拉回 fluid 起点锚位，丢弃
+        // 用户刚滚到的位置）。流体重排本身继续，收尾精确切换兜底。
+        fluidAnchor = nil
         updateBottomButton()
     }
 
@@ -1906,6 +1983,17 @@ extension WOMessageListCore: UIGestureRecognizerDelegate {
 // MARK: - WOMessageListLayoutDelegate（高度问池）
 
 extension WOMessageListCore: WOMessageListLayoutDelegate {
+    /// 【流体重排】fluid 期可见性判定（用重排前一帧的 frame 与当前视口求交，
+    /// ±80pt 迟滞带——近似即可，可见性误判只影响"量真值还是近似"的选择）。
+    private func isItemVisibleInFluid(_ index: Int) -> Bool {
+        guard let cv = collectionView else { return false }
+        let frames = messageLayout.snapshotFrames()
+        guard index < frames.count else { return false }
+        let viewport = CGRect(origin: cv.contentOffset, size: cv.bounds.size)
+            .insetBy(dx: 0, dy: -WOMessageListSupport.freezeMargin(alreadyFrozen: false))
+        return frames[index].intersects(viewport)
+    }
+
     func listLayout(_ layout: WOMessageListLayout,
                     heightForItemAt indexPath: IndexPath,
                     width: CGFloat) -> CGFloat {
@@ -1914,6 +2002,39 @@ extension WOMessageListCore: WOMessageListLayoutDelegate {
         // 【重做批6 · 同出生长覆盖】生长动画中的行显示插值中间值（从 0 长到
         // 池真值——物理顶开旧行+内容淡入=参考件同出）。
         if let growing = growthDisplayHeight(id: item.id) { return growing }
+        // 【流体重排 2026-10-09】fluid 期绕过池直问（避免逐帧新宽度写爆池）：
+        // ①该宽已有真值 → 直用；②可见行 → 同步量真值（当帧定死，无事后
+        // 修正=修正风暴断燃料）；③离屏行 → 旧宽真值×宽度比近似（不可见，
+        // 收尾 trySwitchLayoutWidth 落全量真值兜底）。measureOnly 不落池。
+        if fluidReflowActive {
+            if let cached = pool.cachedHeight(id: item.id, width: width) {
+                return cached
+            }
+            let measure: () -> AnyView = { [weak self] in
+                guard let self else { return AnyView(Color.clear) }
+                return self.makeNodeContent(item, reportsHeight: false)
+            }
+            if isItemVisibleInFluid(indexPath.item) {
+                // 【QA P2-3 修】预重测 side table 优先——后台切片已算好的新宽
+                // 真值免费命中，显著降低逐帧同步量高（重会话动画期掉帧风险）；
+                // miss 才当帧同步量。口径：premeasuredContainerWidth 是容器宽，
+                // 换算内容宽后再比对。
+                let premeasureContentWidth = premeasuredContainerWidth
+                    - messageLayout.sectionInset.left - messageLayout.sectionInset.right
+                if abs(premeasureContentWidth - width) <= 0.5,
+                   let premeasured = premeasuredHeights[item.id] {
+                    return premeasured
+                }
+                return pool.measureOnly(id: item.id, width: width, makeContent: measure)
+            }
+            let oldContentWidth = stableLayoutWidth - messageLayout.sectionInset.left
+                - messageLayout.sectionInset.right
+            if oldContentWidth > 1,
+               let old = pool.cachedHeight(id: item.id, width: oldContentWidth) {
+                return max(24, old * width / oldContentWidth)
+            }
+            return pool.measureOnly(id: item.id, width: width, makeContent: measure)
+        }
         // 三级缓存：签名/宽度未变 → 高度直读；变 → 池视图重测（量高与显示
         // 同一内容装配缝——identity 锚 .id(item.id)；CI修48：装配统一走
         // makeNodeContent，量高路径 reportsHeight=false 不挂上报桥）。
