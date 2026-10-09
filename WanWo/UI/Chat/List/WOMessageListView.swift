@@ -430,6 +430,13 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 流体锚：最上可见行 (条目id, 视口Y)——逐帧补偿把该行钉在原屏幕位。
     private var fluidAnchor: (id: String, viewportY: CGFloat)?
 
+    // MARK: 流体诊断探针（纯记录辅助状态；不参与任何逻辑分支/判定）
+    /// H 系列回报路由防刷屏（"tag|id" → 上次记录高度；差 <1pt 跳过记录）。
+    private var fluidDiagLastH: [String: CGFloat] = [:]
+    /// 逐帧锚定补偿防刷屏：贴底落点/锚行目标上次记录值（变 >0.5pt 才记）。
+    private var fluidDiagLastPinOff: CGFloat = 0
+    private var fluidDiagLastAnchorY: CGFloat = 0
+
     // MARK: 生命周期
 
     override func loadView() {
@@ -679,6 +686,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         messageLayout.layoutWidth = stableLayoutWidth
         pendingWidth = 0
         fluidHeights = [:]
+        // 【流体诊断】探针簿记清零（live- 前缀 id 跨会话复用——旧会话残留
+        // 会让新会话同 id 高度差 <1pt 的回报被防刷屏过滤误吞，污染取证）。
+        fluidDiagLastH = [:]
+        fluidDiagLastPinOff = 0
+        fluidDiagLastAnchorY = 0
         widthSwitchTimer?.cancel()
         pendingAnchorRestore = nil
         // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
@@ -936,6 +948,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         guard followsBottom, let cv = collectionView,
               !cv.isDragging, !cv.isDecelerating,
               abs(cv.contentOffset.y - bottomOffset) > 1 else { return }
+        // 【流体诊断】稳定期兜底校准执行探针（低频 note 必落盘）+ 冲刷
+        // 结算窗缓冲（H-DIRECT/H-LATE/COMMIT 全量落档）。
+        WOFluidDiag.note("SETTLE-SNAP off=\(String(format: "%.1f", cv.contentOffset.y)) -> \(String(format: "%.1f", bottomOffset))")
+        WOFluidDiag.dump(reason: "settle-snap")
         cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
     }
 
@@ -1047,10 +1063,19 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                                              kind: active.kind)
             }
             fluidHeights[id] = height
+            // 【流体诊断】fluid 记表路由探针（纯记录）。
+            fluidDiagH("H-FLUID", id: id, height: height,
+                       "H-FLUID id=\(id) h=\(String(format: "%.1f", height))")
             return
         }
         guard abs(cv.bounds.width - stableLayoutWidth) <= 0.5,
-              stableLayoutWidth > 0 else { return }
+              stableLayoutWidth > 0 else {
+            // 【流体诊断】宽度门丢弃路由探针（guard else 面内插桩，逻辑
+            // 等价；H 系列防刷屏过滤同款——同 id 高度差 <1pt 跳过）。
+            fluidDiagH("H-DROP-WG", id: id, height: height,
+                       "H-DROP-WG id=\(id) h=\(String(format: "%.1f", height)) bounds=\(cv.bounds.width) stable=\(stableLayoutWidth)")
+            return
+        }
         let width = contentWidth()
         let previous = pool.cachedHeight(id: id, width: width)
         // 【批4 真机诊断】大跳变落行（|Δ|>150pt）——残余问题定位探针。
@@ -1096,12 +1121,19 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let isLiveRow = id.hasPrefix("live-")
         let liveStreaming = followsBottom && isLiveRow
         if initialStabilizing || liveStreaming {
+            // 【流体诊断】结算窗/流式直写路由探针（纯记录）。
+            let oldDesc = previous.map { String(format: "%.1f", $0) } ?? "nil"
+            fluidDiagH("H-DIRECT", id: id, height: height,
+                       "H-DIRECT id=\(id) h=\(String(format: "%.1f", height)) old=\(oldDesc) settle=\(CACurrentMediaTime() < initialStabilizingUntil ? "window" : "init")")
             commitHeightChange(id: id, height: height, collectionView: cv)
             return
         }
         if let prev = previous, abs(prev - height) >= 20 {
             let kind: GrowthKind = isLiveRow ? .entrance : .disclosure
             let display = growthDisplayHeight(id: id) ?? prev
+            // 【流体诊断】披露/入场动画路由探针（纯记录）。
+            fluidDiagH("H-ANIM", id: id, height: height,
+                       "H-ANIM id=\(id) kind=\(kind) from=\(String(format: "%.1f", display)) to=\(String(format: "%.1f", height))")
             // 时长恒 0.32（QA P1-2）：本分支新旧两路由历史时长均为 0.32；
             // 0.66 只属于 enqueueGrowthIfEligible 的新行入场路径，不得外溢。
             growthAnims[id] = GrowthAnim(from: display, to: height,
@@ -1134,6 +1166,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             }
             return
         }
+        // 【流体诊断】结算窗过期后的最终直写回报探针（疑似贴底收尾后抽动
+        // 源，必看；纯记录）。
+        let lateOld = previous.map { String(format: "%.1f", $0) } ?? "nil"
+        let lateDelta = previous.map { String(format: "%.1f", height - $0) } ?? "nil"
+        fluidDiagH("H-LATE", id: id, height: height,
+                   "H-LATE id=\(id) h=\(String(format: "%.1f", height)) old=\(lateOld) delta=\(lateDelta)")
         commitHeightChange(id: id, height: height, collectionView: cv)
     }
 
@@ -1146,6 +1184,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 直写钉底（无收敛动画=无"打开后滚动播放"感）。
     private func commitHeightChange(id: String, height: CGFloat,
                                     collectionView cv: UICollectionView) {
+        // 【流体诊断】直写公共体入口探针（纯记录）。
+        WOFluidDiag.record("COMMIT id=\(id) h=\(String(format: "%.1f", height)) follow=\(followsBottom) anchor-pending=\(pendingAnchorRestore != nil)")
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
@@ -1238,12 +1278,44 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     // MARK: 【重做批5 · 宽度解耦】流体重排 + 一次切换 + 锚定
 
+    // MARK: 流体诊断探针辅助（纯记录；只读，无 layoutIfNeeded 不引入布局重入）
+
+    /// 布局 pass 内只读快照：offset / contentSize.height / 可见前 3 行 frame
+    ///（经 layoutAttributesForItem 读——只读已缓存的布局结果，不触发布局）。
+    private func fluidFrameSnapshot() -> String {
+        guard let cv = collectionView else { return "off=-- ch=--" }
+        var cells = ""
+        let visible = cv.indexPathsForVisibleItems
+            .sorted { $0.item < $1.item }.prefix(3)
+        for path in visible {
+            if let attrs = cv.collectionViewLayout
+                .layoutAttributesForItem(at: path) {
+                cells += String(format: " | #%d y=%.1f h=%.1f",
+                                path.item, attrs.frame.minY, attrs.frame.height)
+            }
+        }
+        return String(format: "off=%.1f ch=%.1f%@",
+                      cv.contentOffset.y, cv.contentSize.height, cells)
+    }
+
+    /// H 系列回报路由记录（防刷屏：同 tag+id 高度差 <1pt 跳过——纯记录辅助，
+    /// 不影响主逻辑）。
+    private func fluidDiagH(_ tag: String, id: String, height: CGFloat,
+                            _ line: String) {
+        let key = tag + "|" + id
+        if let last = fluidDiagLastH[key], abs(last - height) < 1 { return }
+        fluidDiagLastH[key] = height
+        WOFluidDiag.record(line)
+    }
+
     /// layout.prepare 检测到容器宽 ≠ 排版宽（resize 动画中每帧上报）。
     /// 【流体重排 v2】动画期逐帧 live 重排（显示面回传真值驱动，零同步量高）；
     /// 去抖 0.1s 稳定后一次切换（fluidHeights 批量落池+invalidate+锚定/钉底
     /// 收尾）。
     private func handleLiveWidthChange(_ width: CGFloat) {
         guard width != stableLayoutWidth, width > 1 else { return }
+        // 【流体诊断】入口探针（纯记录）。
+        WOFluidDiag.record("LIVE-CHANGE w=\(width) stable=\(stableLayoutWidth) anchor=\(fluidAnchor != nil)")
         // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
         // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
         fluidReflowActive = true
@@ -1285,6 +1357,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 渐进重测自愈——不再等全量预重测（"停 0.5s+两连跳"根因）。
         stableLayoutWidth = pendingWidth
         messageLayout.layoutWidth = pendingWidth
+        // 【流体诊断】切换落地必落盘（低频 note 不入缓冲）+ 冲刷动画期
+        // 逐帧缓冲（LIVE-CHANGE/PASS1/PASS2/PIN/ANCHOR/H-FLUID 全量落档）。
+        WOFluidDiag.note("FLUID-SWITCH pendingW=\(pendingWidth) fluidHeights=\(fluidHeights.count) settleWindow=+1.0")
+        WOFluidDiag.dump(reason: "switch")
         // 【流体重排】一次切换落地=全量真值就位 → 流体模式熄灯（锚定补偿
         // 交给下方既有 pendingAnchorRestore/钉底路径收尾）。
         fluidReflowActive = false
@@ -1510,9 +1586,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 校准直写（lody :337-344 同型直写）——「贴底唯一执行点」红线
             // 针对 layout pass 与 display link 的双重贴底驱动，锚定恢复是
             // 扩窗专用路径，不在其列（豁免依据=lody 实码同构）。
+            // 【流体诊断】锚定恢复执行探针（低频 note 必落盘；纯记录）。
+            WOFluidDiag.note(String(format: "ANCHOR-RESTORE id=%@ off=%.1f -> %.1f",
+                                    anchor.id, collectionView.contentOffset.y,
+                                    attrs.frame.minY - anchor.viewportY))
             collectionView.contentOffset.y = attrs.frame.minY - anchor.viewportY
         } else {
             // 锚点被换出（如视口内只剩历史头）：按内容高度差兜底平移。
+            // 【流体诊断】锚定兜底探针（低频 note 必落盘；纯记录）。
+            WOFluidDiag.note(String(format: "ANCHOR-FALLBACK dh=%.1f",
+                                    collectionView.contentSize.height
+                                        - restore.oldContentHeight))
             collectionView.contentOffset.y +=
                 collectionView.contentSize.height - restore.oldContentHeight
         }
@@ -1566,8 +1650,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                 messageLayout.layoutWidth = cv.bounds.width
                 messageLayout.invalidateLayout()
                 cv.layoutIfNeeded()
+                // 【流体诊断】第一遍排版快照（纯记录，只读）。
+                WOFluidDiag.record("PASS1 " + fluidFrameSnapshot())
                 messageLayout.invalidateLayout()
                 cv.layoutIfNeeded()
+                // 【流体诊断】第二遍排版快照（纯记录，只读）。
+                WOFluidDiag.record("PASS2 " + fluidFrameSnapshot())
             }
         }
         // 【修复3-c】推迟的首帧定位每帧重试（几何就绪即消耗；本 pass 布局
@@ -1588,13 +1676,28 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         if fluidReflowActive, let cv = collectionView, cv.window != nil,
            !cv.isDragging, !cv.isDecelerating {
             if followsBottom {
-                cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+                // 【流体诊断】钉底探针（纯记录：落点变 >0.5pt 才记，防每帧
+                // 刷屏；记录不影响直写动作本身）。
+                let off = bottomOffset
+                if abs(off - fluidDiagLastPinOff) > 0.5 {
+                    WOFluidDiag.record(String(format: "PIN-BOTTOM off=%.1f -> %.1f",
+                                              cv.contentOffset.y, off))
+                    fluidDiagLastPinOff = off
+                }
+                cv.setContentOffset(CGPoint(x: 0, y: off), animated: false)
             } else if let anchor = fluidAnchor,
                       let index = currentItems.firstIndex(where: { $0.id == anchor.id }),
                       let attrs = collectionView.collectionViewLayout
                           .layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
                 let targetY = attrs.frame.minY - anchor.viewportY
                 if abs(cv.contentOffset.y - targetY) > 0.5 {
+                    // 【流体诊断】锚行补偿探针（纯记录：目标变 >0.5pt 才记）。
+                    if abs(targetY - fluidDiagLastAnchorY) > 0.5 {
+                        WOFluidDiag.record(String(format: "ANCHOR-COMP id=%@ off=%.1f -> %.1f (targetY=%.1f)",
+                                                  anchor.id, cv.contentOffset.y,
+                                                  targetY, targetY))
+                        fluidDiagLastAnchorY = targetY
+                    }
                     cv.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
                 }
             }
