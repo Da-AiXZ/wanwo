@@ -110,9 +110,9 @@ final class WOMessageListLayout: UICollectionViewLayout {
     /// 强制 invalidate 布局（视频实测：动画中间帧内容已 reflow，且此期间
     /// shouldInvalidateLayout 的返回值被绕过）——prepare 爱被调多少次，输出
     /// 恒定=cell 纹丝不动（超出部分被容器裁剪，"窗框动、画不动"）。宽度稳定
-    /// 后由 core 一次切换（layoutWidth=新宽+预重测值落池+invalidate+锚定）。
+    /// 后由 core 一次切换（layoutWidth=新宽+回传真值落池+invalidate+锚定）。
     var layoutWidth: CGFloat = 0
-    /// 排版宽度与容器实际宽不一致（动画中）→ 通知 core 启动预重测/去抖切换。
+    /// 排版宽度与容器实际宽不一致（动画中）→ 通知 core 进流体重排/去抖切换。
     var onLiveWidthChange: ((CGFloat) -> Void)?
 
     /// digest-H .msgs gap 16。
@@ -279,21 +279,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 【CI修50】列宽动画期推迟重测切片（右栏开合丝滑化）：宽度仍在变的
     /// layout pass 不 drain（prepare 照常收集 stale），宽度稳定后的第一个
     /// pass 一次清账——重测工作量挪出动画帧。
-    /// 【重做批5 · 宽度解耦状态机】（侧栏开合零抖动：预重测+一次切换+锚定）
+    /// 【重做批5 · 宽度解耦状态机】（侧栏开合零抖动：流体回传真值+一次切换+锚定）
     /// 当前排版宽（layout.layoutWidth 同步；只在切换时更新）。
     private var stableLayoutWidth: CGFloat = 0
     /// 检测到的新容器宽（去抖窗口内被持续刷新）。
     private var pendingWidth: CGFloat = 0
     /// 去抖计时（宽度停止变化 0.1s 才认定稳定）。
     private var widthSwitchTimer: DispatchWorkItem?
-    /// 预重测结果 side table（id → 新宽高度；切换时一次落池）。
-    private var premeasuredHeights: [String: CGFloat] = [:]
-    /// 预重测的容器宽（与 pendingWidth 同域对账）。
-    private var premeasuredContainerWidth: CGFloat = 0
-    private var premeasureQueue: [WOHostSizingPool.StaleEntry] = []
-    private var premeasureActive = false
-    /// 预重测代际（宽度再变→作废重启）。
-    private var premeasureGeneration = 0
+    /// 【流体重排 v2】动画期显示面回传真值（id → 该行最新显示实测高）：
+    /// 可见 cell 的 SwiftUI 随容器宽逐帧重排，回传桥报的就是**当前宽的真
+    /// 高**——逐帧重排直接消费（零同步量高=超级卡根治），收尾切换批量落池。
+    private var fluidHeights: [String: CGFloat] = [:]
 
     // MARK: 件 2/批 2 簿记
 
@@ -639,7 +635,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 才写、与滚动位置解耦）。
         updateBottomInset(bottomAllowance)
         sync()
-        // 【重做批5 · 解耦】切换重试钩子：宽度稳定但预重测被新行打断时，
+        // 【重做批5 · 解耦】切换重试钩子：宽度稳定但切换被新行打断时，
         // 借 sync 节奏补齐重测并完成切换（trySwitch 内部幂等）。
         if pendingWidth != 0, pendingWidth != stableLayoutWidth {
             trySwitchLayoutWidth()
@@ -680,9 +676,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         stableLayoutWidth = collectionView?.bounds.width ?? 0
         messageLayout.layoutWidth = stableLayoutWidth
         pendingWidth = 0
-        premeasuredHeights = [:]
-        premeasureQueue = []
-        premeasureActive = false
+        fluidHeights = [:]
         widthSwitchTimer?.cancel()
         pendingAnchorRestore = nil
         // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
@@ -1036,6 +1030,23 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // trySwitchLayoutWidth 注）→ 0~0.5pt 残差永久关门无自愈 = 展开/收起
         // 回传被吞（真机"展开打不开"）。0.5pt 容差与上报口径对齐；宽度真变
         // 时差值远大于死区，门语义（动画期丢弃污染上报）不变。
+        // 【流体重排 v2】动画期显示面回传=唯一真值源：记入 fluidHeights（每行
+        // 最新显示实测；不落池不 invalidate——fluid 逐帧循环统一重排），收尾
+        // trySwitch 批量落池。旧"动画期丢弃上报"语义由 v2 取代（丢弃=逐帧
+        // 只能靠估算=空洞与卡顿的根源之一）。
+        if fluidReflowActive {
+            // 【QA P2-2 修】披露动画在途的行：fluid 帧回报不走引擎插值合并，
+            // 但同步刷新动画终点（from/start/duration 不动）——防动画到期
+            // 落点停在旧宽目标值产生小回跳。
+            if let active = growthAnims[id] {
+                growthAnims[id] = GrowthAnim(from: active.from, to: height,
+                                             start: active.start,
+                                             duration: active.duration,
+                                             kind: active.kind)
+            }
+            fluidHeights[id] = height
+            return
+        }
         guard abs(cv.bounds.width - stableLayoutWidth) <= 0.5,
               stableLayoutWidth > 0 else { return }
         let width = contentWidth()
@@ -1223,18 +1234,38 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         runRemeasureSlice(generation: remeasureGen, index: 0)
     }
 
-    // MARK: 【重做批5 · 宽度解耦】预重测 + 一次切换 + 锚定
+    // MARK: 【重做批5 · 宽度解耦】流体重排 + 一次切换 + 锚定
 
     /// layout.prepare 检测到容器宽 ≠ 排版宽（resize 动画中每帧上报）。
-    /// 首帧启动预重测（新宽高度后台切片算好进 side table）；去抖 0.1s 稳定
-    /// 且预重测完成后一次切换（layoutWidth=新宽+批量落池+invalidate+锚定）。
+    /// 【流体重排 v2】动画期逐帧 live 重排（显示面回传真值驱动，零同步量高）；
+    /// 去抖 0.1s 稳定后一次切换（fluidHeights 批量落池+invalidate+锚定/钉底
+    /// 收尾）。
     private func handleLiveWidthChange(_ width: CGFloat) {
         guard width != stableLayoutWidth, width > 1 else { return }
         // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
         // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
         fluidReflowActive = true
-        if fluidAnchor == nil, let captured = captureTopAnchor() {
-            fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
+        if fluidAnchor == nil {
+            if let captured = captureTopAnchor() {
+                fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
+            }
+            // 【QA P2-1 修】fluid 置位帧对当帧可见行一次性量真值预热
+            // fluidHeights（~5-10 行、一次性 ~4ms）——首帧即真值，消顶缘
+            // 近似裁剪闪烁；后续帧由显示面回传接管。
+            let warmupWidth = width - messageLayout.sectionInset.left
+                - messageLayout.sectionInset.right
+            if warmupWidth > 1, let cv = collectionView {
+                for path in cv.indexPathsForVisibleItems {
+                    guard path.item < currentItems.count else { continue }
+                    let item = currentItems[path.item]
+                    fluidHeights[item.id] = pool.measureOnly(
+                        id: item.id, width: warmupWidth,
+                        makeContent: { [weak self] in
+                            guard let self else { return AnyView(Color.clear) }
+                            return self.makeNodeContent(item, reportsHeight: false)
+                        })
+                }
+            }
         }
         // 【QA P0-1 修·冷启动收养】首次挂载 loadViewIfNeeded 不触发布局 →
         // bindIfNeeded 采到 bounds=0 → stableLayoutWidth/layoutWidth 恒 0 →
@@ -1246,69 +1277,16 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             messageLayout.invalidateLayout()
             return
         }
-        if width != pendingWidth {
-            pendingWidth = width
-            startPremeasure(width: width)
-        }
+        // 【流体重排 v2】预重测退役：动画期高度由显示面回传真值收敛
+        // （fluidHeights），无需后台切片；pendingWidth 每帧刷新供去抖收尾。
+        pendingWidth = width
         widthSwitchTimer?.cancel()
         let timer = DispatchWorkItem { [weak self] in self?.trySwitchLayoutWidth() }
         widthSwitchTimer = timer
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: timer)
     }
 
-    /// 全部行按新宽入预重测队列（切片执行，不占满动画帧；结果进 side table
-    /// 不落池——池仍保持旧宽真值，切换时一次落）。width 参数=容器全宽，
-    /// 队列条目统一换算为**内容宽**（与池条目/prepare 查询口径一致）。
-    private func startPremeasure(width: CGFloat) {
-        premeasureGeneration += 1
-        premeasuredHeights = [:]
-        premeasuredContainerWidth = width
-        let contentWidth = width - messageLayout.sectionInset.left
-            - messageLayout.sectionInset.right
-        premeasureQueue = currentItems.map {
-            WOHostSizingPool.StaleEntry(id: $0.id, width: contentWidth)
-        }
-        guard !premeasureQueue.isEmpty else {
-            premeasureActive = false
-            return
-        }
-        // 【QA P0-2 修·runner 接力】宽度再变时不再因 premeasureActive 挡掉
-        // 新 runner——旧续片因 generation 失配自灭，新代 runner 接棒（否则
-        // 旧 runner 死后 premeasureActive 永真 = 切换永不发生）。
-        premeasureActive = true
-        runPremeasureSlice(generation: premeasureGeneration, index: 0)
-    }
-
-    private func runPremeasureSlice(generation: Int, index: Int) {
-        guard generation == premeasureGeneration, let cv = collectionView else { return }
-        let sliceStart = CACurrentMediaTime()
-        var cursor = index
-        while cursor < premeasureQueue.count,
-              (CACurrentMediaTime() - sliceStart) < 0.004 {
-            let entry = premeasureQueue[cursor]
-            cursor += 1
-            guard let item = currentItems.first(where: { $0.id == entry.id }) else { continue }
-            premeasuredHeights[entry.id] = pool.measureOnly(
-                id: entry.id, width: entry.width,
-                makeContent: { [weak self] in
-                    guard let self else { return AnyView(Color.clear) }
-                    return self.makeNodeContent(item, reportsHeight: false)
-                })
-        }
-        if cursor < premeasureQueue.count {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, generation == self.premeasureGeneration else { return }
-                self.runPremeasureSlice(generation: generation, index: cursor)
-            }
-        } else {
-            // 【QA P0-2 连带】完成分支只在当前代生效（P0-2 接力后旧代续片
-            // 静灭不落此分支；同步完成也仅在 gen 匹配时可达——开头 guard）。
-            premeasureActive = false
-            trySwitchLayoutWidth() // 预重测完成即尝试切换（若宽度已稳定）
-        }
-    }
-
-    /// 一次切换：宽度去抖稳定 + 预重测完成 → 排版宽切新宽、预重测值批量落池、
+    /// 一次切换：宽度去抖稳定 → 排版宽切新宽、动画期显示面回传真值批量落池、
     /// 全量重摆 + 锚定补偿（跟随态钉底；非跟随态顶部锚行恢复原屏幕位置）。
     private func trySwitchLayoutWidth() {
         guard let cv = collectionView, cv.window != nil else { return }
@@ -1319,13 +1297,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 改 0.5pt 容差与上报口径对齐。
         guard abs(current - pendingWidth) <= 0.5, pendingWidth != stableLayoutWidth,
               pendingWidth > 1 else { return }
-        guard !premeasureActive, premeasuredContainerWidth == pendingWidth else { return }
-        // 预重测覆盖不全（期间有新行/扩窗等）→ 按成员集对账补测一轮（幂等
-        // 重启；【QA P2-2 修】count 相等不代表成员一致）。
-        guard Set(premeasuredHeights.keys) == Set(currentItems.map(\.id)) else {
-            startPremeasure(width: pendingWidth)
-            return
-        }
+        // 【流体重排 v2】预重测门拆除：动画期高度已由显示面回传真值收敛
+        // （fluidHeights），收尾=落池+全量重摆；离屏行旧值经既有 stale 切片
+        // 渐进重测自愈——不再等全量预重测（"停 0.5s+两连跳"根因）。
         stableLayoutWidth = pendingWidth
         messageLayout.layoutWidth = pendingWidth
         // 【流体重排】一次切换落地=全量真值就位 → 流体模式熄灯（锚定补偿
@@ -1334,11 +1308,13 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         fluidAnchor = nil
         let contentWidth = pendingWidth - messageLayout.sectionInset.left
             - messageLayout.sectionInset.right
-        for (id, h) in premeasuredHeights {
+        // 动画期显示面回报的真值批量落池（量测宽=收尾前最后帧宽≈终宽；微差
+        // 由切换后显示面回传自愈）。可见行零回归，离屏行走 stale 渐进重测。
+        for (id, h) in fluidHeights {
             pool.forceHeight(id: id, width: contentWidth, height: h,
                              signature: "v\(contentVersions[id] ?? 0)")
         }
-        premeasuredHeights = [:]
+        fluidHeights = [:]
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
@@ -1571,18 +1547,28 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             } else if fluidReflowActive,
                       abs(cv.bounds.width - stableLayoutWidth) <= 0.5 {
                 // 【流体重排】宽度回到稳定值（快速开合未触发切换）：直接归位
-                // 结束流体，排版宽回稳定值。
+                // 结束流体，排版宽回稳定值；中间宽的回传值作废（稳定宽真值
+                // 由池与回传链重建）。
                 fluidReflowActive = false
                 fluidAnchor = nil
+                fluidHeights = [:]
+                // 【QA P2-5 修】归位同时清去抖残留（pendingWidth/timer——
+                // 守卫本可拦，清掉防脏值滞留）。
+                pendingWidth = 0
+                widthSwitchTimer?.cancel()
                 messageLayout.layoutWidth = stableLayoutWidth
                 messageLayout.invalidateLayout()
             }
-            // 【流体重排】fluid 期每帧：排版宽跟手（prepare 按实时宽重排；
-            // 本 pass 之后的下一个 pass 生效，滞后一帧不可感知）。
+            // 【流体重排 v2】fluid 期每帧：排版宽跟手并**立即重排**
+            // （invalidate + layoutIfNeeded 本帧生效）。旧实现等下一个 pass=
+            // 钉底永远滞后一帧，追不上变高的真底=动画期全程显示上方内容+
+            // 收尾才跳回（图8-10）、关闭方向被夹持拉走（图14-16）的根因。
+            // 重入安全：layoutIfNeeded 触发的嵌套 pass 宽度差已归零，各块幂等。
             if fluidReflowActive,
                abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
                 messageLayout.layoutWidth = cv.bounds.width
                 messageLayout.invalidateLayout()
+                cv.layoutIfNeeded()
             }
         }
         // 【修复3-c】推迟的首帧定位每帧重试（几何就绪即消耗；本 pass 布局
@@ -1757,13 +1743,11 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【流体重排】拆解清流体状态（防跨会话残留锚行 id）。
         fluidReflowActive = false
         fluidAnchor = nil
-        // 【重做批5 · 解耦】宽度状态机收口（去抖计时/预重测切片作废）。
+        // 【重做批5 · 解耦】宽度状态机收口（去抖计时作废；v2 无预重测切片，
+        // 流体回传值随会话作废）。
         widthSwitchTimer?.cancel()
         widthSwitchTimer = nil
-        premeasureGeneration += 1
-        premeasureQueue = []
-        premeasureActive = false
-        premeasuredHeights = [:]
+        fluidHeights = [:]
         expansionGeneration += 1 // 在途量高切片作废
         // 【重做批3 · R1】滚动停止门待办一并清（QA P2-1：dismantle 后 didEnd
         // 系列仍可能触发，防在已拆解 core 上空跑 sync）。
@@ -2061,17 +2045,6 @@ extension WOMessageListCore: UIGestureRecognizerDelegate {
 // MARK: - WOMessageListLayoutDelegate（高度问池）
 
 extension WOMessageListCore: WOMessageListLayoutDelegate {
-    /// 【流体重排】fluid 期可见性判定（用重排前一帧的 frame 与当前视口求交，
-    /// ±80pt 迟滞带——近似即可，可见性误判只影响"量真值还是近似"的选择）。
-    private func isItemVisibleInFluid(_ index: Int) -> Bool {
-        guard let cv = collectionView else { return false }
-        let frames = messageLayout.snapshotFrames()
-        guard index < frames.count else { return false }
-        let viewport = CGRect(origin: cv.contentOffset, size: cv.bounds.size)
-            .insetBy(dx: 0, dy: -WOMessageListSupport.freezeMargin(alreadyFrozen: false))
-        return frames[index].intersects(viewport)
-    }
-
     func listLayout(_ layout: WOMessageListLayout,
                     heightForItemAt indexPath: IndexPath,
                     width: CGFloat) -> CGFloat {
@@ -2080,36 +2053,27 @@ extension WOMessageListCore: WOMessageListLayoutDelegate {
         // 【重做批6 · 同出生长覆盖】生长动画中的行显示插值中间值（从 0 长到
         // 池真值——物理顶开旧行+内容淡入=参考件同出）。
         if let growing = growthDisplayHeight(id: item.id) { return growing }
-        // 【流体重排 2026-10-09】fluid 期绕过池直问（避免逐帧新宽度写爆池）：
-        // ①该宽已有真值 → 直用；②可见行 → 同步量真值（当帧定死，无事后
-        // 修正=修正风暴断燃料）；③离屏行 → 旧宽真值×宽度比近似（不可见，
-        // 收尾 trySwitchLayoutWidth 落全量真值兜底）。measureOnly 不落池。
+        // 【流体重排 v2】动画期**零同步量高**（逐帧量十几个行=超级卡根因）：
+        // ①同宽池缓存直用；②显示面回传真值（可见 cell 随容器宽逐帧重排，
+        // 回传桥报的就是当前宽真高——上一帧起逐行收敛，位置由逐帧锚定补偿
+        // 钉住）；③离屏行旧宽真值×宽度比近似（不可见；收尾 trySwitch 落池
+        // +stale 切片渐进重测兜底）；④完全未知（首帧新行）才同步量一次。
         if fluidReflowActive {
             if let cached = pool.cachedHeight(id: item.id, width: width) {
                 return cached
             }
-            let measure: () -> AnyView = { [weak self] in
-                guard let self else { return AnyView(Color.clear) }
-                return self.makeNodeContent(item, reportsHeight: false)
-            }
-            if isItemVisibleInFluid(indexPath.item) {
-                // 【QA P2-3 修】预重测 side table 优先——后台切片已算好的新宽
-                // 真值免费命中，显著降低逐帧同步量高（重会话动画期掉帧风险）；
-                // miss 才当帧同步量。口径：premeasuredContainerWidth 是容器宽，
-                // 换算内容宽后再比对。
-                let premeasureContentWidth = premeasuredContainerWidth
-                    - messageLayout.sectionInset.left - messageLayout.sectionInset.right
-                if abs(premeasureContentWidth - width) <= 0.5,
-                   let premeasured = premeasuredHeights[item.id] {
-                    return premeasured
-                }
-                return pool.measureOnly(id: item.id, width: width, makeContent: measure)
+            if let reported = fluidHeights[item.id] {
+                return reported
             }
             let oldContentWidth = stableLayoutWidth - messageLayout.sectionInset.left
                 - messageLayout.sectionInset.right
             if oldContentWidth > 1,
                let old = pool.cachedHeight(id: item.id, width: oldContentWidth) {
                 return max(24, old * width / oldContentWidth)
+            }
+            let measure: () -> AnyView = { [weak self] in
+                guard let self else { return AnyView(Color.clear) }
+                return self.makeNodeContent(item, reportsHeight: false)
             }
             return pool.measureOnly(id: item.id, width: width, makeContent: measure)
         }

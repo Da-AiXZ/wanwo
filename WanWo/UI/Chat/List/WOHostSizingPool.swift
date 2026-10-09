@@ -155,8 +155,8 @@ final class WOHostSizingPool: NSObject {
         return cached.height
     }
 
-    /// 【重做批5·宽度解耦】纯量高（结果**不落池**）——宽度切换流程的预重测
-    /// 用：侧栏动画期间按新宽度批量量高存 side table，切换时一次落池。与
+    /// 【重做批5·宽度解耦】纯量高（结果**不落池**）——流体重排的预热/兜底
+    /// 量高（fluidHeights 置位帧预热与首帧新行兜底）。与
     /// measure 同款 fitting 流程（复用池视图），只差不写 heights。
     func measureOnly(id: String, width: CGFloat, makeContent: () -> AnyView) -> CGFloat {
         let width = max(1, width)
@@ -188,7 +188,7 @@ final class WOHostSizingPool: NSObject {
     }
 
     /// 【重做批5·宽度解耦】直写条目（绕过 0.5pt 死区与签名保留规则）——
-    /// 宽度切换时批量落预重测值用（预重测已按切换时刻内容实量）。
+    /// 流体收尾切换时批量落显示面回传真值用（实测自显示环境）。
     func forceHeight(id: String, width: CGFloat, height: CGFloat, signature: String) {
         heights[id] = HeightEntry(height: ceil(height), width: max(1, width),
                                   signature: signature)
