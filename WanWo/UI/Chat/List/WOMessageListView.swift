@@ -1396,8 +1396,15 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【流体重排 v2】预重测门拆除：动画期高度已由显示面回传真值收敛
         // （fluidHeights），收尾=落池+全量重摆；离屏行旧值经既有 stale 切片
         // 渐进重测自愈——不再等全量预重测（"停 0.5s+两连跳"根因）。
-        stableLayoutWidth = pendingWidth
-        messageLayout.layoutWidth = pendingWidth
+        // 【修复批 D】落地宽度用 cv.bounds.width 真值（非 pendingWidth）——
+        // 上报链 0.5pt 容差内的残差（真机实证 514.29 vs 514.0）会进入池宽度键，
+        // 与回传对账口径（contentWidth() 从 stableLayoutWidth 推导）差 0.29pt：
+        // stale 重测链 entry.width == contentWidth() 精确比较恒 false 全部丢弃、
+        // 回传 updateHeight 宽度键 miss → 离屏行池值停留旧宽 → 滚入视口池 miss
+        // 同步量高 + 结算窗锚定恢复大跳（+351pt 实锤）。guard 已保证
+        // |bounds - pendingWidth| <= 0.5，落点取真值语义不变、键精确对齐。
+        stableLayoutWidth = cv.bounds.width
+        messageLayout.layoutWidth = cv.bounds.width
         // 【流体诊断】切换落地必落盘（低频 note 不入缓冲）+ 冲刷动画期
         // 逐帧缓冲（LIVE-CHANGE/PASS1/PASS2/PIN/ANCHOR/H-FLUID 全量落档）。
         WOFluidDiag.note("FLUID-SWITCH pendingW=\(pendingWidth) fluidHeights=\(fluidHeights.count) settleWindow=+1.0")
@@ -1408,7 +1415,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         fluidAnchor = nil
         // 【修复批 A】成功切换=流体结束，动画时长门时钟归零。
         fluidStartedAt = 0
-        let contentWidth = pendingWidth - messageLayout.sectionInset.left
+        let contentWidth = cv.bounds.width - messageLayout.sectionInset.left
             - messageLayout.sectionInset.right
         // 动画期显示面回报的真值批量落池（量测宽=收尾前最后帧宽≈终宽；微差
         // 由切换后显示面回传自愈）。可见行零回归，离屏行走 stale 渐进重测。
