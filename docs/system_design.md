@@ -427,3 +427,32 @@ graph TD
 | 5 | 边界遗漏面 | 键盘（高度向，不进 rail）；reduceMotion（rail 是确定性时钟，不降级——登记为拍板语义）；iPad 分栏连续 resize（restart 链，冻结兜底）；hint 与 bounds 交错帧（processWidthHint 的落地以 hint 为准，bounds 仅作收养/守卫） | 全部进 R9 表 + 真机探针验收清单 |
 | 6 | 回退 | T01/T02 向后兼容（默认参数/新增方法，无行为变更）可独立合入；T03+T04 是原子替换（旧机拆除依赖新机在场）——回退单位=T03+T04+T05 整批 git revert | 批次提交纪律：T01、T02、T03、T04、T05 各自独立 commit，T03/T04 相邻 |
 | 7 | CI Release 无本地 Xcode | 编译正确性靠静态纪律：泛型/static/强解包红线、探针无 #if DEBUG、纯函数单测（WORailMathTests）CI 可跑 | 每任务自验清单含全工程 grep 死符号；编译错误面集中在 T03（单文件内聚） |
+
+---
+
+## 11. 实施记录（implementation changelog，2026-10-10 起维护）
+
+本节记录本文档设计落地后的实施偏差与后续修订。设计正文（§1-10）保留定稿原貌。
+
+### 2026-10-10 实施（commit 0ecbdec，团队 software-width-rail）
+- T01-T05 全部落地，QA 两轮（Round1 抓出 P0：processWidthHint 第③步 hint==stable 幂等分支**漏清 widthRail/不停 motionLink**——快速连开连关时 railTick 续跑 p≥1 会 endRail 到被放弃目标的 toFrames 并永久错宽卡死；修复=该分支 widthRail/railSettleCounting/stopMotion 与 abortRail 同窗熄灯）。Round2 SHIP YES。
+- 单测 WORailMathTests 171 行（blend 端点/线性/prepare 零 delegate/progress 单调/与 disclosureEase 同曲线 1e-12）。
+
+### 2026-10-10 真机验证（8384e52 包，用户实测）
+- **核心目标达成**："确实是定在原地了，也不跳了"——锚定钉死与防跳两大目标关闭。RAIL-START warm=19/19 precomputeMs=21~31ms，RAIL-TICK 序列→FLUID-SWITCH(rail-target)→RAIL-END settleCount=0~5，全程无 PASS/PIN/ANCHOR-COMP/H-FLUID。
+- **已知残留暴露**：①表格巨行 rail 期逐帧 SwiftUI 重排仍卡（确定性 rail 消灭了引擎侧每帧工作，但可见巨行自身的内容重排不可消除）②新 bug：上滑后末条消息后大片空白时隐时现+上滑被拽感。
+
+### 2026-10-11 空白 bug 定罪与修复（commit e40ff66 + 38be7a6，团队 software-pool-widthfix）
+- **根因（真机日志+代码定罪）**：`WOHostSizingPool.heights` 实为**单槽**（`[String: HeightEntry]`，每行只存最后写入宽——类头注释声称"宽度是 key 的一部分"但实现塌缩）。本文档 §R2 设计的 P1 空闲预热给每行连测 4 候选宽，槽位永远留在最窄候选 202（内容宽 170）→ `heightForItemAt` 当前宽问高命中 stale 顶替**原样返回窄宽巨高**（真值 886→2043、1682→3294，list-diag 实证 layoutH=3294/drawH=1682）→ 虚高排版=空白区；修正走 0.32s 披露动画=被拽感；下轮预热再投毒=时隐时现。**设计缺陷教训：§R2 预热的前提是多宽缓存，定稿时未校验池实现是否支撑——实现塌缩未被设计评审捕获。**
+- **修复**：①池 heights 改两级键 `[String: [CGFloat: HeightEntry]]`（宽度=真 key），stale 顶替改最近宽近似（误差有界），pendingRemasure 改 per-(id,width)（RemasureKey）；②prewarmWidths 基准修正（原误用 cv.bounds.width 当 viewport，候选全偏窄 56pt+26pt 退化宽；改 `cv.window?.bounds.width` + w≥100 过滤）；③nodeHeightChanged |Δ|>400 巨差直写不走披露动画（hugeHeightDeltaThreshold，防任何未来投毒以动画放大）；④**巨行位图化（方案 A）**：rail 期对 frame.height>视口高的可见巨行 snapshotView 拍快照+host 移出层级（SwiftUI 逐帧重排归零=表格卡根治），快照四边钉随插值帧缩放，其余行照常实时流动；五路径解冻幂等（finishWidthRail/processWidthHint③/bindIfNeeded/shutdown/prepareForReuse 防御）。
+- **真机验证（38be7a6 包）**：用户确认"确实不卡了"——表格卡根治。**已接受的观感取舍**：巨行动画期为快照随帧缩放（"橡筋拉伸"感）vs 其他行实时重排，混合呈现；等比缩放（去拉伸感）已列为后续可选项，用户拍板"以后再搞"。
+- 单测：WOHostSizingPoolMultiWidthTests 9 用例（零渲染路径）+ WOBatch3EngineTests 单槽契约断言更新为多宽共存（旧断言注释自证单槽契约，翻转=更强契约）。
+
+### 遗留登记（本设计相关，均非阻塞）
+1. 巨行快照等比缩放（去橡筋感）——用户拍板延后。
+2. pool.forceHeight/measureOnly 成孤儿 API（消费点随 rail 重构消失）——下批清理。
+3. rail 在途遇全屏（hint≤100 直接 return，rail 继续跑到落地）——内容列已裁剪不可见，回归后正常接管。
+4. nearestEntry 并列宽取值随 Dictionary 遍历序不稳定（误差量级相同，无正确性影响）。
+5. rekeyWidth 最近宽拷贝的近似高度暂留窗口（可见行报告桥闭环修正，有界）。
+6. 合法披露 >400pt（超高工具卡类）将直写跳过动画——阈值观察项。
+7. 取证设施退役决策：WOFluidDiag 探针、list-diag.log、侧栏 footer"列表诊断"入口——侧栏线定位完成后可移除或保留观察（未拍板）。

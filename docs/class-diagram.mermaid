@@ -94,18 +94,34 @@ classDiagram
     }
     class WOHostSizingPool {
         <<NSObject @MainActor>>
+        -heights : [String : [CGFloat : HeightEntry]] 多宽缓存（宽度=真 key）
+        -pendingRemasure : Set<RemasureKey>（id+width 去重锚）
         +height(id, width, signature, makeContent) CGFloat
         +remeasure(id, width, signature, makeContent) CGFloat
         +cachedHeight(id, width) CGFloat?
         +forceHeight(id, width, height, signature)
         +rekeyWidth(id, width)
+        +cancelPendingRemasure(id, width)
+        -nearestEntry(id, width, matchingSignature) HeightEntry?
+        note: 2026-10-11 空白修复批：单槽→多宽（旧单槽被 prewarm
+        note: 最窄候选顶替=stale 巨高投毒=空白区根因）
+    }
+    class WONodeCell {
+        <<UICollectionViewCell>>
+        -host : UIHostingController<AnyView>
+        -hostConstraints : [NSLayoutConstraint]（freeze 存底）
+        -isContentFrozen : Bool
+        +freezeContentSnapshot()
+        +unfreezeContentSnapshot()
+        note: freeze=快照拍当前外观→摘 host 三边钉→host 离层
+        note: →快照四边钉铺满（rail 期 SwiftUI 逐帧重排归零）
     }
     class WOFluidDiag {
         <<enum 探针>>
         +note(_ line : String)
         +record(_ line : String)
         +dump(reason : String)
-        note: RAIL-START / RAIL-TICK / RAIL-END / PREWARM / H-DROP-RAIL 新增
+        note: RAIL-START / RAIL-TICK / RAIL-END / PREWARM / H-DROP-RAIL / FREEZE-ON / FREEZE-OFF / H-DIRECT(huge)
         note: PASS1/PASS2/PIN-BOTTOM/ANCHOR-COMP/H-FLUID 删除
     }
 
@@ -115,6 +131,7 @@ classDiagram
     WOMessageListView --> WOMessageListCore : applyUpdate(widthHint)
     WOMessageListCore --> WOMessageListLayout : beginRail/updateRailProgress/endRail
     WOMessageListCore --> WOHostSizingPool : precompute remeasure / cachedHeight
+    WOMessageListCore --> WONodeCell : freezeGiantRowsForRail / thawGiantRows
     WOMessageListCore --> WOFluidDiag : RAIL-* 探针
     WOMessageListCore *-- RailPrecompute : 预计算态
     WOMessageListCore *-- WidthRail : rail 态
