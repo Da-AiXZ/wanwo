@@ -21,7 +21,11 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     /// layout.fullscreen 投影退役——双记账脱钩是"点开变全屏还关不掉"根因）
     public var fullscreen: Bool
     @ViewBuilder public var sidebar: (_ collapsed: Bool, _ width: CGFloat) -> Sidebar
-    @ViewBuilder public var center: () -> Center
+    /// 【rail hint 管道 R1 第一跳】center 闭包携带列宽目标（cols.center 原值）：
+    /// SwiftUI `.animation(motion, value: key)` 只插值渲染帧，body 求值当刻
+    /// 即得终点 cols.center——每来源一次下发（非逐帧），UIKit 侧 rail 由此
+    /// 获知确定目标宽。全屏折算 center=0 时 hint=0（core 侧 ≤100 门拒绝）。
+    @ViewBuilder public var center: (_ width: CGFloat) -> Center
     @ViewBuilder public var details: () -> Details
     /// shell.overlay 槽（z20 点击穿透层；条目各自 opt-in pointer events）
     @ViewBuilder public var overlayLayer: () -> Overlay
@@ -32,7 +36,7 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     public init(store: WOLayoutStore,
                 hasSession: Bool = false, fullscreen: Bool = false,
                 @ViewBuilder sidebar: @escaping (_ collapsed: Bool, _ width: CGFloat) -> Sidebar,
-                @ViewBuilder center: @escaping () -> Center,
+                @ViewBuilder center: @escaping (_ width: CGFloat) -> Center,
                 @ViewBuilder details: @escaping () -> Details,
                 overlayLayer: @escaping () -> Overlay = { EmptyView() }) {
         self.store = store
@@ -106,7 +110,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
     @ViewBuilder
     private func colsContent(_ cols: WOColumns, viewport: CGFloat) -> some View {
         // 0.42s 唯一曲线（原型拍板，覆盖 dsh 0.3；2026-09-19 真机反馈）。
-        let motion = WOMotion.bezier(duration: 0.42)
+        // 【rail 单源】时长改读 WOMotion.sidebarRailDuration 常量（与 core
+        // rail 时钟同源，架构文档 §3.2——禁第二份 0.42 字面量）。
+        let motion = WOMotion.bezier(duration: WOMotion.sidebarRailDuration)
 
         HStack(spacing: 0) {
             // sidebarCol：min-width 0 overflow hidden specific-sidebar-fill 右 0.5px l3（收拢仍保留带边框轨道）
@@ -131,7 +137,9 @@ public struct WOAppFrame<Sidebar: View, Center: View, Details: View, Overlay: Vi
             // 超 viewport 被居中裁切 → 左栏出屏+右栏 topBar 钮出屏（真机
             // IMG_2404/2406："右栏向左展开挤开一切"）。width=cols.center 由
             // 让位链契约给出（全屏折算 center=0 时 width 0，clipped 收口）。
-            center()
+            // 【rail hint R1】center 闭包携带目标宽（cols.center 原值，按下帧
+            // 一次下发——动画不改变状态值，见 R1 时序铁证）。
+            center(cols.center)
                 .frame(width: cols.center)
                 .frame(maxHeight: .infinity)
                 .clipped()

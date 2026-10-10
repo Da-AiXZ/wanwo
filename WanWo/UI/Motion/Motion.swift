@@ -13,9 +13,52 @@
 
 import SwiftUI
 
+// MARK: - rail 曲线采样器（侧栏开合确定性宽度动画——曲线单源，架构文档 §3.1）
+//
+// WOMotion.bezier 的控制点**唯一来源**：SwiftUI 侧列宽动画（WOAppFrame
+// WOColumnsAnimation）与 UIKit 侧 rail 时钟（WOMessageListCore.railTick）读
+// 同一份 controlPoints——两端逐帧走同一曲线，视觉严格同步。禁第二份
+// 0.4,0,0.2,1 字面量（架构文档 §9 横切纪律）。
+//
+// 形态纪律：file-scope enum + static stored property（合规——泛型 struct 内
+// 才禁）；progress 为纯函数（WORailMathTests 单测直呼）。
+public enum WORailCurve {
+    /// 列宽 rail 采样控制点（cubic-bezier P1/P2）——**唯一来源**；
+    /// WOMotion.bezier 改为消费本常量（消除第二份硬编码）。
+    public static let controlPoints: (Double, Double, Double, Double) = (0.4, 0, 0.2, 1)
+
+    /// 给定线性进度 x∈[0,1] 返回 eased 进度：二分求 t 使 BezierX(t)=x，
+    /// 返回 BezierY(t)——与 WOMessageListSupport.disclosureEase 同构
+    ///（同曲线同算法，两处实现各自承载：Support 侧为披露动画历史件，
+    /// 本侧为 rail 单源常量消费点）。x 越界原样返回（0/1 端点无插值）。
+    public static func progress(_ x: Double) -> Double {
+        guard x > 0, x < 1 else { return x }
+        let (x1, y1, x2, y2) = controlPoints
+        var lo = 0.0
+        var hi = 1.0
+        var t = x
+        for _ in 0..<24 {
+            t = (lo + hi) / 2
+            let bx = 3 * (1 - t) * (1 - t) * t * x1
+                + 3 * (1 - t) * t * t * x2
+                + t * t * t
+            if bx < x { lo = t } else { hi = t }
+        }
+        return 3 * (1 - t) * (1 - t) * t * y1
+            + 3 * (1 - t) * t * t * y2
+            + t * t * t
+    }
+}
+
 // MARK: - 全库动效常量（手册 R2 时长五档 + R3 曲线档位；红线 7：同类交互参数逐字节一致）
 
 public enum WOMotion {
+
+    // ── rail（侧栏开合确定性宽度动画）──
+    /// 侧栏开合 rail 时长——WOAppFrame 列宽动画（SwiftUI 侧）与 core rail
+    /// 时钟（WOMessageListCore.railTick，UIKit 侧）共同读它，零硬编码副本
+    ///（架构文档 §3.1；原 WOAppFrame 内联 0.42 字面量退役）。
+    public static let sidebarRailDuration: Double = 0.42
 
     // ── R2 时长五档（标准值；区间依据见手册 R2 表）──
     /// T0 即时（高频键盘操作、命令面板）
@@ -51,9 +94,13 @@ public enum WOMotion {
     public static let nonInteractiveExit = Animation.easeIn(duration: 0.13)
 
     // ── 唯一贝塞尔曲线（拍板：Hero 演示 keySplines / dsh / Material 三方同一条）──
-    /// 关键帧类动画专用；弹簧类场景用上方 R3 档位
+    /// 关键帧类动画专用；弹簧类场景用上方 R3 档位。
+    /// 控制点改消费 WORailCurve.controlPoints 单源（行为逐字节不变——
+    /// 常量值即原硬编码 0.4,0,0.2,1）。
     public static func bezier(duration: Double) -> Animation {
-        .timingCurve(0.4, 0, 0.2, 1, duration: min(duration, maxDuration))
+        .timingCurve(WORailCurve.controlPoints.0, WORailCurve.controlPoints.1,
+                     WORailCurve.controlPoints.2, WORailCurve.controlPoints.3,
+                     duration: min(duration, maxDuration))
     }
 }
 

@@ -57,6 +57,12 @@ struct WOMessageListView: UIViewControllerRepresentable {
     let nodes: [ConversationProjector.DisplayNode]
     let phase: ChatViewModel.Phase
     let sessionId: String
+    /// 【rail hint R1 第四跳】列宽目标提示（cols.center 原值；0=未提供/直注
+    /// 宿主）——updateUIViewController 经 applyUpdate 透传 core（每来源一次
+    /// 下发，非逐帧；core 侧 processWidthHint 六步消费）。
+    /// 声明序注意：memberwise init 参数序=声明序，本属性须在 bottomAllowance
+    /// 之前（WOChatView 调用点 widthHint 紧随 sessionId）。
+    var widthHint: CGFloat = 0
     /// 批 2 件 3：composer 座位组超出旧链基准的动态让位增量
     ///（max(0, composerChromeHeight - 137)；变更才写 contentInset.bottom）。
     var bottomAllowance: CGFloat
@@ -83,7 +89,8 @@ struct WOMessageListView: UIViewControllerRepresentable {
                          bottomAllowance: bottomAllowance,
                          onBackgroundTap: onBackgroundTap,
                          onHeadScrolled: onHeadScrolled,
-                         onImagePreview: onImagePreview)
+                         onImagePreview: onImagePreview,
+                         widthHint: widthHint)
     }
 
     /// 批 1 P2-4 清偿：视图拆解（会话页离场）→ 切片链作废 + display link
@@ -128,8 +135,95 @@ final class WOMessageListLayout: UICollectionViewLayout {
     private var itemFrames: [CGRect] = []
     private var contentHeight: CGFloat = 0
 
+    // MARK: 【rail T02】确定性混合接口（架构文档 §3.7）
+    //
+    // rail 期布局 = 两端已知布局的 O(n) 线性插值：from=旧宽 itemFrames 快照、
+    // to=目标宽池身高累加帧。prepare 早退 → 零 delegate 询问/零量高/
+    // 零 onLiveWidthChange；layoutAttributesForElements 直读已混合帧（零改动）。
+
+    /// rail 混合在途（prepare 早退门；core 经 beginRail/updateRailProgress/
+    /// endRail 驱动）。
+    private(set) var isRailActive = false
+    /// 旧端帧（rail 启动时 itemFrames 快照；restart 时=当前混合帧快照）。
+    private var railFromFrames: [CGRect] = []
+    /// 新端帧（预计算完成时按目标宽 O(n) 累加）。
+    private var railToFrames: [CGRect] = []
+    /// 旧端内容高（beginRail 时刻 contentHeight 快照；restart 时=当前混合值）。
+    private var railFromContentHeight: CGFloat = 0
+    /// 新端内容高（toFrames 累加推导：末行 maxY + bottom inset）。
+    private var railToContentHeight: CGFloat = 0
+
+    /// rail 期混合内容高（core offset 算术消费；非 rail 期=普通 contentHeight）。
+    var currentContentHeight: CGFloat { contentHeight }
+
+    /// 启动 rail：存两端帧快照、itemFrames 置旧端（p=0 状态）。两端内容高
+    /// 由本函数自足推导（from=当前 contentHeight；to=toFrames 末行 maxY +
+    /// bottom inset——toFrames 由 core 以同一 sectionInset/lineSpacing 累加，
+    /// 几何口径一致）。restart 场景 from=当前混合帧/混合高，插值从中途续跑。
+    func beginRail(fromFrames: [CGRect], toFrames: [CGRect]) {
+        railFromFrames = fromFrames
+        railToFrames = toFrames
+        railFromContentHeight = contentHeight
+        railToContentHeight = toFrames.last.map { $0.maxY + sectionInset.bottom }
+            ?? (sectionInset.top + sectionInset.bottom)
+        itemFrames = fromFrames
+        contentHeight = railFromContentHeight
+        isRailActive = true
+    }
+
+    /// 逐帧混合：O(n) 逐行 blendFrame 写 itemFrames + blendHeight 写
+    /// contentHeight。缺失行语义（R9-7）：缺 from 端=to 直用（流式插入的
+    /// 新行）；缺 to 端=from 直用（防御，行被删）。
+    func updateRailProgress(_ p: CGFloat) {
+        guard isRailActive else { return }
+        let count = max(railFromFrames.count, railToFrames.count)
+        itemFrames.removeAll(keepingCapacity: true)
+        itemFrames.reserveCapacity(count)
+        for i in 0..<count {
+            let hasFrom = i < railFromFrames.count
+            let hasTo = i < railToFrames.count
+            switch (hasFrom, hasTo) {
+            case (true, true):
+                itemFrames.append(WOMessageListSupport.blendFrame(
+                    railFromFrames[i], railToFrames[i], Double(p)))
+            case (false, true):
+                itemFrames.append(railToFrames[i])
+            case (true, false):
+                itemFrames.append(railFromFrames[i])
+            default:
+                break
+            }
+        }
+        contentHeight = WOMessageListSupport.blendHeight(
+            railFromContentHeight, railToContentHeight, Double(p))
+    }
+
+    /// rail 结束：itemFrames 定格新端帧（一次切真布局——prepare 随后按新
+    /// layoutWidth 正常运行，两端帧一致零跳变）。
+    func endRail() {
+        itemFrames = railToFrames
+        contentHeight = railToContentHeight
+        railFromFrames = []
+        railToFrames = []
+        isRailActive = false
+    }
+
+    /// rail 中途作废（restart 链取消分支 R9-8 专用）：解除冻结、**保持当前
+    /// 混合帧原样**（随后 prepare 按 layoutWidth 重建——调用方保证 layoutWidth
+    /// 已是期望值）。与 endRail 的差异：不切 toFrames（restart 链取消时
+    /// to 端属于被放弃的目标）。
+    func abortRail() {
+        isRailActive = false
+        railFromFrames = []
+        railToFrames = []
+    }
+
     override func prepare() {
         super.prepare()
+        // 【rail T02】rail 期早退：零 delegate 询问、零量高、零 onLiveWidth
+        // Change——混合帧原样供 layoutAttributesForElements 消费（确定性优先，
+        // 架构文档 §3.7/R4）。
+        if isRailActive { return }
         guard let collectionView, collectionView.numberOfSections > 0 else {
             itemFrames = []
             contentHeight = sectionInset.top + sectionInset.bottom
@@ -251,7 +345,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 【重做批4·四修】打开会话初始稳定期（首次贴底直写起 2s）：期间行高
     /// 修正（Markdown 解析/富格式切换）免动画直写——逐行动画叠加收敛链 =
     /// 真机"加载完后整个对话从头滚一遍到底部"的观感根源；直写=打开即稳。
-    /// 【2026-10-09】trySwitchLayoutWidth 亦复用此窗（切换结算窗 1s，后写
+    /// 【2026-10-09】切换结算窗（rail 落地，R7）亦复用此窗（1s，后写
     /// 者赢）——切换后首批回报/stale 切片重测走直写，防"收尾反复抽动"。
     private var initialStabilizingUntil: CFTimeInterval = 0
     /// 【打开定位 修复3-e】稳定期结束兜底校准挂位（tryInitialPositioning
@@ -281,17 +375,62 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 【CI修50】列宽动画期推迟重测切片（右栏开合丝滑化）：宽度仍在变的
     /// layout pass 不 drain（prepare 照常收集 stale），宽度稳定后的第一个
     /// pass 一次清账——重测工作量挪出动画帧。
-    /// 【重做批5 · 宽度解耦状态机】（侧栏开合零抖动：流体回传真值+一次切换+锚定）
-    /// 当前排版宽（layout.layoutWidth 同步；只在切换时更新）。
+    /// 【重做批5 · 宽度解耦状态机】当前排版宽（layout.layoutWidth 同步；只在
+    /// rail 落地时更新）。
     private var stableLayoutWidth: CGFloat = 0
-    /// 检测到的新容器宽（去抖窗口内被持续刷新）。
-    private var pendingWidth: CGFloat = 0
-    /// 去抖计时（宽度停止变化 0.1s 才认定稳定）。
-    private var widthSwitchTimer: DispatchWorkItem?
-    /// 【流体重排 v2】动画期显示面回传真值（id → 该行最新显示实测高）：
-    /// 可见 cell 的 SwiftUI 随容器宽逐帧重排，回传桥报的就是**当前宽的真
-    /// 高**——逐帧重排直接消费（零同步量高=超级卡根治），收尾切换批量落池。
-    private var fluidHeights: [String: CGFloat] = [:]
+
+    // MARK: 【rail R1 第五跳】hint 簿记（架构文档 §3.6）
+    /// 最新 hint（cols.center 原值；applyUpdate 每次刷新）。
+    private var widthHint: CGFloat = 0
+    /// 已消费（precompute/rail 启动依据）的 hint 值——幂等去重 +
+    /// "hint==stable 无动作"门（body 重复求值不重复起跑）。
+    private var activeHintWidth: CGFloat = 0
+
+    // MARK: 【rail R2】目标宽预计算（4ms/8ms 切片）
+    /// 预计算切片状态（rail 启动前置——两端布局的"新端"来源）。
+    private struct RailPrecompute {
+        /// hint（目标视口宽）。
+        let targetViewportWidth: CGFloat
+        /// hint − sectionInset.left − right（池键宽口径，与 contentWidth() 同源）。
+        let targetContentWidth: CGFloat
+        /// railPrecomputeGen 快照（重启/切换作废）。
+        let generation: Int
+        /// snapshot 内已量行游标。
+        var cursor: Int
+        /// 启动时刻 currentItems 快照（身份固定；新增行走 startRail 同步补量）。
+        let snapshot: [WOMListNode]
+        let startedAt: CFTimeInterval
+    }
+    private var railPrecompute: RailPrecompute?
+    private var railPrecomputeGen = 0
+
+    // MARK: 【rail R3-R7】确定性宽度动画状态机
+    private struct WidthRail {
+        /// 落地写 stableLayoutWidth/layoutWidth。
+        let targetViewportWidth: CGFloat
+        let startTime: CFTimeInterval
+        /// WOMotion.sidebarRailDuration（曲线/时长单源，零硬编码副本）。
+        let duration: CFTimeInterval
+        let followsBottomAtStart: Bool
+        /// !followsBottom 时启动捕获（captureTopAnchor 语义，跳 meta 行）；
+        /// 锚行被移除时 offset 降级内容高差兜底（R9-7，fromContentHeight 消费）。
+        let anchor: (id: String, viewportY: CGFloat)?
+        /// rail 起点内容高（beginRail 前快照）——锚行缺失兜底算术用（R9-7：
+        /// off += blendH − fromH）。文档 §3.6 字段外的补充承载，报告登记。
+        let fromContentHeight: CGFloat
+    }
+    private var widthRail: WidthRail?
+    /// rail 期锚定 offset 直写防刷屏基线（RAIL-TICK off 变 >0.5pt 才记）。
+    private var railDiagLastOff: CGFloat = -1
+    /// 结算窗 commit 计数（RAIL-END settleCount；finishWidthRail 置窗、
+    /// 1s 后补记并熄灯；代际令牌防 restart 链串窗）。
+    private var railSettleCounting = false
+    private var railSettleCommitCount = 0
+    private var railSettleGeneration = 0
+
+    // MARK: 【rail T05 P1】空闲预热（四契约宽度批量池预热）
+    private var prewarmWorkItem: DispatchWorkItem?
+    private var prewarmGen = 0
 
     // MARK: 件 2/批 2 簿记
 
@@ -417,43 +556,23 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private struct AnchorRestore {
         let anchor: (id: String, viewportY: CGFloat)?
         let oldContentHeight: CGFloat
-        /// 【修复批 C】恢复来源门：true=切换收尾 trySwitchLayoutWidth（锚位
-        /// 跳变超阈值=排版态异常，保险丝放弃直写）；false=扩窗/常规路径
-        /// （上方插入内容的大位移是正常语义，不钳制）。
-        let strict: Bool
     }
     private var pendingAnchorRestore: AnchorRestore?
 
-    // MARK: 【流体重排 2026-10-09】侧栏动画期逐帧 live 重排（用户拍板：
-    // 连续挤压重排+位置稳定，取代纯冻结）。历史抖动两病根=①重排无锚定
-    // 补偿②动画期量高被污染后事后修正风暴；本方案分别堵死：可见行当帧
-    // 同环境量真值（无事后修正）、逐帧锚定补偿（锚行恒在原屏幕位）、
-    // 离屏行近似（不可见；收尾 trySwitchLayoutWidth 落全量真值兜底）。
-    /// 容器宽逐帧变化中（巡检置位；trySwitch 成功或宽度归位熄灭）。
-    private var fluidReflowActive = false
-    /// 【修复批 2026-10-09】流体起点时钟（首次宽度变化采样）——切换的动画时长门基准。
-    private var fluidStartedAt: CFTimeInterval = 0
-    /// 【修复批 B】双排版进行中旗标——两次 layoutIfNeeded 的重入 layout pass
-    /// 里跳过逐帧锚定补偿，只在最外层收口时统一补偿一次（真机实证同帧三写）。
-    private var isInsideDualPass = false
-    /// 流体锚：最上可见行 (条目id, 视口Y)——逐帧补偿把该行钉在原屏幕位。
-    private var fluidAnchor: (id: String, viewportY: CGFloat)?
-
-    // MARK: 流体诊断探针（纯记录辅助状态；不参与任何逻辑分支/判定）
+    // MARK: 探针簿记（纯记录辅助状态；不参与任何逻辑分支/判定）
     /// H 系列回报路由防刷屏（"tag|id" → 上次记录高度；差 <1pt 跳过记录）。
     private var fluidDiagLastH: [String: CGFloat] = [:]
-    /// 逐帧锚定补偿防刷屏：贴底落点/锚行目标上次记录值（变 >0.5pt 才记）。
-    private var fluidDiagLastPinOff: CGFloat = 0
-    private var fluidDiagLastAnchorY: CGFloat = 0
 
     // MARK: 生命周期
 
     override func loadView() {
         let layout = WOMessageListLayout()
         messageLayout = layout
-        // 【重做批5 · 解耦】容器宽 ≠ 排版宽（resize 动画）→ 宽度状态机入口。
+        // 【rail T04 #15】fallback 接线改挂 handleContainerWidthFallback：
+        // hint 管道是唯一宽度权威——本路径只保留冷启动收养 + LIVE-CHANGE
+        // 探针，其余一律早退（旧流体重排链退役）。
         layout.onLiveWidthChange = { [weak self] width in
-            self?.handleLiveWidthChange(width)
+            self?.handleContainerWidthFallback(width)
         }
         let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
         cv.backgroundColor = .clear
@@ -522,6 +641,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private func handleMarkdownParsed(_ text: String?) {
         guard let text, !text.isEmpty,
               let cv = collectionView, cv.window != nil else { return }
+        // 【rail】rail/预计算在途 → 挂起自愈（池真值已按目标宽落位，rail 后
+        // 结算窗/stale 链自然收敛；rail 期提交会与 railTick offset 直写打架）。
+        guard widthRail == nil, railPrecompute == nil else { return }
         let width = contentWidth()
         for item in currentItems {
             guard case .bubble(let bubble) = item.kind,
@@ -564,13 +686,14 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         lastDiagDump = now
         var lines: [String] = []
         lines.append("===== \(reason) phase=\(String(describing: phase)) =====")
-        lines.append(String(format: "offset=%.0f contentH=%.0f viewport=%.0f adjT=%.0f adjB=%.0f follows=%d items=%d width=%.0f layoutW=%.0f stableW=%.0f pendingW=%.0f",
+        lines.append(String(format: "offset=%.0f contentH=%.0f viewport=%.0f adjT=%.0f adjB=%.0f follows=%d items=%d width=%.0f layoutW=%.0f stableW=%.0f rail=%d",
                             cv.contentOffset.y, cv.contentSize.height, cv.bounds.height,
                             cv.adjustedContentInset.top, cv.adjustedContentInset.bottom,
                             followsBottom ? 1 : 0, currentItems.count,
                             cv.bounds.width - messageLayout.sectionInset.left
                                 - messageLayout.sectionInset.right,
-                            messageLayout.layoutWidth, stableLayoutWidth, pendingWidth))
+                            messageLayout.layoutWidth, stableLayoutWidth,
+                            widthRail != nil ? 1 : 0))
         let frames = messageLayout.snapshotFrames()
         let top = cv.contentOffset.y - 1200
         let bottom = cv.contentOffset.y + cv.bounds.height + 1200
@@ -628,7 +751,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                      bottomAllowance: CGFloat,
                      onBackgroundTap: @escaping () -> Void,
                      onHeadScrolled: @escaping (Bool) -> Void,
-                     onImagePreview: @escaping (ImageAttachmentRef) -> Void) {
+                     onImagePreview: @escaping (ImageAttachmentRef) -> Void,
+                     widthHint: CGFloat = 0) {
         loadViewIfNeeded() // updateUIView 早于视图挂载的防御（dataSource 就位）
         bindIfNeeded(viewModel)
         // 【打开定位 修复3-a】会话身份变化也重新武装首帧定位——bindIfNeeded
@@ -649,15 +773,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         self.onBackgroundTap = onBackgroundTap
         self.onHeadScrolled = onHeadScrolled
         self.onImagePreview = onImagePreview
+        // 【rail R1 第五跳】hint 刷新（消费在 applyUpdate 尾部 processWidthHint
+        // ——六步语义，替代旧 trySwitch retry 钩子位）。
+        self.widthHint = widthHint
         // 批 2 件 3：composer 动态让位（lody updateBottomInset 语义——变更
         // 才写、与滚动位置解耦）。
         updateBottomInset(bottomAllowance)
         sync()
-        // 【重做批5 · 解耦】切换重试钩子：宽度稳定但切换被新行打断时，
-        // 借 sync 节奏补齐重测并完成切换（trySwitch 内部幂等）。
-        if pendingWidth != 0, pendingWidth != stableLayoutWidth {
-            trySwitchLayoutWidth()
-        }
+        // 【rail R1】hint 消费位（R1 六步语义；hint 是唯一宽度权威）。
+        processWidthHint()
+        // 【rail T05 P1】空闲预热调度（0.6s 去抖；streaming/rail 让位）。
+        schedulePrewarm()
     }
 
     /// 会话切换（viewModel 身份变）→ 全量重置（池/账本/簿记/快照）。
@@ -689,26 +815,25 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【批4 诊断实证修】新会话首次定位直写位（首个非空 apply 落地贴底）。
         needInitialPositioning = true
         initialStabilizingUntil = 0
-        // 【重做批5 · 解耦】排版宽初始化（容器实际宽；之后只在宽度切换时
+        // 【重做批5 · 解耦】排版宽初始化（容器实际宽；之后只在 rail 落地时
         // 更新——resize 动画期间恒定，冻结门按它对账）。
         stableLayoutWidth = collectionView?.bounds.width ?? 0
         messageLayout.layoutWidth = stableLayoutWidth
-        pendingWidth = 0
-        fluidHeights = [:]
-        // 【修复批 A】会话切换清流体时钟（旧会话的动画时长门基准对新会话无意义）。
-        fluidStartedAt = 0
-        isInsideDualPass = false
-        // 【QA SHIP 跟进】罕见交叠（侧栏动画中切会话）：熄灭流体态并清旧锚
-        // ——live- 前缀 id 跨会话复用，旧锚残入新 episode 会把逐帧补偿钉到
-        // 错行（同 shutdown 的流体收口语义）。
-        fluidReflowActive = false
-        fluidAnchor = nil
-        // 【流体诊断】探针簿记清零（live- 前缀 id 跨会话复用——旧会话残留
-        // 会让新会话同 id 高度差 <1pt 的回报被防刷屏过滤误吞，污染取证）。
+        // 【rail R9-2】rail 全量清理（会话切换不跨残留；新会话走
+        // needInitialPositioning 全量重置）。
+        widthRail = nil
+        railPrecompute = nil
+        railPrecomputeGen += 1
+        activeHintWidth = 0
+        railSettleCounting = false
+        if messageLayout.isRailActive { messageLayout.endRail() }
+        // 探针簿记清零（live- 前缀 id 跨会话复用——旧会话残留会让新会话同
+        // id 高度差 <1pt 的回报被防刷屏过滤误吞，污染取证）。
         fluidDiagLastH = [:]
-        fluidDiagLastPinOff = 0
-        fluidDiagLastAnchorY = 0
-        widthSwitchTimer?.cancel()
+        // P1 预热作废。
+        prewarmGen += 1
+        prewarmWorkItem?.cancel()
+        prewarmWorkItem = nil
         pendingAnchorRestore = nil
         // 【CI修50】扩窗锚定寄存一并清（旧会话的锚对新会话无意义）。
         deferredExpansionAnchor = nil
@@ -815,6 +940,13 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 跳过基线更新与 reconfigure——内容基线保持冻结前值（解冻帧一次性
         // 追平），版本不 bump = 池高度签名不变 = 行高冻结。
         let previousIDs = Set(currentItems.map(\.id))
+        // 【rail R9-7 land-on-identity-change】rail 期节点身份集变化（插入/
+        // 删除）→ rail 立即落地（跳终态 + 结算窗收敛）——退化为"瞬切 +
+        // 1s 结算窗"，无锚定瞬移风险面（流式高频插入防 rail 弯曲/高频重启）。
+        if widthRail != nil, previousIDs != Set(items.map(\.id)) {
+            messageLayout.updateRailProgress(1)
+            finishWidthRail(writeOffset: true)
+        }
         var ids: [String] = []
         var changed: [String] = []
         for item in items {
@@ -1056,33 +1188,22 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// "" 签名条目被空态重测覆盖 → 永久溢出窗口）。
     func nodeHeightChanged(id: String, height: CGFloat) {
         guard let cv = collectionView, cv.window != nil else { return }
-        // 【重做批5 · 解耦冻结门】容器宽 ≠ 排版宽（resize 动画中）→ 丢弃
-        // 上报（旧宽实测会污染账本；切换后预重测值按最新内容实量已覆盖）。
-        // 门判定对象 = stableLayoutWidth（只在切换时更新——旧实现每帧被
-        // drainStaleSweep 刷成中间宽，门恒开 = 动画期间修正直接穿透 = 逐帧
-        // reflow 抖动根因，list-diag 帧 3 实锤 621pt 跳变）。
-        // 【重做批5-R2 · 容差 2026-10-08】精确 == 与上报死区口径差（见
-        // trySwitchLayoutWidth 注）→ 0~0.5pt 残差永久关门无自愈 = 展开/收起
-        // 回传被吞（真机"展开打不开"）。0.5pt 容差与上报口径对齐；宽度真变
-        // 时差值远大于死区，门语义（动画期丢弃污染上报）不变。
-        // 【流体重排 v2】动画期显示面回传=唯一真值源：记入 fluidHeights（每行
-        // 最新显示实测；不落池不 invalidate——fluid 逐帧循环统一重排），收尾
-        // trySwitch 批量落池。旧"动画期丢弃上报"语义由 v2 取代（丢弃=逐帧
-        // 只能靠估算=空洞与卡顿的根源之一）。
-        if fluidReflowActive {
-            // 【QA P2-2 修】披露动画在途的行：fluid 帧回报不走引擎插值合并，
-            // 但同步刷新动画终点（from/start/duration 不动）——防动画到期
-            // 落点停在旧宽目标值产生小回跳。
+        // 【rail R6 门】rail 在途/预计算在途 → 上报不入账本、不弯 rail（确定性
+        // 优先——预计算真值已在池内=显示真值，rail 后修正量≈0；rail 后可见行
+        // 真值经既有报告链 + 1s 结算窗自然修正，离屏行走 stale 切片）。
+        // 在途 growthAnim 终点同步刷新（既有 QA P2-2 语义保留——防动画到期
+        // 落点停在旧值小回跳）。探针 H-DROP-RAIL。
+        // （旧 fluid 门随流体重排机器退役——本门替换其位置，语义对照
+        // 架构文档 R6/R8-#10。）
+        if widthRail != nil || railPrecompute != nil {
             if let active = growthAnims[id] {
                 growthAnims[id] = GrowthAnim(from: active.from, to: height,
                                              start: active.start,
                                              duration: active.duration,
                                              kind: active.kind)
             }
-            fluidHeights[id] = height
-            // 【流体诊断】fluid 记表路由探针（纯记录）。
-            fluidDiagH("H-FLUID", id: id, height: height,
-                       "H-FLUID id=\(id) h=\(String(format: "%.1f", height))")
+            fluidDiagH("H-DROP-RAIL", id: id, height: height,
+                       "H-DROP-RAIL id=\(id) h=\(String(format: "%.1f", height)) rail=\(widthRail != nil) precompute=\(railPrecompute != nil)")
             return
         }
         guard abs(cv.bounds.width - stableLayoutWidth) <= 0.5,
@@ -1203,11 +1324,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                                     collectionView cv: UICollectionView) {
         // 【流体诊断】直写公共体入口探针（纯记录）。
         WOFluidDiag.record("COMMIT id=\(id) h=\(String(format: "%.1f", height)) follow=\(followsBottom) anchor-pending=\(pendingAnchorRestore != nil)")
+        // 【rail R10】结算窗 commit 计数（RAIL-END settleCount 消费）。
+        if railSettleCounting { railSettleCommitCount += 1 }
         if !followsBottom, !expanding {
             pendingAnchorRestore = AnchorRestore(
                 anchor: captureTopAnchor(),
-                oldContentHeight: cv.contentSize.height,
-                strict: false)
+                oldContentHeight: cv.contentSize.height)
         }
         messageLayout.invalidateLayout()
         // 【批4 诊断实证修】异步补标一次（幂等）：SwiftUI 的 onPreference
@@ -1233,7 +1355,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     private func contentWidth() -> CGFloat {
         // 【重做批5 · 解耦】对账口径 = 排版宽（池条目宽度绑定 layoutWidth；
-        // resize 动画期间回传按排版宽对账，切换后 forceHeight 同宽落池）。
+        // resize 动画期间回传按排版宽对账，rail 落地后同宽落池）。
         return stableLayoutWidth - messageLayout.sectionInset.left
             - messageLayout.sectionInset.right
     }
@@ -1281,6 +1403,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private let heightJumpLog = Logger(subsystem: "WanWo", category: "height")
 
     private func drainStaleSweep() {
+        // 【rail R6】rail/预计算在途 → 不清账（stale 留池内，rail 后既有切片
+        // 渐进重测——rail 期 prepare 早退本就不收集，此 guard 双保险）。
+        guard widthRail == nil, railPrecompute == nil else { return }
         // 【重做批5 · 解耦】旧宽度检测分支拆除——宽度变化改由 layout.prepare
         // 的 onLiveWidthChange 直报（容器 resize 强制 invalidate 绕过
         // shouldInvalidateLayout，旧检测在 viewDidLayoutSubviews 里每帧把
@@ -1294,27 +1419,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         runRemeasureSlice(generation: remeasureGen, index: 0)
     }
 
-    // MARK: 【重做批5 · 宽度解耦】流体重排 + 一次切换 + 锚定
+    // MARK: 【rail R1-R7】确定性宽度动画（预计算 + 插值 + 精确锚定）
+    //  旧流体重排机器（逐帧布局快照/宽度状态机/去抖 timer/0.55s 时长门/
+    //  同帧双排版/逐帧补偿/宽度比近似分支）随 R8 删除清单整体退役——本节为
+    //  唯一宽度状态机（架构文档 §4/R1-R7/R9）。
 
     // MARK: 流体诊断探针辅助（纯记录；只读，无 layoutIfNeeded 不引入布局重入）
-
-    /// 布局 pass 内只读快照：offset / contentSize.height / 可见前 3 行 frame
-    ///（经 layoutAttributesForItem 读——只读已缓存的布局结果，不触发布局）。
-    private func fluidFrameSnapshot() -> String {
-        guard let cv = collectionView else { return "off=-- ch=--" }
-        var cells = ""
-        let visible = cv.indexPathsForVisibleItems
-            .sorted { $0.item < $1.item }.prefix(3)
-        for path in visible {
-            if let attrs = cv.collectionViewLayout
-                .layoutAttributesForItem(at: path) {
-                cells += String(format: " | #%d y=%.1f h=%.1f",
-                                path.item, attrs.frame.minY, attrs.frame.height)
-            }
-        }
-        return String(format: "off=%.1f ch=%.1f%@",
-                      cv.contentOffset.y, cv.contentSize.height, cells)
-    }
 
     /// H 系列回报路由记录（防刷屏：同 tag+id 高度差 <1pt 跳过——纯记录辅助，
     /// 不影响主逻辑）。
@@ -1326,131 +1436,404 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         WOFluidDiag.record(line)
     }
 
-    /// layout.prepare 检测到容器宽 ≠ 排版宽（resize 动画中每帧上报）。
-    /// 【流体重排 v2】动画期逐帧 live 重排（显示面回传真值驱动，零同步量高）；
-    /// 去抖 0.1s 稳定后一次切换（fluidHeights 批量落池+invalidate+锚定/钉底
-    /// 收尾）。
-    private func handleLiveWidthChange(_ width: CGFloat) {
+    /// 【rail R8-#15】layout.prepare 检测到容器宽 ≠ 排版宽（fallback 路径）。
+    /// hint 管道是唯一宽度权威——本函数只保留冷启动收养 + LIVE-CHANGE 探针，
+    /// 其余一律早退（旧流体重排/去抖切换链退役）。
+    private func handleContainerWidthFallback(_ width: CGFloat) {
         guard width != stableLayoutWidth, width > 1 else { return }
-        // 【流体诊断】入口探针（纯记录）。
-        WOFluidDiag.record("LIVE-CHANGE w=\(width) stable=\(stableLayoutWidth) anchor=\(fluidAnchor != nil)")
-        // 【流体重排】宽度在逐帧变化 → 进入流体模式；首帧捕获锚行（最上
-        // 可见行），后续每帧补偿把该行钉在原屏幕位（"位置不变"语义）。
-        // 【修复批 A】首次进入流体（收养分支早退不重置时钟）采样起点，
-        // 供 trySwitch 的动画时长门（0.55s）判定。
-        if !fluidReflowActive {
-            fluidStartedAt = CACurrentMediaTime()
-        }
-        fluidReflowActive = true
-        if fluidAnchor == nil, let captured = captureTopAnchor() {
-            fluidAnchor = (id: captured.id, viewportY: captured.viewportY)
-        }
+        // 【流体诊断】宽度 fallback 路由探针（保留标签 LIVE-CHANGE）。
+        WOFluidDiag.record("LIVE-CHANGE w=\(width) stable=\(stableLayoutWidth) rail=\(widthRail != nil)")
         // 【QA P0-1 修·冷启动收养】首次挂载 loadViewIfNeeded 不触发布局 →
         // bindIfNeeded 采到 bounds=0 → stableLayoutWidth/layoutWidth 恒 0 →
-        // prepare 的上报门永不触发 → 列表永久空白。layoutWidth 为 0 时直接
-        // 采认当前宽（无旧数据需保护，无需预重测/锚定）。
+        // 列表永久空白。layoutWidth 为 0 时直接采认当前宽（无旧数据需保护，
+        // 无需预重测/锚定）。常规宽度变化一律走 hint 管道（processWidthHint
+        // ⑥同款收养语义——hint 缺席的直注宿主由此兜底）。
         if stableLayoutWidth == 0, messageLayout.layoutWidth == 0 {
             stableLayoutWidth = width
             messageLayout.layoutWidth = width
             messageLayout.invalidateLayout()
-            return
         }
-        // 【流体重排 v2】预重测退役：动画期高度由显示面回传真值收敛
-        // （fluidHeights），无需后台切片；pendingWidth 每帧刷新供去抖收尾。
-        pendingWidth = width
-        // 【修复批 A】去抖重试收口单一来源（原手工 timer 四行等价替换）。
-        scheduleWidthSwitchRetry()
     }
 
-    /// 【修复批 A】去抖重试调度（0.1s 后再问一次 trySwitch——幂等，成功路径自熄）。
-    private func scheduleWidthSwitchRetry() {
-        widthSwitchTimer?.cancel()
-        let timer = DispatchWorkItem { [weak self] in self?.trySwitchLayoutWidth() }
-        widthSwitchTimer = timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: timer)
+    // MARK: 【rail R1】hint 消费（applyUpdate 尾部；六步语义）
+
+    private func processWidthHint() {
+        // ① 守卫：未挂窗/无数据源 → 不动作（后续 applyUpdate 重入本函数）。
+        guard collectionView?.window != nil, dataSource != nil else { return }
+        // ② hint ≤ 100 → 拒（全屏折算 center=0：旧布局冻结被 clipped；宽度
+        // 回来 hint>100 走正常路径——R9-3）。
+        guard widthHint > 100 else { return }
+        // ③ hint == stable → 幂等无动作（R9-8：关回原位且 precompute 未完成
+        // → 作废 precompute 直接 return，无 rail）。
+        if abs(widthHint - stableLayoutWidth) <= 0.5 {
+            activeHintWidth = widthHint
+            // 【QA P0 修 2026-10】rail 在途变体（快速连开连关）：rail 起跑后
+            // 关回原位 → 本分支原先只 abortRail（解除布局冻结）而**漏清
+            // widthRail/不停 motionLink**——后续 tick 继续跑，p≥1 时
+            // finishWidthRail→endRail 会把 itemFrames/stable 切到被放弃目标
+            // 的 toFrames（真实容器宽已回原位）→ 布局永久错宽卡死（第④步
+            // 幂等门吞掉后续同值 hint，无自愈）。修法：widthRail/railSettle
+            // 簿记与布局冻结一起熄灯 + 停表；abortRail 选型不变（保持混合帧，
+            // 不切被放弃目标的 toFrames）。
+            if messageLayout.isRailActive || widthRail != nil {
+                widthRail = nil
+                railSettleCounting = false
+                stopMotion()
+                if messageLayout.isRailActive {
+                    messageLayout.abortRail()
+                    messageLayout.invalidateLayout()
+                }
+            }
+            if railPrecompute != nil {
+                railPrecomputeGen += 1
+                railPrecompute = nil
+            }
+            return
+        }
+        // ④ body 重复求值幂等门（同 hint 重入拦下）。
+        if widthHint == activeHintWidth { return }
+        // ⑤ rail/precompute 在途且目标已变 → 重启链（R9-1/R9-4）。
+        if let rail = widthRail {
+            if abs(rail.targetViewportWidth - widthHint) <= 0.5 {
+                activeHintWidth = widthHint
+                return
+            }
+            restartRail(to: widthHint)
+            return
+        }
+        if let precompute = railPrecompute {
+            if abs(precompute.targetViewportWidth - widthHint) <= 0.5 {
+                activeHintWidth = widthHint
+                return
+            }
+            // 作废重启（前次 gen 作废；连续 resize = restart 链，R9-4）。
+            railPrecomputeGen += 1
+            railPrecompute = nil
+        }
+        // ⑥ 冷启动收养（旧宽度状态机收养分支语义迁入）。
+        if stableLayoutWidth == 0 {
+            stableLayoutWidth = widthHint
+            messageLayout.layoutWidth = widthHint
+            activeHintWidth = widthHint
+            messageLayout.invalidateLayout()
+            return
+        }
+        activeHintWidth = widthHint
+        startPrecompute(targetViewportWidth: widthHint)
     }
 
-    /// 一次切换：宽度去抖稳定 → 排版宽切新宽、动画期显示面回传真值批量落池、
-    /// 全量重摆 + 锚定补偿（跟随态钉底；非跟随态顶部锚行恢复原屏幕位置）。
-    private func trySwitchLayoutWidth() {
-        guard let cv = collectionView, cv.window != nil else { return }
-        let current = cv.bounds.width
-        // 【修复批 A】动画时长门：列宽动画 0.42s 的 ease 尾段帧差 <0.5pt 会误骗
-        // 0.1s 去抖（真机 fluid-diag 实证：假切换 pendingW=905.21/667.90 中间值、
-        // 一次开合切 2-3 段）。首次宽度变化起 0.55s 内（动画+余量）绝不切换。
-        if CACurrentMediaTime() - fluidStartedAt < 0.55 {
-            scheduleWidthSwitchRetry()
+    /// 【rail R9-1】rail 中途换目标：fromFrames=当前混合 itemFrames（快照），
+    /// 目标=新 hint 预计算（池大概率缓存命中，同帧可启）；新 WidthRail 于
+    /// startRail 重置时钟（RAIL-START 重复 note——每次起跑必落）。
+    private func restartRail(to newHint: CGFloat) {
+        guard collectionView?.window != nil, dataSource != nil else { return }
+        // 旧 rail 簿记熄灯（不写 offset 不结算——新 rail 起跑重置基线）。
+        widthRail = nil
+        railSettleCounting = false
+        activeHintWidth = newHint
+        // 布局保持 rail 冻结态（当前混合帧原样，prepare 持续早退）；
+        // startPrecompute 完成时 beginRail(fromFrames: 混合快照, toFrames: 新端)
+        // 从中途续跑。
+        startPrecompute(targetViewportWidth: newHint)
+    }
+
+    // MARK: 【rail R2】预计算切片（4ms 预算 + 8ms 间隙；railPrecomputeGen 防串）
+
+    /// rail 前置条件门 + 切片启动。rail 未启动期间 layoutWidth 恒旧值 →
+    /// prepare 产物不变 → "窗框动画不动"，零跳变（旧布局冻结语义）。
+    private func startPrecompute(targetViewportWidth: CGFloat) {
+        guard collectionView?.window != nil, dataSource != nil else { return }
+        let targetContentWidth = targetViewportWidth
+            - messageLayout.sectionInset.left - messageLayout.sectionInset.right
+        guard targetContentWidth > 1 else { return }
+        railPrecomputeGen += 1
+        let generation = railPrecomputeGen
+        railPrecompute = RailPrecompute(
+            targetViewportWidth: targetViewportWidth,
+            targetContentWidth: targetContentWidth,
+            generation: generation,
+            cursor: 0,
+            // 启动时刻 currentItems 快照（身份固定；流式新增行走 startRail
+            // 同步补量——身份集变化本身走 land-on-identity-change，R9-7）。
+            snapshot: currentItems,
+            startedAt: CACurrentMediaTime())
+        runPrecomputeSlice(generation)
+    }
+
+    private func runPrecomputeSlice(_ generation: Int) {
+        guard var pc = railPrecompute, pc.generation == generation else { return }
+        guard collectionView?.window != nil, dataSource != nil else {
+            // 离场（R9-10）：作废（rail 不再起跑；下一 hint 重入重建）。
+            railPrecompute = nil
             return
         }
-        // 【重做批5-R2 · 容差 2026-10-08】精确 == 与 prepare 上报死区 0.5pt
-        // 口径不一致（上报 |bounds-layoutWidth|>0.5）→ 动画末帧 bounds 与最后
-        // 一次上报值差 0~0.5pt 时本 guard 永假 = 切换永久卡死带（且无自愈）。
-        // 改 0.5pt 容差与上报口径对齐。
-        guard abs(current - pendingWidth) <= 0.5, pendingWidth != stableLayoutWidth,
-              pendingWidth > 1 else {
-            // 【修复批 A】宽度未达 pending（尾段慢爬/尚未稳定）→ 续期去抖重试，
-            // 防 timer 一次性消费后陷入僵尸态（480ms 空窗实证）。
-            if fluidReflowActive { scheduleWidthSwitchRetry() }
+        let sliceStart = CACurrentMediaTime()
+        while pc.cursor < pc.snapshot.count,
+              (CACurrentMediaTime() - sliceStart) < 0.004 {
+            let item = pc.snapshot[pc.cursor]
+            pc.cursor += 1
+            // 缓存命中即跳过（P1 预热的主收益面；未命中 remeasure 同步量高
+            // + 直写 cache，与既有量高路径同缝——reportsHeight=false 不挂
+            // 上报桥）。
+            if pool.cachedHeight(id: item.id, width: pc.targetContentWidth) != nil {
+                continue
+            }
+            _ = pool.remeasure(
+                id: item.id, width: pc.targetContentWidth,
+                signature: "v\(contentVersions[item.id] ?? 0)",
+                makeContent: { [weak self] in
+                    guard let self else { return AnyView(Color.clear) }
+                    return self.makeNodeContent(item, reportsHeight: false)
+                })
+        }
+        railPrecompute = pc
+        if pc.cursor < pc.snapshot.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+                guard let self, self.railPrecompute?.generation == generation else { return }
+                self.runPrecomputeSlice(generation)
+            }
             return
         }
-        // 【流体重排 v2】预重测门拆除：动画期高度已由显示面回传真值收敛
-        // （fluidHeights），收尾=落池+全量重摆；离屏行旧值经既有 stale 切片
-        // 渐进重测自愈——不再等全量预重测（"停 0.5s+两连跳"根因）。
-        // 【修复批 D】落地宽度用 cv.bounds.width 真值（非 pendingWidth）——
-        // 上报链 0.5pt 容差内的残差（真机实证 514.29 vs 514.0）会进入池宽度键，
-        // 与回传对账口径（contentWidth() 从 stableLayoutWidth 推导）差 0.29pt：
-        // stale 重测链 entry.width == contentWidth() 精确比较恒 false 全部丢弃、
-        // 回传 updateHeight 宽度键 miss → 离屏行池值停留旧宽 → 滚入视口池 miss
-        // 同步量高 + 结算窗锚定恢复大跳（+351pt 实锤）。guard 已保证
-        // |bounds - pendingWidth| <= 0.5，落点取真值语义不变、键精确对齐。
-        stableLayoutWidth = cv.bounds.width
-        messageLayout.layoutWidth = cv.bounds.width
-        // 【流体诊断】切换落地必落盘（低频 note 不入缓冲）+ 冲刷动画期
-        // 逐帧缓冲（LIVE-CHANGE/PASS1/PASS2/PIN/ANCHOR/H-FLUID 全量落档）。
-        WOFluidDiag.note("FLUID-SWITCH pendingW=\(pendingWidth) fluidHeights=\(fluidHeights.count) settleWindow=+1.0")
-        WOFluidDiag.dump(reason: "switch")
-        // 【流体重排】一次切换落地=全量真值就位 → 流体模式熄灯（锚定补偿
-        // 交给下方既有 pendingAnchorRestore/钉底路径收尾）。
-        fluidReflowActive = false
-        fluidAnchor = nil
-        // 【修复批 A】成功切换=流体结束，动画时长门时钟归零。
-        fluidStartedAt = 0
-        let contentWidth = cv.bounds.width - messageLayout.sectionInset.left
-            - messageLayout.sectionInset.right
-        // 动画期显示面回报的真值批量落池（量测宽=收尾前最后帧宽≈终宽；微差
-        // 由切换后显示面回传自愈）。可见行零回归，离屏行走 stale 渐进重测。
-        for (id, h) in fluidHeights {
-            pool.forceHeight(id: id, width: contentWidth, height: h,
-                             signature: "v\(contentVersions[id] ?? 0)")
+        // 预计算完成 → rail 起跑（precomputeMs 观测点=RAIL-START，R9-5）。
+        let precomputeMs = (CACurrentMediaTime() - pc.startedAt) * 1000
+        railPrecompute = nil
+        startRail(targetViewportWidth: pc.targetViewportWidth,
+                  targetContentWidth: pc.targetContentWidth,
+                  precomputeMs: precomputeMs)
+    }
+
+    // MARK: 【rail R3-R5】rail 起跑 / 逐帧 tick / 落地
+
+    /// rail 起跑：toFrames=按 currentItems 顺序对池值 O(n) 累加（y 起点
+    /// sectionInset.top，x=left，宽=targetContentWidth，步进 lineSpacing）；
+    /// fromFrames=当前 itemFrames 快照（restart 时=混合帧）；锚/贴底基线
+    /// 捕获 → startMotion → RAIL-START。
+    private func startRail(targetViewportWidth: CGFloat,
+                           targetContentWidth: CGFloat,
+                           precomputeMs: Double) {
+        guard let cv = collectionView, cv.window != nil, dataSource != nil else { return }
+        // warm 统计先于补量（真反映预计算/预热命中率）。
+        let warmCount = currentItems.filter {
+            pool.cachedHeight(id: $0.id, width: targetContentWidth) != nil
+        }.count
+        var toFrames: [CGRect] = []
+        toFrames.reserveCapacity(currentItems.count)
+        var y = messageLayout.sectionInset.top
+        for item in currentItems {
+            // 池值直用；预计算快照外新增行（流式插入）同步补量一次。
+            let height = pool.cachedHeight(id: item.id, width: targetContentWidth)
+                ?? pool.remeasure(
+                    id: item.id, width: targetContentWidth,
+                    signature: "v\(contentVersions[item.id] ?? 0)",
+                    makeContent: { [weak self] in
+                        guard let self else { return AnyView(Color.clear) }
+                        return self.makeNodeContent(item, reportsHeight: false)
+                    })
+            toFrames.append(CGRect(x: messageLayout.sectionInset.left, y: y,
+                                   width: targetContentWidth, height: height))
+            y += height + messageLayout.lineSpacing
         }
-        fluidHeights = [:]
-        // 【抽动根修 2026-10-09】切换结算窗 1s：动画期回传高度与终宽真值存在
-        // 残余差（高度早停报的行停留在中间宽实测值），切换后首批回报与 stale
-        // 切片重测若走 ≥20 披露路由 = 可见行逐行 0.32s 动画 + followsBottom
-        // 被断 + 锚定恢复交错 = 收尾后"上下反复抽动"（真机实证：重排完约
-        // 0.2s 起持续抽动）。窗口内一切修正走直写（follow 钉底/非 follow
-        // 锚定恢复）视觉零扰动；窗口结束 settle snap 兜底校准。
-        initialStabilizingUntil = CACurrentMediaTime() + 1.0
-        stabilizingSnapPending = true
-        if !followsBottom, !expanding {
-            pendingAnchorRestore = AnchorRestore(
-                anchor: captureTopAnchor(),
-                oldContentHeight: cv.contentSize.height,
-                strict: true)
-        }
+        let fromContentHeight = messageLayout.currentContentHeight
+        messageLayout.beginRail(fromFrames: messageLayout.snapshotFrames(),
+                                toFrames: toFrames)
+        let followsBottomAtStart = followsBottom
+        let anchor: (id: String, viewportY: CGFloat)? = followsBottomAtStart
+            ? nil : captureTopAnchor()
+        widthRail = WidthRail(
+            targetViewportWidth: targetViewportWidth,
+            startTime: CACurrentMediaTime(),
+            duration: WOMotion.sidebarRailDuration,
+            followsBottomAtStart: followsBottomAtStart,
+            anchor: anchor,
+            fromContentHeight: fromContentHeight)
+        railDiagLastOff = cv.contentOffset.y - 1000
+        WOFluidDiag.note(String(
+            format: "RAIL-START(target=%.1f warm=%d/%d precomputeMs=%.1f)",
+            targetViewportWidth, warmCount, currentItems.count, precomputeMs))
+        startMotion()
+    }
+
+    /// 每帧 tick（advanceMotion 顶部 rail 分支独占该帧——收敛/生长不参与）。
+    /// 曲线/时长读 Motion.swift 单源（R3，零硬编码副本）；offset 精确直写
+    /// （R5：与混合帧同一套算术——确定性优先，不依赖 UIKit 本帧是否已应用
+    /// 布局）；p≥1 自停落地（R7）。
+    private func railTick(_ link: CADisplayLink, collectionView cv: UICollectionView) {
+        guard let rail = widthRail else { return }
+        let elapsed = max(0, link.targetTimestamp - rail.startTime)
+        let p = min(1.0, elapsed / rail.duration)
+        let eased = CGFloat(WORailCurve.progress(p))
+        messageLayout.updateRailProgress(eased)
         messageLayout.invalidateLayout()
-        if followsBottom {
-            // 贴底态：直写钉底（【QA P2-1 修】async 内先 layoutIfNeeded 确保
-            // 新宽 prepare 已跑完、contentSize 为新真值，再落 offset——否则
-            // 可能取到旧 contentSize 落错位；viewDidLayoutSubviews 的收敛链
-            // 兜底仍在）。
+        // offset 直写：贴底=blendH 落点；非贴底=锚行 blend minY − viewportY。
+        // 拖拽/惯性中不抢（正常情况 willBeginDragging 已走 cancelWidthRail，
+        // 此为双保险）。
+        if !cv.isDragging, !cv.isDecelerating {
+            var target: CGFloat?
+            if rail.followsBottomAtStart {
+                target = CGFloat(WOMessageListSupport.bottomOffset(
+                    contentHeight: Double(messageLayout.currentContentHeight),
+                    viewportHeight: Double(cv.bounds.height),
+                    topInset: Double(cv.adjustedContentInset.top),
+                    bottomInset: Double(cv.adjustedContentInset.bottom)))
+            } else if let anchor = rail.anchor,
+                      let index = currentItems.firstIndex(where: { $0.id == anchor.id }) {
+                let frames = messageLayout.snapshotFrames()
+                if index < frames.count {
+                    target = frames[index].minY - anchor.viewportY
+                }
+            }
+            if target == nil, !rail.followsBottomAtStart {
+                // 锚行被移除降级（R9-7）：按内容高差平移兜底。
+                target = cv.contentOffset.y
+                    + (messageLayout.currentContentHeight - rail.fromContentHeight)
+            }
+            if let target {
+                cv.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+                // 【流体诊断】RAIL-TICK（off 变 >0.5pt 才记，防刷屏）。
+                if abs(target - railDiagLastOff) > 0.5 {
+                    WOFluidDiag.record(String(format: "RAIL-TICK p=%.3f off=%.1f",
+                                              p, target))
+                    railDiagLastOff = target
+                }
+            }
+        }
+        if p >= 1 {
+            finishWidthRail(writeOffset: true)
+        }
+    }
+
+    /// 【rail R7】rail 落地（旧"一次切换"的重构落地件）：一次切真
+    /// 布局，零修正零级联。无假切换面——无 0.55s 时长门、无去抖容差
+    /// 对账、无 0.5pt 键漂移（落地宽=hint 显式值，非上报真值）。
+    /// 无 pendingAnchorRestore（非贴底态末帧已钉锚位）。
+    private func finishWidthRail(writeOffset: Bool) {
+        guard let rail = widthRail else { return }
+        widthRail = nil
+        messageLayout.endRail()
+        stableLayoutWidth = rail.targetViewportWidth
+        messageLayout.layoutWidth = rail.targetViewportWidth
+        // 探针：FLUID-SWITCH 标签保留连续性（rail 落地继续发）+ 缓冲冲刷。
+        WOFluidDiag.note(String(
+            format: "FLUID-SWITCH rail-target=%.1f dur=%.3f settleWindow=+1.0",
+            rail.targetViewportWidth, CACurrentMediaTime() - rail.startTime))
+        WOFluidDiag.dump(reason: "rail-end")
+        initialStabilizingUntil = CACurrentMediaTime() + 1.0
+        stabilizingSnapPending = rail.followsBottomAtStart
+        messageLayout.invalidateLayout()
+        // 结算窗 commit 计数（RAIL-END settleCount=窗内 COMMIT 数；窗满补记，
+        // 代际令牌防 restart 链串窗）。
+        railSettleCounting = true
+        railSettleCommitCount = 0
+        railSettleGeneration += 1
+        let settleGeneration = railSettleGeneration
+        let railDuration = CACurrentMediaTime() - rail.startTime
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.05) { [weak self] in
+            guard let self, self.railSettleCounting,
+                  self.railSettleGeneration == settleGeneration else { return }
+            self.railSettleCounting = false
+            WOFluidDiag.note(String(
+                format: "RAIL-END dur=%.3f settleCount=%d",
+                railDuration, self.railSettleCommitCount))
+        }
+        // 贴底态收尾（既有 QA P2-1 修同款）：async 内先 layoutIfNeeded 确保
+        // 新宽 prepare 跑完、contentSize 为新真值，再落 offset。
+        if writeOffset, rail.followsBottomAtStart {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let cv = self.collectionView, cv.window != nil else { return }
                 cv.layoutIfNeeded()
                 cv.setContentOffset(CGPoint(x: 0, y: self.bottomOffset), animated: false)
             }
         }
-        pendingWidth = 0
+        // rail tick 自停（R7：link.invalidate——startMotion 既有 guard 天然
+        // 防重入，后续几何运动按需重启）。
+        stopMotion()
+    }
+
+    /// 【rail R9-6】拖拽/惯性接管：跳终态落地（stable=目标、结算窗）但
+    /// **不写 offset**（用户接管）；后续修正走结算窗直写。
+    private func cancelWidthRail(userTakeover: Bool) {
+        guard widthRail != nil else { return }
+        _ = userTakeover // 语义标记（当前唯一调用点=用户拖拽接管）
+        messageLayout.updateRailProgress(1)
+        finishWidthRail(writeOffset: false)
+    }
+
+    // MARK: 【rail T05 P1】空闲预热（四契约宽度批量池预热）
+
+    /// 契约候选内容宽（架构文档 §R2）：[viewport−56, viewport−280,
+    /// viewport−456, viewport−680] − 32（insets 合计）。非法值/当前内容宽剔除。
+    private func prewarmWidths(viewport: CGFloat) -> [CGFloat] {
+        var widths: [CGFloat] = []
+        let current = contentWidth()
+        for delta in [CGFloat(56), 280, 456, 680] {
+            let w = viewport - delta - 32
+            guard w > 1, abs(w - current) > 0.5 else { continue }
+            if !widths.contains(w) { widths.append(w) }
+        }
+        return widths
+    }
+
+    /// 空闲预热调度（0.6s 去抖；streaming 暂停、rail/precompute 在途让位）。
+    private func schedulePrewarm() {
+        guard phase != .streaming, widthRail == nil, railPrecompute == nil else { return }
+        prewarmWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.startPrewarm() }
+        prewarmWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    private func startPrewarm() {
+        guard let cv = collectionView, cv.window != nil, dataSource != nil,
+              !currentItems.isEmpty else { return }
+        guard widthRail == nil, railPrecompute == nil, phase != .streaming else { return }
+        let widths = prewarmWidths(viewport: cv.bounds.width)
+        guard !widths.isEmpty else { return }
+        prewarmGen += 1
+        runPrewarmSlice(generation: prewarmGen, widths: widths,
+                        widthIndex: 0, cursor: 0, rowsWarmed: 0)
+    }
+
+    /// 预热切片（4ms 预算 + 8ms 间隙复用；cachedHeight 命中即跳过；批粒度
+    /// PREWARM record；rail/precompute 抢占即作废——rail 几何优先）。
+    private func runPrewarmSlice(generation: Int, widths: [CGFloat],
+                                 widthIndex: Int, cursor: Int, rowsWarmed: Int) {
+        guard generation == prewarmGen, widthIndex < widths.count else { return }
+        guard collectionView?.window != nil, dataSource != nil else { return }
+        guard widthRail == nil, railPrecompute == nil, phase != .streaming else { return }
+        let width = widths[widthIndex]
+        let sliceStart = CACurrentMediaTime()
+        var index = cursor
+        var warmed = rowsWarmed
+        while index < currentItems.count,
+              (CACurrentMediaTime() - sliceStart) < 0.004 {
+            let item = currentItems[index]
+            index += 1
+            if pool.cachedHeight(id: item.id, width: width) != nil { continue }
+            warmed += 1
+            _ = pool.remeasure(
+                id: item.id, width: width,
+                signature: "v\(contentVersions[item.id] ?? 0)",
+                makeContent: { [weak self] in
+                    guard let self else { return AnyView(Color.clear) }
+                    return self.makeNodeContent(item, reportsHeight: false)
+                })
+        }
+        if index >= currentItems.count {
+            WOFluidDiag.record(String(format: "PREWARM(w=%.1f rows=%d)", width, warmed))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+                guard let self, generation == self.prewarmGen else { return }
+                self.runPrewarmSlice(generation: generation, widths: widths,
+                                     widthIndex: widthIndex + 1, cursor: 0,
+                                     rowsWarmed: 0)
+            }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+            guard let self, generation == self.prewarmGen else { return }
+            self.runPrewarmSlice(generation: generation, widths: widths,
+                                 widthIndex: widthIndex, cursor: index,
+                                 rowsWarmed: warmed)
+        }
     }
 
     private func runRemeasureSlice(generation: Int, index: Int) {
@@ -1584,8 +1967,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         historyLoading = false
         viewModel.commitHistoryWindowExpansion(to: expandedStart)
         let restore = AnchorRestore(anchor: anchor,
-                                    oldContentHeight: oldContentHeight,
-                                    strict: false)
+                                    oldContentHeight: oldContentHeight)
         if applyInFlight {
             // 【CI修50】在途 apply：锚定寄存，落地后入位（防旧帧提前消费）。
             deferredExpansionAnchor = restore
@@ -1643,14 +2025,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                                     anchor.id, collectionView.contentOffset.y,
                                     attrs.frame.minY - anchor.viewportY))
             let targetY = attrs.frame.minY - anchor.viewportY
-            // 【修复批 C】保险丝：切换收尾恢复（strict）的锚位跳变超阈值 = 排版态
-            // 异常（真机实证假切换期 ANCHOR-RESTORE 拉跳 -730/-835pt）——放弃直写，
-            // 保持当前 offset（下一帧补偿/钉底收敛自愈）。扩窗路径（strict=false）
-            // 不钳制：上方插入内容的大位移是正常语义。
-            if restore.strict, abs(targetY - collectionView.contentOffset.y) > 300,
-               !collectionView.isDragging, !collectionView.isDecelerating {
-                return
-            }
+            // 【rail T04 #12】300pt 保险丝随旧 trySwitch 收尾路径退役——唯一
+            // true 来源已死；扩窗路径（不钳制）语义不变：上方插入内容的大
+            // 位移是正常语义。
             collectionView.contentOffset.y = targetY
         } else {
             // 锚点被换出（如视口内只剩历史头）：按内容高度差兜底平移。
@@ -1667,115 +2044,25 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 【重做批5-R2 · 宽度切换链救活 2026-10-08】shouldInvalidateLayout 恒
-        // false 后，纯容器 resize（侧栏开合）不再触发 prepare 重跑（标准
-        // UICollectionViewLayout 行为：false 即不 invalidate）→ onLiveWidth
-        // Change 死火 → 预重测/一次切换整链成为死代码（list-diag 实锤：右栏
-        // 开合 width 706→1106 而 contentH 恒 4410、41 行高度全同=排版宽没切；
-        // 连带冻结门 == 恒假 → 展开回传被丢 = "展开打不开"）。
-        // 修=布局 pass 主动巡检宽度差（动画中每帧幂等：handleLiveWidthChange
-        // 刷 pendingWidth + 0.1s 去抖；v2.1 起预重测已退役，动画期由同帧双
-        // 排版逐帧 live 重排——见 fluid 重排块注），切换链与原 prepare 被动
-        // 上报完全同路径。
-        if let cv = collectionView, cv.window != nil {
-            if abs(cv.bounds.width - stableLayoutWidth) > 0.5,
-               abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
-                handleLiveWidthChange(cv.bounds.width)
-            } else if fluidReflowActive,
-                      abs(cv.bounds.width - stableLayoutWidth) <= 0.5 {
-                // 【流体重排】宽度回到稳定值（快速开合未触发切换）：直接归位
-                // 结束流体，排版宽回稳定值；中间宽的回传值作废（稳定宽真值
-                // 由池与回传链重建）。
-                fluidReflowActive = false
-                fluidAnchor = nil
-                // 【修复批 A】归位结束流体，动画时长门时钟一并归零。
-                fluidStartedAt = 0
-                fluidHeights = [:]
-                // 【QA P2-5 修】归位同时清去抖残留（pendingWidth/timer——
-                // 守卫本可拦，清掉防脏值滞留）。
-                pendingWidth = 0
-                widthSwitchTimer?.cancel()
-                messageLayout.layoutWidth = stableLayoutWidth
-                messageLayout.invalidateLayout()
-            }
-            // 【流体重排 v2.1 · 同帧双排版】fluid 期每帧：排版宽跟手后**同帧
-            // 排两遍**——第一遍按上一帧高度排 + cells 以新宽 reflow（回传桥
-            // 在布局链内同步回报**当帧真高**入 fluidHeights）；紧接着第二遍
-            // 用刚到的真高定格。高度从"慢一帧"变"当帧精确"=用户拍板的锚点
-            // 挤压方案（钉视口顶缘锚点、下方实时挤压）真正成立：锚点下方
-            // 行不再被逐帧修正推挤（v2 实测"非贴底开/关都乱动"根因）。
-            // 同时删预热（P2-1 反噬：表格/重排版行单价 1-5ms×15 行=开合瞬间
-            // 卡一下——真机会话实证），双排版以零量高成本达到当帧精度。
-            // 重入安全：layoutIfNeeded 的嵌套 pass 宽度差已归零各块幂等；
-            // 第二遍后回传值不变（host 宽不变、intrinsic 同值）→ 无循环。
-            if fluidReflowActive,
-               abs(cv.bounds.width - messageLayout.layoutWidth) > 0.5 {
-                // 【修复批 B】双排版进行中：抑制重入 layout pass 的逐帧锚定
-                // 补偿，最外层收口统一补一次（真机实证同帧 PASS1→ANCHOR-COMP
-                // →PASS2 三写 offset）。该块无早退，直接首尾两行赋值。
-                isInsideDualPass = true
-                messageLayout.layoutWidth = cv.bounds.width
-                messageLayout.invalidateLayout()
-                cv.layoutIfNeeded()
-                // 【流体诊断】第一遍排版快照（纯记录，只读）。
-                WOFluidDiag.record("PASS1 " + fluidFrameSnapshot())
-                messageLayout.invalidateLayout()
-                cv.layoutIfNeeded()
-                // 【流体诊断】第二遍排版快照（纯记录，只读）。
-                WOFluidDiag.record("PASS2 " + fluidFrameSnapshot())
-                isInsideDualPass = false
-            }
-        }
+        // 【rail T04】旧宽度巡检/归位/双排版/逐帧补偿四块随流体重排机器退役
+        //（R8-#6/#7/#8）——rail 期布局由 messageLayout 混合帧 + railTick
+        // offset 直写承担（确定性插值，无逐帧试探）。
         // 【修复3-c】推迟的首帧定位每帧重试（几何就绪即消耗；本 pass 布局
         // 刚跑过 → 不强制 layoutIfNeeded）。
         tryInitialPositioning(forceLayout: false)
-        // 【CI修49】stale 重测切片调度（prepare 期间收集的宽度变化行——
-        // 空队列时零成本）。
+        // 【CI修49】stale 重测切片调度（rail/precompute 在途时 guard 早退）。
         drainStaleSweep()
         if let restore = pendingAnchorRestore {
             pendingAnchorRestore = nil
             restoreTopAnchor(restore)
             return
         }
-        // 【流体重排】逐帧锚定补偿：贴底态钉底（底缘随内容高度平滑移动）；
-        // 非贴底态把锚行钉在原屏幕位（"位置不变"语义=重排只有排版在变，
-        // 眼前内容不跳）。拖拽/惯性中不抢（用户手优先）。pendingAnchor
-        // Restore 消费帧让位（上方 return）不双写。
-        if fluidReflowActive, !isInsideDualPass, let cv = collectionView, cv.window != nil,
-           !cv.isDragging, !cv.isDecelerating {
-            if followsBottom {
-                // 【流体诊断】钉底探针（纯记录：落点变 >0.5pt 才记，防每帧
-                // 刷屏；记录不影响直写动作本身）。
-                let off = bottomOffset
-                if abs(off - fluidDiagLastPinOff) > 0.5 {
-                    WOFluidDiag.record(String(format: "PIN-BOTTOM off=%.1f -> %.1f",
-                                              cv.contentOffset.y, off))
-                    fluidDiagLastPinOff = off
-                }
-                cv.setContentOffset(CGPoint(x: 0, y: off), animated: false)
-            } else if let anchor = fluidAnchor,
-                      let index = currentItems.firstIndex(where: { $0.id == anchor.id }),
-                      let attrs = collectionView.collectionViewLayout
-                          .layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
-                let targetY = attrs.frame.minY - anchor.viewportY
-                if abs(cv.contentOffset.y - targetY) > 0.5 {
-                    // 【流体诊断】锚行补偿探针（纯记录：目标变 >0.5pt 才记）。
-                    if abs(targetY - fluidDiagLastAnchorY) > 0.5 {
-                        WOFluidDiag.record(String(format: "ANCHOR-COMP id=%@ off=%.1f -> %.1f (targetY=%.1f)",
-                                                  anchor.id, cv.contentOffset.y,
-                                                  targetY, targetY))
-                        fluidDiagLastAnchorY = targetY
-                    }
-                    cv.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
-                }
-            }
-        }
         // 键盘弹出等诱发的 layout pass：不直接写 offset（单一驱动点红线），
         // 只唤醒 display link（距底 >0.5 且跟随态）——收敛由 tick 完成。
-        // （fluid 期跳过：钉底由上方逐帧补偿直写，收敛链不参与防打架。）
+        // （rail 期天然不参与：motionLink 被 rail 分支独占。）
         // 【重做批6-R2 · 稳定期例外 2026-10-08】打开稳定期内直写钉底（用户
-        // 拍板"打开会话直线呈现"=零可见运动；见 scrollToBottom 注）。
-        if followsBottom, !fluidReflowActive, motionLink == nil, let cv = collectionView,
+        // 拍板"打开会话直线呈现"=零可见运动）。
+        if followsBottom, motionLink == nil, let cv = collectionView,
            cv.window != nil, abs(cv.contentOffset.y - bottomOffset) > 0.5 {
             if CACurrentMediaTime() < initialStabilizingUntil {
                 cv.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
@@ -1786,6 +2073,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 【修复3-e】稳定期结束兜底校准（一次性；用户已拖拽不动作）。
         settleSnapIfDue()
         updateBottomButton()
+        // 【rail T05 P1】空闲预热调度（0.6s 去抖；streaming/rail 让位）。
+        schedulePrewarm()
     }
 
     /// 贴底落点（lody bottomOffset :250-254 同型；adjustedContentInset 口径
@@ -1837,7 +2126,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 判定）；自停条件 = 非跟随或已收敛到半像素内。
     @objc func advanceMotion(_ link: CADisplayLink) {
         guard let cv = collectionView, cv.window != nil else {
+            // 【rail R9-10】离场期 rail 强制收口（不写 offset）+ link 停摆。
+            if widthRail != nil { finishWidthRail(writeOffset: false) }
             stopMotion()
+            return
+        }
+        // 【rail R3】rail 分支独占该帧（rail tick 与贴底收敛/生长插值同属
+        // "几何运动单源"，一条 link 一套 invalidate 生命周期——rail 在途时
+        // 收敛/生长逻辑不参与；rail tick 自身在 p≥1 时 invalidate 自停，
+        // startMotion 既有 guard（motionLink==nil）天然防重入）。
+        if widthRail != nil {
+            railTick(link, collectionView: cv)
             return
         }
         let elapsed = min(1.0 / 30, max(0, link.targetTimestamp - motionTime))
@@ -1868,7 +2167,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         let disclosureActive = growthAnims.values.contains { $0.kind == .disclosure }
         let bottom = bottomOffset
         let tracking = followsBottom && !cv.isDragging && !cv.isDecelerating
-            && !disclosureActive && !fluidReflowActive
+            && !disclosureActive
         if tracking {
             let scale = cv.traitCollection.displayScale > 0
                 ? Double(cv.traitCollection.displayScale) : 3.0
@@ -1910,14 +2209,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     func shutdown() {
         stopMotion()
         growthAnims = [:] // 【重做批6】拆解清生长队列
-        // 【流体重排】拆解清流体状态（防跨会话残留锚行 id）。
-        fluidReflowActive = false
-        fluidAnchor = nil
-        // 【重做批5 · 解耦】宽度状态机收口（去抖计时作废；v2 无预重测切片，
-        // 流体回传值随会话作废）。
-        widthSwitchTimer?.cancel()
-        widthSwitchTimer = nil
-        fluidHeights = [:]
+        // 【rail R9-10】拆解清 rail 状态（防跨会话残留；gen 作废在途切片）。
+        widthRail = nil
+        railPrecompute = nil
+        railPrecomputeGen += 1
+        activeHintWidth = 0
+        railSettleCounting = false
+        if messageLayout?.isRailActive == true { messageLayout?.endRail() }
+        // 【rail T05】预热作废。
+        prewarmGen += 1
+        prewarmWorkItem?.cancel()
+        prewarmWorkItem = nil
         expansionGeneration += 1 // 在途量高切片作废
         // 【重做批3 · R1】滚动停止门待办一并清（QA P2-1：dismantle 后 didEnd
         // 系列仍可能触发，防在已拆解 core 上空跑 sync）。
@@ -2156,10 +2458,10 @@ extension WOMessageListCore: UIScrollViewDelegate {
     /// lody pauseTracking :179-185 同语义：手指一碰即断（绝不 yank）。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         followsBottom = false
-        // 【QA P2-1 修 2026-10-09】fluid 期用户拖拽=接管滚动位置：清流体锚
-        // （否则拖拽让位结束后下一帧补偿把 offset 拉回 fluid 起点锚位，丢弃
-        // 用户刚滚到的位置）。流体重排本身继续，收尾精确切换兜底。
-        fluidAnchor = nil
+        // 【rail R9-6】rail 期用户拖拽 = 接管滚动位置：跳终态落地（stable=
+        // 目标、结算窗）但不写 offset——用户刚滚到的位置不被 yank；后续
+        // 修正走结算窗直写。
+        cancelWidthRail(userTakeover: true)
         updateBottomButton()
     }
 
@@ -2223,30 +2525,9 @@ extension WOMessageListCore: WOMessageListLayoutDelegate {
         // 【重做批6 · 同出生长覆盖】生长动画中的行显示插值中间值（从 0 长到
         // 池真值——物理顶开旧行+内容淡入=参考件同出）。
         if let growing = growthDisplayHeight(id: item.id) { return growing }
-        // 【流体重排 v2】动画期**零同步量高**（逐帧量十几个行=超级卡根因）：
-        // ①同宽池缓存直用；②显示面回传真值（可见 cell 随容器宽逐帧重排，
-        // 回传桥报的就是当前宽真高——上一帧起逐行收敛，位置由逐帧锚定补偿
-        // 钉住）；③离屏行旧宽真值×宽度比近似（不可见；收尾 trySwitch 落池
-        // +stale 切片渐进重测兜底）；④完全未知（首帧新行）才同步量一次。
-        if fluidReflowActive {
-            if let cached = pool.cachedHeight(id: item.id, width: width) {
-                return cached
-            }
-            if let reported = fluidHeights[item.id] {
-                return reported
-            }
-            let oldContentWidth = stableLayoutWidth - messageLayout.sectionInset.left
-                - messageLayout.sectionInset.right
-            if oldContentWidth > 1,
-               let old = pool.cachedHeight(id: item.id, width: oldContentWidth) {
-                return max(24, old * width / oldContentWidth)
-            }
-            let measure: () -> AnyView = { [weak self] in
-                guard let self else { return AnyView(Color.clear) }
-                return self.makeNodeContent(item, reportsHeight: false)
-            }
-            return pool.measureOnly(id: item.id, width: width, makeContent: measure)
-        }
+        // 【rail T04 #9】旧 fluid 分支（同宽池直读/回传真值/宽度比近似/
+        // 纯量高兜底）随流体重排机器退役——rail 期本函数不可达
+        //（prepare 早退零 delegate 询问）。常规三级缓存路径不变。
         // 三级缓存：签名/宽度未变 → 高度直读；变 → 池视图重测（量高与显示
         // 同一内容装配缝——identity 锚 .id(item.id)；CI修48：装配统一走
         // makeNodeContent，量高路径 reportsHeight=false 不挂上报桥）。

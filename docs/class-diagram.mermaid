@@ -1,0 +1,123 @@
+classDiagram
+    %% 侧栏开合确定性宽度动画 —— 关键类与关系（rail 方案）
+
+    class Motion {
+        <<file Motion.swift>>
+        +WORailCurve : enum
+        +sidebarRailDuration : Double = 0.42
+        +bezier(duration:) Animation
+    }
+    class WORailCurve {
+        <<file-scope enum>>
+        +controlPoints : (Double,Double,Double,Double) = (0.4,0,0.2,1)
+        +progress(x : Double) Double
+    }
+
+    class WOAppFrame {
+        <<SwiftUI View>>
+        +store : WOLayoutStore
+        +center : (_ width: CGFloat) -> Center
+        +sidebar : (_ collapsed: Bool, _ width: CGFloat) -> Sidebar
+    }
+    class WORootFrame {
+        <<SwiftUI View>>
+        -centerRegion(widthHint : CGFloat) some View
+    }
+    class WOChatView {
+        <<SwiftUI View>>
+        +widthHint : CGFloat = 0
+        -messageList() some View
+    }
+    class WOMessageListView {
+        <<UIViewControllerRepresentable>>
+        +viewModel : ChatViewModel
+        +nodes : [DisplayNode]
+        +widthHint : CGFloat
+        +updateUIViewController(core, context)
+    }
+    class WOMessageListCore {
+        <<UIViewController @MainActor>>
+        +widthHint : CGFloat = 0
+        +activeHintWidth : CGFloat = 0
+        -railPrecompute : RailPrecompute?
+        -railPrecomputeGen : Int
+        -widthRail : WidthRail?
+        -stableLayoutWidth : CGFloat
+        -initialStabilizingUntil : CFTimeInterval
+        -growthAnims : [String: GrowthAnim]
+        +applyUpdate(..., widthHint : CGFloat)
+        -processWidthHint()
+        -startPrecompute(target : CGFloat)
+        -startRail()
+        -railTick(_ link : CADisplayLink)
+        -finishWidthRail()
+        -cancelWidthRail(userTakeover : Bool)
+        -restartRail(newHint : CGFloat)
+        -nodeHeightChanged(id, height)
+        -drainStaleSweep()
+    }
+    class RailPrecompute {
+        <<struct>>
+        +targetViewportWidth : CGFloat
+        +targetContentWidth : CGFloat
+        +generation : Int
+        +cursor : Int
+        +snapshot : [WOMListNode]
+        +startedAt : CFTimeInterval
+    }
+    class WidthRail {
+        <<struct>>
+        +targetViewportWidth : CGFloat
+        +startTime : CFTimeInterval
+        +duration : CFTimeInterval
+        +followsBottomAtStart : Bool
+        +anchor : (id : String, viewportY : CGFloat)?
+    }
+    class WOMessageListLayout {
+        <<UICollectionViewLayout>>
+        +layoutWidth : CGFloat
+        +onLiveWidthChange : ((CGFloat) -> Void)?
+        +isRailActive : Bool {private(set)}
+        +currentContentHeight : CGFloat
+        -railFromFrames : [CGRect]
+        -railToFrames : [CGRect]
+        +beginRail(fromFrames : [CGRect], toFrames : [CGRect])
+        +updateRailProgress(p : CGFloat)
+        +endRail()
+        +prepare()
+    }
+    class WOMessageListSupport {
+        <<enum 纯函数库>>
+        +blendFrame(a : CGRect, b : CGRect, p : Double) CGRect
+        +blendHeight(a : CGFloat, b : CGFloat, p : Double) CGFloat
+        +bottomOffset(contentHeight, viewportHeight, topInset, bottomInset) Double
+    }
+    class WOHostSizingPool {
+        <<NSObject @MainActor>>
+        +height(id, width, signature, makeContent) CGFloat
+        +remeasure(id, width, signature, makeContent) CGFloat
+        +cachedHeight(id, width) CGFloat?
+        +forceHeight(id, width, height, signature)
+        +rekeyWidth(id, width)
+    }
+    class WOFluidDiag {
+        <<enum 探针>>
+        +note(_ line : String)
+        +record(_ line : String)
+        +dump(reason : String)
+        note: RAIL-START / RAIL-TICK / RAIL-END / PREWARM / H-DROP-RAIL 新增
+        note: PASS1/PASS2/PIN-BOTTOM/ANCHOR-COMP/H-FLUID 删除
+    }
+
+    WOAppFrame --> WORootFrame : center(width) 逐跳下发 hint
+    WORootFrame --> WOChatView : widthHint
+    WOChatView --> WOMessageListView : widthHint
+    WOMessageListView --> WOMessageListCore : applyUpdate(widthHint)
+    WOMessageListCore --> WOMessageListLayout : beginRail/updateRailProgress/endRail
+    WOMessageListCore --> WOHostSizingPool : precompute remeasure / cachedHeight
+    WOMessageListCore --> WOFluidDiag : RAIL-* 探针
+    WOMessageListCore *-- RailPrecompute : 预计算态
+    WOMessageListCore *-- WidthRail : rail 态
+    WOMessageListLayout ..> WOMessageListSupport : blendFrame/blendHeight（单源算术）
+    WORailCurve ..> Motion : controlPoints 单源（bezier 同源）
+    WOMessageListCore ..> WORailCurve : eased 进度采样

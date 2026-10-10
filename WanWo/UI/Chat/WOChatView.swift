@@ -59,6 +59,9 @@ struct WOChatView: View {
     var onToggleRightSidebar: (() -> Void)? = nil
     /// 批12+联动B：轻提示点击回调（展开右栏+AI 页签落点；真值在 WORootFrame）。
     var onOpenAgentBrowser: ((URL) -> Void)? = nil
+    /// 【rail hint R1 第三跳】列宽目标提示（cols.center 原值；0=未提供/直注
+    /// 测试宿主）。两 init 均带默认值参数——既有调用点零破坏。
+    let widthHint: CGFloat
 
     /// 批C4：顶栏丝线判定（原型 .main-head.scrolled：scrollTop>4）。
     /// 【重做批4】丝线真值源迁引擎 core（scrollViewDidScroll 判定经
@@ -93,9 +96,11 @@ struct WOChatView: View {
     @State private var autoSubmitArmed = false
 
     init(environment: AppEnvironment, sessionId: String,
+         widthHint: CGFloat = 0,
          onToggleRightSidebar: (() -> Void)? = nil,
          onOpenAgentBrowser: ((URL) -> Void)? = nil) {
         self.sessionId = sessionId
+        self.widthHint = widthHint
         self.onToggleRightSidebar = onToggleRightSidebar
         self.onOpenAgentBrowser = onOpenAgentBrowser
         // dsh 草稿跨切换种子（ConversationSession mount 规则，**只读**——
@@ -116,6 +121,7 @@ struct WOChatView: View {
     /// 直注实例（测试/宿主复用；与 environment 版共一存储）。
     init(viewModel: ChatViewModel) {
         self.sessionId = ""
+        self.widthHint = 0
         self.onToggleRightSidebar = nil
         self.onOpenAgentBrowser = nil
         self.consumesPendingImages = false
@@ -721,6 +727,8 @@ struct WOChatView: View {
             nodes: viewModel.displayNodes,
             phase: viewModel.phase,
             sessionId: sessionId,
+            // 【rail hint R1 第四跳入口】列宽目标透传（0=直注宿主缺省）。
+            widthHint: widthHint,
             // 批 2 件 3：composer 座位组超出旧链基准（137）的动态让位增量
             // （旧链静态 189 由 sectionInset 承担，两者分立）。
             bottomAllowance: max(0, composerChromeHeight

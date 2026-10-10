@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant SF as WOAppFrame(SwiftUI)
+    participant RF as WORootFrame/WOChatView
+    participant REP as WOMessageListView(representable)
+    participant Core as WOMessageListCore
+    participant Lay as WOMessageListLayout
+    participant Pool as WOHostSizingPool
+    participant Link as motionLink(CADisplayLink)
+
+    Note over SF: 用户按下侧栏开关 → store 变更 → body 求值
+    SF->>SF: cols = WOColumnSolver.compute(...)（目标值即刻已知）
+    SF->>RF: center(cols.center)
+    RF->>REP: WOChatView(widthHint:) → updateUIViewController
+    REP->>Core: applyUpdate(..., widthHint:)
+    Core->>Core: processWidthHint()：hint≤100 拒 / hint==stable 幂等 / else startPrecompute
+
+    Note over Core,Pool: 预计算期（旧布局冻结 = 窗框动画不动）
+    loop 4ms 预算 + 8ms 间隙切片（railPrecomputeGen 防串）
+        Core->>Pool: cachedHeight(id, targetContentWidth) 未命中→ remeasure(签名 v{n})
+        Pool-->>Core: 目标宽身高逐行就位
+    end
+    Core->>Lay: beginRail(fromFrames: itemFrames快照, toFrames: O(n)累加)
+    Core->>Core: followsBottom? 记 fromBottom 基线 : anchor=captureTopAnchor()
+    Core->>Link: startMotion()
+    Core->>Core: WOFluidDiag.note("RAIL-START ...")
+
+    loop 每帧 tick（advanceMotion 顶部 rail 分支独占）
+        Link->>Core: railTick
+        Core->>Core: p = min(1, t/0.42)；eased = WORailCurve.progress(p)
+        Core->>Lay: updateRailProgress(eased) → invalidateLayout()
+        Core->>Core: offset 算术直写：贴底=blendHeight(contentH)落点 / 非贴底=锚行 blend frame.minY − viewportY
+        Core->>Core: WOFluidDiag.record("RAIL-TICK p=... off=...")
+        alt p ≥ 1
+            Core->>Core: finishWidthRail()（R7 落地件）
+        end
+    end
+
+    Note over Core: 用户拖拽/惯性 → scrollViewWillBeginDragging → cancelWidthRail(userTakeover)
+
+    Note over Core: rail 结束（R7：一次切真布局，零修正零级联）
+    Core->>Lay: endRail()
+    Core->>Core: stableLayoutWidth=hint；layoutWidth=hint；invalidate 一次
+    Core->>Core: initialStabilizingUntil=+1s（结算窗只服务报告修正）；无 pendingAnchorRestore
+    Core->>Core: WOFluidDiag.note("RAIL-END dur= settleCount=...") + note("FLUID-SWITCH ...")
+    Core->>Link: link.invalidate()（rail tick 自停）
+
+    Note over Core,Pool: rail 后：可见行真值经报告桥/结算窗自然修正（量≈0）；离屏行走既有 stale 切片

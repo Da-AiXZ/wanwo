@@ -2,18 +2,30 @@
 //  WOFluidDiag.swift
 //  WanWo
 //
-//  【流体逐帧诊断探针】侧栏开合流体重排引擎的零行为变化逐帧取证。
+//  【侧栏开合诊断探针】宽度动画链的零行为变化逐帧取证。
 //    · 运行时静态开关（Release 包可用——CI 走 Release 配置，严禁 #if DEBUG
 //      包裹；排除干扰时置 false 即全链静默）。
 //    · 环形缓冲 8192 行，O(1) 摊销 append；dump 落 Documents/fluid-diag.log
 //      （256KB 截半守护——WOMessageListView.swift 里 WOLayoutDiag.write 同款
 //      写文件模式）。
 //    · record = 高频逐帧事件入缓冲（dump 统一落盘）；note = 低频关键事件
-//      不入缓冲、直接单独落一行（防被高频帧淹没——FLUID-SWITCH / SETTLE-SNAP
-//      / ANCHOR-RESTORE 用）。
+//      不入缓冲、直接单独落一行（防被高频帧淹没）。
 //    · dump 后清空缓冲并重置时间基准（每段取证自带独立时间轴）。
 //    · 线程约定：插桩点全部位于 MainActor（WOMessageListCore），record/note
 //      的缓冲读写恒主线程执行；文件 IO 走独立串行队列（WOLayoutDiag 同款）。
+//
+//  【rail 批事件清单 2026-10】（确定性宽度动画——预计算+插值+精确锚定）
+//    新增 note：RAIL-START(target=,warm=n/total,precomputeMs=)（rail 起跑必落）
+//              RAIL-END(dur=,settleCount=)（结算窗满 1s 补记）
+//              FLUID-SWITCH(rail-target=,dur=,settleWindow=)（rail 落地，标签连续性）
+//    新增 record：RAIL-TICK(p=,off=)（off 变 >0.5pt 才记）/
+//              H-DROP-RAIL(id=,h=)（rail 期被门挡的上报）/
+//              PREWARM(w=,rows=)（预热轮，批粒度）
+//    删除（宿主随流体重排机器退役）：PASS1/PASS2/PIN-BOTTOM/ANCHOR-COMP/H-FLUID。
+//    保留：LIVE-CHANGE（fallback 路径）/H-DIRECT/H-ANIM/H-DROP-WG/H-LATE/
+//          SETTLE-SNAP/ANCHOR-RESTORE/ANCHOR-FALLBACK/COMMIT。
+//  真机验收口径：一次开合应见 RAIL-START → RAIL-TICK 序列 → FLUID-SWITCH →
+//  RAIL-END(settleCount≈0)，无 PASS/PIN/ANCHOR-COMP/H-FLUID。
 //
 
 import Foundation

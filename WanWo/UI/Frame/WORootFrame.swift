@@ -182,7 +182,9 @@ struct WORootFrame: View {
             sidebar: { collapsed, width in
                 sidebarRegion(snapshot: snapshot, collapsed: collapsed, width: width)
             },
-            center: { centerRegion },
+            // 【rail hint R1 第二跳】center 闭包接收列宽目标 → centerRegion
+            // 逐跳透传（全工程唯一 center 调用点，带参数）。
+            center: { w in centerRegion(widthHint: w) },
             details: { detailsRegion },
             overlayLayer: { EmptyView() }
         )
@@ -391,13 +393,16 @@ struct WORootFrame: View {
 
     // MARK: - 中栏（Hero / 聊天）
 
+    /// 【rail hint R1 第二跳】列宽目标逐跳透传（cols.center 原值）；WOChatHero
+    /// 分支无消息列表，忽略 hint。
     @ViewBuilder
-    private var centerRegion: some View {
+    private func centerRegion(widthHint: CGFloat) -> some View {
         if let sessionId = appState.currentSessionId {
             // 批C1：右栏开关钮在顶栏（WOConversationHead）——批12+右栏重构
             // 批1：切换改 store.toggleWorkspace（hidden↔split 单值三态；full
             // 不经由 toggle，"toggle 不许吞掉对话"）。
             WOChatView(environment: environment, sessionId: sessionId,
+                       widthHint: widthHint,
                        onToggleRightSidebar: {
                            workspaceStore.toggleWorkspace(sessionId: sessionId)
                        },

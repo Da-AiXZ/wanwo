@@ -17,6 +17,7 @@
 //  直接复用）→ reconfigureItems 更新（非 reload）。
 //
 
+import CoreGraphics
 import Foundation
 
 // MARK: - 列表条目模型（件 1）
@@ -211,6 +212,29 @@ enum WOMessageListSupport {
     /// 回底恢复判定（lody resumeTrackingAtBottom :244 同参：距底 ≤1pt）。
     static func shouldResumeFollowing(bottomOffset: Double, offsetY: Double) -> Bool {
         bottomOffset - offsetY <= 1
+    }
+
+    // MARK: 【rail T02】帧混合纯函数（侧栏开合确定性宽度动画——单测直呼）
+
+    /// 帧线性混合（rail 唯一算术来源，WOMessageListLayout 与单测共用；
+    /// 架构文档 §3.8/§9 横切纪律：rail 几何算术禁散落内联）。p 端点原样
+    /// 返回端点帧（p≤0 → a；p≥1 → b——端点恒等由单测钉死）。
+    static func blendFrame(_ a: CGRect, _ b: CGRect, _ p: Double) -> CGRect {
+        if p <= 0 { return a }
+        if p >= 1 { return b }
+        let t = CGFloat(p)
+        return CGRect(
+            x: a.minX + (b.minX - a.minX) * t,
+            y: a.minY + (b.minY - a.minY) * t,
+            width: a.width + (b.width - a.width) * t,
+            height: a.height + (b.height - a.height) * t)
+    }
+
+    /// 内容高混合（两端 contentHeight 线性；端点恒等同 blendFrame）。
+    static func blendHeight(_ a: CGFloat, _ b: CGFloat, _ p: Double) -> CGFloat {
+        if p <= 0 { return a }
+        if p >= 1 { return b }
+        return a + (b - a) * CGFloat(p)
     }
 
     // MARK: 批 2 件 3 让位增量（与静态 sectionInset 分立的动态部分）
