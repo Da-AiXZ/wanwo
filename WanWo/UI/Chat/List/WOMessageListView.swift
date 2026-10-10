@@ -428,6 +428,18 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private var railSettleCommitCount = 0
     private var railSettleGeneration = 0
 
+    // MARK: 【巨行位图化·方案 A】rail 期巨行冻结簿记
+
+    /// 冻结中的巨行 cell（行 id → cell；强引用——rail 期可见 cell 不会被
+    /// reuse，0.42s rail 时长的持有时长无害）。恢复路径幂等（WONodeCell
+    /// unfreeze 幂等 + 本字典统一清空）：
+    ///   · finishWidthRail（cancelWidthRail userTakeover / advanceMotion
+    ///     离场收口均经此路径）
+    ///   · processWidthHint ③ abortRail 分支（rail 起跑后关回原位）
+    ///   · bindIfNeeded（会话切换全量重置）
+    ///   · shutdown（representable dismantle）
+    private var frozenGiantCells: [String: WONodeCell] = [:]
+
     // MARK: 【rail T05 P1】空闲预热（四契约宽度批量池预热）
     private var prewarmWorkItem: DispatchWorkItem?
     private var prewarmGen = 0
@@ -469,6 +481,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     /// 参考件时长：新行 0→真值 0.66s，与 SwiftUI 侧纯淡入（WOEntryModifier
     /// duration 0.66）同步——同一参考件参数。
     private static let growthDuration: TimeInterval = 0.66
+
+    /// 【空白修复批·修3】投毒级巨差门槛：合法披露幅度上限（思考体展开
+    /// 240pt + chrome）与投毒级虚高（预热投毒时代的 1000+pt 假差）之间的
+    /// 分界。|Δ| 超过该值的回传不走 0.32s 披露动画（动画会把虚高以插值
+    /// 放大成整屏"被拽感"），直接 commit 直写；合法披露（≤400）不受影响。
+    private static let hugeHeightDeltaThreshold: CGFloat = 400
 
     /// 新插入 non-user 行入队生长（applyUpdate 检测后调；seen/instantLive 行
     /// 跳过=历史静默/刚看过语义不生长）。to=同步量高入池取真值（插入帧格子
@@ -826,6 +844,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         railPrecomputeGen += 1
         activeHintWidth = 0
         railSettleCounting = false
+        // 【巨行位图化】旧会话冻结巨行全量解冻（旧 cell 解冻幂等无害；
+        // 簿记清空防跨会话残留）。
+        thawGiantRows()
         if messageLayout.isRailActive { messageLayout.endRail() }
         // 探针簿记清零（live- 前缀 id 跨会话复用——旧会话残留会让新会话同
         // id 高度差 <1pt 的回报被防刷屏过滤误吞，污染取证）。
@@ -1243,6 +1264,17 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 条目走下方正常路由——防 entrance 行以 from=0 重生长一闪。
             growthAnims[id] = nil
         }
+        // 【空白修复批·修3】投毒级巨差不走披露动画：|Δ| > 400 → 改走直写
+        // commit（同 H-DIRECT 语义，huge 标记），不建 growthAnim——防未来
+        // 投毒类虚高（如单槽时代 886→2043 的 stale 顶替差）再以 0.32s 披露
+        // 动画放大成整屏"被拽感"。动画在途并入逻辑（上方 2026-10-09 修复2）
+        // 优先保留——本门只拦"新建动画"路由。合法披露（≤400）不受影响。
+        if let prev = previous, abs(prev - height) > Self.hugeHeightDeltaThreshold {
+            fluidDiagH("H-DIRECT", id: id, height: height,
+                       "H-DIRECT(huge) id=\(id) h=\(String(format: "%.1f", height)) old=\(String(format: "%.1f", prev)) delta=\(String(format: "%.1f", height - prev))")
+            commitHeightChange(id: id, height: height, collectionView: cv)
+            return
+        }
         // 运动分流（CI修50 归一 + 重做批6 插值 + 2026-10-09 披露单时钟）：
         // ①打开稳定期 / 流式 live 行 → 直写（打开即稳 / 贴底收敛独占）。
         // ②大幅变化（|Δ|≥20pt）→ 引擎插值，按种类分派：
@@ -1483,6 +1515,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
                     messageLayout.abortRail()
                     messageLayout.invalidateLayout()
                 }
+                // 【巨行位图化】abortRail 路径同步解冻（rail 起跑后关回原位
+                // ——布局冻结熄灯，巨行快照一并恢复）。
+                thawGiantRows()
             }
             if railPrecompute != nil {
                 railPrecomputeGen += 1
@@ -1650,6 +1685,9 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         WOFluidDiag.note(String(
             format: "RAIL-START(target=%.1f warm=%d/%d precomputeMs=%.1f)",
             targetViewportWidth, warmCount, currentItems.count, precomputeMs))
+        // 【巨行位图化】rail 起跑时刻巨行判定+冻结（此刻 cell frame=旧宽帧，
+        // 判定基准正确；先于首个 rail tick——混合首帧起巨行即免逐帧重排）。
+        freezeGiantRowsForRail()
         startMotion()
     }
 
@@ -1709,6 +1747,10 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
     private func finishWidthRail(writeOffset: Bool) {
         guard let rail = widthRail else { return }
         widthRail = nil
+        // 【巨行位图化】rail 落地即全量解冻（cancelWidthRail userTakeover /
+        // advanceMotion 离场收口均经本路径）——host 按原约束装回、快照移除、
+        // 重排回传真值（下方结算窗 +1s 消化）。
+        thawGiantRows()
         messageLayout.endRail()
         stableLayoutWidth = rail.targetViewportWidth
         messageLayout.layoutWidth = rail.targetViewportWidth
@@ -1758,16 +1800,64 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         finishWidthRail(writeOffset: false)
     }
 
+    // MARK: 【巨行位图化·方案 A】rail 期巨行冻结（表格卡残留）
+
+    /// rail 起跑时刻扫描可见行：cell frame 高 > 视口高（cv.bounds.height，
+    /// "高过一屏"判定）的巨行执行内容冻结——host.view 离层换静态快照，
+    /// 消除其 rail 逐帧 SwiftUI 重排（表格巨行 rail 期卡顿源）；其他行
+    /// 照常流动。判定只在 startRail 一次：rail 中途新滚入的 cell 不冻结
+    /// （从屏外进入的首帧本就在混合宽，保持简单）。
+    /// restart 链幂等：已冻结 cell 只重挂簿记不重复拍快照（离层的
+    /// host.view snapshotView 不可靠），未冻结新巨行补冻。
+    private func freezeGiantRowsForRail() {
+        guard let cv = collectionView, cv.window != nil else { return }
+        for path in cv.indexPathsForVisibleItems {
+            guard path.item < currentItems.count else { continue }
+            let id = currentItems[path.item].id
+            guard let cell = cv.cellForItem(at: path) as? WONodeCell else { continue }
+            if cell.isContentFrozen {
+                // restart 链重入：簿记重挂（旧簿记未被清——rail 中途 restart
+                // 不经 finishWidthRail），不重复 FREEZE-ON。
+                frozenGiantCells[id] = cell
+                continue
+            }
+            // 巨行判定：rail 启动时刻 cell frame（旧宽帧）高 > 视口高。
+            let frameHeight = cell.frame.height
+            guard frameHeight > cv.bounds.height else { continue }
+            cell.freezeContentSnapshot()
+            guard cell.isContentFrozen else { continue } // 快照失败 fail-open
+            frozenGiantCells[id] = cell
+            // 【流体诊断】冻结/解冻必落盘 note（rail 期逐帧重排豁免面取证）。
+            WOFluidDiag.note(String(
+                format: "FREEZE-ON(id=%@ h=%.1f)", id, frameHeight))
+        }
+    }
+
+    /// 全量解冻（恢复路径见 frozenGiantCells 注释；幂等——空簿记/非冻结
+    /// cell 空操作）。恢复后 host 重排一次并经报告桥回传真值（rail 后
+    /// 结算窗消化；rail 门已熄，回传走 H-DIRECT/披露正常路由）。
+    private func thawGiantRows() {
+        guard !frozenGiantCells.isEmpty else { return }
+        for (id, cell) in frozenGiantCells {
+            cell.unfreezeContentSnapshot()
+            WOFluidDiag.note("FREEZE-OFF(id=\(id))")
+        }
+        frozenGiantCells.removeAll()
+    }
+
     // MARK: 【rail T05 P1】空闲预热（四契约宽度批量池预热）
 
     /// 契约候选内容宽（架构文档 §R2）：[viewport−56, viewport−280,
-    /// viewport−456, viewport−680] − 32（insets 合计）。非法值/当前内容宽剔除。
+    /// viewport−456, viewport−680] − 32（insets 合计）。非法值/当前内容宽
+    /// 剔除；【空白修复批·修2】退化宽度过滤：候选 < 100pt 剔除（旧基准
+    /// 传 cv.bounds.width=中心列宽时，右栏开合期出现 514−488=26 之类的
+    /// 退化候选——量高无意义且浪费切片预算）。
     private func prewarmWidths(viewport: CGFloat) -> [CGFloat] {
         var widths: [CGFloat] = []
         let current = contentWidth()
         for delta in [CGFloat(56), 280, 456, 680] {
             let w = viewport - delta - 32
-            guard w > 1, abs(w - current) > 0.5 else { continue }
+            guard w >= 100, abs(w - current) > 0.5 else { continue }
             if !widths.contains(w) { widths.append(w) }
         }
         return widths
@@ -1786,7 +1876,12 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         guard let cv = collectionView, cv.window != nil, dataSource != nil,
               !currentItems.isEmpty else { return }
         guard widthRail == nil, railPrecompute == nil, phase != .streaming else { return }
-        let widths = prewarmWidths(viewport: cv.bounds.width)
+        // 【空白修复批·修2】预热基准 = **窗口 viewport**（cv.window?.bounds.width），
+        // 非中心列 cv.bounds.width——中心列基准使候选全偏窄 56pt（914 基准出
+        // 826/602/426/202，窗口 970 真值 882/658/482/258），且右栏开时出现
+        // 26pt 退化宽度。窗口未挂（nil）→ 跳过本轮（下轮 updateUIView 再调度）。
+        guard let viewportWidth = cv.window?.bounds.width else { return }
+        let widths = prewarmWidths(viewport: viewportWidth)
         guard !widths.isEmpty else { return }
         prewarmGen += 1
         runPrewarmSlice(generation: prewarmGen, widths: widths,
@@ -1847,7 +1942,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         // 本防御兜底 window 已 nil 的窗口期；【QA R1】逐条释放去重锚——
         // 瞬态离场不经 retain([]) 时该批行后续宽度变化不被锚挡）。
         guard let cv = collectionView, cv.window != nil else {
-            for entry in remeasureQueue { pool.cancelPendingRemasure(id: entry.id) }
+            for entry in remeasureQueue { pool.cancelPendingRemasure(id: entry.id, width: entry.width) }
             remeasureQueue.removeAll()
             remeasureActive = false
             return
@@ -1860,7 +1955,7 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
             // 否则该行后续所有宽度变化永不重新入队（stale 自愈链失效）。
             guard entry.width == contentWidth(),
                   let item = currentItems.first(where: { $0.id == entry.id }) else {
-                pool.cancelPendingRemasure(id: entry.id)
+                pool.cancelPendingRemasure(id: entry.id, width: entry.width)
                 continue
             }
             // 【重做批4·四修】可见行跳过离屏重测——显示 cell 在新宽度下
@@ -2215,6 +2310,8 @@ final class WOMessageListCore: UIViewController, UICollectionViewDelegate {
         railPrecomputeGen += 1
         activeHintWidth = 0
         railSettleCounting = false
+        // 【巨行位图化】拆解全量解冻（冻结簿记清零；旧 cell 解冻幂等无害）。
+        thawGiantRows()
         if messageLayout?.isRailActive == true { messageLayout?.endRail() }
         // 【rail T05】预热作废。
         prewarmGen += 1

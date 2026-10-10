@@ -17,6 +17,17 @@ final class WONodeCell: UICollectionViewCell {
 
     private var host: UIHostingController<AnyView>?
 
+    /// host.view 与 contentView 的三边钉约束（top/leading/trailing；高度
+    /// 由 sizingOptions intrinsicContentSize 自持）。【巨行位图化】冻结时
+    /// 摘除、解冻时原样激活（约束描述保留，装回即恢复）。
+    private var hostConstraints: [NSLayoutConstraint] = []
+
+    /// 【巨行位图化】冻结态簿记：静态快照视图（rail 期顶替 host.view 挂在
+    /// contentView 上）。
+    private var frozenSnapshot: UIView?
+    /// 冻结态标记（freeze/unfreeze 幂等锚；prepareForReuse 防御读）。
+    private(set) var isContentFrozen = false
+
     /// 【批4 真机诊断】host 实际渲染框（dumpLayoutSnapshot 对拍"布局 frame
     /// vs 内容实画"——渲染层空白/半画定位）。
     var hostViewFrame: CGRect {
@@ -72,11 +83,14 @@ final class WONodeCell: UICollectionViewCell {
             host.sizingOptions = [.intrinsicContentSize]
             contentView.addSubview(host.view)
             host.view.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
+            let constraints = [
                 host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
                 host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
                 host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
-            ])
+            ]
+            NSLayoutConstraint.activate(constraints)
+            // 【巨行位图化】约束描述存底（冻结摘除 / 解冻装回）。
+            hostConstraints = constraints
             self.host = host
         }
         // 【CI修50】揭示裁剪（复用分支也要重申——复用不重建约束但 clipped
@@ -86,8 +100,69 @@ final class WONodeCell: UICollectionViewCell {
         contentView.isAccessibilityElement = true
     }
 
+    // MARK: 【巨行位图化·方案 A】rail 期巨行内容冻结
+
+    /// rail 期把"高过一屏"的可见巨行内容替换为静态快照（消除其逐帧 SwiftUI
+    /// 重排 = rail 逐帧卡顿源；其他行照常流动）。机制：host.view 从
+    /// contentView **移除**（保留控制器引用与约束描述）——host 离层后
+    /// SwiftUI 不再为其布局 = 逐帧重排成本归零（只 hide 不行：宽度约束仍
+    /// 会驱动它重排）；当前外观以 snapshotView 拍下，作为静态视图铺满
+    /// contentView（四边钉约束——随插值中的 cell frame 逐帧贴合，内容随帧
+    /// 平滑缩放无 letterbox；0.4s rail 瞬态缩放换满帧流动的取舍，rail 后
+    /// 解冻恢复原渲染零残留）。
+    /// 快照失败（视图未渲染/离窗窗口期）→ fail-open 不冻结（cell 保持
+    /// 活行语义，卡顿面收窄但正确性无损）。
+    /// 交互注意：host 离层期间 WOHeightReporting 静默（rail 门本就丢弃
+    /// 上报，无损失）；解冻后 host 重排一次并经报告桥回传真值（结算窗
+    /// 消化）。
+    func freezeContentSnapshot() {
+        guard !isContentFrozen else { return } // 幂等（restart 链重复起跑）
+        guard let host, host.view.superview === contentView else { return }
+        // 先拍快照（host 仍在层级内、已渲染——snapshotView 可靠），再摘除。
+        guard let snapshot = host.view.snapshotView(afterScreenUpdates: false)
+        else { return }
+        // 约束先摘后移除（防跨层级悬挂约束告警）；描述保留在 hostConstraints。
+        NSLayoutConstraint.deactivate(hostConstraints)
+        host.view.removeFromSuperview()
+        frozenSnapshot = snapshot
+        snapshot.translatesAutoresizingMaskIntoConstraints = false
+        snapshot.isUserInteractionEnabled = false
+        contentView.addSubview(snapshot)
+        NSLayoutConstraint.activate([
+            snapshot.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            snapshot.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            snapshot.topAnchor.constraint(equalTo: contentView.topAnchor),
+            snapshot.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+        isContentFrozen = true
+    }
+
+    /// 解冻：快照移除、host.view 按原约束装回 contentView，强制重排一次
+    /// （invalidateIntrinsicContentSize + setNeedsLayout——复用残留同款
+    /// 防御），随后 SwiftUI 重排并经 WOHeightReporting 桥回传真值（rail 后
+    /// 结算窗消化）。幂等（非冻结态空操作——全恢复路径可无差别调用）。
+    func unfreezeContentSnapshot() {
+        guard isContentFrozen else { return }
+        frozenSnapshot?.removeFromSuperview()
+        frozenSnapshot = nil
+        if let host {
+            contentView.addSubview(host.view)
+            // translatesAutoresizingMaskIntoConstraints 在 configure 时
+            // 已置 false 且从未改动——装回即受 hostConstraints 约束。
+            NSLayoutConstraint.activate(hostConstraints)
+            host.view.invalidateIntrinsicContentSize()
+            host.view.setNeedsLayout()
+        }
+        isContentFrozen = false
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
+        // 【巨行位图化】防御：rail 期可见 cell 不会被 reuse，但异常路径
+        // （冻结态 cell 进入复用池）下不恢复 = 快照残留 + host 永久离层
+        // ——解冻幂等恢复（host 保留，内容在下次 configure 时以 identity
+        // 重挂载替换）。
+        unfreezeContentSnapshot()
         // host 保留（复用面）；内容在下次 configure 时以 identity 重挂载替换。
     }
 }

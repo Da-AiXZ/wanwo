@@ -20,12 +20,21 @@
 //              FLUID-SWITCH(rail-target=,dur=,settleWindow=)（rail 落地，标签连续性）
 //    新增 record：RAIL-TICK(p=,off=)（off 变 >0.5pt 才记）/
 //              H-DROP-RAIL(id=,h=)（rail 期被门挡的上报）/
-//              PREWARM(w=,rows=)（预热轮，批粒度）
+//              PREWARM(w=,rows=)（预热轮，批粒度；【空白修复批】w 基准改
+//              窗口 viewport——正确候选 882/658/482/258）
 //    删除（宿主随流体重排机器退役）：PASS1/PASS2/PIN-BOTTOM/ANCHOR-COMP/H-FLUID。
 //    保留：LIVE-CHANGE（fallback 路径）/H-DIRECT/H-ANIM/H-DROP-WG/H-LATE/
 //          SETTLE-SNAP/ANCHOR-RESTORE/ANCHOR-FALLBACK/COMMIT。
 //  真机验收口径：一次开合应见 RAIL-START → RAIL-TICK 序列 → FLUID-SWITCH →
 //  RAIL-END(settleCount≈0)，无 PASS/PIN/ANCHOR-COMP/H-FLUID。
+//
+//  【空白修复批 + 巨行位图化批事件清单 2026-10】
+//    新增 note：FREEZE-ON(id=,h=)（rail 起跑时刻巨行内容冻结，h=判定帧高）
+//              FREEZE-OFF(id=)（巨行解冻——rail 落地/取消/abort/会话切换/
+//              dismantle 全恢复路径）
+//    变体：H-DIRECT(huge)（|Δ|>400 投毒级巨差直写 commit，不建披露动画）
+//    口径变更：pool 高度缓存条目数（list-diag pool 高栏）= 全部 (id,width)
+//              条目数（多宽缓存），非行数。
 //
 
 import Foundation

@@ -55,12 +55,12 @@ final class WOBatch3EngineTests: XCTestCase {
         // 超差更新（真实内容膨胀场景）→ 返回 true 且缓存修正。
         XCTAssertTrue(pool.updateHeight(id: "h1", width: 300, height: 240))
         XCTAssertEqual(pool.cachedHeight(id: "h1", width: 300), 240)
-        // 宽度变化 = 覆盖语义【QA P0-1 纠偏】（池单 id 单条目，宽度是失效
-        // 判定而非多宽度存储——lody 同型）：500 宽首写覆盖 300 宽条目，
-        // 旧宽直读失效返回 nil。
+        // 宽度变化 = 多宽共存语义【空白修复批·根修】（宽度是池高度缓存的
+        // 真 key——类头注释原本声称的语义；单槽覆盖=预热最窄候选顶替投毒
+        // 通道，已废除）：500 宽首写与 300 宽条目互不覆盖，旧宽直读仍有效。
         XCTAssertTrue(pool.updateHeight(id: "h1", width: 500, height: 100))
         XCTAssertEqual(pool.cachedHeight(id: "h1", width: 500), 100)
-        XCTAssertNil(pool.cachedHeight(id: "h1", width: 300))
+        XCTAssertEqual(pool.cachedHeight(id: "h1", width: 300), 240)
         // 未知 id 直读 nil（retention 清理后的迟到上报不伪造可读高度）。
         XCTAssertNil(pool.cachedHeight(id: "ghost", width: 300))
     }
