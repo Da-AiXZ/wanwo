@@ -94,9 +94,9 @@ final class WORailMathTests: XCTestCase {
         let to = [CGRect(x: 16, y: 75, width: 500, height: 88)]
         layout.beginRail(fromFrames: from, toFrames: to)
         layout.updateRailProgress(0)
-        XCTAssertEqual(layout.snapshotFrames()[0], from)
+        XCTAssertEqual(layout.snapshotFrames()[0], from[0])
         layout.updateRailProgress(1)
-        XCTAssertEqual(layout.snapshotFrames()[0], to)
+        XCTAssertEqual(layout.snapshotFrames()[0], to[0])
         layout.updateRailProgress(0.5)
         let mid = layout.snapshotFrames()[0]
         XCTAssertEqual(mid.width, 400, accuracy: 0.0001)
