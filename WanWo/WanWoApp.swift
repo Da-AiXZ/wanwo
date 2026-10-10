@@ -18,8 +18,9 @@ struct WanWoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            // UI 全量重写环 3：根入口切换到新三栏骨架（WORootFrame）。
-            // 旧 RootView 保留至环 8 统一删除（旧 UI 即删拍板：环 8 收官清死代码）。
+            // 根入口=新三栏骨架 WORootFrame（UI 全量重写环 3 换入；旧
+            // RootView 已随 28028de 右栏重构批1 退役，早于环 8 计划——
+            // 原"保留至环 8"注释过时删除 2026-10-11）。
             WORootFrame()
                 .environmentObject(environment)
                 // R1 诚实化：App 级会话真值源（当前会话/列表纪元）注入——
