@@ -49,8 +49,8 @@ final class WOHostSizingPoolMultiWidthTests: XCTestCase {
         let pool = makePool()
         XCTAssertTrue(pool.updateHeight(id: "A", width: 882, height: 886,
                                         signature: "v1"))
-        // 同宽 0.5pt 死区（亚像素抖动吞掉）。
-        XCTAssertFalse(pool.updateHeight(id: "A", width: 882, height: 886.4))
+        // 同宽 0.5pt 死区（实现契约=先 ceil 再比较：ceil 后同整数值吞掉）。
+        XCTAssertFalse(pool.updateHeight(id: "A", width: 882, height: 886.0))
         XCTAssertTrue(pool.updateHeight(id: "A", width: 882, height: 887))
         // 异宽同 id：死区不跨宽（482 无既有条目 → 必写）。
         XCTAssertTrue(pool.updateHeight(id: "A", width: 482, height: 887))
