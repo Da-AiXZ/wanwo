@@ -12,7 +12,9 @@
 //      wanwo_offload_register_checked）。
 //   2. 【替换】@Published pendingRequest 审批流 → 审批缝 presentApproval
 //      （简报明示形态：var presentApproval: ((Request, @Sendable @escaping
-//      (Bool) -> Void) -> Void)?；AppEnvironment 后续接线，TODO(审批接线)）。
+//      (Bool) -> Void) -> Void)?；接线已完成——OffloadApprovalPresenter
+//      .install()（AppEnvironment init）承载呈现，原 TODO(审批接线) 已清账
+//      2026-10-11 对账）。
 //      PermissionRequest 保留（去掉 continuation 字段——应答通道由缝回调承载），
 //      parsedArguments 参数化解析逻辑 1:1 保留（原件 :34-92）。
 //      OpenMinis 靠 pendingRequest 主线程串行化防"超时 vs 用户应答"双恢复；
@@ -217,8 +219,8 @@ final class OffloadPermissionManager: ObservableObject {
 
     // MARK: 审批缝（万我 M6.1 增，简报 B1a ②明示形态）
 
-    /// TODO(审批接线)：AppEnvironment 后续把本缝接到 SwiftUI 审批卡（形态对齐
-    /// OpenMinis pendingRequest 审批流；本批只定义缝，不接 UI）。回调在任意
+    /// 审批缝（接线已完成——OffloadApprovalPresenter.install()，AppEnvironment
+    /// init 装配；形态对齐 OpenMinis pendingRequest 审批流）。回调在任意
     /// 线程调用；第二个参数为应答闭包（YES=allow / NO=deny，只首个生效）。
     var presentApproval: ((PermissionRequest, @Sendable @escaping (Bool) -> Void) -> Void)?
 
@@ -359,7 +361,7 @@ final class OffloadPermissionManager: ObservableObject {
 
                 Task { @MainActor in
                     self.activeApprovalID = request.id
-                    // TODO(审批接线)：缝未接线时 presentApproval 为 nil——
+                    // 【降级说明】缝未接线时 presentApproval 为 nil——
                     // 等价于无人应答，30s 超时按 deny 收敛（与 OpenMinis
                     // 审批卡无人应答路径语义一致）。
                     // 【批2 B⑦】判定打点：弹卡（呈现面缝未接线时同义=无人应答）。

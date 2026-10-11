@@ -62,7 +62,9 @@ enum WOMP {
     static let blueRing = woRGBA(0x2f, 0x6f, 0xed, 0.13)
 
     // ---- 原型曲线/时长（逐值照录；全 ≤0.6s）----
-    /// 全站唯一曲线 cubic-bezier(.22,1,.36,1)
+    /// 原型域唯一曲线 cubic-bezier(.22,1,.36,1)——**仅设置域 WOMP 令牌**，
+    /// 非全库唯一（全库动效曲线 = Motion.swift WORailCurve 0.4,0,0.2,1；
+    /// 两域并存系原型逐值翻译拍板，勿混淆、勿互相覆盖）。
     static func ease(_ duration: Double) -> Animation {
         .timingCurve(0.22, 1, 0.36, 1, duration: min(duration, 0.6))
     }

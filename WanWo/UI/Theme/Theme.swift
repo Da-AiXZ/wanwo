@@ -311,6 +311,8 @@ public enum WOElevation {
 
 public enum WOMotionBase {
     /// --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1)——全库唯一曲线
+    ///（例外=设置域原型令牌 WOMP.ease .22,1,.36,1——用户 HTML 原型独立
+    /// 设计稿逐值翻译，非本曲线域，见 PrototypeKit.swift 头注动效纪律）。
     public static let easeInOutControlPoints: (Double, Double, Double, Double) = (0.4, 0, 0.2, 1)
     /// --ds-transition-duration
     public static let duration: Double = 0.2
