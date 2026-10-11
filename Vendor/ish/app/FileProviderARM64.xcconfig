@@ -15,7 +15,11 @@ PRODUCT_BUNDLE_IDENTIFIER = $(ROOT_BUNDLE_IDENTIFIER).arm64.FileProvider
 PRODUCT_APP_GROUP_IDENTIFIER = group.$(ROOT_BUNDLE_IDENTIFIER).arm64
 
 // Must match the iSH-ARM64 host app version (App Store validation requires it).
-MARKETING_VERSION = 2.0.0
+MARKETING_VERSION = 2.1.0
+
+// Must match the host app (AppARM64.xcconfig): iOS rejects an extension
+// whose version differs from its containing app.
+CURRENT_PROJECT_VERSION = 806
 
 // Header search paths for the FileProvider sources (fs/fake-db.h, kernel/errno.h).
 HEADER_SEARCH_PATHS = $(inherited) $(SRCROOT)

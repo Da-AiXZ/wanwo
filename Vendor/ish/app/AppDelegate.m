@@ -25,6 +25,9 @@
 #import "UIApplication+OpenURL.h"
 #include "kernel/init.h"
 #include "kernel/calls.h"
+#include "kernel/mm.h"     // [T-ish-footprint-brake] memory governor feed
+#import <mach/mach.h>       // task_info / TASK_VM_INFO (phys_footprint)
+#import <os/proc.h>         // os_proc_available_memory
 #include "fs/dyndev.h"
 #include "fs/devices.h"
 #include "fs/path.h"
@@ -76,10 +79,96 @@ void ReportPanic(const char *message) {
 static int bootError;
 static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
+// [T-ish-footprint-brake] Feed the kernel's memory governor the two numbers
+// jetsam actually operates on: the app's physical footprint and its remaining
+// allowance. `limit = phys_footprint + os_proc_available_memory()` is the live
+// per-app jetsam line, so there is no hardcoded per-device table and no
+// boot-time snapshot that goes stale.
+//
+// Without this feed ish_footprint_mode() stays false and admission falls back
+// to the fixed ANON_MMAP_LIMIT_PAGES ledger, which is not device-derived --
+// V8's ~5x128MB startup cage commit then hits that ceiling regardless of how
+// much memory the device actually has. The kernel side owns the state machine
+// (BRAKE below 10% headroom, release above 15%, critical pressure forces it,
+// and a feed older than 2s fails closed); this just reports the truth.
+static void ish_memory_governor_tick(bool pressureCritical) {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    uint64_t footprint = 0;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
+        footprint = info.phys_footprint;
+    uint64_t avail = (uint64_t) os_proc_available_memory();
+    if (footprint == 0 || avail == 0)
+        return; // couldn't measure -- the kernel's staleness rule handles a dead feed
+    ish_set_memory_status(footprint + avail, avail, pressureCritical);
+}
+
+static void ish_memory_governor_start(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        // 250ms cadence: guest dirtying is bounded by emulation speed, so the
+        // per-tick overshoot stays small against a 10%-of-limit brake margin.
+        static dispatch_source_t timer;
+        timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+        dispatch_source_set_timer(timer, DISPATCH_TIME_NOW,
+                                  250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(timer, ^{ ish_memory_governor_tick(false); });
+        dispatch_resume(timer);
+        // OS pressure events arrive faster than any poll -- treat CRITICAL as
+        // an immediate brake regardless of our own arithmetic.
+        static dispatch_source_t pressure;
+        pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+                                          DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                          q);
+        dispatch_source_set_event_handler(pressure, ^{
+            bool critical = (dispatch_source_get_data(pressure) & DISPATCH_MEMORYPRESSURE_CRITICAL) != 0;
+            ish_memory_governor_tick(critical);
+        });
+        dispatch_resume(pressure);
+    });
+    // Synchronous first feed so footprint mode is active before the first
+    // guest process ever runs.
+    ish_memory_governor_tick(false);
+}
+
+// [T-ish-anon-cap-page-units] Install the legacy ledger cap from the device's
+// real allowance. This stays as the fallback regime for the case where the
+// governor can never measure (footprint mode never activates); once the first
+// governor feed lands this stops being the admission control and only keeps
+// counting for meminfo/diagnostics.
+//
+// Divide by the HOST page size, not the guest 4KB one: the counter is in guest
+// pages but each committed guest page occupies a whole host page, so
+// converting a host-byte budget with 4096 authorises 4x what was intended.
+static void ish_install_anon_cap(void) {
+    size_t avail = os_proc_available_memory();
+    size_t hostPage = (size_t) getpagesize();
+    if (avail == 0 || hostPage == 0) {
+        NSLog(@"iSH: os_proc_available_memory unavailable -- keeping default anon cap");
+        return;
+    }
+    static const double kGuestMemoryShare = 0.8;
+    long pages = (long)((double) avail * kGuestMemoryShare / (double) hostPage);
+    ish_set_anon_page_limit(pages);
+    extern _Atomic long anon_page_limit;
+    long effective = atomic_load(&anon_page_limit);
+    double capMB = (double) effective * (double) hostPage / (1024 * 1024);
+    NSLog(@"iSH: guest anon cap = %.0f MB host (%ld guest pages, host page %zuKB, "
+          @"share %.0f%%, available %.0f MB)",
+          capMB, effective, hostPage / 1024, kGuestMemoryShare * 100.0,
+          (double) avail / (1024 * 1024));
+}
+
 @implementation AppDelegate
 
 - (int)boot {
 #if !ISH_LINUX
+    // Install the device-derived ledger cap, then start the live governor.
+    // Both must happen before the first guest process runs.
+    ish_install_anon_cap();
+    ish_memory_governor_start();
+
     NSURL *root = [Roots.instance rootUrl:Roots.instance.defaultRoot];
 
     int err = mount_root(&fakefs, [root URLByAppendingPathComponent:@"data"].fileSystemRepresentation);

@@ -442,6 +442,69 @@ static void test_waitid_siginfo(void) {
     }
 }
 
+// POSIX timer, SIGEV_SIGNAL. sys_timer_create's SIGEV_SIGNAL branch left
+// timer->thread_pid at 0, and posix_timer_callback resolves its target with
+// pid_get_task(thread_pid) -- pid 0 is never a live task, so the lookup
+// returned NULL and the callback dropped the signal. Both syscalls reported
+// success and the clock expired on time; nothing was ever delivered.
+//
+// The user-visible symptom was that GNU coreutils `timeout` never fired:
+// `timeout 3 sleep 300` ran the full 300s and exited 0, which reads from the
+// outside as "processes cannot be killed". busybox's timeout was unaffected
+// because it polls with kill(pid, 0) instead of arming a timer.
+static volatile sig_atomic_t timer_fired;
+static void timer_sigalrm(int sig) { (void) sig; timer_fired = 1; }
+
+static void test_posix_timer_sigev_signal(void) {
+    section("posix timer SIGEV_SIGNAL delivery");
+
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = timer_sigalrm;
+    sigaction(SIGALRM, &sa, &old);
+
+    // The NULL-sigevent form, which is what coreutils `timeout` ends up using.
+    timer_fired = 0;
+    timer_t tid;
+    if (timer_create(CLOCK_REALTIME, NULL, &tid) != 0) {
+        check(0, "timer_create(CLOCK_REALTIME, NULL)");
+    } else {
+        check(1, "timer_create(CLOCK_REALTIME, NULL)");
+        struct itimerspec its;
+        memset(&its, 0, sizeof(its));
+        its.it_value.tv_sec = 1;
+        check(timer_settime(tid, 0, &its, NULL) == 0, "timer_settime(1s)");
+        // Sleep well past the deadline. Before the fix this waited the full
+        // duration with timer_fired still 0.
+        for (int i = 0; i < 40 && !timer_fired; i++)
+            usleep(100 * 1000);
+        check(timer_fired == 1, "SIGEV_SIGNAL timer actually fires");
+        timer_delete(tid);
+    }
+
+    // The explicit SIGEV_SIGNAL form must behave the same way.
+    timer_fired = 0;
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGALRM;
+    if (timer_create(CLOCK_REALTIME, &sev, &tid) != 0) {
+        check(0, "timer_create(explicit SIGEV_SIGNAL)");
+    } else {
+        check(1, "timer_create(explicit SIGEV_SIGNAL)");
+        struct itimerspec its;
+        memset(&its, 0, sizeof(its));
+        its.it_value.tv_sec = 1;
+        timer_settime(tid, 0, &its, NULL);
+        for (int i = 0; i < 40 && !timer_fired; i++)
+            usleep(100 * 1000);
+        check(timer_fired == 1, "explicit SIGEV_SIGNAL timer fires");
+        timer_delete(tid);
+    }
+
+    sigaction(SIGALRM, &old, NULL);
+}
+
 int main(int argc, char **argv) {
     // Optional extra path to check stat/fstat on, e.g. a fakefs mount point.
     const char *extra_path = argc > 1 ? argv[1] : NULL;
@@ -473,6 +536,7 @@ int main(int argc, char **argv) {
     test_waitpid_across_timeout();
     test_signal_still_interrupts();
     test_waitid_siginfo();
+    test_posix_timer_sigev_signal();
 
     printf("\n================ RESULT ================\n");
     printf("  PASS: %d    FAIL: %d\n", pass, fail);
