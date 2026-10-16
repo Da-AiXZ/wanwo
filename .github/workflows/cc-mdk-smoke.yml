@@ -26,14 +26,16 @@ env:
 
 jobs:
   smoke:
-    runs-on: macos-15
+    # 官方绿跑同款环境（macos-latest = macos-26-arm64 / Xcode 26.6）。
+    # 必要性（run 38933052078 undefined 实证 + 本地字节级探针）：
+    # 官方工具链 llvm.a 的 SYMDEF 索引部分缺失（成员定义在、索引没收录），
+    # Xcode 26.6 的 ld 有"归档成员扫描兜底"能解析；macos-15/Xcode 16.4 的
+    # 旧 ld 信任 TOC 无兜底 → undefined。官方配方=官方环境，回归官方地面。
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
 
       - name: Install XcodeGen
         run: brew install xcodegen
