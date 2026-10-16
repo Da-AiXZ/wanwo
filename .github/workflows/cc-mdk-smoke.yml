@@ -68,6 +68,19 @@ jobs:
           test -f Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/llvm.a && echo "mv 后布局验证 ✓" || { echo "!! mv 后布局错误"; exit 1; }
           du -sh Vendor/nyxian/CoreCompilerSupportLibs
 
+      - name: Generate placeholder build-time resources (ERR-008/ERR-019 precedents)
+        run: |
+          # 主工程的两个构建期资源由主流水线的 iSH/rootfs 脚本顺带产出
+          # （build_ish.sh:207 → RootfsPatch.bundle；fetch_rootfs.sh →
+          # alpine-rootfs.zip）。本 smoke 只编译 CC/MDK framework——不 boot
+          # guest、不触碰 rootfs 内容，占位即可（test.yml 同款先例）。
+          mkdir -p WanWo/Resources Vendor/resources/RootfsPatch.bundle
+          PLACEHOLDER_DIR="$(mktemp -d)"
+          echo "placeholder rootfs (smoke never boots the guest)" > "$PLACEHOLDER_DIR/placeholder.txt"
+          (cd "$PLACEHOLDER_DIR" && zip -qry "$GITHUB_WORKSPACE/WanWo/Resources/alpine-rootfs.zip" .)
+          echo "placeholder RootfsPatch bundle (smoke never applies overlay)" > Vendor/resources/RootfsPatch.bundle/placeholder.txt
+          ls -lh WanWo/Resources/alpine-rootfs.zip
+
       - name: Generate Xcode project
         run: xcodegen generate
 
