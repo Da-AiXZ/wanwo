@@ -229,6 +229,9 @@ targets:
           - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntaxMacroExpansion.dylib"
           - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntaxMacros.dylib"
           - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftWarningControl.dylib"
+          # -lz：llvm.a 的 Compression.cpp.o/CRC.cpp.o 引用 zlib（compress/decompress/crc32/
+          # uncompress——run 38935535884 undefined 实证；官方 10-01 链接行同款有 -lz）
+          - "-lz"
           - "-lc++"
         WARNING_CFLAGS:
           - "-Wno-shorten-64-to-32"
