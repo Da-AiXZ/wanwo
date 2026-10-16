@@ -209,26 +209,27 @@ targets:
         OTHER_CFLAGS: "-std=gnu17"
         OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "$(OTHER_CFLAGS)", "-std=gnu++17"]
         SWIFT_OPTIMIZATION_LEVEL: "-Onone"
-        # 14 个 -l_CompilerSwift*：官方同步文件夹自动链接的 XcodeGen 等价实现
-        # （名单=工具链 artifact 实物 2026-10-16；probe 全绿同款数组形态——
-        # xcconfig 续行写法存疑未采，见 run 38931667586 undefined 实证）
+        # 对齐官方 main 版形态（0587c30 pbxproj：同步文件夹成员=全路径链接输入，
+        # 无任何 -l 旗标——"llvm.a 无 lib 前缀，-lllvm 永远解析不到"是 probe 旧版
+        # 形态的隐患，run 38933052078/38934655419 undefined 实证）。名单=工具链
+        # artifact 实物 14 dylib+llvm.a。
         OTHER_LDFLAGS:
-          - "-lllvm"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/llvm.a"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftBasicFormat.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftCompilerPluginMessageHandling.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftDiagnostics.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftIDEUtils.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftIfConfig.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftLexicalLookup.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftOperators.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftParser.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftParserDiagnostics.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntax.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntaxBuilder.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntaxMacroExpansion.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftSyntaxMacros.dylib"
+          - "$(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwiftWarningControl.dylib"
           - "-lc++"
-          - "-l_CompilerSwiftBasicFormat"
-          - "-l_CompilerSwiftCompilerPluginMessageHandling"
-          - "-l_CompilerSwiftDiagnostics"
-          - "-l_CompilerSwiftIDEUtils"
-          - "-l_CompilerSwiftIfConfig"
-          - "-l_CompilerSwiftLexicalLookup"
-          - "-l_CompilerSwiftOperators"
-          - "-l_CompilerSwiftParser"
-          - "-l_CompilerSwiftParserDiagnostics"
-          - "-l_CompilerSwiftSyntax"
-          - "-l_CompilerSwiftSyntaxBuilder"
-          - "-l_CompilerSwiftSyntaxMacroExpansion"
-          - "-l_CompilerSwiftSyntaxMacros"
-          - "-l_CompilerSwiftWarningControl"
         WARNING_CFLAGS:
           - "-Wno-shorten-64-to-32"
           - "-Wno-documentation"
