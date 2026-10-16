@@ -84,7 +84,12 @@ targets:
         # 显式 -framework 链接（run 38943084567：dependencies 生成的链接条目
         # 未覆盖 bridging header 引用的 CC C 符号——MDK 链 CC 成功而主 App 链
         # 失败，XcodeGen app-target 差异；embed 仍由 dependencies 负责）
-        OTHER_LDFLAGS: "$(inherited) -framework CoreCompiler -framework MobileDevelopmentKit"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-framework"
+          - "CoreCompiler"
+          - "-framework"
+          - "MobileDevelopmentKit"
         # 用户手绘应用图标（2026-09-22 提供）：单尺寸 1024 asset catalog 通用图标
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.0.1"
@@ -291,6 +296,10 @@ schemes:
       targets:
         WanWo: all
         WanWoTests: [test]
+        # N2：两 framework 显式入 scheme 构建图（run 38949409608 诊断实证
+        # dependencies 未自动展开——Products 里无两 framework）
+        CoreCompiler: all
+        MobileDevelopmentKit: all
     test:
       targets:
         - WanWoTests
