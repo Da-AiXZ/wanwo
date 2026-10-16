@@ -67,6 +67,12 @@ targets:
       # （D2 先例：folder reference 展开冲突，单文件路径直接落 Resources phase）
       - path: WanWo/Resources/Ptc/sucrase.js
         buildPhase: resources
+    # ── N2（13 号设计）：编译链接线接入主 App——CC/MDK framework 自动
+    # embed 进 ipa（Frameworks/ 目录，运行时 dlopen）。构建顺序由
+    # target 依赖驱动：CC/MDK 先行（cc-mdk-smoke 同款工具链消费）。
+    dependencies:
+      - target: CoreCompiler
+      - target: MobileDevelopmentKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang

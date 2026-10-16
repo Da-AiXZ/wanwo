@@ -31,6 +31,26 @@ jobs:
       - name: Prepare Alpine rootfs
         run: ./scripts/fetch_rootfs.sh
 
+      # 【N2】CC/MDK framework 已接入主 App（dependencies）——构建期链接
+      # 需要 SupportLibs 在位：下载官方配方工具链 Release 并落位
+      # （cc-mdk-smoke 同款两步 mv；尺寸锚 1,412,422,533 bytes）。
+      - name: Download Nyxian toolchain (CC/MDK link inputs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download toolchain-0587c30-20261016 \
+            --repo Da-AiXZ/nyxian-official-replica \
+            --output toolchain.zip
+          SIZE=$(stat -f%z toolchain.zip)
+          test "$SIZE" -eq 1412422533 || { echo "!! size mismatch: $SIZE"; exit 1; }
+          unzip -q -o toolchain.zip
+          rm -rf Vendor/nyxian/CoreCompilerSupportLibs
+          mv CoreCompilerSupportLibs Vendor/nyxian/
+          mv LLVM.xcframework Vendor/nyxian/CoreCompilerSupportLibs/
+          test -f Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/llvm.a \
+            && echo "toolchain layout ✓"
+
       - name: Generate Xcode project
         run: xcodegen generate
 

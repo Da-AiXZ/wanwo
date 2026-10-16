@@ -54,6 +54,8 @@ struct WORootFrame: View {
     @State private var deleteTarget: R3Target?
     /// 【批4 真机诊断】列表布局诊断 sheet 开关（侧栏 footer 入口）。
     @State private var showListDiag = false
+    /// 【N2 BuildExt】编译栈自检 sheet 开关（侧栏 footer 入口）。
+    @State private var showBuildCheck = false
 
     // MARK: - Body（只组装）
 
@@ -309,6 +311,10 @@ struct WORootFrame: View {
         .sheet(isPresented: $showListDiag) {
             WOListDiagSheet()
         }
+        // 【N2 BuildExt】编译栈自检 sheet（侧栏 footer 入口——CC 三 API 冒烟）。
+        .sheet(isPresented: $showBuildCheck) {
+            WOBuildCheckSheet()
+        }
     }
 
     /// 【批4 真机诊断】布局快照 sheet（WOLayoutDiag.lastDump 全文展示 +
@@ -328,6 +334,63 @@ struct WORootFrame: View {
                         .textSelection(.enabled)
                 }
                 .navigationTitle("列表布局诊断")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("关闭") { dismiss() }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            UIPasteboard.general.string = dump
+                        } label: {
+                            Label("复制全部", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 【N2 BuildExt】编译栈自检 sheet（BuildExtSelfCheck.run 结果展示 +
+    /// 一键复制；验收口径：三项 CC C API 全通 = CoreCompiler.framework 在
+    /// iPad 上加载并工作）。
+    private struct WOBuildCheckSheet: View {
+        @Environment(\.dismiss) private var dismiss
+        /// 打开时刻执行（同步轻量调用，无编译动作）。
+        private let items = BuildExtSelfCheck.run()
+        private var dump: String {
+            BuildExtSelfCheck.summary(items) + "\n\n"
+                + items.map { "\($0.passed ? "✓" : "✗") \($0.name)：\($0.detail)" }.joined(separator: "\n")
+        }
+
+        var body: some View {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(items) { item in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: item.passed ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                                    .foregroundColor(item.passed ? .green : .red)
+                                    .font(.system(size: 14))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name)
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text(item.detail)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Divider()
+                        Text(dump)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    .padding(12)
+                }
+                .navigationTitle("构建自检")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
@@ -368,6 +431,27 @@ struct WORootFrame: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("打开列表布局诊断")
+            Divider().opacity(0.3)
+            // 【N2 BuildExt】编译栈自检入口（CC framework 真机冒烟）。
+            Button {
+                showBuildCheck = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "hammer")
+                        .font(.system(size: 13))
+                    if wide {
+                        Text("构建自检")
+                            .font(.system(size: 13))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(WOAlias.labelSecondary)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("打开构建自检")
             Divider().opacity(0.3)
             Button {
                 environment.openSettings()
