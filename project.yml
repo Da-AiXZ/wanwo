@@ -76,6 +76,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang
+        # 显式框架搜索路径（同工程 framework target 产物解析——run 38938464832
+        # "no such module 'CoreCompiler'" 实证默认解析不可靠）
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(BUILT_PRODUCTS_DIR)"
         # 用户手绘应用图标（2026-09-22 提供）：单尺寸 1024 asset catalog 通用图标
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.0.1"
