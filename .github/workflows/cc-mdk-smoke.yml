@@ -59,7 +59,7 @@ jobs:
           echo "=== 解包完整性验证 ==="
           test -f LLVM.xcframework/ios-arm64/llvm.a && echo "llvm.a ✓" || { echo "!! llvm.a 缺失"; exit 1; }
           DYLIB_COUNT=$(find CoreCompilerSupportLibs -name "lib_CompilerSwift*.dylib" | wc -l | tr -d ' ')
-          echo "SupportLibs dylib 数: $DYLIB_COUNT（锚 13）"
+          echo "SupportLibs dylib count: ${DYLIB_COUNT} (expect 13)"
           test "$DYLIB_COUNT" -eq 13 || { echo "!! dylib 计数异常"; exit 1; }
           test -f LLVM.xcframework/ios-arm64/Headers/llvm/Support/Threading.h && echo "Threading.h ✓" || { echo "!! Headers 不完整"; exit 1; }
           rm -rf Vendor/nyxian/CoreCompilerSupportLibs
