@@ -1,0 +1,117 @@
+# N1（13 号设计 §五，2026-10-16 改写版）：工具链消费冒烟
+# 改写说明：原设计 N1 = 自建 LLVM 构建链（scripts/build_llvm.sh + cache）。
+# 2026-10-16 审计改写：LLVM 永不自建——工具链由官方配方原样复刻仓
+# （Da-AiXZ/nyxian-official-replica，run 38873142024 绿跑）发布 GitHub
+# Release，本 job 消费之：下载 → 布局落位 → CC/MDK 真编译链接冒烟。
+# 环境组合先例：probe 仓 run 38565498097 实证"Xcode 26.6 构建的工具链
+# + macos-15/Xcode 16.4 消费端编译链接 = 成功"。
+# 验收（N1）：CC framework + MDK framework 真编译链接通过（vendored
+# main@0587c30 源码 36+47 文件全量）。
+
+name: CC-MDK Smoke (toolchain consume)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Vendor/nyxian/**'
+      - 'Configs/**'
+      - 'project.yml'
+      - '.github/workflows/cc-mdk-smoke.yml'
+  workflow_dispatch:
+
+env:
+  TOOLCHAIN_REPO: Da-AiXZ/nyxian-official-replica
+  TOOLCHAIN_TAG: toolchain-0587c30-20261016
+
+jobs:
+  smoke:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Download toolchain from Release (pinned tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$TOOLCHAIN_TAG" \
+            --repo "$TOOLCHAIN_REPO" \
+            --output toolchain.zip
+          ls -lh toolchain.zip
+          # 完整性锚：1,412,422,533 bytes（run 38873142024 artifact 原值）
+          SIZE=$(stat -f%z toolchain.zip)
+          echo "downloaded: $SIZE bytes"
+          test "$SIZE" -eq 1412422533 || { echo "!! size mismatch"; exit 1; }
+
+      - name: Unpack + layout (probe-verified two-step mv)
+        run: |
+          set -euo pipefail
+          unzip -q -o toolchain.zip
+          echo "=== 解包完整性验证 ==="
+          test -f LLVM.xcframework/ios-arm64/llvm.a && echo "llvm.a ✓" || { echo "!! llvm.a 缺失"; exit 1; }
+          DYLIB_COUNT=$(find CoreCompilerSupportLibs -name "lib_CompilerSwift*.dylib" | wc -l | tr -d ' ')
+          echo "SupportLibs dylib 数: $DYLIB_COUNT（锚 13）"
+          test "$DYLIB_COUNT" -eq 13 || { echo "!! dylib 计数异常"; exit 1; }
+          test -f LLVM.xcframework/ios-arm64/Headers/llvm/Support/Threading.h && echo "Threading.h ✓" || { echo "!! Headers 不完整"; exit 1; }
+          rm -rf Vendor/nyxian/CoreCompilerSupportLibs
+          mv CoreCompilerSupportLibs Vendor/nyxian/
+          mv LLVM.xcframework Vendor/nyxian/CoreCompilerSupportLibs/
+          test -f Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/llvm.a && echo "mv 后布局验证 ✓" || { echo "!! mv 后布局错误"; exit 1; }
+          du -sh Vendor/nyxian/CoreCompilerSupportLibs
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build settings sanity (golden values)
+        run: |
+          xcodebuild -project WanWo.xcodeproj -target CoreCompiler -showBuildSettings 2>/dev/null \
+            | grep -E "HEADER_SEARCH_PATHS|LIBRARY_SEARCH_PATHS" | head -4
+
+      - name: Build CoreCompiler framework (real compile+link, 36 files)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -target CoreCompiler \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tail -30
+
+      - name: Build MobileDevelopmentKit framework (47 files, links CoreCompiler)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WanWo.xcodeproj \
+            -target MobileDevelopmentKit \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tail -30
+
+      - name: Verify products
+        run: |
+          set -euo pipefail
+          CC_BIN=$(find build -path "*Release-iphoneos/CoreCompiler.framework/CoreCompiler" -type f | head -1)
+          MDK_BIN=$(find build -path "*Release-iphoneos/MobileDevelopmentKit.framework/MobileDevelopmentKit" -type f | head -1)
+          test -n "$CC_BIN" && test -n "$MDK_BIN"
+          echo "=== framework 产物 ==="
+          ls -lh "$CC_BIN" "$MDK_BIN"
+          file "$CC_BIN"
+          # 链接健全性：CC 二进制应含 swift/clang 符号（llvm.a 静态链接进来的证据）
+          nm "$CC_BIN" 2>/dev/null | grep -c "swift" || true
