@@ -76,6 +76,22 @@ jobs:
           zip -qry "WanWo-${{ github.sha }}.ipa" Payload
           ls -lh WanWo-*.ipa
 
+      - name: Link diagnostics (on failure)
+        if: failure()
+        run: |
+          echo "=== 主 App Ld 命令行（全量）==="
+          grep -m1 "Ld /.*WanWo normal" build.log || echo "(未见 Ld 行)"
+          echo "=== -framework 旗标统计 ==="
+          grep -o "\-framework [A-Za-z]*" build.log | sort | uniq -c | head -12
+          echo "=== CC/MDK framework 产物 ==="
+          ls build/Build/Products/Release-iphoneos/ 2>/dev/null
+          ls build/Build/Products/Release-iphoneos/CoreCompiler.framework/ 2>/dev/null | head -6
+          echo "=== pbxproj 接线证据 ==="
+          grep -c "CoreCompiler.framework" WanWo.xcodeproj/project.pbxproj || true
+          grep -n "FRAMEWORK_SEARCH_PATHS" WanWo.xcodeproj/project.pbxproj | head -3 || true
+          echo "=== 主 App 符号探针（CC 符号在 CC.framework 里吗）==="
+          nm build/Build/Products/Release-iphoneos/CoreCompiler.framework/CoreCompiler 2>/dev/null | grep -c "_CCGetMaximumPerformanceCores" || echo "0（CC 二进制无此符号！）"
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
