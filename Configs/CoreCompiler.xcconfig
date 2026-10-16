@@ -1,0 +1,7 @@
+// CoreCompiler: LLVM 工具链头/库路径（xcconfig 直通，绕开 XcodeGen settings
+// 序列化不确定性——probe 仓实证教训"YAML 对≠生成物对"）。
+// SupportLibs/ 为 CI 产物位（N1: gh release download toolchain-0587c30-20261016
+// 解压至此；不进 git），置包根以避免污染 CoreCompiler/ 源码扫描。
+HEADER_SEARCH_PATHS = $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/Headers
+LIBRARY_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64
+OTHER_LDFLAGS = $(inherited) -lllvm -lc++

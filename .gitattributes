@@ -2,3 +2,6 @@
 *.png binary
 *.icns binary
 *.gz binary
+
+# vendored: Nyxian 源码字节级纪律（禁行尾归一，防 CRLF 污染——probe 仓教训）
+Vendor/nyxian/** -text

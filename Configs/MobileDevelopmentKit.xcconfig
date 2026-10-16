@@ -1,0 +1,2 @@
+// MobileDevelopmentKit: CC/SupportLibs 路径（N1 工具链就位后生效）
+LIBRARY_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs

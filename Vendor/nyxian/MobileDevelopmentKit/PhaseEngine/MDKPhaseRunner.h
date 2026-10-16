@@ -1,0 +1,59 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 emexlab
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#ifndef MOBILEDEVELOPMENTKIT_MDKPHASERUNNER_H
+#define MOBILEDEVELOPMENTKIT_MDKPHASERUNNER_H
+
+#import <Foundation/Foundation.h>
+#import <MobileDevelopmentKit/MDKPhaseEngine.h>
+
+@class MDKPhaseRunner;
+
+@protocol MDKPhaseRunnerDelegate <NSObject>
+
+@optional
+- (BOOL)runner:(MDKPhaseRunner * _Nonnull)runner phase:(MDKPhase * _Nonnull)phase executeJob:(MDKJob * _Nonnull)job withOutDiagnostics:(NSArray<MDKDiagnostic*> * _Nonnull* _Nullable)diagnostics withOutMainSource:(NSString * _Nonnull* _Nullable)mainSource;
+- (void)runner:(MDKPhaseRunner * _Nonnull)runner phase:(MDKPhase * _Nonnull)phase finishedRunningJob:(MDKJob * _Nonnull)job withResultingDiagnostics:(NSArray<MDKDiagnostic*> * _Nullable)diagnostics withMainSource:(NSString * _Nullable)mainSource wasSuccessful:(BOOL)success;
+- (CFIndex)runner:(MDKPhaseRunner * _Nonnull)runner multithreadingThreadCountForPhase:(MDKPhase * _Nonnull)phase;
+
+@end
+
+@interface MDKPhaseRunner : NSObject
+
+@property (nonatomic, readonly, strong, nonnull) MDKPhaseEngine *engine;
+@property (nonatomic, readwrite, weak, nullable) id<MDKPhaseRunnerDelegate> delegate;
+
++ (instancetype _Nullable)runnerWithEngine:(MDKPhaseEngine * _Nonnull)engine;
+
+- (BOOL)runJob:(MDKJob * _Nonnull)job withinPhase:(MDKPhase * _Nonnull)phase;
+- (BOOL)runPhase:(MDKPhase * _Nonnull)phase;
+- (BOOL)runPhasesWithPhases:(NSArray * _Nonnull)phases;
+- (BOOL)runPhases;
+
+- (void)runPhasesWithCompletion:(void (^ _Nonnull)(BOOL success, BOOL terminated))completion;
+- (void)terminateWithCompletion:(void (^ _Nonnull)(void))completion;
+
+@end
+
+#endif /* MOBILEDEVELOPMENTKIT_MDKPHASERUNNER_H */

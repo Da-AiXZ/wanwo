@@ -189,6 +189,62 @@ targets:
       # 测试需以相同 identifier 预记账 grdb_migrations）。
       - package: GRDB
 
+  # ── N0（13 号设计 §五）：vendored 编译链两 framework ──
+  # 源码 = Nyxian main@0587c302a08（官方 10-01 绿跑同 commit，字节级落位
+  # + 品牌串机械替换，登记 docs/gpl-compliance.md）。
+  # N0 空转绿纪律：两 target 不进任何 scheme、主 App 零依赖——主流水线
+  # 构建路径零变化；真编译在 N1（CI 下载工具链 Release 后接通）。
+  CoreCompiler:
+    type: framework
+    platform: iOS
+    configFiles:
+      Debug: Configs/CoreCompiler.xcconfig
+      Release: Configs/CoreCompiler.xcconfig
+    sources:
+      - path: Vendor/nyxian/CoreCompiler
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.CoreCompiler
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        OTHER_CFLAGS: "-std=gnu17"
+        OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "$(OTHER_CFLAGS)", "-std=gnu++17"]
+        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        WARNING_CFLAGS:
+          - "-Wno-shorten-64-to-32"
+          - "-Wno-documentation"
+          - "-Wno-documentation-deprecated-sync"
+          - "-Wno-comma"
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+        SKIP_INSTALL: YES
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  MobileDevelopmentKit:
+    type: framework
+    platform: iOS
+    configFiles:
+      Debug: Configs/MobileDevelopmentKit.xcconfig
+      Release: Configs/MobileDevelopmentKit.xcconfig
+    sources:
+      - path: Vendor/nyxian/MobileDevelopmentKit
+    dependencies:
+      - target: CoreCompiler
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.MobileDevelopmentKit
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@loader_path/Frameworks"
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+        SKIP_INSTALL: YES
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+
 # 测试 scheme（本地 xcodebuild test 用；主流水线构建路径不受影响）。
 schemes:
   WanWo:
