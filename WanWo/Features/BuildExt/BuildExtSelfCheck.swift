@@ -4,8 +4,9 @@
 // 本模块 = 设备端最小验证面：三个 CC C API 全通 = CoreCompiler.framework
 // 在 iPad 上加载并工作（llvm_init constructor 已随 dyld 执行）。
 
-import CoreCompiler
 import Foundation
+// CC 三 API 经 WanWo-Bridging-Header.h 暴露（#import <CoreCompiler/CCUtils.h>）——
+// 官方 Nyxian 同款形态：CoreCompiler umbrella 含 C++ 头，Swift 不直接 import。
 
 struct BuildExtCheckItem: Identifiable {
     let id = UUID()
