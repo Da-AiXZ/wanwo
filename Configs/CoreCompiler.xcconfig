@@ -2,23 +2,8 @@
 // 序列化不确定性——probe 仓实证教训"YAML 对≠生成物对"）。
 // SupportLibs/ 为 CI 产物位（N1: gh release download toolchain-0587c30-20261016
 // 解压至此；不进 git），置包根以避免污染 CoreCompiler/ 源码扫描。
-// 14 个 -l_CompilerSwift*：官方 main pbxproj 用 Xcode 16 同步文件夹自动链接
-// SupportLibs dylib；XcodeGen 无此机制 → 显式旗标（名单对齐工具链 artifact
-// 实物 2026-10-16，run 38873142024 产物 14 个 lib_CompilerSwift*.dylib）。
+// 14 个 -l_CompilerSwift* 链接旗标放 project.yml settings.OTHER_LDFLAGS 数组
+// （probe 全绿同款形态；xcconfig 反斜杠续行写法存疑未采——run 38931667586
+// undefined 实证 dylib 旗标疑似整组未生效）。
 HEADER_SEARCH_PATHS = $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/Headers
 LIBRARY_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs $(PROJECT_DIR)/Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64
-OTHER_LDFLAGS = $(inherited) -lllvm -lc++ \
-  -l_CompilerSwiftBasicFormat \
-  -l_CompilerSwiftCompilerPluginMessageHandling \
-  -l_CompilerSwiftDiagnostics \
-  -l_CompilerSwiftIDEUtils \
-  -l_CompilerSwiftIfConfig \
-  -l_CompilerSwiftLexicalLookup \
-  -l_CompilerSwiftOperators \
-  -l_CompilerSwiftParser \
-  -l_CompilerSwiftParserDiagnostics \
-  -l_CompilerSwiftSyntax \
-  -l_CompilerSwiftSyntaxBuilder \
-  -l_CompilerSwiftSyntaxMacroExpansion \
-  -l_CompilerSwiftSyntaxMacros \
-  -l_CompilerSwiftWarningControl

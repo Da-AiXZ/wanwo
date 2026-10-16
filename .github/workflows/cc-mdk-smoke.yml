@@ -87,7 +87,7 @@ jobs:
       - name: Build settings sanity (golden values)
         run: |
           xcodebuild -project WanWo.xcodeproj -target CoreCompiler -showBuildSettings 2>/dev/null \
-            | grep -E "HEADER_SEARCH_PATHS|LIBRARY_SEARCH_PATHS" | head -4
+            | grep -E "HEADER_SEARCH_PATHS|LIBRARY_SEARCH_PATHS|OTHER_LDFLAGS" | head -6
 
       - name: Build CoreCompiler framework (real compile+link, 36 files)
         run: |

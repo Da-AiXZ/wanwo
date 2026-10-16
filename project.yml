@@ -209,6 +209,26 @@ targets:
         OTHER_CFLAGS: "-std=gnu17"
         OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "$(OTHER_CFLAGS)", "-std=gnu++17"]
         SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        # 14 个 -l_CompilerSwift*：官方同步文件夹自动链接的 XcodeGen 等价实现
+        # （名单=工具链 artifact 实物 2026-10-16；probe 全绿同款数组形态——
+        # xcconfig 续行写法存疑未采，见 run 38931667586 undefined 实证）
+        OTHER_LDFLAGS:
+          - "-lllvm"
+          - "-lc++"
+          - "-l_CompilerSwiftBasicFormat"
+          - "-l_CompilerSwiftCompilerPluginMessageHandling"
+          - "-l_CompilerSwiftDiagnostics"
+          - "-l_CompilerSwiftIDEUtils"
+          - "-l_CompilerSwiftIfConfig"
+          - "-l_CompilerSwiftLexicalLookup"
+          - "-l_CompilerSwiftOperators"
+          - "-l_CompilerSwiftParser"
+          - "-l_CompilerSwiftParserDiagnostics"
+          - "-l_CompilerSwiftSyntax"
+          - "-l_CompilerSwiftSyntaxBuilder"
+          - "-l_CompilerSwiftSyntaxMacroExpansion"
+          - "-l_CompilerSwiftSyntaxMacros"
+          - "-l_CompilerSwiftWarningControl"
         WARNING_CFLAGS:
           - "-Wno-shorten-64-to-32"
           - "-Wno-documentation"
