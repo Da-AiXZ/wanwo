@@ -32,4 +32,6 @@
 #import <LindChain/IDEFoundation/NXDocumentManager.h>
 #import <LindChain/IDEFoundation/NXRemoteCompiler.h>
 #import <LindChain/IDEBuilder/NXPhaseRunner.h>
+#import <LindChain/IDEBuilder/NXPhaseEngine.h>
 #import <LindChain/IDEBuilder/LDEFilesFinder.h>
+#import <LindChain/Utils/Zip.h>

@@ -238,6 +238,11 @@ class DebugDatabase: Codable {
     }
 }
 
+/* 万我 N4 适配（diff 登记：docs/gpl-compliance.md §N4N5）：本类是诊断
+ * 展示 UI（UITableViewController，引用 UI 层 CodeEditorViewController）——
+ * UI 层未落位，随 WANWO_BUILD_UI 守卫（N6+ 集成时开）。上方
+ * DebugItem/DebugObject/DebugDatabase 纯逻辑类（N4 验收对象）不受影响。 */
+#if WANWO_BUILD_UI
 class UIDebugViewController: UITableViewController {
     let file: String
     var project: NXProject
@@ -457,3 +462,4 @@ class UIDebugViewController: UITableViewController {
         self.reloadTableData()
     }
 }
+#endif /* WANWO_BUILD_UI */
