@@ -147,7 +147,7 @@ final class BuildService: @unchecked Sendable {
                 .sorted { $0.severity.rawValue > $1.severity.rawValue }
             var lines2: [String] = []
             for item in all.prefix(50) {
-                let lv = Self.levelNames[item.severity.rawValue] ?? "note"
+                let lv = Self.levelNames[Int(item.severity.rawValue)] ?? "note"
                 var loc = ""
                 let sl = item.sourceLocation
                 if sl.line > 0 {
