@@ -116,8 +116,8 @@ struct ProjectCreateTool: AgentTool {
         required: ["name"])
 
     private let writer: SessionWriter
-    private let sessionCwd: String
-    init(writer: SessionWriter, sessionCwd: String) {
+    private let sessionCwd: String?
+    init(writer: SessionWriter, sessionCwd: String?) {
         self.writer = writer
         self.sessionCwd = sessionCwd
     }
@@ -219,8 +219,8 @@ struct BuildIPATool: AgentTool {
         required: ["name"])
 
     private let writer: SessionWriter
-    private let sessionCwd: String
-    init(writer: SessionWriter, sessionCwd: String) {
+    private let sessionCwd: String?
+    init(writer: SessionWriter, sessionCwd: String?) {
         self.writer = writer
         self.sessionCwd = sessionCwd
     }
