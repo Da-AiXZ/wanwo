@@ -71,8 +71,12 @@ targets:
     # embed 进 ipa（Frameworks/ 目录，运行时 dlopen）。构建顺序由
     # target 依赖驱动：CC/MDK 先行（cc-mdk-smoke 同款工具链消费）。
     dependencies:
+      # embed: true 显式声明（绿包 38953302190 实证 Frameworks/ 无两 framework——
+      # XcodeGen 默认未 embed，装上会 dyld 启动崩）
       - target: CoreCompiler
+        embed: true
       - target: MobileDevelopmentKit
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang
