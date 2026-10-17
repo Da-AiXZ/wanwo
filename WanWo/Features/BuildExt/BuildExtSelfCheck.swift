@@ -156,7 +156,9 @@ enum BuildExtSelfCheck {
         }
 
         // ⑧ DebugDatabase 读写回环（getDatabase → addMessage → save →
-        //    重开读回 → clear 语义）。
+        //    重开读回 → reuse/clear 语义）。官方语义注：reuseDatabase=
+        //    重置 Internal 桶开始新一轮（NXBuilder get→reuse 顺序）——
+        //    读回断言必须在 reuse 之前（首版断言顺序错致 ⑧ 误红）。
         do {
             let path = (NSTemporaryDirectory() as NSString)
                 .appendingPathComponent("n4check-debug-\(UUID().uuidString).json")
@@ -167,19 +169,26 @@ enum BuildExtSelfCheck {
             db.saveDatabase(toPath: path)
 
             let reopened = DebugDatabase.getDatabase(ofPath: path)
-            reopened.reuseDatabase()
+            /* 先断言持久化回环（reuse 之前——reuse 会重置 Internal 桶） */
             let roundtripOK = reopened.debugObjects.values.flatMap(\.debugItems)
                 .contains { $0.message == "n4-selfcheck-roundtrip" }
 
-            reopened.clearDatabase()
-            let clearOK = reopened.debugObjects.values.flatMap(\.debugItems).isEmpty
+            /* 再验证 reuse 语义（官方 NXBuilder 顺序）：重置 Internal 桶 */
+            reopened.reuseDatabase()
+            let reuseResetsOK = reopened.debugObjects["Internal"]?.debugItems.isEmpty == true
+
+            /* clear 语义：清空后无残留 */
+            let db2 = DebugDatabase.getDatabase(ofPath: "/dev/null") /* 不存在 → 走新建分支 */
+            db2.addMessage(message: "to-be-cleared", severity: .warning)
+            db2.clearDatabase()
+            let clearOK = db2.debugObjects.values.flatMap(\.debugItems).isEmpty
 
             items.append(BuildExtCheckItem(
                 name: "DebugDatabase 读写",
-                detail: roundtripOK && clearOK
-                    ? "读写回环 ✓ + clear 语义 ✓"
-                    : "失败：回环=\(roundtripOK ? "✓" : "✗") clear=\(clearOK ? "✓" : "✗")",
-                passed: roundtripOK && clearOK))
+                detail: roundtripOK && reuseResetsOK && clearOK
+                    ? "读写回环 ✓ + reuse 重置语义 ✓ + clear ✓"
+                    : "失败：回环=\(roundtripOK ? "✓" : "✗") reuse=\(reuseResetsOK ? "✓" : "✗") clear=\(clearOK ? "✓" : "✗")",
+                passed: roundtripOK && reuseResetsOK && clearOK))
         }
 
         return items
