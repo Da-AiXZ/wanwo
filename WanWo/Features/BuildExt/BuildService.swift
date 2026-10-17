@@ -146,16 +146,22 @@ final class BuildService: @unchecked Sendable {
             struct Rendered { let level: String; let file: String; let line: Int; let col: Int; let message: String }
             var rendered: [Rendered] = []
             for (title, object) in db.debugObjects {
+                // 全部拆单步局部变量（type-check 超时惯犯：构造器内嵌三元/
+                // 下标链/?? 混合——第 5 次实证）。
+                let file = title.hasPrefix("/") ? String(title.dropFirst(rootPrefix.count)) : title
                 for item in object.debugItems {
-                    rendered.append(Rendered(
-                        level: Self.levelNames[Int(item.severity.rawValue)] ?? "note",
-                        file: title.hasPrefix("/") ? String(title.dropFirst(rootPrefix.count)) : title,
-                        line: Int(item.sourceLocation.line),
-                        col: Int(item.sourceLocation.column),
-                        message: item.message))
+                    let levelKey = Int(item.severity.rawValue)
+                    let level = Self.levelNames[levelKey] ?? "note"
+                    let lineNum = Int(item.sourceLocation.line)
+                    let colNum = Int(item.sourceLocation.column)
+                    let msg = item.message
+                    rendered.append(Rendered(level: level, file: file, line: lineNum,
+                                             col: colNum, message: msg))
                 }
             }
-            rendered.sort { $0.level == $1.level ? $0.file < $1.file : $0.level < $1.level }
+            // 两步稳定排序替代三元混合比较闭包。
+            rendered.sort { $0.file < $1.file }
+            rendered.sort { $0.level < $1.level }
             // 零插值形态（type-check 超时第 4 次实证——插值链全部改拼接）。
             var lines2: [String] = []
             for r in rendered.prefix(50) {
