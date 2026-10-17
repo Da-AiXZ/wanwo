@@ -26,11 +26,11 @@
 #import <LindChain/IDEFoundation/NXPlist.h>
 #import <LindChain/IDEFoundation/NXType.h>
 /* 万我 N4 适配（diff 登记：docs/gpl-compliance.md §N4N5）：原引用
- * trust 层 entitlement.h（N7 落位）——N4 实测有真实消费（kNXT2* 键名
+ * trust 层 entitlement.h（N7 落位）——N4 实测有真实消费（kNXT2 键名
  * 常量，NXProject.m 生成工程 Entitlements.plist 用；首跑 grep 模式
- * PE*/entitlement_ 未覆盖 kNXT2* 前缀致误判空引用，run 39009276643
- * undeclared 实证）——头字节级复制至 Utils/、常量实现建万我版
- * （键名品牌映射 com.wanwo.build.*），import 改指 Utils。 */
+ * "PE 前缀与 entitlement_ 前缀"未覆盖 kNXT2 前缀致误判空引用，run
+ * 39009276643 undeclared 实证）——头字节级复制至 Utils/、常量实现建
+ * 万我版（键名品牌映射 com.wanwo.build.*），import 改指 Utils。 */
 #import <LindChain/Utils/entitlement.h>
 
 @interface NXProjectConfig : NXPlist
