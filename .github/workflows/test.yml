@@ -8,8 +8,12 @@
 #   · 步骤主体 = git 历史权威先例 816ae62:.github/workflows/test.yml 1:1
 #     （该件源自 M4-A 先例 957aa41，经 M6 终验环境七轮修正收敛——ios-sim 库
 #     变体重编/SIM_UDID 最新 runtime 解析/WebKit Swift overlay 弱链接方案）；
-#   · runner/Xcode 版本 = ios.yml 对齐（macos-15 / Xcode 16.4 / 同款工具链
-#     安装与 iSH 库构建步骤）；
+#   · runner/Xcode 版本 = ios.yml 对齐——【N4/N5 对齐 2026-10-17：macos-15/
+#     Xcode 16.4 → macos-latest/Xcode 26.6（ios.yml 修⑧同款——主 App 现含
+#     N2-N5 编译链接线，llvm.a 内的 Swift 6.4 编译成员要求 6.4 运行时，
+#     16.4 无法编译主 App）+ 新增"Download Nyxian toolchain"步骤（CC/MDK
+#     framework 链接输入；N1 同款锚定 tag 下载）——RootfsPatch.bundle 由
+#     build_ish.sh:207 顺带产出无需占位；
 #   · 占位 rootfs = issue-ledger ERR-008（ledger:27-32）：App target 把
 #     alpine-rootfs.zip 声明为构建期必须存在的资源，test 前必须生成——
 #     单测不 boot guest，内容无关（真实 rootfs 仍由 ios.yml fetch_rootfs.sh
@@ -21,7 +25,8 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    # N4/N5 对齐（ios.yml 修⑧同款）：主 App 编译链接线要求 Xcode 26.6
+    runs-on: macos-latest
     # 【CI修41 基建】正常 8-15 分钟；run 36898416182 实证编译阶段可僵死
     # （静默 44 分钟，device 目标同代码 20 分钟过=代码无罪）——60 分钟
     # 硬护栏防默认 6 小时挂死。
@@ -29,9 +34,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
 
       - name: Install toolchain
         run: |
@@ -45,6 +47,25 @@ jobs:
         run: |
           chmod +x scripts/*.sh
           ./scripts/build_ish.sh release
+
+      # N4/N5 对齐（ios.yml 同款）：主 App 的 CC/MDK framework 链接输入——
+      # 官方配方 Release 锚定 tag 下载（N1 改写版落地：LLVM 永不自建）。
+      - name: Download Nyxian toolchain (CC/MDK link inputs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download toolchain-0587c30-20261016 \
+            --repo Da-AiXZ/nyxian-official-replica \
+            --output toolchain.zip
+          SIZE=$(stat -f%z toolchain.zip)
+          test "$SIZE" -eq 1412422533 || { echo "!! size mismatch: $SIZE"; exit 1; }
+          unzip -q -o toolchain.zip
+          rm -rf Vendor/nyxian/CoreCompilerSupportLibs
+          mv CoreCompilerSupportLibs Vendor/nyxian/
+          mv LLVM.xcframework Vendor/nyxian/CoreCompilerSupportLibs/
+          test -f Vendor/nyxian/CoreCompilerSupportLibs/LLVM.xcframework/ios-arm64/llvm.a \
+            && echo "toolchain layout ✓"
 
       - name: Generate placeholder Alpine rootfs (ERR-008)
         run: |
