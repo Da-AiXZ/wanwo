@@ -142,19 +142,25 @@ final class BuildService: @unchecked Sendable {
             // 【N6 压测反馈】诊断可定位化（保守形态重做——嵌套函数+正则链
             // 疑触发 swiftc 崩溃 run 39032097279/rerun，见 §三 g）。
             let rootPrefix = project.url.standardizedFileURL.path + "/"
-            let all = db.debugObjects.values
-                .flatMap(\.debugItems)
-                .sorted { $0.severity.rawValue > $1.severity.rawValue }
-            var lines2: [String] = []
-            for item in all.prefix(50) {
-                let lv = Self.levelNames[Int(item.severity.rawValue)] ?? "note"
-                var loc = ""
-                let sl = item.sourceLocation
-                if sl.line > 0 {
-                    let file = sl.file.isEmpty ? "" : String(sl.file.dropFirst(rootPrefix.count))
-                    loc = "[\(file):\(sl.line):\(sl.column)] "
+            // file 在 DebugObject 的键上（MDKSourceLocation 只有行列）。
+            struct Rendered { let level: String; let file: String; let line: Int; let col: Int; let message: String }
+            var rendered: [Rendered] = []
+            for (title, object) in db.debugObjects {
+                for item in object.debugItems {
+                    rendered.append(Rendered(
+                        level: Self.levelNames[Int(item.severity.rawValue)] ?? "note",
+                        file: title.hasPrefix("/") ? String(title.dropFirst(rootPrefix.count)) : title,
+                        line: Int(item.sourceLocation.line),
+                        col: Int(item.sourceLocation.column),
+                        message: item.message))
                 }
-                var msg = "[\(lv)] \(loc)\(item.message)"
+            }
+            rendered.sort { $0.level == $1.level ? $0.file < $1.file : $0.level < $1.level }
+            var lines2: [String] = []
+            for r in rendered.prefix(50) {
+                var loc = ""
+                if r.line > 0 { loc = "[\(r.file):\(r.line):\(r.col)] " }
+                var msg = "[\(r.level)] \(loc)\(r.message)"
                 msg = msg.replacingOccurrences(
                     of: "/private/var/mobile/Containers/Data/Application/",
                     with: "wanwo-build-sandbox/")
