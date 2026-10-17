@@ -111,19 +111,19 @@ enum BuildExtSelfCheck {
             var failures: [String] = []
             if let plist = NXPlist(plistPath: plistPath, withVariables: ["PlatformArch": "arm64"]) {
                 // ① 字典点路径
-                if let arch = plist.dictionary.expandString("$(Compiler.Arch)", depth: 0, ownRoot: nil) as? String, arch == "arm64" {} else {
+                if let arch = plist.dictionary.expand("$(Compiler.Arch)", depth: 0, ownRoot: nil) as? String, arch == "arm64" {} else {
                     failures.append("点路径展开失败")
                 }
                 // ② variables 兜底
-                if let v = plist.dictionary.expandString("value-$(PlatformArch)", depth: 0, ownRoot: nil) as? String, v == "value-arm64" {} else {
+                if let v = plist.dictionary.expand("value-$(PlatformArch)", depth: 0, ownRoot: nil) as? String, v == "value-arm64" {} else {
                     failures.append("variables 兜底失败")
                 }
                 // ③ 未命中 → 空串
-                if let miss = plist.dictionary.expandString("x-$(NoSuch.Var)-y", depth: 0, ownRoot: nil) as? String, miss == "x--y" {} else {
+                if let miss = plist.dictionary.expand("x-$(NoSuch.Var)-y", depth: 0, ownRoot: nil) as? String, miss == "x--y" {} else {
                     failures.append("未命中空串语义失败")
                 }
                 // ④ 递归展开
-                if let r = plist.dictionary.expandString("$(Recursive)", depth: 0, ownRoot: nil) as? String, r == "flag-value" {
+                if let r = plist.dictionary.expand("$(Recursive)", depth: 0, ownRoot: nil) as? String, r == "flag-value" {
                     // 递归用例需要字典支持——用独立 plist 验证
                 } else {
                     // 递归单独构造
@@ -133,7 +133,7 @@ enum BuildExtSelfCheck {
                     FileManager.default.createFile(atPath: p2Path, contents: d2data)
                     defer { try? FileManager.default.removeItem(atPath: p2Path) }
                     if let p2 = NXPlist(plistPath: p2Path, withVariables: nil),
-                       let r2 = p2.dictionary.expandString("$(A)", depth: 0, ownRoot: nil) as? String, r2 == "flag-value" {
+                       let r2 = p2.dictionary.expand("$(A)", depth: 0, ownRoot: nil) as? String, r2 == "flag-value" {
                     } else {
                         failures.append("递归展开失败")
                     }
