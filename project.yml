@@ -117,6 +117,13 @@ targets:
         # ⚠️ YAML 同 key 后者覆盖前者（run 39002278710 实证：N3b 数组形式被
         # 本条覆盖致桥接头 NXBootstrap.h not found）——本条为唯一 HEADER_SEARCH_PATHS。
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt"
+        # N3b 修③（run 39003398834 实证）：桥接头 import MDKOSVersion 触发
+        # MobileDevelopmentKit module 构建，MDKThreadPool.h:29 #import
+        # <CoreCompiler/CCUtils.h> 在 -I Vendor/nyxian 加宽后命中 CC 源码树头
+        # （非模块化）——-Wnon-modular-include-in-framework-module 被构建器
+        # 升级 [-Werror] 拦截。该 include 是官方既定结构（官方 pbxproj 未设
+        # 此键=警告不升级，绿跑实证）；显式关警告，语义对齐官方。
+        CLANG_WARN_NON_MODULAR_INCLUDE_IN_FRAMEWORK_MODULE: NO
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
         # 【回退登记】weak_library 方案（弱链接 WebKit Swift overlay）实测链接期
         # 即需文件存在（-weak_library 全路径缺失=ld 报 Build input file cannot
