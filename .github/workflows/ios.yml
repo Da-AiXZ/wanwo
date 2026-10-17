@@ -74,8 +74,17 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R "build/Build/Products/Release-iphoneos/WanWo.app" Payload/
+          # N2 手动 embed（run 38992198215 实证：Products 有两 framework、
+          # XcodeGen embed: true 未生成任何 Embed phase——手动补进 ipa；
+          # 免签包不签 framework，用户签名安装时整包重签）
+          mkdir -p "Payload/WanWo.app/Frameworks"
+          cp -R "build/Build/Products/Release-iphoneos/CoreCompiler.framework" "Payload/WanWo.app/Frameworks/"
+          cp -R "build/Build/Products/Release-iphoneos/MobileDevelopmentKit.framework" "Payload/WanWo.app/Frameworks/"
+          echo "=== Frameworks 落位验证 ==="
+          ls -lh "Payload/WanWo.app/Frameworks/"
           zip -qry "WanWo-${{ github.sha }}.ipa" Payload
           ls -lh WanWo-*.ipa
+          unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/CoreCompiler" || { echo "!! embed 失败"; exit 1; }
 
       - name: Link diagnostics (on failure)
         if: failure()
