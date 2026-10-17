@@ -113,3 +113,11 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 3 | `IDEFoundation/NXCodeTemplate.m:37` 读路径 `bundleURL/Shared/Templates` → `bundleURL/Templates.bundle/Templates`（唯一路径拼装点，语义等价） |
 
 试验源码（N5CompileTrial.swift）改用官方模板链（删除自写源文件段）——createProject→模板→buildProject 全官方路径。
+
+## 三 e、N6 收尾三小件（2026-10-17，真机事件流审读产出）
+
+| # | 件 | 改动 |
+|---|---|---|
+| ① | browser 截图→fs 桶间桥 | `BrowserUseTool` 截图持久化段追加：复制进会话工作区桶 `browser/`，返回文本加 workspace_image_path 行（read_image 直读；修复真机实证的 read_image file not found——browser 桶物理隔离 sessionPersistentDir，fs 解析分支够不到） |
+| ② | project 工具 guest 路径提示 | `BuildTools` registerAll/两工具注入 sessionCwd（ShellTool 同款装配），project_create/build_ipa 输出追加 guest bash path 行（修复 AI bash 盲试 6 次找工程） |
+| ③ | 自修复场景实测 | 留真机验证：对话让 AI 故意引入编译错误（如写错类型名）→ build_ipa → AI 按诊断修复 → 重建 |

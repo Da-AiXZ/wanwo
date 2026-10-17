@@ -334,6 +334,24 @@ struct BrowserUseTool: AgentTool {
         if let filename = persistedName {
             let linuxPath = "\(WanWoPaths.browserLinuxDir)/\(filename)"
             text += "\nimage_path: \(linuxPath)"
+            // 【N6 收尾件① 2026-10-17】：截图同步复制进会话工作区桶 browser/
+            // ——read_image（fs 桶作用域）只能读工作区桶，browser 桶物理隔离
+            // （真机实证：read_image file not found，AI 只能 bash 绕道确认）。
+            // 复制后返回 workspace 路径行，read_image 直读。
+            let wsBrowserDir = ctx.workspace.rootURL.appendingPathComponent("browser", isDirectory: true)
+            try? FileManager.default.createDirectory(at: wsBrowserDir, withIntermediateDirectories: true)
+            var workspaceImageURL: URL? = nil
+            if let path = result.imageFilePath, !path.isEmpty,
+               FileManager.default.fileExists(atPath: path) {
+                let dst = wsBrowserDir.appendingPathComponent(filename)
+                try? FileManager.default.removeItem(at: dst)
+                if (try? FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: dst)) != nil {
+                    workspaceImageURL = dst
+                }
+            }
+            if let wsURL = workspaceImageURL {
+                text += "\nworkspace_image_path: \(wsURL.path)（read_image 可直读此路径）"
+            }
             if let link = WanwoURLSchemeHandler.linuxPathToWanwoURL(linuxPath) {
                 text += "\nwanwo_url: \(link)"
             }

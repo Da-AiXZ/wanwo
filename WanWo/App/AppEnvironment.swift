@@ -1166,7 +1166,8 @@ final class AppEnvironment: ObservableObject {
         // build_log、stop_build——build_and_run 属阶段 2）。工程目录=会话
         // 工作区桶 BuildProjects/<name>（fs 工具与 NXBuilder 同仓零拷贝）。
         BuildEvents.register()
-        BuildTools.registerAll(into: registry, sessionId: sessionId, writer: writer)
+        BuildTools.registerAll(into: registry, sessionId: sessionId, writer: writer,
+                               sessionCwd: sessionCwd)
         // M6.3 B2：browser_use 工具（F033——schema/执行分发语义源=OpenMinis
         // AIChatViewModel+ToolDefinitions:102-132 + ConcurrentTools:547-638，
         // 见 BrowserUseTool.swift 头注）。高风险面审批=提权呈现缝（OriginPolicy.

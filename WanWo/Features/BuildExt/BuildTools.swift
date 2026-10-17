@@ -46,13 +46,24 @@ enum BuildTools {
     /// stop_build——build_and_run 属阶段 2）。writer 注入供 build 事件发射。
     static func registerAll(into registry: ToolRegistry,
                             sessionId: String,
-                            writer: SessionWriter) {
-        registry.register(ProjectCreateTool(writer: writer))
+                            writer: SessionWriter,
+                            sessionCwd: String) {
+        registry.register(ProjectCreateTool(writer: writer, sessionCwd: sessionCwd))
         registry.register(ProjectListTool())
         registry.register(ProjectReadTool())
-        registry.register(BuildIPATool(writer: writer))
+        registry.register(BuildIPATool(writer: writer, sessionCwd: sessionCwd))
         registry.register(BuildLogTool())
         registry.register(StopBuildTool())
+    }
+
+    /// guest bash 视角路径提示（会话桶在 guest 侧的挂载点=sessionCwd）——
+    /// 真机实证：project_create 只回宿主路径时 AI 用 bash 盲试 6 次找工程。
+    static func guestPathHint(_ hostPath: String, workspaceRoot: URL, sessionCwd: String) -> String {
+        let root = workspaceRoot.standardizedFileURL.path
+        let host = hostPath.standardizedFileURL.path
+        guard host.hasPrefix(root + "/") || host == root else { return "" }
+        let rel = String(host.dropFirst(root.count))
+        return "\nguest bash path: \(sessionCwd)\(rel)（guest 内 ls/cat 可见）"
     }
 }
 
@@ -105,7 +116,11 @@ struct ProjectCreateTool: AgentTool {
         required: ["name"])
 
     private let writer: SessionWriter
-    init(writer: SessionWriter) { self.writer = writer }
+    private let sessionCwd: String
+    init(writer: SessionWriter, sessionCwd: String) {
+        self.writer = writer
+        self.sessionCwd = sessionCwd
+    }
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
@@ -122,11 +137,13 @@ struct ProjectCreateTool: AgentTool {
             let sources = (try? FileManager.default.contentsOfDirectory(
                 at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
                 .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
+            let guestHint = Self.guestPathHint(project.url.path, workspaceRoot: ctx.workspace.rootURL,
+                                               sessionCwd: sessionCwd)
             return .success("""
                 project \(note): \(name)
-                project dir: \(project.url.path)
+                project dir: \(project.url.path)\(guestHint)
                 sources: \(sources)
-                Next: write/overwrite .swift files in this directory with the fs tools, then call build_ipa(name: "\(name)").
+                Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_ipa(name: "\(name)").
                 """)
         } catch {
             return .failure(String(describing: error), code: "CREATE_FAILED", name: "BuildError")
@@ -202,7 +219,11 @@ struct BuildIPATool: AgentTool {
         required: ["name"])
 
     private let writer: SessionWriter
-    init(writer: SessionWriter) { self.writer = writer }
+    private let sessionCwd: String
+    init(writer: SessionWriter, sessionCwd: String) {
+        self.writer = writer
+        self.sessionCwd = sessionCwd
+    }
 
     /// 编译占线程池与缓存目录——exclusive 车道串行。
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
@@ -262,9 +283,11 @@ struct BuildIPATool: AgentTool {
             payload: eventPayload))
 
         if result.success {
+            let guestHint = Self.guestPathHint(result.ipaURL.path, workspaceRoot: ctx.workspace.rootURL,
+                                               sessionCwd: sessionCwd)
             return .success("""
                 BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）
-                ipa: \(result.ipaURL.path)
+                ipa: \(result.ipaURL.path)\(guestHint)
                 bundle(.app, N7 签名/N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
                 diagnostics: \(result.diagnosticsSummary)
