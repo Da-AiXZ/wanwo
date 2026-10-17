@@ -99,6 +99,7 @@ targets:
       - path: Vendor/nyxian/LindChain/IDEBuilder/NXPhaseRunner.m
       - path: Vendor/nyxian/LindChain/IDEBuilder/LDEFilesFinder.m
       - path: Vendor/nyxian/LindChain/Utils/Swizzle.c
+      - path: Vendor/nyxian/LindChain/Utils/entitlement.c
       - path: Vendor/nyxian/LindChain/Utils/NXOSVersion.swift
       # N3b：SDK + Shared 三 zip 内嵌资源（拍板 ③ 零网络；单文件形态——
       # D2 先例 folder 展开冲突，四 zip 文件名全唯一；NXBootstrap 侧路径

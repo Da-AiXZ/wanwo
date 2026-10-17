@@ -20,6 +20,7 @@
 */
 
 #import <LindChain/IDEFoundation/NXProject.h>
+#import <LindChain/IDEFoundation/NXBootstrap.h> /* 万我 N4 适配：L40 NXBootstrap.shared（官方经 Nyxian-Swift.h re-export 桥接头间接可见；万我显式 import 更稳） */
 #import <LindChain/IDEFoundation/NXCodeTemplate.h>
 #import <LindChain/IDEFoundation/NXUser.h>
 #import <LindChain/IDEFoundation/NXUtils.h>
