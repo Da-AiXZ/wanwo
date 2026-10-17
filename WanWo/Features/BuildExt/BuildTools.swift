@@ -126,8 +126,9 @@ struct ProjectCreateTool: AgentTool {
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         guard let name = args.objectValue?["name"]?.stringValue,
-              !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber }) else {
-            return .failure("missing/invalid \"name\"（字母数字，作为目录名与可执行名）", code: "INVALID_ARGS")
+              !name.isEmpty, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            return .failure("missing/invalid \"name\"（ASCII 字母数字——作为目录名/可执行名/链接模块名；\
+真机实证中文名会致 ld64.lld 链接失败 run 事件 2026-10-17；中文显示名建工程后改 Project.plist 的 NXDisplayName）", code: "INVALID_ARGS")
         }
         do {
             let (project, created) = try BuildService.shared.createOrReuseProject(
@@ -271,7 +272,7 @@ struct BuildIPATool: AgentTool {
 
         // 诊断双去向 ②：build 事件持久化（modelVisible——AI 下一回合读到）
         let eventPayload: JSONValue = .object([
-            "name": .string(result.projectName),
+            "name": .string(name),
             "result": .string(result.success ? "success" : "failure"),
             "phase": .string("export"),
             "elapsed": .string(String(format: "%.1fs", result.elapsedSeconds)),

@@ -121,3 +121,15 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | ① | browser 截图→fs 桶间桥 | `BrowserUseTool` 截图持久化段追加：复制进会话工作区桶 `browser/`，返回文本加 workspace_image_path 行（read_image 直读；修复真机实证的 read_image file not found——browser 桶物理隔离 sessionPersistentDir，fs 解析分支够不到） |
 | ② | project 工具 guest 路径提示 | `BuildTools` registerAll/两工具注入 sessionCwd（ShellTool 同款装配），project_create/build_ipa 输出追加 guest bash path 行（修复 AI bash 盲试 6 次找工程） |
 | ③ | 自修复场景实测 | 留真机验证：对话让 AI 故意引入编译错误（如写错类型名）→ build_ipa → AI 按诊断修复 → 重建 |
+
+## 三 f、N6 大规模实测修正（2026-10-17，用户 55278 事件流审读产出）
+
+用户侧 AI 对构建功能做 27 次编译压测（12 次失败→12/12 自修复成功、29/29 审批、127 工具调用）。产出修正：
+
+| # | 发现 | 修正 |
+|---|---|---|
+| 1 | 中文工程名"计算器"：编译 success 但 **ld64.lld 链接失败**（非 ASCII 路径/模块名） | project_create name 校验收紧 ASCII（错误信息附中文名替代路径：建工程后改 Project.plist NXDisplayName） |
+| 2 | build 事件 name 丢成 "Unknown"（displayName 展开失败时 BuildResult.projectName 兜底值污染事件） | 事件 name 改用调用入参（确定值） |
+| 3 | 诊断摘要 "[MDKDiagnosticLevel(rawValue: 3)]" 不可读 | severity rawValue→显示名映射（error/warning/remark/note） |
+
+**登记不修**（事件流实证的官方边界/无害项）：①`wanwo-build//Cache` 双斜杠（官方拼接形态，路径有效）②0.0s 无诊断失败（NXBuilder init 失败路径无诊断——BuildPanelView 场景补）③`external macro` 失败（@Preview 设备端编译限制——官方边界）。

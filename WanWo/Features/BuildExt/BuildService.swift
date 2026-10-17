@@ -136,11 +136,14 @@ final class BuildService: @unchecked Sendable {
             let db = DebugDatabase.getDatabase(
                 ofPath: project.cacheURL.appendingPathComponent("debug.json").path)
             db.reuseDatabase()
+            func levelName(_ raw: Int) -> String {
+                switch raw { case 3: return "error"; case 2: return "warning"; case 1: return "remark"; default: return "note" }
+            }
             let summary = db.debugObjects.values
                 .flatMap(\.debugItems)
                 .sorted { $0.severity.rawValue > $1.severity.rawValue }
                 .prefix(20)
-                .map { "[\($0.severity)] \($0.message)" }
+                .map { "[\(levelName($0.severity.rawValue))] \($0.message)" }
                 .joined(separator: "\n")
 
             let buildResult = BuildResult(
