@@ -67,6 +67,24 @@ targets:
       # （D2 先例：folder reference 展开冲突，单文件路径直接落 Resources phase）
       - path: WanWo/Resources/Ptc/sucrase.js
         buildPhase: resources
+      # ── N3b（13 号设计）：编译引导闭包接入主 App——NXBootstrap（vendored
+      # 16 化版）+ 其 ObjC 依赖；Swift 侧经 WanWo-Bridging-Header.h 访问
+      # （NXBootstrap/MDKOSVersion；bridging 含 C++ 头的 framework 不可直接
+      # import——N2 修②同款纪律）。
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXBootstrap.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXAlertDiagnosticPresenter.m
+      - path: Vendor/nyxian/LindChain/Utils/Zip.m
+      # N3b：SDK + Shared 三 zip 内嵌资源（拍板 ③ 零网络；单文件形态——
+      # D2 先例 folder 展开冲突，四 zip 文件名全唯一；NXBootstrap 侧路径
+      # 已同步平铺适配，diff 登记 docs/gpl-compliance.md §N3b）
+      - path: Vendor/nyxian/Shared/include.zip
+        buildPhase: resources
+      - path: Vendor/nyxian/Shared/lib.zip
+        buildPhase: resources
+      - path: Vendor/nyxian/Shared/swift.zip
+        buildPhase: resources
+      - path: Vendor/nyxian/Shared/SDK.zip
+        buildPhase: resources
     # ── N2（13 号设计）：编译链接线接入主 App——CC/MDK framework 自动
     # embed 进 ipa（Frameworks/ 目录，运行时 dlopen）。构建顺序由
     # target 依赖驱动：CC/MDK 先行（cc-mdk-smoke 同款工具链消费）。
@@ -85,6 +103,11 @@ targets:
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(BUILT_PRODUCTS_DIR)"
+        # N3b：vendored LindChain 头树（<LindChain/...> import 与官方路径
+        # 语义一致——Vendor/nyxian 下 LindChain/MobileDevelopmentKit 同级）
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Vendor/nyxian"
         # 显式 -framework 链接（run 38943084567：dependencies 生成的链接条目
         # 未覆盖 bridging header 引用的 CC C 符号——MDK 链 CC 成功而主 App 链
         # 失败，XcodeGen app-target 差异；embed 仍由 dependencies 负责）

@@ -20,7 +20,40 @@
 */
 
 #import <LindChain/IDEFoundation/NXAlertDiagnosticPresenter.h>
-#import <LindChain/WindowServer/NXWindowServer.h>
+
+/* 万我 N3b 适配（diff 登记：docs/gpl-compliance.md §N3b）：原实现取
+ * NXWindowServer.shared.rootViewController（WindowServer 层，0.10.3 宿主
+ * 面之一，N9 落位）作呈现根。万我当前无 WindowServer——改用标准
+ * UIApplication connectedScenes 取前台 keyWindow rootViewController
+ * （iOS 16 兼容形态），语义等价：找当前最前窗口的呈现根。 */
+
+static UIViewController *WANWOKeyRootViewController(void)
+{
+    UIViewController *root = nil;
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+    {
+        if(scene.activationState != UISceneActivationStateForegroundActive ||
+           ![scene isKindOfClass:[UIWindowScene class]])
+        {
+            continue;
+        }
+
+        for(UIWindow *window in ((UIWindowScene*)scene).windows)
+        {
+            if(window.isKeyWindow)
+            {
+                root = window.rootViewController;
+                break;
+            }
+        }
+
+        if(root != nil)
+        {
+            break;
+        }
+    }
+    return root;
+}
 
 static UIViewController *NXTopViewController(UIViewController *viewController)
 {
@@ -66,7 +99,7 @@ static NSString *NXStringForNXAlertDiagnosticPresenterLevel(NXAlertDiagnosticPre
 {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIViewController *viewController = NXTopViewController(NXWindowServer.shared.rootViewController);
+            UIViewController *viewController = NXTopViewController(WANWOKeyRootViewController());
             UIAlertController *alertController = [UIAlertController alertControllerWithTitle:NXStringForNXAlertDiagnosticPresenterLevel(level) message:message preferredStyle:UIAlertControllerStyleAlert];
             [alertController addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]];
             [viewController presentViewController:alertController animated:YES completion:nil];

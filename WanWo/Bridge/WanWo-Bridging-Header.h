@@ -13,3 +13,10 @@
 // 已含 BUILT_PRODUCTS_DIR；Swift 侧不 import CoreCompiler module——其 umbrella
 // 含 C++ 头，Xcode 16.4 Swift 无法 import，官方 Nyxian 同走 bridging header）
 #import <CoreCompiler/CCUtils.h>
+
+// N3b BuildExt：编译引导（vendored 16 化 NXBootstrap）+ 宿主 OS 读数
+// （MDKOSVersion）。头树经主 target HEADER_SEARCH_PATHS=$(PROJECT_DIR)/
+// Vendor/nyxian 解析（<LindChain/...> 官方路径语义）；MDK 经 framework
+// include。NXBootstrap.h/MDKOSVersion.h 均纯 ObjC 无 C++，可桥。
+#import <LindChain/IDEFoundation/NXBootstrap.h>
+#import <MobileDevelopmentKit/MDKOSVersion.h>

@@ -14,6 +14,14 @@ struct WanWoApp: App {
         // 时序纪律：didFinishLaunching 返回前未设置则前台投递缺失；SwiftUI
         // App 的 init 即最早注册点）。
         WanWoNotificationDelegate.shared.register()
+
+        // N3b：首启后台编译引导（vendored NXBootstrap 16 化——幂等：
+        // version==NEWEST(29) 时 bootstrap 内部直接返回；SDK/三 zip 内嵌
+        // 解压零网络，失败走 report_error 自清路径）。放 utility 队列不阻塞
+        // 启动；bootstrap 内部再经 MDKPthreadDispatch 派发（MDK 线程池）。
+        DispatchQueue.global(qos: .utility).async {
+            NXBootstrap.shared().bootstrap()
+        }
     }
 
     var body: some Scene {

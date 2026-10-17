@@ -57,6 +57,41 @@ enum BuildExtSelfCheck {
             detail: toolchainAnchor,
             passed: true))
 
+        // ── N3b 读数：编译引导状态 + 宿主 OS（13 号设计 N3b 验收项）──
+
+        // ⑤ Bootstrap 状态（NXBootstrap 幂等安装：SDK/Include/lib/swift 四树
+        //    就位 = 编译前置资源完整；未完成时列缺失树，不阻断其余读数）。
+        let bootstrap = NXBootstrap.shared()
+        let bootstrapVersion = bootstrap.version
+        let trees: [(String, URL)] = [
+            ("SDK/iPhoneOS26.5.sdk", bootstrap.sdkURL()),
+            ("Include", bootstrap.includeURL()),
+            ("swift", bootstrap.swiftURL()),
+            ("lib", bootstrap.rootURL().appendingPathComponent("lib")),
+        ]
+        let missing = trees.filter { !FileManager.default.fileExists(atPath: $0.1.path) }.map(\.0)
+        if bootstrapVersion >= 29 && missing.isEmpty {
+            items.append(BuildExtCheckItem(
+                name: "编译引导（bootstrap）",
+                detail: "已安装（v\(bootstrapVersion)）：SDK/Include/swift/lib 四树完整 @ \(bootstrap.rootURL().path)",
+                passed: true))
+        } else {
+            items.append(BuildExtCheckItem(
+                name: "编译引导（bootstrap）",
+                detail: missing.isEmpty
+                    ? "进行中（v\(bootstrapVersion)/29）——首启后台安装中，稍后重开本页"
+                    : "未完成（v\(bootstrapVersion)/29）缺失：\(missing.joined(separator: "、"))",
+                passed: missing.isEmpty))
+        }
+
+        // ⑥ 宿主 OS 版本（MDKOSVersion.host——13 号设计 N3b 验收：
+        //    返回 16.6.1 数值正确）。
+        let hostOS = MDKOSVersion.host().versionString
+        items.append(BuildExtCheckItem(
+            name: "宿主 OS 读数",
+            detail: "MDKOSVersion.host = \(hostOS)",
+            passed: !hostOS.isEmpty))
+
         return items
     }
 
