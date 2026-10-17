@@ -47,7 +47,7 @@ enum BuildTools {
     static func registerAll(into registry: ToolRegistry,
                             sessionId: String,
                             writer: SessionWriter,
-                            sessionCwd: String) {
+                            sessionCwd: String?) {
         registry.register(ProjectCreateTool(writer: writer, sessionCwd: sessionCwd))
         registry.register(ProjectListTool())
         registry.register(ProjectReadTool())
@@ -58,12 +58,12 @@ enum BuildTools {
 
     /// guest bash 视角路径提示（会话桶在 guest 侧的挂载点=sessionCwd）——
     /// 真机实证：project_create 只回宿主路径时 AI 用 bash 盲试 6 次找工程。
-    static func guestPathHint(_ hostPath: String, workspaceRoot: URL, sessionCwd: String) -> String {
+    static func guestPathHint(_ hostPath: String, workspaceRoot: URL, sessionCwd: String?) -> String {
         let root = workspaceRoot.standardizedFileURL.path
-        let host = hostPath.standardizedFileURL.path
+        let host = URL(fileURLWithPath: hostPath).standardizedFileURL.path
         guard host.hasPrefix(root + "/") || host == root else { return "" }
         let rel = String(host.dropFirst(root.count))
-        return "\nguest bash path: \(sessionCwd)\(rel)（guest 内 ls/cat 可见）"
+        return "\nguest bash path: \(sessionCwd ?? "/var/wanwo/projects/<session>")\(rel)（guest 内 ls/cat 可见）"
     }
 }
 
@@ -137,7 +137,7 @@ struct ProjectCreateTool: AgentTool {
             let sources = (try? FileManager.default.contentsOfDirectory(
                 at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
                 .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
-            let guestHint = Self.guestPathHint(project.url.path, workspaceRoot: ctx.workspace.rootURL,
+            let guestHint = BuildTools.guestPathHint(project.url.path, workspaceRoot: ctx.workspace.rootURL,
                                                sessionCwd: sessionCwd)
             return .success("""
                 project \(note): \(name)
@@ -283,7 +283,7 @@ struct BuildIPATool: AgentTool {
             payload: eventPayload))
 
         if result.success {
-            let guestHint = Self.guestPathHint(result.ipaURL.path, workspaceRoot: ctx.workspace.rootURL,
+            let guestHint = BuildTools.guestPathHint(result.ipaURL.path, workspaceRoot: ctx.workspace.rootURL,
                                                sessionCwd: sessionCwd)
             return .success("""
                 BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）
