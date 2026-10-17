@@ -72,7 +72,7 @@ enum BuildToolSupport {
               let latest = entries.max(by: {
                   BuildService.modificationDate(of: $0) < BuildService.modificationDate(of: $1)
               }),
-              let project = NXProject.projectWithURL(latest) else {
+              let project = NXProject(url: latest) else {
             throw BuildServiceError.projectNotFound(name: name)
         }
         return project

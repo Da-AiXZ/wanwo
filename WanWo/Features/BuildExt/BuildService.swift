@@ -77,7 +77,7 @@ final class BuildService: @unchecked Sendable {
            let latest = entries.sorted(by: {
                Self.modificationDate(of: $0) > Self.modificationDate(of: $1)
            }).first,
-           let reused = NXProject.projectWithURL(latest) {
+           let reused = NXProject(url: latest) {
             return (reused, false)
         }
 
@@ -109,7 +109,7 @@ final class BuildService: @unchecked Sendable {
             let latest = entries.max(by: {
                 Self.modificationDate(of: $0) < Self.modificationDate(of: $1)
             }) ?? entries[0]
-            let project = NXProject.projectWithURL(latest)
+            let project = NXProject(url: latest)
             out.append((nameDir.lastPathComponent, latest, project?.projectConfig))
         }
         return out.map { ($0.0, $0.1, $0.2) }
