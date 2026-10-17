@@ -109,7 +109,7 @@ enum BuildExtSelfCheck {
             defer { try? FileManager.default.removeItem(atPath: plistPath) }
 
             var failures: [String] = []
-            if let plist = NXPlist(plistPath: plistPath, variables: ["PlatformArch": "arm64"]) {
+            if let plist = NXPlist(plistPath: plistPath, withVariables: ["PlatformArch": "arm64"]) {
                 // ① 字典点路径
                 if let arch = plist.expandString("$(Compiler.Arch)", depth: 0, ownRoot: nil) as? String, arch == "arm64" {} else {
                     failures.append("点路径展开失败")
@@ -132,7 +132,7 @@ enum BuildExtSelfCheck {
                     let d2data = try PropertyListSerialization.data(fromPropertyList: d2, format: .xml, options: 0)
                     FileManager.default.createFile(atPath: p2Path, contents: d2data)
                     defer { try? FileManager.default.removeItem(atPath: p2Path) }
-                    if let p2 = NXPlist(plistPath: p2Path, variables: nil),
+                    if let p2 = NXPlist(plistPath: p2Path, withVariables: nil),
                        let r2 = p2.expandString("$(A)", depth: 0, ownRoot: nil) as? String, r2 == "flag-value" {
                     } else {
                         failures.append("递归展开失败")
