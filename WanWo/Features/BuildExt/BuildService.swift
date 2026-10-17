@@ -156,15 +156,18 @@ final class BuildService: @unchecked Sendable {
                 }
             }
             rendered.sort { $0.level == $1.level ? $0.file < $1.file : $0.level < $1.level }
+            // 零插值形态（type-check 超时第 4 次实证——插值链全部改拼接）。
             var lines2: [String] = []
             for r in rendered.prefix(50) {
-                var loc = ""
-                if r.line > 0 { loc = "[\(r.file):\(r.line):\(r.col)] " }
-                var msg = "[\(r.level)] \(loc)\(r.message)"
-                msg = msg.replacingOccurrences(
+                var line = "[" + r.level + "] "
+                if r.line > 0 {
+                    line = line + "[" + r.file + ":" + String(r.line) + ":" + String(r.col) + "] "
+                }
+                line = line + r.message
+                line = line.replacingOccurrences(
                     of: "/private/var/mobile/Containers/Data/Application/",
                     with: "wanwo-build-sandbox/")
-                lines2.append(msg)
+                lines2.append(line)
             }
             let summary: String
             if lines2.isEmpty {
