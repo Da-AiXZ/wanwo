@@ -286,8 +286,13 @@ struct BuildIPATool: AgentTool {
         if result.success {
             let guestHint = BuildTools.guestPathHint(result.ipaURL.path, workspaceRoot: ctx.workspace.rootURL,
                                                sessionCwd: sessionCwd)
+            var sizeText = "-"
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: result.ipaURL.path),
+               let size = attrs[.size] as? NSNumber {
+                sizeText = ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file)
+            }
             return .success("""
-                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）
+                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)
                 ipa: \(result.ipaURL.path)\(guestHint)
                 bundle(.app, N7 签名/N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
@@ -348,6 +353,6 @@ struct StopBuildTool: AgentTool {
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         BuildService.shared.endBuild()
-        return .success("build slot released（在途构建无法中断——官方 NXBuilder 无取消 API，本工具仅复位残留门；登记 docs/gpl-compliance.md §N6）")
+        return .success("构建槽位已复位（说明：编译进行中无法中途取消——官方构建器无取消接口；本操作仅用于异常残留后放行下一次构建）")
     }
 }

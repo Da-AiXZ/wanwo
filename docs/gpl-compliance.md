@@ -133,3 +133,13 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 3 | 诊断摘要 "[MDKDiagnosticLevel(rawValue: 3)]" 不可读 | severity rawValue→显示名映射（error/warning/remark/note） |
 
 **登记不修**（事件流实证的官方边界/无害项）：①`wanwo-build//Cache` 双斜杠（官方拼接形态，路径有效）②0.0s 无诊断失败（NXBuilder init 失败路径无诊断——BuildPanelView 场景补）③`external macro` 失败（@Preview 设备端编译限制——官方边界）。
+
+## 三 g、N6 压测报告 14 条建议处置对照（2026-10-17）
+
+**本轮快修（6）**：①诊断带 file:line:col（DebugItem.sourceLocation 数据在位，摘要输出补齐）②诊断路径相对化（绝对沙盒路径→wanwo-build/ 相对，正则净化）③截断显式（前 50 条+总数提示，压测 G 实证的静默截断）④零诊断失败显式指路（压测 K1 最贵失败类型——plist 损坏/init 失败给检查指引）⑤stop_build 去内部术语（压测 J）⑥build_ipa 输出补 ipa 大小（压测 11 产物暴露）。
+
+**批 2（BuildPanelView 承载）**：级别中文化+配色图标（建议 2 剩余半）/fix-it 折叠（3）/拆阶段耗时+编译文件数（10）/产物摘要面（11 剩余半）。
+
+**登记后续**：#Preview 冒烟预检提示（6）/错误收集上限与批量模式深度改造（5——已提至 50）/并发构建独立输出目录（9——单会话 exclusive 车道已天然串行，跨会话 App 级单飞行门在位）/AppIcon 占位脚手架（13）/-O 开关工具参数化（12——AI 实测 -O 可用 1.9→6.7s）。
+
+**官方语义不修**：NXDisplayName 与输出路径强耦合（建议 8 主体——vendored NXOutputPath 模板；正确姿势已实证=CFBundleDisplayName 独立设置）。

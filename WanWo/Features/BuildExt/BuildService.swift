@@ -139,12 +139,34 @@ final class BuildService: @unchecked Sendable {
             func levelName(_ raw: Int) -> String {
                 switch raw { case 3: return "error"; case 2: return "warning"; case 1: return "remark"; default: return "note" }
             }
-            let summary = db.debugObjects.values
+            // 【N6 压测反馈】诊断可定位化：file:line:col + 路径相对化 +
+            // 截断显式（压测 G：40 错静默截断 20 条无提示）。
+            let rootPrefix = project.url.standardizedFileURL.path + "/"
+            let all = db.debugObjects.values
                 .flatMap(\.debugItems)
                 .sorted { $0.severity.rawValue > $1.severity.rawValue }
-                .prefix(20)
-                .map { "[\(levelName($0.severity.rawValue))] \($0.message)" }
-                .joined(separator: "\n")
+            func render(_ item: DebugItem) -> String {
+                var loc = ""
+                let sl = item.sourceLocation
+                if sl.line > 0 {
+                    let file = sl.file.isEmpty ? "" : String(sl.file.dropFirst(rootPrefix.count))
+                    loc = "[\(file):\(sl.line):\(sl.column)] "
+                }
+                return "[\(levelName(item.severity.rawValue))] \(loc)\(item.message)"
+                    .replacingOccurrences(
+                        of: "/private/var/mobile/Containers/Data/Application/[0-9A-F-]+/Documents/wanwo-build/",
+                        with: "wanwo-build/", options: .regularExpression)
+            }
+            let summary: String
+            if all.isEmpty {
+                // 【压测 K1】零诊断失败=最贵的失败类型（plist 损坏/init 失败）——
+                // 显式指路而非"（无诊断条目）"静默。
+                summary = "（零诊断——工程配置解析或构建器初始化失败：检查 Config/Project.plist 的 XML 是否完整有效）"
+            } else {
+                let shown = all.prefix(50).map(render)
+                summary = shown.joined(separator: "\n")
+                    + (all.count > 50 ? "\n…（仅显示前 50 条，共 \(all.count) 条——修一批再构建看下一批）" : "")
+            }
 
             let buildResult = BuildResult(
                 success: result,
