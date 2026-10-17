@@ -112,6 +112,11 @@ targets:
         buildPhase: resources
       - path: Vendor/nyxian/Shared/SDK.zip
         buildPhase: resources
+      # N5：官方模板资源（NXCodeTemplateMakeProjectStructure 消费——
+      # createProject 内依赖，真机 createProject nil 定案；.bundle 整体
+      # 拷贝保留目录结构——RootfsPatch.bundle 先例，Main.c×2 异目录共存）
+      - path: Vendor/nyxian/Shared/Templates.bundle
+        buildPhase: resources
     # ── N2（13 号设计）：编译链接线接入主 App——CC/MDK framework 自动
     # embed 进 ipa（Frameworks/ 目录，运行时 dlopen）。构建顺序由
     # target 依赖驱动：CC/MDK 先行（cc-mdk-smoke 同款工具链消费）。

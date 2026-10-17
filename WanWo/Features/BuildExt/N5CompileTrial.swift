@@ -14,36 +14,9 @@ enum N5CompileTrial {
 
     static let projectName = "HelloWorld"
 
-    // 官方 Shared/Templates/Application/Swift/SwiftUI/ContentView.swift 原文
-    static let contentViewSource = """
-    import SwiftUI
-
-    struct ContentView: View {
-    \tvar body: some View {
-    \t\tVStack {
-    \t\t\tImage(systemName: "globe")
-    \t\t\t\t.imageScale(.large)
-    \t\t\t\t.foregroundStyle(.tint)
-    \t\t\tText("Hello, world!")
-    \t\t}
-    \t\t.padding()
-    \t}
-    }
-    """
-
-    // 官方 Shared/Templates/Application/Swift/SwiftUI/$(LDEDisplayName)App.swift 原文
-    static let appSourceTemplate = """
-    import SwiftUI
-
-    @main
-    struct $(LDEDisplayName)App: App {
-    \tvar body: some Scene {
-    \t\tWindowGroup {
-    \t\t\tContentView()
-    \t\t}
-    \t}
-    }
-    """
+    /* 源文件由官方模板链生成：createProject 内部调 NXCodeTemplateMakeProjectStructure
+     * （读 bundle 内 Templates/Application/Swift/SwiftUI/——Templates.bundle 资源，
+     * 见 docs/gpl-compliance.md §三 d）——自写源文件段已删（与模板铺的文件冲突）。 */
 
     /// 跑完整试验。completion 回主线程：(成功?, 报告文本)。
     static func run(completion: @escaping (Bool, String) -> Void) {
@@ -63,19 +36,8 @@ enum N5CompileTrial {
             return
         }
 
-        // ② 写 SwiftUI 两源文件（官方模板内容，占位符替换）到工程根
-        //（PhaseEngine 经 LDEFilesFinder 扫工程根全部 .swift，排除 Resources/Config）
-        do {
-            let appSource = appSourceTemplate
-                .replacingOccurrences(of: "$(LDEDisplayName)", with: projectName)
-            try appSource.write(to: project.url.appendingPathComponent("\(projectName)App.swift"),
-                                atomically: true, encoding: .utf8)
-            try contentViewSource.write(to: project.url.appendingPathComponent("ContentView.swift"),
-                                        atomically: true, encoding: .utf8)
-        } catch {
-            DispatchQueue.main.async { completion(false, "写源文件失败：\(error.localizedDescription)") }
-            return
-        }
+        // ② 源文件由 createProject 内部的 NXCodeTemplateMakeProjectStructure
+        //    铺设（官方 SwiftUI 模板：HelloWorldApp.swift+ContentView.swift 到工程根）
 
         // ③ 官方全链构建（MDK 线程池内跑：waitTillDone→NXBuilder→phases）
         let started = Date()

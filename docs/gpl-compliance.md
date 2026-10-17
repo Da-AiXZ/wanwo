@@ -101,3 +101,15 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 7 | `XCButtonCompat.h/.m`（万我侧） | 补 NXBuilder 消费的 4 方法：startSpinning/startSpinningWithArcFraction:duration:/stopSpinning/switchImageSyncWithSystemName 两形态/updateProgressIncrement:（Swift 名 incrementProgress(withValue:) 别名）——NSNotificationCenter 广播同前 |
 
 **接入清单（19 文件）**：IDEFoundation 10 实现（NXProject/NXPlist/NXType/NXDocument/NXDocumentManager/NXCodeTemplate/NXUser/NXUtils/NXRemoteCompiler 空壳/Project+Debug.swift+已入 NXBootstrap/NXAlertDiagnosticPresenter）+ IDEBuilder 6（NXBuilder.swift/NXBuilder+MDKDriver/NXBuilder+MDKPhaseRunner/NXPhaseEngine.m/NXPhaseRunner.m/LDEFilesFinder.m）+ Utils 3（Zip.m 已入/Swizzle.c→NXPlist.m 消费/NXOSVersion.swift）。**排除**：IconUtils.m（零消费者+ISIcon/bootstrapd 私有类依赖）、CFTools.c/LDEDebouncer.m（零消费者）、NXConsoleView/IDELanguageServer（N6+ 环）。
+
+## 三 d、N5 试验环补登记（2026-10-17，真机 createProject nil 定案）
+
+**勘误**：§三 c 曾判"NXCodeTemplate 属 N6 UI 环可绕开"——**错**。真机实证（N5 试验首跑 createProject 返回 nil）：`NXProject.createProjectAtURL` 内部调用 `NXCodeTemplateMakeProjectStructure`（NXProject.m:359）——**官方工厂与模板系统一体**，无 Templates 资源则脚手架源文件阶段失败。
+
+| # | 改动 |
+|---|---|
+| 1 | `Vendor/nyxian/Shared/Templates.bundle/`（新建）——官方 `Shared/Templates/` **全量 17 文件字节级落位**（Application/ObjC/UIKit 7+Application/Swift/SwiftUI 2+Application/Swift/UIKit 3+Utility/C 1+Utility/C++ 1+Kext/C 1+目录结构），bundle 形态保结构（Main.c×2 异目录共存无平铺冲突） |
+| 2 | `project.yml` 主 target 资源 +1（Templates.bundle 单条目，RootfsPatch.bundle 先例） |
+| 3 | `IDEFoundation/NXCodeTemplate.m:37` 读路径 `bundleURL/Shared/Templates` → `bundleURL/Templates.bundle/Templates`（唯一路径拼装点，语义等价） |
+
+试验源码（N5CompileTrial.swift）改用官方模板链（删除自写源文件段）——createProject→模板→buildProject 全官方路径。

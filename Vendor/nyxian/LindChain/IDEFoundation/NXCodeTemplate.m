@@ -34,7 +34,11 @@ BOOL NXCodeTemplateMakeProjectStructure(NXProjectScheme scheme,
     
     NSFileManager *defaultManager = [NSFileManager defaultManager];
     [NXUser shared].projectName = projectName;
-    NSURL *templateURL = [[[NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"/Shared/Templates"] URLByAppendingPathComponent:scheme] URLByAppendingPathComponent:language];
+    /* 万我 N5 适配（diff 登记：docs/gpl-compliance.md §N4N5）：模板资源
+     * 以 Templates.bundle 分发（RootfsPatch.bundle 同款形态——.bundle 整体
+     * 拷贝保留目录结构；bundle 内 Main.c×2 异目录共存无平铺冲突），读路径
+     * Shared/Templates → Templates.bundle/Templates，语义等价。 */
+    NSURL *templateURL = [[[NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"/Templates.bundle/Templates"] URLByAppendingPathComponent:scheme] URLByAppendingPathComponent:language];
     if(interface != nil)
     {
         templateURL = [templateURL URLByAppendingPathComponent:interface];
