@@ -124,6 +124,11 @@ targets:
         # 升级 [-Werror] 拦截。该 include 是官方既定结构（官方 pbxproj 未设
         # 此键=警告不升级，绿跑实证）；显式关警告，语义对齐官方。
         CLANG_WARN_NON_MODULAR_INCLUDE_IN_FRAMEWORK_MODULE: NO
+        # N3b 修④（run 39004087523 实证）：显式 module 预编译（Xcode 16
+        # explicit modules）里该警告 clang 默认开启且参数带 [-Werror]——
+        # CLANG_WARN_...=NO 只是"不加旗标"压不住默认开启的警告，须显式
+        # -Wno-。同官方既定结构语义（CCUtils include 官方绿跑合法）。
+        OTHER_CFLAGS: "$(inherited) -Wno-non-modular-include-in-framework-module"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
         # 【回退登记】weak_library 方案（弱链接 WebKit Swift overlay）实测链接期
         # 即需文件存在（-weak_library 全路径缺失=ld 报 Build input file cannot
