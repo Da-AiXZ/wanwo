@@ -55,9 +55,9 @@ enum N5CompileTrial {
             withName: projectName,
             withOrganizationIdentifier: "com.wanwo",
             withBundleIdentifier: "com.wanwo.helloworld",
-            withSchemeKind: NXProjectSchemeKindApp,
-            withLanguageKind: NXProjectLanguageKindSwift,
-            withInterfaceKind: NXProjectInterfaceKindSwiftUI
+            withSchemeKind: NXProjectSchemeKind.app,
+            withLanguageKind: NXProjectLanguageKind.swift,
+            withInterfaceKind: NXProjectInterfaceKind.swiftUI
         ) else {
             DispatchQueue.main.async { completion(false, "createProject 返回 nil（脚手架创建失败）") }
             return
