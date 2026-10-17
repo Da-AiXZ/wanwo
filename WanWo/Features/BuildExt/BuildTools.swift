@@ -75,6 +75,11 @@ enum BuildToolSupport {
     /// 工程定位：name → 最新 UUID 工程目录的 NXProject。
     static func resolveProject(workspace: WorkspaceFileAccess,
                                name: String) throws -> NXProject {
+        // 空名/含分隔符会使 nameDir 退化为根目录（真机实证："" → 解析成
+        // "最新工程"触发 0.0s 垃圾构建，压测报告 D9）——fail closed。
+        guard !name.isEmpty, !name.contains("/"), name != "." , name != ".." else {
+            throw BuildServiceError.projectNotFound(name: name)
+        }
         let projectsRoot = BuildService.projectsRoot(inWorkspace: workspace.rootURL)
         let nameDir = projectsRoot.appendingPathComponent(name, isDirectory: true)
         guard FileManager.default.fileExists(atPath: nameDir.path),
@@ -293,9 +298,23 @@ struct BuildIPATool: AgentTool {
                let size = attrs[.size] as? NSNumber {
                 sizeText = ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file)
             }
+            // 【压测报告 D1】ipa 复制进会话工作区桶 BuildArtifacts/——guest/文件
+            // App/fs 工具立即可取（真机实证：Cache 在 guest/工作区视图均不可见，
+            // "构建成功"只能信返回值）。
+            var artifactPath: String? = nil
+            if FileManager.default.fileExists(atPath: result.ipaURL.path) {
+                let artDir = ctx.workspace.rootURL.appendingPathComponent("BuildArtifacts", isDirectory: true)
+                try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
+                let dst = artDir.appendingPathComponent(result.projectName + ".ipa")
+                try? FileManager.default.removeItem(at: dst)
+                if (try? FileManager.default.copyItem(at: URL(fileURLWithPath: result.ipaURL.path), to: dst)) != nil {
+                    artifactPath = dst.path
+                }
+            }
+            let artifactLine = artifactPath.map { "\nworkspace ipa: \($0)（文件 App/读工具可直取）" } ?? ""
             return .success("""
                 BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)
-                ipa: \(result.ipaURL.path)\(guestHint)
+                ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
                 bundle(.app, N7 签名/N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
                 diagnostics: \(result.diagnosticsSummary)

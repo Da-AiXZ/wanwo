@@ -143,3 +143,22 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **登记后续**：#Preview 冒烟预检提示（6）/错误收集上限与批量模式深度改造（5——已提至 50）/并发构建独立输出目录（9——单会话 exclusive 车道已天然串行，跨会话 App 级单飞行门在位）/AppIcon 占位脚手架（13）/-O 开关工具参数化（12——AI 实测 -O 可用 1.9→6.7s）。
 
 **官方语义不修**：NXDisplayName 与输出路径强耦合（建议 8 主体——vendored NXOutputPath 模板；正确姿势已实证=CFBundleDisplayName 独立设置）。
+
+## 三 h、N6 三小件验证 + AI 深度压测报告处置（2026-10-17，第三份事件流 70007 事件）
+
+**三小件生效实证**：guest bash path 22 次、诊断三件（file:line:col/级别名/相对化）全对（`[error] [ContentView.swift:8:9]`）、自修复闭环（BuildSmoke/Demo 失败→修→成功）。**AI 走 run_code（JSCore PTC）通道派发**——39/39 审批、35 次编译全通，等效验证双呈现模式。
+
+**AI 自写报告（23 项矩阵+D1-D9 缺陷）处置**：
+| # | 缺陷 | 处置 |
+|---|---|---|
+| D3 | success 误显"零诊断失败"指路文案（我的 D3 文案 bug） | 已修：零诊断文案分 success/failure 两态 |
+| D8 | 同位置重复诊断 2-3 条 | 已修：file:line:col:message 去重 |
+| D9 | build_ipa("") 空/异常名触发 0.0s 垃圾构建 | 已修：resolveProject 防空名/分隔符退化（nameDir==根 fail closed） |
+| D1 | ipa 产物 guest/工作区不可见（构建成功只能信返回值） | 已修：成功后 ipa 复制进会话桶 BuildArtifacts/<name>.ipa + workspace 路径输出 |
+| D5 缓解 | 僵尸工程 0.0s 不可恢复 | 文案指引换名重建；project_delete/reset 登记批 2 |
+| D2 | 显示名空格/中文→.app 目录与 macho 不一致（官方 NXOutputPath 模板） | 登记官方语义；AI 已实证变通（NXOutputPath 改 $(NXExecutable)）；出厂模板修正随批 2 |
+| D4 | build_log 单行退化 | 已在修⑤⑥覆盖（file:line:col+级别名） |
+| D6 | guest ls 与 host 写入视图不一致 | M4-E 挂载语义既有——登记（AI 已自适应改用 fs 工具） |
+| D7 | 宏插件缺失（@Observable/@Model） | 官方工具链边界——登记（模板文档提示随批 2） |
+
+**build_ipa 经 run_code 通道的"interrupted"**：长阻塞超 harness 时限被打断，AI 自适应从 extension-event 读结果——事件通道兜底有效，登记（阶段 2 可考虑异步任务形态）。

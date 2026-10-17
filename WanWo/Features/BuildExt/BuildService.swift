@@ -162,9 +162,16 @@ final class BuildService: @unchecked Sendable {
             // 两步稳定排序替代三元混合比较闭包。
             rendered.sort { $0.file < $1.file }
             rendered.sort { $0.level < $1.level }
+            // 【压测报告 D8】同位置重复诊断去重（宏错误连喷 2-3 条实证）。
+            var seenKeys = Set<String>()
+            var uniq: [Rendered] = []
+            for r in rendered {
+                let key = r.file + ":" + String(r.line) + ":" + String(r.col) + ":" + r.message
+                if seenKeys.insert(key).inserted { uniq.append(r) }
+            }
             // 零插值形态（type-check 超时第 4 次实证——插值链全部改拼接）。
             var lines2: [String] = []
-            for r in rendered.prefix(50) {
+            for r in uniq.prefix(50) {
                 var line = "[" + r.level + "] "
                 if r.line > 0 {
                     line = line + "[" + r.file + ":" + String(r.line) + ":" + String(r.col) + "] "
@@ -177,12 +184,14 @@ final class BuildService: @unchecked Sendable {
             }
             let summary: String
             if lines2.isEmpty {
-                // 【压测 K1】零诊断失败=最贵的失败类型（plist 损坏/init 失败）——
-                // 显式指路而非"（无诊断条目）"静默。
-                summary = "（零诊断——工程配置解析或构建器初始化失败：检查 Config/Project.plist 的 XML 是否完整有效）"
+                // 【压测报告 D3】零诊断文案分 success/failure 两态——success 空
+                // 诊断是正常态，误显失败指路文案纯属噪音（真机实证）。
+                summary = result
+                    ? "构建成功，无诊断"
+                    : "（零诊断失败——优先检查 Config/Project.plist 的 XML 完整性；如反复 0 秒失败，建议换新工程名重建——同名复用不会重置已损坏工程）"
             } else {
                 summary = lines2.joined(separator: "\n")
-                    + (rendered.count > 50 ? "\n…（仅显示前 50 条，共 " + String(rendered.count) + " 条——修一批再构建看下一批）" : "")
+                    + (uniq.count > 50 ? "\n…（仅显示前 50 条，共 " + String(uniq.count) + " 条——修一批再构建看下一批）" : "")
             }
 
             let buildResult = BuildResult(
