@@ -127,8 +127,10 @@ struct ProjectCreateTool: AgentTool {
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         guard let name = args.objectValue?["name"]?.stringValue,
               !name.isEmpty, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
-            return .failure("missing/invalid \"name\"（ASCII 字母数字——作为目录名/可执行名/链接模块名；\
-真机实证中文名会致 ld64.lld 链接失败 run 事件 2026-10-17；中文显示名建工程后改 Project.plist 的 NXDisplayName）", code: "INVALID_ARGS")
+            // 真机实证：非 ASCII 名（如"计算器"）编译过但 ld64.lld 链接失败。
+            let hint = "ASCII letters/numbers only (used as dir/executable/linker module name). "
+                + "Chinese display name: edit NXDisplayName in Config/Project.plist after create."
+            return .failure("missing/invalid \"name\". " + hint, code: "INVALID_ARGS")
         }
         do {
             let (project, created) = try BuildService.shared.createOrReuseProject(

@@ -47,6 +47,9 @@ final class BuildService: @unchecked Sendable {
 
     static let shared = BuildService()
 
+    /// 诊断级别显示名（压测建议 2：内部枚举 rawValue 不直接喷给用户）。
+    static let levelNames: [Int: String] = [3: "error", 2: "warning", 1: "remark", 0: "note"]
+
     /// 单飞行门（官方 NXBuilder.builds 同语义：并发构建互踩 MDK 线程池/缓存）。
     private var inFlight = false
     private let lock = NSLock()
@@ -136,35 +139,34 @@ final class BuildService: @unchecked Sendable {
             let db = DebugDatabase.getDatabase(
                 ofPath: project.cacheURL.appendingPathComponent("debug.json").path)
             db.reuseDatabase()
-            func levelName(_ raw: Int) -> String {
-                switch raw { case 3: return "error"; case 2: return "warning"; case 1: return "remark"; default: return "note" }
-            }
-            // 【N6 压测反馈】诊断可定位化：file:line:col + 路径相对化 +
-            // 截断显式（压测 G：40 错静默截断 20 条无提示）。
+            // 【N6 压测反馈】诊断可定位化（保守形态重做——嵌套函数+正则链
+            // 疑触发 swiftc 崩溃 run 39032097279/rerun，见 §三 g）。
             let rootPrefix = project.url.standardizedFileURL.path + "/"
             let all = db.debugObjects.values
                 .flatMap(\.debugItems)
                 .sorted { $0.severity.rawValue > $1.severity.rawValue }
-            func render(_ item: DebugItem) -> String {
+            var lines2: [String] = []
+            for item in all.prefix(50) {
+                let lv = Self.levelNames[item.severity.rawValue] ?? "note"
                 var loc = ""
                 let sl = item.sourceLocation
                 if sl.line > 0 {
                     let file = sl.file.isEmpty ? "" : String(sl.file.dropFirst(rootPrefix.count))
                     loc = "[\(file):\(sl.line):\(sl.column)] "
                 }
-                return "[\(levelName(item.severity.rawValue))] \(loc)\(item.message)"
-                    .replacingOccurrences(
-                        of: "/private/var/mobile/Containers/Data/Application/[0-9A-F-]+/Documents/wanwo-build/",
-                        with: "wanwo-build/", options: .regularExpression)
+                var msg = "[\(lv)] \(loc)\(item.message)"
+                msg = msg.replacingOccurrences(
+                    of: "/private/var/mobile/Containers/Data/Application/",
+                    with: "wanwo-build-sandbox/")
+                lines2.append(msg)
             }
             let summary: String
-            if all.isEmpty {
+            if lines2.isEmpty {
                 // 【压测 K1】零诊断失败=最贵的失败类型（plist 损坏/init 失败）——
                 // 显式指路而非"（无诊断条目）"静默。
                 summary = "（零诊断——工程配置解析或构建器初始化失败：检查 Config/Project.plist 的 XML 是否完整有效）"
             } else {
-                let shown = all.prefix(50).map(render)
-                summary = shown.joined(separator: "\n")
+                summary = lines2.joined(separator: "\n")
                     + (all.count > 50 ? "\n…（仅显示前 50 条，共 \(all.count) 条——修一批再构建看下一批）" : "")
             }
 
