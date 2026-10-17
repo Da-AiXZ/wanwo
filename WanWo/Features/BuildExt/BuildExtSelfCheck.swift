@@ -63,17 +63,18 @@ enum BuildExtSelfCheck {
         //    就位 = 编译前置资源完整；未完成时列缺失树，不阻断其余读数）。
         let bootstrap = NXBootstrap.shared()
         let bootstrapVersion = bootstrap.version
+        // ObjC readonly property 导入 Swift 后为属性（非函数）——直接访问。
         let trees: [(String, URL)] = [
-            ("SDK/iPhoneOS26.5.sdk", bootstrap.sdkURL()),
-            ("Include", bootstrap.includeURL()),
-            ("swift", bootstrap.swiftURL()),
-            ("lib", bootstrap.rootURL().appendingPathComponent("lib")),
+            ("SDK/iPhoneOS26.5.sdk", bootstrap.sdkURL),
+            ("Include", bootstrap.includeURL),
+            ("swift", bootstrap.swiftURL),
+            ("lib", bootstrap.rootURL.appendingPathComponent("lib")),
         ]
         let missing = trees.filter { !FileManager.default.fileExists(atPath: $0.1.path) }.map(\.0)
         if bootstrapVersion >= 29 && missing.isEmpty {
             items.append(BuildExtCheckItem(
                 name: "编译引导（bootstrap）",
-                detail: "已安装（v\(bootstrapVersion)）：SDK/Include/swift/lib 四树完整 @ \(bootstrap.rootURL().path)",
+                detail: "已安装（v\(bootstrapVersion)）：SDK/Include/swift/lib 四树完整 @ \(bootstrap.rootURL.path)",
                 passed: true))
         } else {
             items.append(BuildExtCheckItem(
@@ -85,8 +86,8 @@ enum BuildExtSelfCheck {
         }
 
         // ⑥ 宿主 OS 版本（MDKOSVersion.host——13 号设计 N3b 验收：
-        //    返回 16.6.1 数值正确）。
-        let hostOS = MDKOSVersion.host().versionString
+        //    返回 16.6.1 数值正确；host 为类属性，Swift 侧不带括号）。
+        let hostOS = MDKOSVersion.host.versionString
         items.append(BuildExtCheckItem(
             name: "宿主 OS 读数",
             detail: "MDKOSVersion.host = \(hostOS)",
