@@ -353,11 +353,13 @@ struct WORootFrame: View {
 
     /// 【N2 BuildExt】编译栈自检 sheet（BuildExtSelfCheck.run 结果展示 +
     /// 一键复制；验收口径：三项 CC C API 全通 = CoreCompiler.framework 在
-    /// iPad 上加载并工作）。
+    /// iPad 上加载并工作）。【N5】追加编译试验按钮（hello-world .export）。
     private struct WOBuildCheckSheet: View {
         @Environment(\.dismiss) private var dismiss
         /// 打开时刻执行（同步轻量调用，无编译动作）。
         private let items = BuildExtSelfCheck.run()
+        @State private var trialRunning = false
+        @State private var trialReport: String?
         private var dump: String {
             BuildExtSelfCheck.summary(items) + "\n\n"
                 + items.map { "\($0.passed ? "✓" : "✗") \($0.name)：\($0.detail)" }.joined(separator: "\n")
@@ -382,6 +384,31 @@ struct WORootFrame: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Divider()
+                        // 【N5 编译试验】hello-world → buildProject(.export) → ipa
+                        Button {
+                            guard !trialRunning else { return }
+                            trialRunning = true
+                            trialReport = "编译中（首次全链约 1-3 分钟：clang/swift 驱动+链接+打包）…"
+                            N5CompileTrial.run { result, report in
+                                trialRunning = false
+                                trialReport = (result ? "✅ " : "❌ ") + report
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: trialRunning ? "hourglass" : "hammer.fill")
+                                Text(trialRunning ? "编译试验进行中…" : "运行 N5 编译试验（hello-world → ipa）")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(trialRunning)
+                        if let trialReport {
+                            Text(trialReport)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
                         }
                         Divider()
                         Text(dump)
