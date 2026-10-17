@@ -182,7 +182,7 @@ final class BuildService: @unchecked Sendable {
                 summary = "（零诊断——工程配置解析或构建器初始化失败：检查 Config/Project.plist 的 XML 是否完整有效）"
             } else {
                 summary = lines2.joined(separator: "\n")
-                    + (all.count > 50 ? "\n…（仅显示前 50 条，共 \(all.count) 条——修一批再构建看下一批）" : "")
+                    + (rendered.count > 50 ? "\n…（仅显示前 50 条，共 " + String(rendered.count) + " 条——修一批再构建看下一批）" : "")
             }
 
             let buildResult = BuildResult(
