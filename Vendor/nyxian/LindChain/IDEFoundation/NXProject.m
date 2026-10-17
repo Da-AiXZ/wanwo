@@ -23,7 +23,11 @@
 #import <LindChain/IDEFoundation/NXCodeTemplate.h>
 #import <LindChain/IDEFoundation/NXUser.h>
 #import <LindChain/IDEFoundation/NXUtils.h>
-#import <Nyxian-Swift.h>
+/* 万我 N4 适配（diff 登记：docs/gpl-compliance.md §N4N5）：Nyxian-Swift.h
+ * → WanWo-Swift.h（万我 product module 头）——本文件消费 Swift @objc 类
+ * NXOSVersion（NXOSVersionSupportedBuildVersionsRaw，L237-238；该类自官方
+ * UI 层 iOSVersionPickerView.swift 字节级提取至 Utils/NXOSVersion.swift）。 */
+#import "WanWo-Swift.h"
 
 @implementation NXProjectConfig
 

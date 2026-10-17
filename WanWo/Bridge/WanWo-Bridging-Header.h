@@ -20,3 +20,16 @@
 // include。NXBootstrap.h/MDKOSVersion.h 均纯 ObjC 无 C++，可桥。
 #import <LindChain/IDEFoundation/NXBootstrap.h>
 #import <MobileDevelopmentKit/MDKOSVersion.h>
+
+// N4/N5 BuildExt：项目模型 + 构建编排（Swift 侧 NXBuilder/Project+Debug
+// 消费的 ObjC 类；NXProject.h 内部链 NXPlist/NXType/NXDocument 等；
+// NXPhaseRunner.h 链 NXPhaseEngine）。全部纯 ObjC 无 C++。
+#import "XCButtonCompat.h"
+#import <LindChain/IDEFoundation/NXProject.h>
+#import <LindChain/IDEFoundation/NXUser.h>
+#import <LindChain/IDEFoundation/NXUtils.h>
+#import <LindChain/IDEFoundation/NXCodeTemplate.h>
+#import <LindChain/IDEFoundation/NXDocumentManager.h>
+#import <LindChain/IDEFoundation/NXRemoteCompiler.h>
+#import <LindChain/IDEBuilder/NXPhaseRunner.h>
+#import <LindChain/IDEBuilder/LDEFilesFinder.h>

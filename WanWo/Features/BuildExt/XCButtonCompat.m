@@ -38,6 +38,12 @@ static NSString * _Nullable _wanwoBootstrapIcon = nil;
     [self updateProgressWithValue:_wanwoBootstrapProgress + value];
 }
 
+/* 官方同名语义别名（NXBuilder.swift L307 经 Swift 名 incrementProgress(withValue:) 调用）。 */
++ (void)updateProgressIncrement:(double)value
+{
+    [self incrementProgressWithValue:value];
+}
+
 + (void)resetProgress
 {
     [self updateProgressWithValue:0.0];
@@ -61,6 +67,40 @@ static NSString * _Nullable _wanwoBootstrapIcon = nil;
 + (void)switchImageWithSystemName:(NSString*)systemName animated:(BOOL)animated
 {
     [self switchImageWithSystemName:systemName animated:animated withDuration:0.25];
+}
+
++ (void)switchImageSyncWithSystemName:(NSString*)systemName animated:(BOOL)animated withDuration:(double)duration
+{
+    /* 官方语义：同步切图标（无动画延迟）——Compat 层同为广播。 */
+    [self switchImageWithSystemName:systemName animated:animated withDuration:duration];
+}
+
++ (void)switchImageSyncWithSystemName:(NSString*)systemName animated:(BOOL)animated
+{
+    [self switchImageSyncWithSystemName:systemName animated:animated withDuration:0.0];
+}
+
++ (void)startSpinning
+{
+    [[NSNotificationCenter defaultCenter] postNotificationName:WANWOBootstrapIconNotification
+                                                        object:nil
+                                                      userInfo:@{ @"state": @"startSpinning" }];
+}
+
++ (void)startSpinningWithArcFraction:(CGFloat)fraction duration:(CFTimeInterval)duration
+{
+    [[NSNotificationCenter defaultCenter] postNotificationName:WANWOBootstrapIconNotification
+                                                        object:nil
+                                                      userInfo:@{ @"state": @"startSpinning",
+                                                                  @"arcFraction": @(fraction),
+                                                                  @"duration": @(duration) }];
+}
+
++ (void)stopSpinning
+{
+    [[NSNotificationCenter defaultCenter] postNotificationName:WANWOBootstrapIconNotification
+                                                        object:nil
+                                                      userInfo:@{ @"state": @"stopSpinning" }];
 }
 
 /* UIView 子类无实际视图职责（init 私有用途，见 shared）。 */

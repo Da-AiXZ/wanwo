@@ -26,11 +26,17 @@ extern NSNotificationName const WANWOBootstrapIconNotification;
 
 + (void)updateProgressWithValue:(double)value;
 + (void)incrementProgressWithValue:(double)value;
++ (void)updateProgressIncrement:(double)value;
 + (void)resetProgress;
 + (double)getProgress;
 
 + (void)switchImageWithSystemName:(NSString*)systemName animated:(BOOL)animated withDuration:(double)duration;
 + (void)switchImageWithSystemName:(NSString*)systemName animated:(BOOL)animated;
++ (void)switchImageSyncWithSystemName:(NSString*)systemName animated:(BOOL)animated withDuration:(double)duration;
++ (void)switchImageSyncWithSystemName:(NSString*)systemName animated:(BOOL)animated;
++ (void)startSpinning;
++ (void)startSpinningWithArcFraction:(CGFloat)fraction duration:(CFTimeInterval)duration;
++ (void)stopSpinning;
 
 @end
 

@@ -25,7 +25,9 @@
 #import <Foundation/Foundation.h>
 #import <LindChain/IDEFoundation/NXPlist.h>
 #import <LindChain/IDEFoundation/NXType.h>
-#import <LindChain/ProcEnvironment/Surface/trust/entitlement.h>
+/* 万我 N4 适配（diff 登记：docs/gpl-compliance.md §N4N5）：原引用
+ * <LindChain/ProcEnvironment/Surface/trust/entitlement.h>（trust 层，N7
+ * 落位）——本文件对其符号零使用（grep 实证），import 移除。 */
 
 @interface NXProjectConfig : NXPlist
 

@@ -166,7 +166,13 @@ final class NXBuilder: NSObject {
             XCButton.stopSpinning()
         }
         
+        /* 万我 N5 适配（diff 登记：docs/gpl-compliance.md §N4N5，设计文档
+         * 环 N5 产出指示）：.run 分支的 trust/ksurface/LCUtils/
+         * LDEApplicationWorkspace/PERestartSelf 符号属阶段 2 运行链（N7-N9
+         * 落位）——整支以 WANWO_BUILD_RUN 宏守卫（默认关）。万我当前形态
+         * 仅 .export 交付（编译→打包 ipa），调 .run 显式抛错。 */
         if buildType == .run {
+#if WANWO_BUILD_RUN
             var success: Bool = false;
             let semaphore = DispatchSemaphore(value: 0)
             checkSigningSetup() { codeSigningSetup in
@@ -174,38 +180,38 @@ final class NXBuilder: NSObject {
                 semaphore.signal()
             }
             semaphore.wait()
-            
+
             if !success {
                 throw NSError(domain: "com.wanwo.builder.install", code: 1, userInfo: [NSLocalizedDescriptionKey:"Code signing is not properly set up. Cannot sign targets."])
             }
-            
+
             if self.project.projectConfig.schemeKind == .app {
                 let semaphore = DispatchSemaphore(value: 0)
                 var nsError: NSError? = nil
-                
+
                 LCUtils.signAppBundle(withZSign: self.project.bundleURL) { [weak self] result, error in
                     guard let self = self else { return }
-                    
+
                     if self.project.projectConfig.signMachOWithNyxianEntitlements {
                         trust_nxt2_sign(self.project.machoURL.path, project.entitlementsConfig.dictionary as CFDictionary, true, nil)
                     }
-                    
+
                     guard result else {
                         nsError = NSError(domain: "com.wanwo.builder.install", code: 1, userInfo: [NSLocalizedDescriptionKey:error?.localizedDescription ?? "Unknown error happened signing application"])
                         semaphore.signal()
                         return
                     }
-                    
+
                     guard LDEApplicationWorkspace.shared().installApplication(atBundlePath: project.bundleURL.path) else {
                         nsError = NSError(domain: "com.wanwo.builder.install", code: 1, userInfo: [NSLocalizedDescriptionKey:"Unknown error happened installing application"]) // TODO: implement NSError pipeline
                         semaphore.signal()
                         return
                     }
-                    
+
                     semaphore.signal()
                 }
                 semaphore.wait()
-                
+
                 if let nsError = nsError {
                     throw nsError
                 }
@@ -214,7 +220,7 @@ final class NXBuilder: NSObject {
                 if self.project.projectConfig.signMachOWithNyxianEntitlements {
                     trust_nxt2_sign(self.project.machoURL.path, project.entitlementsConfig.dictionary as CFDictionary, true, nil)
                 }
-                
+
                 let path: String? = LDEApplicationWorkspace.shared().fastpathUtility(self.project.machoURL.path)
                 if path == nil {
                     throw NSError(domain: "com.wanwo.builder.install", code: 1, userInfo: [NSLocalizedDescriptionKey:"Failed to fastpath install utility"])
@@ -224,7 +230,7 @@ final class NXBuilder: NSObject {
                 if let ptr = LCMapMachO(self.project.machoURL.path, false) {
                     ptr.pointee.header.pointee.filetype = UInt32(MH_KEXT_BUNDLE)
                     LCUnmapMachO(ptr)
-                    
+
                     LCUtils.signMachOWithoutPatch(at: self.project.machoURL)
                     trust_nxt2_sign(self.project.machoURL.path, [
                         "com.wanwo.build.ksurface.kernelextension.loading" : true
@@ -234,20 +240,27 @@ final class NXBuilder: NSObject {
                     if ret != 0 {
                         throw NSError(domain: "com.wanwo.builder.install", code: 1, userInfo: [NSLocalizedDescriptionKey:"Failed to install kext: \(String(cString: mach_error_string(ret)))"])
                     }
-                    
+
                     PERestartSelf()
                 }
             }
+#else
+            throw NSError(domain: "com.wanwo.builder.install", code: 2, userInfo: [NSLocalizedDescriptionKey:"Run 链未启用（阶段 2/N7+）——万我当前形态仅支持 .export 编译交付。"])
+#endif
         } else {
+            /* 万我 N5 适配：kext 分支（JB 形态）与拒签段（trust 层）同属
+             * WANWO_BUILD_RUN 守卫——.export 的 app/utility 打包路径保留
+             * （N5 验收：hello-world 产出合法 ipa）。 */
+#if WANWO_BUILD_RUN
             if self.project.projectConfig.schemeKind == .kSurfaceKext {
                 if let ptr = LCMapMachO(self.project.machoURL.path, false) {
                     ptr.pointee.header.pointee.filetype = UInt32(MH_KEXT_BUNDLE)
                     LCUnmapMachO(ptr)
-                    
+
                     trust_nxt2_sign(self.project.machoURL.path, [
                         "com.wanwo.build.ksurface.kernelextension.loading" : true
                     ] as CFDictionary, true, nil)
-                    
+
                     zipDirectoryAtPath(project.payloadURL.path, project.packageURL.path, true)
                 }
             } else {
@@ -258,6 +271,11 @@ final class NXBuilder: NSObject {
                     try self.package()
                 }
             }
+#else
+            if self.project.projectConfig.schemeKind == .app {
+                try self.package()
+            }
+#endif
         }
     }
     
@@ -340,6 +358,11 @@ final class NXBuilder: NSObject {
     }
 }
 
+/* 万我 N5 适配（diff 登记：docs/gpl-compliance.md §N4N5）：本函数是官方
+ * UI 层的构建入口辅助（UIViewController/UINavigationItem/UIDebugViewController/
+ * share 全 UI 符号，UI 层未落位）——万我侧 N6 接 AgentTool 工具面时以
+ * 工具化路径重建；当前以 WANWO_BUILD_UI 宏守卫（默认关）。 */
+#if WANWO_BUILD_UI
 func buildProjectWithArgumentUI(targetViewController: UIViewController,
                                 project: NXProject,
                                 buildType: NXBuilder.BuildType,
@@ -381,3 +404,4 @@ func buildProjectWithArgumentUI(targetViewController: UIViewController,
         }
     }
 }
+#endif /* WANWO_BUILD_UI */

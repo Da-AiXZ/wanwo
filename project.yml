@@ -73,7 +73,33 @@ targets:
       # import——N2 修②同款纪律）。
       - path: Vendor/nyxian/LindChain/IDEFoundation/NXBootstrap.m
       - path: Vendor/nyxian/LindChain/IDEFoundation/NXAlertDiagnosticPresenter.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXRemoteCompiler.m
       - path: Vendor/nyxian/LindChain/Utils/Zip.m
+      # ── N4/N5（13 号设计环定义）：IDEFoundation 项目模型 + IDEBuilder
+      # 构建编排。逐文件列法（不整目录——排除件：IconUtils.m 零消费者+
+      # ISIcon/bootstrapd 私有依赖、CFTools.c/LDEDebouncer.m 零消费者、
+      # NXConsoleView/IDELanguageServer 属 N6+ 环）。适配 diff 全登记
+      # docs/gpl-compliance.md §N4N5（NXRemoteCompiler.m=万我空壳实现、
+      # NXProject.m→WanWo-Swift.h、NXBuilder.swift 三段 WANWO_BUILD_RUN/UI
+      # 守卫、NXProject.h entitlement 空引用删、NXOSVersion.swift 自 UI 层
+      # 字节级提取、NXPhaseRunner.m XCodeButton→Compat）。
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXProject.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXPlist.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXType.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXDocument.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXDocumentManager.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXCodeTemplate.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXUser.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/NXUtils.m
+      - path: Vendor/nyxian/LindChain/IDEFoundation/Project+Debug.swift
+      - path: Vendor/nyxian/LindChain/IDEBuilder/NXBuilder.swift
+      - path: Vendor/nyxian/LindChain/IDEBuilder/NXBuilder+MDKDriver.swift
+      - path: Vendor/nyxian/LindChain/IDEBuilder/NXBuilder+MDKPhaseRunner.swift
+      - path: Vendor/nyxian/LindChain/IDEBuilder/NXPhaseEngine.m
+      - path: Vendor/nyxian/LindChain/IDEBuilder/NXPhaseRunner.m
+      - path: Vendor/nyxian/LindChain/IDEBuilder/LDEFilesFinder.m
+      - path: Vendor/nyxian/LindChain/Utils/Swizzle.c
+      - path: Vendor/nyxian/LindChain/Utils/NXOSVersion.swift
       # N3b：SDK + Shared 三 zip 内嵌资源（拍板 ③ 零网络；单文件形态——
       # D2 先例 folder 展开冲突，四 zip 文件名全唯一；NXBootstrap 侧路径
       # 已同步平铺适配，diff 登记 docs/gpl-compliance.md §N3b）

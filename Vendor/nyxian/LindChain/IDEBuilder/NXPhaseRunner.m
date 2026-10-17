@@ -20,7 +20,7 @@
 */
 
 #import <LindChain/IDEBuilder/NXPhaseRunner.h>
-#import <UI/XCodeButton.h>
+#import "XCButtonCompat.h" /* 万我 N4N5 适配：UI/XCodeButton.h → Compat 壳（接口逐一对齐） */
 
 @interface NXPhaseRunner(Private)
 

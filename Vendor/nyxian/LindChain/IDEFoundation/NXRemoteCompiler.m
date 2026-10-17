@@ -19,382 +19,75 @@
  along with Nyxian. If not, see <https://www.gnu.org/licenses/>.
 */
 
-#import <LindChain/IDEFoundation/NXRemoteCompiler.h>
-#import <LindChain/ProcEnvironment/PELaunchServiceManager.h>
-#import <Nyxian-Swift.h>
+/* 万我 N4 适配（diff 登记：docs/gpl-compliance.md §N4N5）——本文件为
+ * 【万我空壳实现】替换官方实现。原实现是 compilerd 守护进程的远程编译
+ * 客户端（PELaunchServiceManager/PEProcessObserver/Nyxian-Swift，均属
+ * 未落位层）。
+ *
+ * 万我拍板（2026-10-16 ⑤）：compilerd 默认关——进程内编译为唯一路径。
+ * NXBuilder 的 remoteCompiler 分支在 isAvailable=NO 时自动回退本地
+ * MDKDependencyScanner（NXBuilder.swift init 逻辑原样保留该回退）。
+ * 本空壳语义：远程编译永不可用；类与接口完整保留以维持 NXBuilder.swift
+ * 的类型引用与链接（官方 .h 原样未动）。
+ */
 
-@implementation NXRemoteDependencyScanner {
-    NXRemoteCompiler *_remoteCompiler;
-}
+#import <LindChain/IDEFoundation/NXRemoteCompiler.h>
+
+@implementation NXRemoteDependencyScanner
 
 + (instancetype)dependencyScannerWithRemoteCompiler:(NXRemoteCompiler*)compiler
 {
-    if(compiler == nil)
-    {
-        return nil;
-    }
-    
-    NXRemoteDependencyScanner *scanner = [[self alloc] init];
-    if(scanner)
-    {
-        scanner->_remoteCompiler = compiler;
-    }
-    return scanner;
+    return nil; /* 万我：远程路径永不可用 */
 }
 
 - (NSArray<MDKFile*>*)headerFilesForFile:(MDKFile*)file
 {
-    return [_remoteCompiler headersForFile:file];
+    return @[];
 }
 
-- (BOOL)dependenciesForFile:(MDKFile*)file
-        withHeaderFilePaths:(NSArray<MDKFile*>**)headerFilePaths
-           withDependencies:(NSArray<MDKDependency*>**)dependencies
+- (BOOL)dependenciesForFile:(MDKFile*)file withHeaderFilePaths:(NSArray<MDKFile*>**)headerFilePaths withDependencies:(NSArray<MDKDependency*>**)dependencies
 {
-    return [_remoteCompiler dependenciesForFile:file withHeaderFilePaths:headerFilePaths withDependencies:dependencies];
-}
-
-+ (Class)class
-{
-    return [MDKDependencyScanner class];
+    return NO;
 }
 
 @end
 
-@interface NXRemoteCompiler () <PEProcessObserver>
-
-@end
-
-@implementation NXRemoteCompiler {
-    PELaunchServiceInstance *_instance;
-    NSXPCConnection *_connection;
-    os_unfair_lock _lock;
-}
+@implementation NXRemoteCompiler
 
 + (BOOL)isAvailable
 {
-    return !NXApplicationState.extensionLessMode;
+    /* 万我：compilerd 守护进程未启用（拍板 ⑤）——进程内编译是唯一路径 */
+    return NO;
 }
 
 + (instancetype)newRemoteCompiler
 {
-    if(![self isAvailable])
-    {
-        return nil;
-    }
-    
-    NXRemoteCompiler *remoteCompiler = [[super alloc] init];
-    if(remoteCompiler)
-    {
-        /* need new launch service instance */
-        PELaunchService *service = [[PELaunchServiceManager shared] serviceForIdentifier:@"com.wanwo.compilerd"];
-        if(service == NULL)
-        {
-            return nil;
-        }
-        
-        remoteCompiler->_instance = [service newInstance];
-        if(remoteCompiler->_instance == NULL)
-        {
-            return nil;
-        }
-        
-        NSXPCListenerEndpoint *endpoint = [remoteCompiler->_instance xpcEndpoint];
-        if(endpoint == NULL)
-        {
-            [remoteCompiler->_instance terminate];
-            return nil;
-        }
-        
-        remoteCompiler->_connection = [[NSXPCConnection alloc] initWithListenerEndpoint:endpoint];
-        if(remoteCompiler->_connection == NULL)
-        {
-            [remoteCompiler->_instance terminate];
-            return nil;
-        }
-        
-        __weak typeof(remoteCompiler) weakRemoteCompiler = remoteCompiler;
-        remoteCompiler->_connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(NXCompilationServiceProtocol)];
-        remoteCompiler->_connection.invalidationHandler = ^{
-            __strong typeof(remoteCompiler) strongRemoteCompiler = weakRemoteCompiler;
-            if(strongRemoteCompiler)
-            {
-                [strongRemoteCompiler->_instance terminate];
-            }
-        };
-        remoteCompiler->_connection.interruptionHandler = ^{
-            __strong typeof(remoteCompiler) strongRemoteCompiler = weakRemoteCompiler;
-            if(strongRemoteCompiler)
-            {
-                [strongRemoteCompiler->_instance terminate];
-            }
-        };
-        NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(NXCompilationServiceProtocol)];
-        NSSet *classes = [NSSet setWithObjects: [NSArray class], [MDKFile class], [MDKJob class], [MDKDiagnostic class], [MDKDependency class], [MDKFileSourceLocation class], [NSString class], [NSURL class], nil];
-        [iface setClasses:classes forSelector:@selector(executeJob:withReply:) argumentIndex:0 ofReply:NO];
-        [iface setClasses:classes forSelector:@selector(executeJob:withReply:) argumentIndex:1 ofReply:YES];
-        [iface setClasses:classes forSelector:@selector(headersForFile:withReply:) argumentIndex:0 ofReply:NO];
-        [iface setClasses:classes forSelector:@selector(headersForFile:withReply:) argumentIndex:0 ofReply:YES];
-        [iface setClasses:classes forSelector:@selector(dependenciesForFile:withReply:) argumentIndex:0 ofReply:NO];
-        [iface setClasses:classes forSelector:@selector(dependenciesForFile:withReply:) argumentIndex:1 ofReply:YES];
-        [iface setClasses:classes forSelector:@selector(dependenciesForFile:withReply:) argumentIndex:2 ofReply:YES];
-        remoteCompiler->_connection.remoteObjectInterface = iface;
-        [remoteCompiler->_connection resume];
-        
-        remoteCompiler->_lock = OS_UNFAIR_LOCK_INIT;
-        [remoteCompiler->_instance.process addObserver:remoteCompiler];
-    }
-    return remoteCompiler;
+    return nil; /* isAvailable=NO 的语义化结果 */
 }
 
-- (BOOL)executeJob:(MDKJob*)job
-   withDiagnostics:(NSArray<MDKDiagnostic*>**)diagnostics
-    withMainSource:(NSString**)mainSource
+- (BOOL)executeJob:(MDKJob*)job withDiagnostics:(NSArray<MDKDiagnostic*>**)diagnostics withMainSource:(NSString**)mainSource
 {
-    os_unfair_lock_lock(&_lock);
-    if(_instance == nil)
-    {
-        if(mainSource)
-        {
-            *mainSource = job.inputFileURLs[0].path;
-        }
-        if(diagnostics)
-        {
-            *diagnostics = @[[MDKDiagnostic diagnosticWithType:MDKDiagnosticTypeInternal level:MDKDiagnosticLevelFatal mainSource:job.inputFileURLs[0].path fileSourceLocation:nil message:@"Couldn't get remote compilation daemon instance."]];
-        }
-        os_unfair_lock_unlock(&_lock);
-        return NO;
-    }
-    os_unfair_lock_unlock(&_lock);
-    
-    __block BOOL failed = NO;
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    __block BOOL result = NO;
-    __block NSArray<MDKDiagnostic*> *resultDiagnostic;
-    __block NSString *resultMainSource;
-    
-    id proxy = [_connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(proxy == NULL)
-    {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }
-    else
-    {
-        [proxy executeJob:job withReply:^(BOOL successRet, NSArray<MDKDiagnostic*> *diagnosticsRet, NSString *mainSourceRet){
-            result = successRet;
-            resultDiagnostic = diagnosticsRet;
-            resultMainSource = mainSourceRet;
-            dispatch_semaphore_signal(sema);
-        }];
-    }
-    
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-    if(failed)
-    {
-        if(mainSource)
-        {
-            *mainSource = job.inputFileURLs[0].path;
-        }
-        if(diagnostics)
-        {
-            *diagnostics = @[[MDKDiagnostic diagnosticWithType:MDKDiagnosticTypeInternal level:MDKDiagnosticLevelFatal mainSource:job.inputFileURLs[0].path fileSourceLocation:nil message:@"Couldn't keep connection with remote compilation service instance."]];
-        }
-        os_unfair_lock_lock(&_lock);
-        [_instance terminate];
-        os_unfair_lock_unlock(&_lock);
-        return NO;
-    }
-    
-    if(diagnostics)
-    {
-        *diagnostics = resultDiagnostic;
-    }
-    if(mainSource)
-    {
-        *mainSource = resultMainSource;
-    }
-    
-    return result;
+    return NO;
 }
 
 - (BOOL)setupDependencyScannerWithArguments:(NSArray<NSString*>*)arguments
 {
-    os_unfair_lock_lock(&_lock);
-    if(_instance == nil)
-    {
-        os_unfair_lock_unlock(&_lock);
-        return NO;
-    }
-    os_unfair_lock_unlock(&_lock);
-    
-    __block BOOL failed = NO;
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    __block BOOL result = NO;
-    
-    id proxy = [_connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(proxy == NULL)
-    {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }
-    else
-    {
-        [proxy setupDependencyScannerWithArguments:arguments withReply:^(BOOL success){
-            result = success;
-            dispatch_semaphore_signal(sema);
-        }];
-    }
-    
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-    if(failed)
-    {
-        os_unfair_lock_lock(&_lock);
-        [_instance terminate];
-        os_unfair_lock_unlock(&_lock);
-        return NO;
-    }
-    
-    return result;
+    return NO;
 }
 
 - (NSArray<MDKFile*>*)headersForFile:(MDKFile*)file
 {
-    os_unfair_lock_lock(&_lock);
-    if(_instance == nil)
-    {
-        os_unfair_lock_unlock(&_lock);
-        return nil;
-    }
-    os_unfair_lock_unlock(&_lock);
-    
-    __block BOOL failed = NO;
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    __block NSArray<MDKFile*> *result = nil;
-    
-    id proxy = [_connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(proxy == NULL)
-    {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }
-    else
-    {
-        [proxy headersForFile:file withReply:^(NSArray<MDKFile*> *files){
-            result = files;
-            dispatch_semaphore_signal(sema);
-        }];
-    }
-    
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-    if(failed)
-    {
-        os_unfair_lock_lock(&_lock);
-        [_instance terminate];
-        os_unfair_lock_unlock(&_lock);
-        return nil;
-    }
-    
-    return result;
+    return @[];
 }
 
-- (BOOL)dependenciesForFile:(MDKFile*)file
-        withHeaderFilePaths:(NSArray<MDKFile*>**)headerFilePaths
-           withDependencies:(NSArray<MDKDependency*>**)dependencies
+- (BOOL)dependenciesForFile:(MDKFile*)file withHeaderFilePaths:(NSArray<MDKFile*>**)headerFilePaths withDependencies:(NSArray<MDKDependency*>**)dependencies
 {
-    os_unfair_lock_lock(&_lock);
-    if(_instance == nil)
-    {
-        os_unfair_lock_unlock(&_lock);
-        return nil;
-    }
-    os_unfair_lock_unlock(&_lock);
-    
-    __block BOOL failed = NO;
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    __block BOOL result = false;
-    __block NSArray<MDKFile*> *outHeaders;
-    __block NSArray<MDKDependency*> *outDependencies;
-    
-    id proxy = [_connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(proxy == NULL)
-    {
-        /* semaphores remember the signal, it doesnt have to catch them in time */
-        failed = YES;
-        dispatch_semaphore_signal(sema);
-    }
-    else
-    {
-        [proxy dependenciesForFile:file withReply:^(BOOL success, NSArray<MDKFile*> *hdrs, NSArray<MDKDependency*> *deps){
-            result = success;
-            outHeaders = hdrs;
-            outDependencies = deps;
-            dispatch_semaphore_signal(sema);
-        }];
-    }
-    
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-    if(failed)
-    {
-        os_unfair_lock_lock(&_lock);
-        [_instance terminate];
-        os_unfair_lock_unlock(&_lock);
-        return nil;
-    }
-    
-    if(headerFilePaths != nil)
-    {
-        *headerFilePaths = outHeaders;
-    }
-    if(dependencies != nil)
-    {
-        *dependencies = outDependencies;
-    }
-    
-    return result;
+    return NO;
 }
 
 - (MDKDependencyScanner*)dependencyScanner
 {
-    return (MDKDependencyScanner*)[NXRemoteDependencyScanner dependencyScannerWithRemoteCompiler:self];
-}
-
-- (void)process:(PEProcess *)process didExitWithWait4Code:(int)code
-{
-    os_unfair_lock_lock(&_lock);
-    _instance = NULL;
-    os_unfair_lock_unlock(&_lock);
-}
-
-- (void)dealloc
-{
-    os_unfair_lock_lock(&_lock);
-    [_instance.process removeObserver:self];
-    [_instance terminate];
-    os_unfair_lock_unlock(&_lock);
+    return nil;
 }
 
 @end
