@@ -68,14 +68,10 @@ enum BuildToolSupport {
         let nameDir = projectsRoot.appendingPathComponent(name, isDirectory: true)
         guard FileManager.default.fileExists(atPath: nameDir.path),
               let entries = try? FileManager.default.contentsOfDirectory(
-                  at: nameDir, includingPropertiesForKeys: [.contentModificationDateKey],
-                  options: [.skipsHiddenFiles]),
-              let latest = entries.sorted(by: {
-                  ((try? $0.resourceValues(forKeys: [.contentModificationDateKey])?
-                      .contentModificationDate ?? .distantPast) ?? .distantPast)
-                      > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey])?
-                          .contentModificationDate ?? .distantPast) ?? .distantPast)
-              }).first,
+                  at: nameDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
+              let latest = entries.max(by: {
+                  BuildService.modificationDate(of: $0) < BuildService.modificationDate(of: $1)
+              }),
               let project = NXProject.projectWithURL(latest) else {
             throw BuildServiceError.projectNotFound(name: name)
         }
@@ -253,16 +249,17 @@ struct BuildIPATool: AgentTool {
         }
 
         // 诊断双去向 ②：build 事件持久化（modelVisible——AI 下一回合读到）
+        let eventPayload: JSONValue = .object([
+            "name": .string(result.projectName),
+            "result": .string(result.success ? "success" : "failure"),
+            "phase": .string("export"),
+            "elapsed": .string(String(format: "%.1fs", result.elapsedSeconds)),
+            "ipaURL": .string(result.ipaURL.path),
+            "diagnostics": .string(String(result.diagnosticsSummary.prefix(2000))),
+        ])
         _ = try? await writer.append(.extensionEvent(
             kind: BuildEvents.eventKind,
-            payload: [
-                "name": .string(result.projectName),
-                "result": .string(result.success ? "success" : "failure"),
-                "phase": .string("export"),
-                "elapsed": .string(String(format: "%.1fs", result.elapsedSeconds)),
-                "ipaURL": .string(result.ipaURL.path),
-                "diagnostics": .string(String(result.diagnosticsSummary.prefix(2000))),
-            ]))
+            payload: eventPayload))
 
         if result.success {
             return .success("""

@@ -56,6 +56,12 @@ final class BuildService: @unchecked Sendable {
         workspaceRoot.appendingPathComponent("BuildProjects", isDirectory: true)
     }
 
+    /// 目录最近修改时间（URLResourceValues 链式表达式独立成函数——防
+    /// type-check 超时，run 39024753589 实证）。
+    static func modificationDate(of url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+    }
+
     /// 取（或经官方工厂创建）工程。同名已存在 → 复用（AI 增量写码场景）。
     /// 返回 (project, created)。
     func createOrReuseProject(workspaceRoot: URL,
@@ -67,13 +73,9 @@ final class BuildService: @unchecked Sendable {
         // 同名复用：目录下已有 UUID 子目录 → 取最新工程
         if FileManager.default.fileExists(atPath: nameDir.path),
            let entries = try? FileManager.default.contentsOfDirectory(
-               at: nameDir, includingPropertiesForKeys: [.contentModificationDateKey],
-               options: [.skipsHiddenFiles]),
+               at: nameDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
            let latest = entries.sorted(by: {
-               (try? $0.resourceValues(forKeys: [.contentModificationDateKey])?
-                   .contentModificationDate ?? .distantPast) ?? .distantPast
-               > (try? $1.resourceValues(forKeys: [.contentModificationDateKey])?
-                   .contentModificationDate ?? .distantPast) ?? .distantPast
+               Self.modificationDate(of: $0) > Self.modificationDate(of: $1)
            }).first,
            let reused = NXProject.projectWithURL(latest) {
             return (reused, false)
@@ -102,14 +104,11 @@ final class BuildService: @unchecked Sendable {
         var out: [(String, URL, NXProjectConfig?)] = []
         for nameDir in names.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: nameDir, includingPropertiesForKeys: [.contentModificationDateKey],
-                options: [.skipsHiddenFiles]), !entries.isEmpty else { continue }
-            let latest = entries.sorted {
-                ((try? $0.resourceValues(forKeys: [.contentModificationDateKey])?
-                    .contentModificationDate ?? .distantPast) ?? .distantPast)
-                    > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey])?
-                        .contentModificationDate ?? .distantPast) ?? .distantPast)
-            }[0]
+                at: nameDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
+                !entries.isEmpty else { continue }
+            let latest = entries.max(by: {
+                Self.modificationDate(of: $0) < Self.modificationDate(of: $1)
+            }) ?? entries[0]
             let project = NXProject.projectWithURL(latest)
             out.append((nameDir.lastPathComponent, latest, project?.projectConfig))
         }
