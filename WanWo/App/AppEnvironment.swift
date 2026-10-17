@@ -1161,6 +1161,12 @@ final class AppEnvironment: ObservableObject {
         // M7 件 A（F049）：todo_write 工具（dsh tool-todo apply 1:1——整表
         // 替换 + allowParallelInProgress=false 万我拍板）。
         registry.register(TodoTool(writer: writer))
+        // N6 BuildExt 工具面（13 号设计环 N6）：编译事件 schema 注册 +
+        // 5 件工具（project_create/list/read、build_ipa（审批 askOnce）、
+        // build_log、stop_build——build_and_run 属阶段 2）。工程目录=会话
+        // 工作区桶 BuildProjects/<name>（fs 工具与 NXBuilder 同仓零拷贝）。
+        BuildEvents.register()
+        BuildTools.registerAll(into: registry, sessionId: sessionId, writer: writer)
         // M6.3 B2：browser_use 工具（F033——schema/执行分发语义源=OpenMinis
         // AIChatViewModel+ToolDefinitions:102-132 + ConcurrentTools:547-638，
         // 见 BrowserUseTool.swift 头注）。高风险面审批=提权呈现缝（OriginPolicy.
