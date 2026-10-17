@@ -80,11 +80,23 @@ jobs:
           mkdir -p "Payload/WanWo.app/Frameworks"
           cp -R "build/Build/Products/Release-iphoneos/CoreCompiler.framework" "Payload/WanWo.app/Frameworks/"
           cp -R "build/Build/Products/Release-iphoneos/MobileDevelopmentKit.framework" "Payload/WanWo.app/Frameworks/"
+          # 修⑪（真机 crash 实证 WanWo-2026-10-17-105200.ips：dyld "Library
+          # missing @rpath/lib_CompilerSwiftBasicFormat.dylib"，引用者=CC 本体）：
+          # CC 以动态链接消费 14 个 SupportLibs dylib（本地 Mach-O 解析实证
+          # CC 依赖闭包=14 dylib 互引+系统库，minos 全部 16.0 与 16.6.1 兼容）
+          # ——设备运行时必须与 CC 同层可见，一并 embed。
+          cp Vendor/nyxian/CoreCompilerSupportLibs/lib_CompilerSwift*.dylib "Payload/WanWo.app/Frameworks/"
           echo "=== Frameworks 落位验证 ==="
           ls -lh "Payload/WanWo.app/Frameworks/"
+          DYLIB_N=$(ls "Payload/WanWo.app/Frameworks/" | grep -c '^lib_CompilerSwift.*\.dylib$')
+          FW_N=$(ls "Payload/WanWo.app/Frameworks/" | grep -c '\.framework$')
+          echo "dylib 数: ${DYLIB_N} (expect 14) / framework 数: ${FW_N} (expect 2)"
+          test "${DYLIB_N}" -eq 14 || { echo "!! dylib embed 失败"; exit 1; }
+          test "${FW_N}" -eq 2 || { echo "!! framework embed 失败"; exit 1; }
           zip -qry "WanWo-${{ github.sha }}.ipa" Payload
           ls -lh WanWo-*.ipa
           unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/CoreCompiler" || { echo "!! embed 失败"; exit 1; }
+          unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/lib_CompilerSwift" || { echo "!! dylib embed 失败"; exit 1; }
 
       - name: Link diagnostics (on failure)
         if: failure()
