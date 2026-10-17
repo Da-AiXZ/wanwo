@@ -93,6 +93,95 @@ enum BuildExtSelfCheck {
             detail: "MDKOSVersion.host = \(hostOS)",
             passed: !hostOS.isEmpty))
 
+        // ── N4 逻辑验收（13 号设计环 N4：$(VAR) 展开 + DebugDatabase 读写）──
+        // 原设计"模拟器 swift test 云跑"不可行：主 App 含编译内核后模拟器
+        // 构建需链 sim 平台 CC，而官方工具链 llvm.a 仅 ios-arm64 切片（真机）
+        // ——run 39011546398 实证平台不匹配拒链。逻辑验证移入真机自检页。
+
+        // ⑦ $(VAR) 展开（NXPlist.expandString——官方语义：字典点路径递归
+        //    解析 → variables 兜底 → 未命中空串；depth 上限 10）。
+        do {
+            let dir = NSTemporaryDirectory()
+            let plistPath = (dir as NSString).appendingPathComponent("n4check-\(UUID().uuidString).plist")
+            let dict: [String: Any] = ["Compiler": ["Arch": "arm64"], "App": ["Name": "WanWo"]]
+            let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+            FileManager.default.createFile(atPath: plistPath, contents: data)
+            defer { try? FileManager.default.removeItem(atPath: plistPath) }
+
+            var failures: [String] = []
+            if let plist = NXPlist(plistPath: plistPath, variables: ["PlatformArch": "arm64"]) {
+                // ① 字典点路径
+                if let arch = plist.expandString("$(Compiler.Arch)", depth: 0, ownRoot: nil) as? String, arch == "arm64" {} else {
+                    failures.append("点路径展开失败")
+                }
+                // ② variables 兜底
+                if let v = plist.expandString("value-$(PlatformArch)", depth: 0, ownRoot: nil) as? String, v == "value-arm64" {} else {
+                    failures.append("variables 兜底失败")
+                }
+                // ③ 未命中 → 空串
+                if let miss = plist.expandString("x-$(NoSuch.Var)-y", depth: 0, ownRoot: nil) as? String, miss == "x--y" {} else {
+                    failures.append("未命中空串语义失败")
+                }
+                // ④ 递归展开
+                if let r = plist.expandString("$(Recursive)", depth: 0, ownRoot: nil) as? String, r == "flag-value" {
+                    // 递归用例需要字典支持——用独立 plist 验证
+                } else {
+                    // 递归单独构造
+                    let p2Path = (dir as NSString).appendingPathComponent("n4check2-\(UUID().uuidString).plist")
+                    let d2: [String: Any] = ["A": "flag-$(B)", "B": "value"]
+                    let d2data = try PropertyListSerialization.data(fromPropertyList: d2, format: .xml, options: 0)
+                    FileManager.default.createFile(atPath: p2Path, contents: d2data)
+                    defer { try? FileManager.default.removeItem(atPath: p2Path) }
+                    if let p2 = NXPlist(plistPath: p2Path, variables: nil),
+                       let r2 = p2.expandString("$(A)", depth: 0, ownRoot: nil) as? String, r2 == "flag-value" {
+                    } else {
+                        failures.append("递归展开失败")
+                    }
+                }
+            } else {
+                failures.append("NXPlist 初始化失败")
+            }
+
+            items.append(BuildExtCheckItem(
+                name: "$(VAR) 展开（NXPlist）",
+                detail: failures.isEmpty
+                    ? "4/4 语义验证通过：点路径/variables 兜底/未命中空串/递归展开"
+                    : "失败：\(failures.joined(separator: "；"))",
+                passed: failures.isEmpty))
+        } catch {
+            items.append(BuildExtCheckItem(
+                name: "$(VAR) 展开（NXPlist）",
+                detail: "异常：\(error.localizedDescription)",
+                passed: false))
+        }
+
+        // ⑧ DebugDatabase 读写回环（getDatabase → addMessage → save →
+        //    重开读回 → clear 语义）。
+        do {
+            let path = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("n4check-debug-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(atPath: path) }
+
+            let db = DebugDatabase.getDatabase(ofPath: path)
+            db.addMessage(message: "n4-selfcheck-roundtrip", severity: .error)
+            db.saveDatabase(toPath: path)
+
+            let reopened = DebugDatabase.getDatabase(ofPath: path)
+            reopened.reuseDatabase()
+            let roundtripOK = reopened.debugObjects.values.flatMap(\.debugItems)
+                .contains { $0.message == "n4-selfcheck-roundtrip" }
+
+            reopened.clearDatabase()
+            let clearOK = reopened.debugObjects.values.flatMap(\.debugItems).isEmpty
+
+            items.append(BuildExtCheckItem(
+                name: "DebugDatabase 读写",
+                detail: roundtripOK && clearOK
+                    ? "读写回环 ✓ + clear 语义 ✓"
+                    : "失败：回环=\(roundtripOK ? "✓" : "✗") clear=\(clearOK ? "✓" : "✗")",
+                passed: roundtripOK && clearOK))
+        }
+
         return items
     }
 

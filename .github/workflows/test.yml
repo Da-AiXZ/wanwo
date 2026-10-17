@@ -14,6 +14,12 @@
 #     16.4 无法编译主 App）+ 新增"Download Nyxian toolchain"步骤（CC/MDK
 #     framework 链接输入；N1 同款锚定 tag 下载）——RootfsPatch.bundle 由
 #     build_ish.sh:207 顺带产出无需占位；
+#   · 【N4/N5 后停摆登记 2026-10-17】：主 App 含编译内核（N2-N5）后，模拟器
+#     构建需链 sim 平台 CC——官方工具链 llvm.a 仅 ios-arm64 真机切片，平台
+#     不匹配 ld 拒链（run 39011546398 实证）——模拟器单测路线整体停摆。
+#     N4 验收逻辑（$(VAR) 展开/DebugDatabase 读写）已移入真机自检页
+#     （BuildExtSelfCheck 第⑦⑧项）。本 workflow 保留待将来 CC sim 切片
+#     或纯 SPM 化时复活；dispatch 前须知上述约束。
 #   · 占位 rootfs = issue-ledger ERR-008（ledger:27-32）：App target 把
 #     alpine-rootfs.zip 声明为构建期必须存在的资源，test 前必须生成——
 #     单测不 boot guest，内容无关（真实 rootfs 仍由 ios.yml fetch_rootfs.sh
