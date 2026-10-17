@@ -135,9 +135,16 @@ targets:
         # be found，35043089816）——回退；改走 CI 测试选旧 runtime 路线
         # （test.yml SIM_UDID 解析：旧 runtime 卷自带该库）。
         # 【N2 修⑥清理】修③曾加数组形式 OTHER_LDFLAGS（-framework CC/MDK），
-        # 同 key 被本条覆盖=从未生效的死配置；framework 链接实际由
-        # dependencies 承担（run 38953302190 全绿实证）——死配置删除。
-        OTHER_LDFLAGS: "-lish -lish_emu -lfakefs"
+        # 同 key 被本条覆盖=从未生效的死配置——本轮显式并入（见下）。
+        # N3b 修⑤（run 39005032750 两族 undefined 实证）：
+        # ① -framework CoreCompiler/MobileDevelopmentKit——N2 时 CC 符号靠
+        #   Swift autolink（module 经 -F 解析→自动注入）；N3b -I Vendor/nyxian
+        #   使 bridging 的 CC 头优先命中源码树（非模块化），autolink 推导失效
+        #   →显式补齐（官方 pbxproj 主 App Frameworks 阶段同款显式条目）；
+        # ② -larchive——N3b 新接的 Zip.m 用 libarchive；官方同款机制=SDK
+        #   自带 libarchive.tbd（iOS 系统私有库，运行时走 dyld 共享缓存，
+        #   不 embed；官方 pbxproj L275 SDKROOT/usr/lib/libarchive.tbd）。
+        OTHER_LDFLAGS: "$(inherited) -lish -lish_emu -lfakefs -framework CoreCompiler -framework MobileDevelopmentKit -larchive"
         CLANG_ENABLE_MODULES: YES
         # 万我 M6.1 增（B1b）：entitlements（HealthKit/HomeKit/NFC，按 OpenMinis
         # src/ios/Minis.entitlements 原样引入，见 WanWo.entitlements 注释）
