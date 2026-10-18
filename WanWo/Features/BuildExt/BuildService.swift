@@ -382,6 +382,63 @@ final class BuildService: @unchecked Sendable {
         return (hitFiles, samples)
     }
 
+    // MARK: 批 2 收官 · fakefs 元数据补注册（D6 根治）+ lld 污染标志
+
+    /// 【D6 根治 2026-10-18】guest rootfs = iSH fakefs 混合模式：目录元数据在
+    /// meta.db 的 paths 表、文件内容在真实 FS——host（Swift/fs 工具/构建管线）
+    /// 直写真实目录树而不注册元数据时，guest readdir（ls/find）看不到新目录
+    ///（装机审计实锤：新建工程 ls 不可见、cat 完整路径可读）。枚举工程目录树
+    /// 逐项补注册，复用 IshExecutorBridge.ensureFakefsMetadata 既有钩子（与
+    /// 挂载/adopt 同源），零 vendored 改动。guestMount = 工作区在 guest 侧的
+    /// 挂载根（与 guestPathHint 同源 sessionCwd）；nil 则保守跳过（仅失去
+    /// guest 可见性，构建本身不受影响）。
+    static func registerProjectTreeInFakefs(project: NXProject, workspaceRoot: URL, guestMount: String?) {
+        guard let guestMount, !guestMount.isEmpty else { return }
+        let fm = FileManager.default
+        let wsRoot = workspaceRoot.standardizedFileURL.path
+        let projPath = project.url.standardizedFileURL.path
+        guard projPath.hasPrefix(wsRoot + "/") else { return }
+        // 相对工作区根 = "/BuildProjects/<name>/<uuid>"
+        let projRel = String(projPath.dropFirst(wsRoot.count))
+        // 父链先行：nameDir（/BuildProjects/<name>）首次创建也未注册
+        let nameDirRel = (projRel as NSString).deletingLastPathComponent
+        IshExecutorBridge.ensureFakefsMetadata(for: guestMount + nameDirRel, isDirectory: true)
+        IshExecutorBridge.ensureFakefsMetadata(for: guestMount + projRel, isDirectory: true)
+        guard let en = fm.enumerator(at: project.url, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return
+        }
+        for case let fileURL as URL in en {
+            let path = fileURL.standardizedFileURL.path
+            guard path.hasPrefix(projPath + "/") else { continue }
+            let rel = String(path.dropFirst(projPath.count))
+            let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            IshExecutorBridge.ensureFakefsMetadata(for: guestMount + projRel + rel, isDirectory: isDir)
+        }
+    }
+
+    // MARK: lld 污染标志（上游 dupSymDiags 残留的事前拦截）
+    // lld/MachO/SymbolTable.cpp 的 dupSymDiags（D134794 引入）文件级静态且无
+    // clear（对照 undefs 有 clear——疏漏）。同进程第二次链接时 Writer::run
+    // 无条件重放残留诊断，toString(*悬空 sym) 读第一次链接已释放的 arena →
+    // UAF/闪退（.ips：memmove←__assign_external←reportPendingDuplicateSymbols，
+    // 0x157538000 恰落已回收 MALLOC_LARGE 64K 块边界）。lld CLI 单进程单链接
+    // 不触发，上游无感知至今未修。万我无法从外部清理 lld 内部静态——精确
+    // 止损：诊断含 duplicate symbol → 置进程级标志 → 后续构建事前拦截并引导
+    // 重启 App（把随机闪退转成明确失败+指引）。
+    private static let contaminationLock = NSLock()
+    private static var lldContaminated = false
+
+    static var isLldContaminated: Bool {
+        contaminationLock.lock(); defer { contaminationLock.unlock() }
+        return lldContaminated
+    }
+
+    static func markLldContaminatedIfDuplicate(_ summary: String) {
+        guard summary.contains("duplicate symbol:") else { return }
+        contaminationLock.lock(); defer { contaminationLock.unlock() }
+        lldContaminated = true
+    }
+
     /// 单飞行门。返回 false = 已有构建在途（stop_build/等待后重试）。
     func beginBuild() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -513,6 +570,10 @@ final class BuildService: @unchecked Sendable {
                 buildLogPath: project.cacheURL.appendingPathComponent("debug.json").path,
                 diagnosticsSummary: summary.isEmpty ? "（无诊断条目）" : summary,
                 elapsedSeconds: elapsed)
+            // 【lld 污染标志】链接阶段 duplicate symbol 失败 → lld 静态残留
+            //（dupSymDiags 无 clear），同进程后续链接有 UAF 闪退风险——置位
+            // 供工具层事前拦截（BuildIPATool）。
+            Self.markLldContaminatedIfDuplicate(buildResult.diagnosticsSummary)
             _ = self // BuildService 无状态依赖；保留 weak 形态防环
             completion(buildResult)
         }

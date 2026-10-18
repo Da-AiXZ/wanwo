@@ -146,6 +146,13 @@ struct ProjectCreateTool: AgentTool {
             let (project, created) = try BuildService.shared.createOrReuseProject(
                 workspaceRoot: ctx.workspace.rootURL, name: name,
                 interfaceKind: NXProjectInterfaceKind.swiftUI)
+            // 【D6 根治】新建工程的目录树补注册 fakefs 元数据（host 直写未经
+            // meta.db 注册时 guest ls 不可见——装机审计实锤）；复用路径已注册
+            // 过，跳过。
+            if created {
+                BuildService.registerProjectTreeInFakefs(
+                    project: project, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
+            }
             let note = created ? "created" : "reused (existing project with same name)"
             let sources = (try? FileManager.default.contentsOfDirectory(
                 at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
@@ -316,6 +323,9 @@ struct ProjectResetTool: AgentTool {
             let (project, _) = try BuildService.shared.createOrReuseProject(
                 workspaceRoot: ctx.workspace.rootURL, name: name,
                 interfaceKind: NXProjectInterfaceKind.swiftUI)
+            // 【D6 根治】重铺的脚手架目录树补注册 fakefs 元数据
+            BuildService.registerProjectTreeInFakefs(
+                project: project, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
             let sources = (try? FileManager.default.contentsOfDirectory(
                 at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
                 .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
@@ -378,6 +388,18 @@ struct BuildIPATool: AgentTool {
             return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
         } catch {
             return .failure(String(describing: error), code: "PROJECT_ERROR")
+        }
+
+        // 【lld 污染拦截】上次 duplicate symbol 链接失败后 lld 内部残留
+        //（dupSymDiags 无 clear，上游疏漏）——同进程再次链接大概率 UAF 闪退
+        //（.ips 实锤）。lld 内部静态无法从外部清理：事前拦截+引导重启。
+        if BuildService.isLldContaminated {
+            return .failure(
+                "build service contamination: a previous build in this process failed with duplicate symbols, "
+                    + "leaking lld linker state (upstream lld never clears its duplicate diagnostics — "
+                    + "re-linking in this process would risk a crash). Ask the user to restart the App "
+                    + "(kill and relaunch WanWo), then rebuild — the same build will succeed after restart.",
+                code: "LLD_CONTAMINATED", name: "BuildError")
         }
 
         // 宏预检（压测建议 6）：external macro 官方边界必败（§三 f 实证）——
@@ -466,6 +488,18 @@ struct BuildIPATool: AgentTool {
                 try? FileManager.default.removeItem(at: dst)
                 if (try? FileManager.default.copyItem(at: URL(fileURLWithPath: result.ipaURL.path), to: dst)) != nil {
                     artifactPath = dst.path
+                    // 【D6 根治】host 直写补注册 fakefs 元数据（meta.db paths 表
+                    // =guest 目录视图权威）——否则 guest ls 看不到 BuildArtifacts
+                    //（装机审计实锤：fs glob 可见、guest ls 不可见）。
+                    if let cwd = sessionCwd {
+                        let wsRoot = ctx.workspace.rootURL.standardizedFileURL.path
+                        let dstStd = dst.standardizedFileURL.path
+                        if dstStd.hasPrefix(wsRoot + "/") {
+                            let dstRel = String(dstStd.dropFirst(wsRoot.count))
+                            IshExecutorBridge.ensureFakefsMetadata(for: cwd + "/BuildArtifacts", isDirectory: true)
+                            IshExecutorBridge.ensureFakefsMetadata(for: cwd + dstRel, isDirectory: false)
+                        }
+                    }
                 }
             }
             let artifactLine = artifactPath.map { "\nworkspace ipa: \($0)（文件 App/读工具可直取）" } ?? ""

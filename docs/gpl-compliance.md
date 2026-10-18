@@ -174,7 +174,12 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 **升级登记（原 §三 h 末尾"build_ipa 经 run_code 通道的 interrupted"）**：该现象非 run_code 通道特有——所有先落 modelVisible 事件再落 result 的工具调用（本版即 build_ipa 全部 11 次）都触发占位合成；宏预检（失败路径不写事件）与 project_create/reset/delete（不写 build 事件）不受影响——与本次根因分析完全吻合。本修后工具文本直达 AI。
 
-**审计新发现登记（低优先/待拍板）**：①BuildArtifacts 文件名用 displayName（中文名→"测试.ipa"，与 ipaURL 名不同源；对文件 App 直观，用户拍板保持现状）②诊断 file 键含 uuid 尾段（[1385895/Broken.swift:4:24]）=官方 debug.json 键形态既有 ③D6 精细画像：guest readdir 陈旧但完整路径 lookup 实时，AI 已自适应，危害降级 ④预检失败不写 debug.json（AI 建议+code 字段透出——低优先）⑤**D6 已修（prompt 级，用户拍板方案 A）**：ShellTool.swift description 加明示「guest 目录列表可能陈旧（内核目录缓存滞后），已知完整路径读取不受影响——文件存在性一律用 fs 工具（glob/read）核验，勿用 guest ls」；内核级修复（fs/path.c 缓存语义）与 lld UAF 上游深挖转入研究阶段。
+**审计新发现登记（低优先/待拍板）**：①BuildArtifacts 文件名用 displayName（中文名→"测试.ipa"，与 ipaURL 名不同源；对文件 App 直观，用户拍板保持现状）②诊断 file 键含 uuid 尾段（[1385895/Broken.swift:4:24]）=官方 debug.json 键形态既有 ③D6 精细画像：guest readdir 陈旧但完整路径 lookup 实时，AI 已自适应，危害降级 ④预检失败不写 debug.json（AI 建议+code 字段透出——低优先）⑤**D6 已修两段**：prompt 级（ShellTool description 明示，955b280）+**元数据补注册根治（用户拍板实施）**——BuildService.registerProjectTreeInFakefs（create/reset 建目录树枚举补注册）+BuildIPATool BuildArtifacts/ipa 复制后注册（复用 ensureFakefsMetadata 钩子，零 vendored 改动）⑥**lld 污染事前拦截（用户拍板实施）**：诊断含 duplicate symbol → 进程级污染标志 → 后续 build_ipa 事前失败+重启指引（LLD_CONTAMINATED）——把随机闪退转明确失败。
+
+## 三 l、深水区研究终审（2026-10-18 晚，analysis/lld-uaf-d6-research-20261018.md + issue 草稿 analysis/lld-upstream-issue-draft.md）
+
+- **lld UAF 根因（上游源码级实锤，swift-6.4.0-RELEASE 与 llvm main 同构）**：`lld/MachO/SymbolTable.cpp` 的 `dupSymDiags`（D134794 引入）文件级静态 **无 clear**（对照 undefs 有 clear=疏漏）；元素 `const Symbol *sym` 指向 per-link SymbolTable arena——同进程第二次链接 arena 释放后 Writer::run **无条件重放**残留诊断 → `toString(*悬空 sym)` UAF。src1/src2 是 std::string 值拷贝（StringRef 悬空论否证）。lld CLI 单进程单链接不触发→上游无感知。**万我侧拦截已落地（⑥）+上游 issue 草稿就绪（含 .ips 栈/地址证据，待用户拍板提交 llvm-project）**。
+- **D6 根因（本地源码实锤）**：万我 guest rootfs=iSH fakefs 混合模式——目录元数据在 **meta.db paths 表**（fake-db.c，`ensureFakefsMetadata` 直写该表；RootfsInstaller.swift:366 自证注释「Register in fakefs meta.db so iSH kernel can see the file」），文件内容在真实 FS。host 直写不注册→guest readdir 不可见（lookup 实时兼容）。**元数据补注册已落地（⑤）**。
 
 ## 三 h、N6 三小件验证 + AI 深度压测报告处置（2026-10-17，第三份事件流 70007 事件）
 
