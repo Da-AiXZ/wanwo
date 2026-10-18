@@ -21,7 +21,7 @@ struct ReviewTabView: View {
 
     init(environment: AppEnvironment) {
         self.environment = environment
-        let sessionID = WorkspaceRightSidebarView.sessionID(of: environment.selection)
+        let sessionID = WORightPanel.sessionID(of: environment.selection)
             ?? "m0-shell-test"
         _model = StateObject(wrappedValue: ReviewTabModel(
             sessionID: sessionID,

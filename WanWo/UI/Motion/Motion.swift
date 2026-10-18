@@ -275,3 +275,118 @@ public struct WOMotionAwareModifier<V: Equatable>: ViewModifier {
         content.animation(reduceMotion ? .easeOut(duration: 0.15) : prefer, value: value)
     }
 }
+
+// MARK: - 右栏三式（右侧栏原型.html 逐值；2026-10-18 用户拍板「右栏重做按原型」）
+//
+// 曲线即全库唯一 cubic-bezier(0.4,0,0.2,1)（原型 --ease 同一条），供货处
+// 只登记时长/位移/模糊/步进参数与触发形态。重绘不重放语义见各 modifier 头注。
+
+public extension WOMotion {
+    /// paneIn 切页过渡时长（原型 :214 .52s）。
+    static let panelPaneIn: Double = 0.52
+    /// itemIn 交错入场时长（原型 :240 .55s）。
+    static let panelItemIn: Double = 0.55
+    /// itemIn 步进（原型 animation-delay calc(var(--i) * 72ms + 90ms)）。
+    static let panelItemStep: Double = 0.072
+    static let panelItemBaseDelay: Double = 0.09
+    /// handle 把手入场时长（原型 opacity .34s / transform .44s——取位移段）。
+    static let panelHandleIn: Double = 0.44
+}
+
+/// paneIn：切到该页时播一次（opacity 0→1 + translateX 14→0 + scale .985→1
+/// + blur 4→0；原型 :214-217）。「内部局部刷新不重放」= 仅 isActive false→true
+/// 沿触发（onChange），后续 body 重算不再触发；onAppear 时已 active 也播
+///（对齐原型进入页签态的首次入场）。Reduce Motion 降级 150ms 纯淡入。
+public struct WOPaneInModifier: ViewModifier {
+    let isActive: Bool
+    @State private var entering = false
+    @State private var armed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public func body(content: Content) -> some View {
+        let visual = entering && !reduceMotion
+        content
+            .opacity(entering ? 0 : 1)
+            .offset(x: visual ? 14 : 0)
+            .scaleEffect(visual ? 0.985 : 1)
+            .blur(radius: visual ? 4 : 0)
+            .onAppear {
+                guard !armed else { return }
+                armed = true
+                if isActive { play() }
+            }
+            .onChange(of: isActive) { nowActive in
+                if nowActive { play() }
+            }
+    }
+
+    /// 两帧法：先以禁动画事务瞬落起点，下一帧以唯一曲线归位终态。
+    private func play() {
+        if reduceMotion {
+            var quick = Transaction()
+            quick.disablesAnimations = true
+            withTransaction(quick) { entering = true }
+            withAnimation(.easeOut(duration: 0.15)) { entering = false }
+            return
+        }
+        var plain = Transaction()
+        plain.disablesAnimations = true
+        withTransaction(plain) { entering = true }
+        DispatchQueue.main.async {
+            withAnimation(WOMotion.bezier(duration: WOMotion.panelPaneIn)) {
+                entering = false
+            }
+        }
+    }
+}
+
+/// itemIn：交错入场（translateY 12→0 + blur 3→0 + scale .985→1；原型
+/// :218-221）。onAppear 播一次——launcher 行每次出现（页签清空→空态浮现）
+/// 都重播，与原型 DOM 重建语义一致。步进双档：launcher 72ms+90ms（:241）/
+/// pop 菜单行 26ms+40ms（:320）。
+public struct WOItemInModifier: ViewModifier {
+    let index: Int
+    let step: Double
+    let baseDelay: Double
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public func body(content: Content) -> some View {
+        let visual = !appeared && !reduceMotion
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: visual ? 12 : 0)
+            .scaleEffect(visual ? 0.985 : 1)
+            .blur(radius: visual ? 3 : 0)
+            .onAppear {
+                guard !appeared else { return }
+                let delay = Double(max(index, 0)) * step + baseDelay
+                if reduceMotion {
+                    withAnimation(.easeOut(duration: 0.15).delay(delay)) { appeared = true }
+                } else {
+                    withAnimation(WOMotion.bezier(duration: WOMotion.panelItemIn).delay(delay)) {
+                        appeared = true
+                    }
+                }
+            }
+    }
+}
+
+public extension View {
+    /// 右栏切页一次过渡（WORightPanel 页签内容挂接；isActive=本页是否激活）。
+    func woPaneIn(isActive: Bool) -> some View {
+        modifier(WOPaneInModifier(isActive: isActive))
+    }
+
+    /// 右栏 launcher 行交错入场（原型步进 72ms+90ms）。
+    func woItemIn(index: Int) -> some View {
+        modifier(WOItemInModifier(index: index,
+                                  step: WOMotion.panelItemStep,
+                                  baseDelay: WOMotion.panelItemBaseDelay))
+    }
+
+    /// pop 菜单行交错入场（原型 pop-item 步进 26ms+40ms，:320）。
+    func woItemIn(index: Int, step: Double, base: Double) -> some View {
+        modifier(WOItemInModifier(index: index, step: step, baseDelay: base))
+    }
+}

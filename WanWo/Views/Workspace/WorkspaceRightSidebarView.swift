@@ -2,6 +2,11 @@
 //  WorkspaceRightSidebarView.swift
 //  WanWo
 //
+//  【退役 2026-10-18 批 2a-1】右栏骨架已被 WORightPanel（UI/Workspace/，
+//  按右侧栏原型.html 重做）替代——本文件零引用态暂留防回退，收官批随
+//  C 层死代码统一删除。六页签内容视图的 sessionID(of:) 工具函数同签名
+//  迁至 WORightPanel.sessionID(of:)（全部调用方已改指）。
+//
 //  【M6.6 新写（B4）· 语义源 m6-scope-brief §6.0/§6.6a】右侧边栏视图。
 //  【批12+右栏重构批1（2026-09-27 用户拍板）】状态源换 WOWorkspaceStore
 //  （cc-haha workspaceStore 语义 1:1——按会话作用域/复用规则/真删释放/undo

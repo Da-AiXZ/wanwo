@@ -46,7 +46,7 @@ struct WorkspaceBrowserTabView: View {
                 // 却无落盘、无任何可见反馈）。didSet 副作用 = loadPersistedURLs
                 // （BrowserTabPool:304-310），绑定即恢复该会话的页签 URL 持久化
                 // ——原设计能力顺带接通。
-                pool.sessionId = WorkspaceRightSidebarView.sessionID(of: environment.selection)
+                pool.sessionId = WORightPanel.sessionID(of: environment.selection)
                 if !navigated, let initialURL {
                     navigated = true
                     pool.ensureTabForUI()
@@ -55,7 +55,7 @@ struct WorkspaceBrowserTabView: View {
             }
             // 会话切换跟随（批2 简报 B① 修法原句：onChange）。
             .onChange(of: environment.selection) { selection in
-                pool.sessionId = WorkspaceRightSidebarView.sessionID(of: selection)
+                pool.sessionId = WORightPanel.sessionID(of: selection)
             }
             // 批12+联动B：AI 单活动页签跟随——右栏模型改写 initialURL →
             // 同页签换 URL（不新建页签；WKWebView 原生返回键=AI 开过的页历史）。
