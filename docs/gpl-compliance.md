@@ -140,9 +140,26 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 **批 2（BuildPanelView 承载）**：级别中文化+配色图标（建议 2 剩余半）/fix-it 折叠（3）/拆阶段耗时+编译文件数（10）/产物摘要面（11 剩余半）。
 
-**登记后续**：#Preview 冒烟预检提示（6）/错误收集上限与批量模式深度改造（5——已提至 50）/并发构建独立输出目录（9——单会话 exclusive 车道已天然串行，跨会话 App 级单飞行门在位）/AppIcon 占位脚手架（13）/-O 开关工具参数化（12——AI 实测 -O 可用 1.9→6.7s）。
+**登记后续**：~~#Preview 冒烟预检提示（6）~~/~~-O 开关工具参数化（12——AI 实测 -O 可用 1.9→6.7s）~~（两者已随 §三 j 落地）/错误收集上限与批量模式深度改造（5——已提至 50）/并发构建独立输出目录（9——单会话 exclusive 车道已天然串行，跨会话 App 级单飞行门在位）/AppIcon 占位脚手架（13）。
 
 **官方语义不修**：NXDisplayName 与输出路径强耦合（建议 8 主体——vendored NXOutputPath 模板；正确姿势已实证=CFBundleDisplayName 独立设置）。
+
+## 三 j、批 2 第一批（AgentTool 域五件，2026-10-18）
+
+右栏重做（批 2a-1）整体回滚后（14725bc），批 2 中与右栏外壳无关的构建域项先行落地。vendored 官方件零修改——全部在万我层（BuildExt）实现：
+
+| # | 项 | 实现 |
+|---|---|---|
+| 1 | project_delete（D5 缓解） | 审批级新工具：删 BuildProjects/<name>/ 整目录+Cache/<uuid> 编译缓存；名称校验同 resolveProject（fail closed）+构建在途禁删（isBuilding 门）；刻意不走 NXProject 实例（僵尸工程 init 返回 nil 也能删） |
+| 2 | project_reset | 审批级新工具：delete + createOrReuseProject 同名重铺脚手架（一次审批完成两步） |
+| 3 | -O 参数化（建议 12） | build_ipa 新增 optimize 布尔参数（默认 false）：持久写入工程 plist NXSwiftFlags 追加/移除 "-O"+reload 生效（官方默认数组无优化等级=swiftc -Onone；AI 实测 -O 1.9→6.7s 换运行性能）；参数即真值语义（false 显式移除）；无变化不写盘 |
+| 4 | 宏预检（建议 6） | build_ipa 构建前扫描 .swift 源文件（字面匹配 #Preview/@Observable/@Model——external macro 官方边界 §三 f 实证必败），命中即拦下必然失败的构建（code MACRO_PRECHECK+替代方案指引），省一次审批+数分钟 CPU；注释/字符串误报可接受（提示语注明字面匹配） |
+| 5 | D2 出厂模板修正 | createOrReuseProject 新建工程后覆写 Config/Project.plist NXOutputPath → $(CACHEROOT)/Payload/$(NXExecutable).app/$(NXExecutable)（幂等：仅官方默认形态才覆写，AI 自定义不动；best effort 失败不阻塞创建）；plist 写回与官方工厂同构（NSPropertyListSerialization XMLFormat，NXProject.m:336 同款） |
+| 6 | D7 模板提示 | project_create/project_reset 成功输出附宏不可用提示（#Preview/@Observable/@Model → ObservableObject/@Published） |
+
+**配套行为优化**：build_ipa 工程定位提前到审批前（工程不存在/名字错不再让用户白批一次）。
+
+**批 2 剩余（挂起待 BuildPanelView=2a-2 随右栏重启）**：级别中文化+配色图标/fix-it 折叠/拆阶段耗时+编译文件数/产物摘要面（原"BuildPanelView 承载"四件——展示层宿主视图未建）；批量模式深度改造/AppIcon 占位脚手架/并发构建独立输出目录（低优先）。
 
 ## 三 h、N6 三小件验证 + AI 深度压测报告处置（2026-10-17，第三份事件流 70007 事件）
 
@@ -155,11 +172,11 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | D8 | 同位置重复诊断 2-3 条 | 已修：file:line:col:message 去重 |
 | D9 | build_ipa("") 空/异常名触发 0.0s 垃圾构建 | 已修：resolveProject 防空名/分隔符退化（nameDir==根 fail closed） |
 | D1 | ipa 产物 guest/工作区不可见（构建成功只能信返回值） | 已修：成功后 ipa 复制进会话桶 BuildArtifacts/<name>.ipa + workspace 路径输出 |
-| D5 缓解 | 僵尸工程 0.0s 不可恢复 | 文案指引换名重建；project_delete/reset 登记批 2 |
-| D2 | 显示名空格/中文→.app 目录与 macho 不一致（官方 NXOutputPath 模板） | 登记官方语义；AI 已实证变通（NXOutputPath 改 $(NXExecutable)）；出厂模板修正随批 2 |
+| D5 缓解 | 僵尸工程 0.0s 不可恢复 | ✅ 批 2 已修：project_delete/project_reset 工具（审批级+构建在途禁删；不依赖 NXProject 可解析——僵尸工程可删）；删除范围=nameDir 全部+Cache/<uuid> |
+| D2 | 显示名空格/中文→.app 目录与 macho 不一致（官方 NXOutputPath 模板） | ✅ 批 2 已修：createOrReuseProject 新建即覆写 NXOutputPath → $(CACHEROOT)/Payload/$(NXExecutable).app/$(NXExecutable)（幂等：AI 自定义值不动；NXDisplayName 仍独立服务 CFBundleDisplayName） |
 | D4 | build_log 单行退化 | 已在修⑤⑥覆盖（file:line:col+级别名） |
 | D6 | guest ls 与 host 写入视图不一致 | M4-E 挂载语义既有——登记（AI 已自适应改用 fs 工具） |
-| D7 | 宏插件缺失（@Observable/@Model） | 官方工具链边界——登记（模板文档提示随批 2） |
+| D7 | 宏插件缺失（@Observable/@Model） | ✅ 批 2 已修（提示面）：project_create/project_reset 输出附宏不可用提示 + build_ipa 宏预检（见 §三 j） |
 
 **build_ipa 经 run_code 通道的"interrupted"**：长阻塞超 harness 时限被打断，AI 自适应从 extension-event 读结果——事件通道兜底有效，登记（阶段 2 可考虑异步任务形态）。
 

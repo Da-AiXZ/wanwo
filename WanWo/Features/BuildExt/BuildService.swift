@@ -212,6 +212,13 @@ final class BuildService: @unchecked Sendable {
             withInterfaceKind: interfaceKind) else {
             throw BuildServiceError.createFailed(name: name)
         }
+        // 【批 2 · D2 出厂模板修正 2026-10-18】官方 App 模板 NXOutputPath 把
+        // .app 目录挂在 $(NXDisplayName) 上——显示名含空格/中文时 .app 目录
+        // 与 macho 名不一致（压测 D2 实证；AI 变通=手改 $(NXExecutable)）。
+        // 新建即覆写为 $(NXExecutable) 形态（best effort：失败不阻塞创建，
+        // 语义等价旧行为）；NXDisplayName 仍独立服务 CFBundleDisplayName
+        //（合规 §三 g 实证的官方正确姿势）。
+        _ = Self.overwriteOutputPathTemplate(project: project)
         return (project, true)
     }
 
@@ -236,6 +243,141 @@ final class BuildService: @unchecked Sendable {
         return out.map { ($0.0, $0.1, $0.2) }
     }
 
+    // MARK: 批 2 · 工程生命周期（D5 缓解 / -O 参数化 / D2 模板 / 宏预检）
+
+    /// 删除工程（D5 缓解：僵尸工程/损坏 plist 0.0s 不可恢复 → 可删可重建）。
+    /// 范围 = BuildProjects/<name>/ 整目录 + Cache/<uuid>（每个 UUID 工程目录
+    /// 对应一份编译缓存，NXProject.m:151 构造规则）。刻意不依赖 NXProject
+    /// 可解析——僵尸工程（init 返回 nil）同样可删。返回 (工程目录数, 缓存目录数)。
+    static func deleteProjectDirectories(workspaceRoot: URL, name: String) throws -> (projects: Int, caches: Int) {
+        // 名称校验同 resolveProject（防空名/分隔符退化——nameDir==根 fail closed）
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
+            throw BuildServiceError.projectNotFound(name: name)
+        }
+        let projectsRoot = Self.projectsRoot(inWorkspace: workspaceRoot)
+        let nameDir = projectsRoot.appendingPathComponent(name, isDirectory: true)
+        // 双保险：目标必须真落在 projectsRoot 内
+        let targetPath = nameDir.standardizedFileURL.path
+        let rootPath = projectsRoot.standardizedFileURL.path
+        guard targetPath.hasPrefix(rootPath + "/") else {
+            throw BuildServiceError.fileEscapesProject(name: name, file: nameDir.path)
+        }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: targetPath) else {
+            throw BuildServiceError.projectNotFound(name: name)
+        }
+        let entries = (try? fm.contentsOfDirectory(
+            at: nameDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        var cacheCount = 0
+        if !entries.isEmpty {
+            let cacheRoot = NXBootstrap.shared().rootURL.appendingPathComponent("Cache", isDirectory: true)
+            for entry in entries {
+                let cacheDir = cacheRoot.appendingPathComponent(entry.lastPathComponent, isDirectory: true)
+                if fm.fileExists(atPath: cacheDir.path) {
+                    try? fm.removeItem(at: cacheDir)
+                    cacheCount += 1
+                }
+            }
+        }
+        try fm.removeItem(at: nameDir)
+        return (entries.count, cacheCount)
+    }
+
+    /// D2 出厂模板修正：官方 App 模板 NXOutputPath = `$(CACHEROOT)/Payload/
+    /// $(NXDisplayName).app/$(NXExecutable)`（NXProject.m:276）——显示名空格/
+    /// 中文 → .app 目录与 macho 名不一致。新建工程覆写为 $(NXExecutable) 形态。
+    /// 幂等：值非官方默认形态（AI 已自定义）不动。best effort：任何失败返回
+    /// false，不阻塞创建。
+    static func overwriteOutputPathTemplate(project: NXProject) -> Bool {
+        let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
+        guard let read = NSDictionary(contentsOf: plistURL) else { return false }
+        let current = read["NXOutputPath"] as? String ?? ""
+        // 官方 App 默认形态才覆写（幂等 + 不碰 AI 自定义值）
+        guard current == "$(CACHEROOT)/Payload/$(NXDisplayName).app/$(NXExecutable)" else { return true }
+        let dict = NSMutableDictionary(dictionary: read)
+        dict["NXOutputPath"] = "$(CACHEROOT)/Payload/$(NXExecutable).app/$(NXExecutable)"
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+            try data.write(to: plistURL, options: .atomic)
+        } catch {
+            return false
+        }
+        return project.reload()
+    }
+
+    /// -O 参数化（压测建议 12）：NXSwiftFlags 追加/移除 "-O" 并写回 plist +
+    /// reload 生效。官方默认数组无优化等级（swiftc 默认 -Onone）；AI 实测
+    /// -O 编译 1.9s→6.7s 换运行性能。持久写入=参数即真值语义。无变化时
+    /// 不写盘直接返回。
+    static func setSwiftOptimization(project: NXProject, enabled: Bool) throws -> String {
+        let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
+        guard let read = NSDictionary(contentsOf: plistURL) else {
+            throw BuildServiceError.plistUnreadable(path: plistURL.path)
+        }
+        var flags = (read["NXSwiftFlags"] as? [String]) ?? []
+        let hasO = flags.contains("-O")
+        if enabled && !hasO {
+            flags.append("-O")
+        } else if !enabled && hasO {
+            flags.removeAll { $0 == "-O" }
+        } else {
+            if enabled {
+                return "-O already present（无变化）"
+            }
+            return "-O not present（无变化）"
+        }
+        let dict = NSMutableDictionary(dictionary: read)
+        dict["NXSwiftFlags"] = flags
+        let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+        try data.write(to: plistURL, options: .atomic)
+        let ok = project.reload()
+        if !ok {
+            throw BuildServiceError.plistReloadFailed(path: plistURL.path)
+        }
+        if enabled {
+            return "-O written to NXSwiftFlags（编译较慢、运行更快；持久生效）"
+        }
+        return "-O removed from NXSwiftFlags（回到默认 -Onone）"
+    }
+
+    /// 宏预检（压测建议 6）：枚举 .swift 源文件统计设备端不可用宏的字面出现
+    ///（#Preview/@Observable/@Model——external macro 官方边界，§三 f 实证
+    /// 必败）。字面匹配不解析语法：注释/字符串误报可接受（提示语已注明）。
+    /// 返回 (命中文件数, 前 5 个相对路径)。
+    static func scanMacroUsage(project: NXProject) -> (files: Int, samples: [String]) {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: project.url, includingPropertiesForKeys: nil) else {
+            return (0, [])
+        }
+        var hitFiles = 0
+        var samples: [String] = []
+        let rootPath = project.url.standardizedFileURL.path
+        for case let fileURL as URL in en {
+            let path = fileURL.path
+            if path.contains("/Resources") || path.contains("/Config") {
+                continue
+            }
+            let ext = fileURL.pathExtension.lowercased()
+            if ext != "swift" {
+                continue
+            }
+            guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                continue
+            }
+            let hitPreview = text.contains("#Preview")
+            let hitObservable = text.contains("@Observable")
+            let hitModel = text.contains("@Model")
+            if hitPreview || hitObservable || hitModel {
+                hitFiles += 1
+                if samples.count < 5 {
+                    let rel = path.hasPrefix(rootPath) ? String(path.dropFirst(rootPath.count + 1)) : path
+                    samples.append(rel)
+                }
+            }
+        }
+        return (hitFiles, samples)
+    }
+
     /// 单飞行门。返回 false = 已有构建在途（stop_build/等待后重试）。
     func beginBuild() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -247,6 +389,13 @@ final class BuildService: @unchecked Sendable {
     func endBuild() {
         lock.lock(); defer { lock.unlock() }
         inFlight = false
+    }
+
+    /// 是否有构建在途（批 2：project_delete/reset 前置检查——构建中删
+    /// 工程目录会让在途构建踩空路径）。
+    var isBuilding: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return inFlight
     }
 
     /// 官方全链构建（.export）。completion 在 MDK 线程池线程回调。
@@ -372,6 +521,8 @@ enum BuildServiceError: Error, CustomStringConvertible {
     case createFailed(name: String)
     case projectNotFound(name: String)
     case fileEscapesProject(name: String, file: String)
+    case plistUnreadable(path: String)
+    case plistReloadFailed(path: String)
 
     var description: String {
         switch self {
@@ -381,6 +532,10 @@ enum BuildServiceError: Error, CustomStringConvertible {
             return "project \"\(name)\" not found（先 project_create 或核对 project_list）"
         case .fileEscapesProject(let name, let file):
             return "path \"\(file)\" escapes project \"\(name)\"（拒绝越界访问）"
+        case .plistUnreadable(let path):
+            return "project plist unreadable（\(path)）"
+        case .plistReloadFailed(let path):
+            return "project reload failed after plist write（\(path)）"
         }
     }
 }

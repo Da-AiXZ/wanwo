@@ -2,12 +2,14 @@
 //  BuildTools.swift
 //  WanWo
 //
-//  【N6 · BuildExt 工具面】13 号设计环 N6：6 件 AgentTool（build_and_run 属
-//  阶段 2——WANWO_BUILD_RUN 开启时随 N7-N9 注册）。装配点 AppEnvironment
+//  【N6 · BuildExt 工具面】13 号设计环 N6：8 件 AgentTool（批 2 增补
+//  project_delete/project_reset + build_ipa optimize/宏预检；build_and_run
+//  属阶段 2——WANWO_BUILD_RUN 开启时随 N7-N9 注册）。装配点 AppEnvironment
 //  makeAgentStack（BuildTools.registerAll，writer 注入供 extensionEvent）。
 //
-//  审批：build_ipa 走 ctx.escalationApprover 提权呈现缝（browser_use 同一
-//  ApprovalCoordinator.request 呈现；nil approver → fail closed）。其余低危。
+//  审批：build_ipa/project_delete/project_reset 走 ctx.escalationApprover
+//  提权呈现缝（browser_use 同一 ApprovalCoordinator.request 呈现；nil
+//  approver → fail closed）。其余低危。
 //
 //  诊断双去向（设计文档 §三）：① DebugDatabase（vendored 件原样持久化）；
 //  ② build_ipa 工具输出直给 AI（同回合自修复）+ extensionEvent("build",
@@ -42,8 +44,9 @@ enum BuildEvents {
 // MARK: - 工具族装配
 
 enum BuildTools {
-    /// 注册 5 件（project_create/project_list/project_read/build_ipa/build_log/
-    /// stop_build——build_and_run 属阶段 2）。writer 注入供 build 事件发射。
+    /// 注册 8 件（project_create/project_list/project_read/project_delete/
+    /// project_reset/build_ipa/build_log/stop_build——build_and_run 属
+    /// 阶段 2）。writer 注入供 build 事件发射。
     static func registerAll(into registry: ToolRegistry,
                             sessionId: String,
                             writer: SessionWriter,
@@ -51,6 +54,8 @@ enum BuildTools {
         registry.register(ProjectCreateTool(writer: writer, sessionCwd: sessionCwd))
         registry.register(ProjectListTool())
         registry.register(ProjectReadTool())
+        registry.register(ProjectDeleteTool())
+        registry.register(ProjectResetTool(writer: writer, sessionCwd: sessionCwd))
         registry.register(BuildIPATool(writer: writer, sessionCwd: sessionCwd))
         registry.register(BuildLogTool())
         registry.register(StopBuildTool())
@@ -151,6 +156,7 @@ struct ProjectCreateTool: AgentTool {
                 project \(note): \(name)
                 project dir: \(project.url.path)\(guestHint)
                 sources: \(sources)
+                Note: external macro plugins are not bundled in this toolchain — #Preview / @Observable / @Model will fail to compile. Use ObservableObject/@Published instead.
                 Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_ipa(name: "\(name)").
                 """)
         } catch {
@@ -214,15 +220,137 @@ struct ProjectReadTool: AgentTool {
     }
 }
 
+// MARK: - project_delete（危险级：审批——删除工程全部源码）
+
+struct ProjectDeleteTool: AgentTool {
+    let name = "project_delete"
+    let description = "Delete a build project permanently (all sources, config, and compile cache). "
+        + "Use for zombie projects that fail with 0.0s and cannot be recovered by other means. Requires user approval."
+    let parameters = JSONValue.schemaObject(
+        properties: [
+            "name": .stringSchema(description: "Project name to delete."),
+        ],
+        required: ["name"])
+
+    func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
+
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        guard let name = args.objectValue?["name"]?.stringValue else {
+            return .failure("missing \"name\"", code: "INVALID_ARGS")
+        }
+        // 审批（危险级——删除用户工程不可恢复；nil → fail closed）
+        if let approver = ctx.escalationApprover {
+            let outcome = await approver("project_delete", ctx.callId,
+                                         "删除工程 \"\(name)\"（全部源码/配置/编译缓存，不可恢复）")
+            guard outcome == .allowedOnce else {
+                return .failure("user did not approve the deletion (outcome: \(outcome.rawValue))",
+                                code: "DELETE_NOT_APPROVED", name: "BuildError")
+            }
+        } else {
+            return .failure("no approval service available（fail closed）",
+                            code: "DELETE_NOT_APPROVED", name: "BuildError")
+        }
+        // 构建在途禁删（删目录会让在途构建踩空路径）
+        if BuildService.shared.isBuilding {
+            return .failure("a build is in flight — delete after it settles（等待构建结束再删）",
+                            code: "BUILD_IN_FLIGHT", name: "BuildError")
+        }
+        do {
+            let removed = try BuildService.deleteProjectDirectories(
+                workspaceRoot: ctx.workspace.rootURL, name: name)
+            let detail = String(removed.projects) + " project dir(s), " + String(removed.caches) + " cache dir(s)"
+            return .success("project deleted: " + name + "（" + detail + "）\n"
+                + "Next: project_create with the same name rebuilds from scratch, or pick a new name.")
+        } catch let e as BuildServiceError {
+            return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
+        } catch {
+            return .failure(String(describing: error), code: "DELETE_FAILED")
+        }
+    }
+}
+
+// MARK: - project_reset（危险级：审批——删全部源码重铺脚手架）
+
+struct ProjectResetTool: AgentTool {
+    let name = "project_reset"
+    let description = "Delete a build project and re-create it from the official scaffold under the SAME name "
+        + "(all current sources are lost). For zombie/broken projects whose name you want to keep. Requires user approval."
+    let parameters = JSONValue.schemaObject(
+        properties: [
+            "name": .stringSchema(description: "Project name to reset (re-created empty)."),
+        ],
+        required: ["name"])
+
+    private let writer: SessionWriter
+    private let sessionCwd: String?
+    init(writer: SessionWriter, sessionCwd: String?) {
+        self.writer = writer
+        self.sessionCwd = sessionCwd
+    }
+
+    func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
+
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        guard let name = args.objectValue?["name"]?.stringValue else {
+            return .failure("missing \"name\"", code: "INVALID_ARGS")
+        }
+        // 审批（危险级——重置丢弃现源码；nil → fail closed）
+        if let approver = ctx.escalationApprover {
+            let outcome = await approver("project_reset", ctx.callId,
+                                         "重置工程 \"\(name)\"（删除现源码并重铺官方脚手架，不可恢复）")
+            guard outcome == .allowedOnce else {
+                return .failure("user did not approve the reset (outcome: \(outcome.rawValue))",
+                                code: "RESET_NOT_APPROVED", name: "BuildError")
+            }
+        } else {
+            return .failure("no approval service available（fail closed）",
+                            code: "RESET_NOT_APPROVED", name: "BuildError")
+        }
+        if BuildService.shared.isBuilding {
+            return .failure("a build is in flight — reset after it settles（等待构建结束再重置）",
+                            code: "BUILD_IN_FLIGHT", name: "BuildError")
+        }
+        do {
+            let removed = try BuildService.deleteProjectDirectories(
+                workspaceRoot: ctx.workspace.rootURL, name: name)
+            let (project, _) = try BuildService.shared.createOrReuseProject(
+                workspaceRoot: ctx.workspace.rootURL, name: name,
+                interfaceKind: NXProjectInterfaceKind.swiftUI)
+            let sources = (try? FileManager.default.contentsOfDirectory(
+                at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
+                .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
+            let guestHint = BuildTools.guestPathHint(project.url.path, workspaceRoot: ctx.workspace.rootURL,
+                                                     sessionCwd: sessionCwd)
+            // 元组成员插值拆局部变量（type-check 超时雷区对策：多行插值串内
+            // 只放简单变量——swiftc 6.4 四次实证形态纪律）。
+            let removedNote = "removed " + String(removed.projects) + " project dir(s), "
+                + String(removed.caches) + " cache dir(s)"
+            return .success("""
+                project reset: \(name)（\(removedNote)）
+                project dir: \(project.url.path)\(guestHint)
+                sources: \(sources)
+                Note: external macro plugins are not bundled in this toolchain — #Preview / @Observable / @Model will fail to compile. Use ObservableObject/@Published instead.
+                Next: write source files (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_ipa(name: "\(name)").
+                """)
+        } catch let e as BuildServiceError {
+            return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
+        } catch {
+            return .failure(String(describing: error), code: "RESET_FAILED")
+        }
+    }
+}
+
 // MARK: - build_ipa（危险级：审批 + 单飞行）
 
 struct BuildIPATool: AgentTool {
     let name = "build_ipa"
     let description = "Build the project into an ipa (full official pipeline: swiftc compile → link → Payload package). "
+        + "Pre-checks macros (#Preview/@Observable/@Model are unavailable — build would fail). "
         + "Requires user approval (ask once). Returns build result with diagnostics — fix errors and rebuild."
     let parameters = JSONValue.schemaObject(
         properties: [
             "name": .stringSchema(description: "Project name to build."),
+            "optimize": .booleanSchema(description: "Compile with -O (faster runtime, slower compile; persisted in project NXSwiftFlags). Default false."),
         ],
         required: ["name"])
 
@@ -239,6 +367,32 @@ struct BuildIPATool: AgentTool {
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         guard let name = args.objectValue?["name"]?.stringValue else {
             return .failure("missing \"name\"", code: "INVALID_ARGS")
+        }
+        let optimize = args.objectValue?["optimize"]?.boolValue ?? false
+
+        // 工程定位提前到审批前（批 2：工程不存在/名字错不必让用户白批一次）
+        let project: NXProject
+        do {
+            project = try BuildToolSupport.resolveProject(workspace: ctx.workspace, name: name)
+        } catch let e as BuildServiceError {
+            return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
+        } catch {
+            return .failure(String(describing: error), code: "PROJECT_ERROR")
+        }
+
+        // 宏预检（压测建议 6）：external macro 官方边界必败（§三 f 实证）——
+        // 命中即拦下这次必然失败的构建，省一次审批+数分钟 CPU。
+        let macroScan = BuildService.scanMacroUsage(project: project)
+        if macroScan.files > 0 {
+            var macroMsg = "pre-check: " + String(macroScan.files)
+                + " source file(s) use macros unavailable in this toolchain"
+                + " (#Preview / @Observable / @Model — external macro plugins are not bundled, official boundary)."
+                + " The build would fail on external macro. Remove the macros"
+                + " (e.g. ObservableObject/@Published instead of @Observable) and rebuild."
+            if !macroScan.samples.isEmpty {
+                macroMsg = macroMsg + "\nfiles: " + macroScan.samples.joined(separator: ", ")
+            }
+            return .failure(macroMsg, code: "MACRO_PRECHECK", name: "BuildError")
         }
 
         // 审批（危险级 askOnce——提权呈现缝，browser_use 同一呈现；nil → fail closed）
@@ -261,13 +415,16 @@ struct BuildIPATool: AgentTool {
         }
         defer { BuildService.shared.endBuild() }
 
-        let project: NXProject
+        // -O 参数化（压测建议 12）：持久写入工程 plist NXSwiftFlags。
+        // optimize=false 为显式语义（曾开过则移除，保持参数即真值）。
+        var optNote = ""
         do {
-            project = try BuildToolSupport.resolveProject(workspace: ctx.workspace, name: name)
+            let note = try BuildService.setSwiftOptimization(project: project, enabled: optimize)
+            optNote = "\noptimize: " + note
         } catch let e as BuildServiceError {
             return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
         } catch {
-            return .failure(String(describing: error), code: "PROJECT_ERROR")
+            return .failure(String(describing: error), code: "OPTIMIZE_FAILED")
         }
 
         // 官方全链（MDK 线程池；阻塞本工具车道直到完成）
@@ -313,7 +470,7 @@ struct BuildIPATool: AgentTool {
             }
             let artifactLine = artifactPath.map { "\nworkspace ipa: \($0)（文件 App/读工具可直取）" } ?? ""
             return .success("""
-                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)
+                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)
                 ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
                 bundle(.app, N7 签名/N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
@@ -321,7 +478,7 @@ struct BuildIPATool: AgentTool {
                 """)
         } else {
             return .failure("""
-                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）
+                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）\(optNote)
                 —— 按以下诊断修复源码后重新 build_ipa：
                 \(result.diagnosticsSummary)
                 build log: \(result.buildLogPath)
