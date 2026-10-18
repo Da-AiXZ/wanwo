@@ -361,11 +361,16 @@ public struct WOItemInModifier: ViewModifier {
             .onAppear {
                 guard !appeared else { return }
                 let delay = Double(max(index, 0)) * step + baseDelay
-                if reduceMotion {
-                    withAnimation(.easeOut(duration: 0.15).delay(delay)) { appeared = true }
-                } else {
-                    withAnimation(WOMotion.bezier(duration: WOMotion.panelItemIn).delay(delay)) {
-                        appeared = true
+                // 两帧法：onAppear 同帧提交 state 变更会被首帧吞掉（iOS 13-16
+                // 已知行为，swiftui.cc/SO#71113512 多源实证）——延后一帧让
+                // 初值（opacity 0）先上屏，动画才有着色起点。
+                DispatchQueue.main.async {
+                    if reduceMotion {
+                        withAnimation(.easeOut(duration: 0.15).delay(delay)) { appeared = true }
+                    } else {
+                        withAnimation(WOMotion.bezier(duration: WOMotion.panelItemIn).delay(delay)) {
+                            appeared = true
+                        }
                     }
                 }
             }

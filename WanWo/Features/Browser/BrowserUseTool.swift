@@ -300,6 +300,24 @@ struct BrowserUseTool: AgentTool {
                               errorCode: "BROWSER_ACTION_FAILED", meta: nil)
         }
 
+        // ── 【切换器（浏览器2原型 tabs-view 语义）】AI navigate 成功追加轨迹 ──
+        // 每次导航 = 右栏切换器一个条目（用户可切回/可关闭）；手动导航不走
+        // 本路径天然不记。title 尽力取当前页标题（加载中回落 host）。
+        if input.action == .navigate {
+            let trailURL = input.url.flatMap(URL.init(string:))
+            if let trailURL, let host = trailURL.host {
+                let record = await MainActor.run { () -> (URL, String) in
+                    let pageTitle = pool.activeManager?.pageTitle ?? ""
+                    let resolvedTitle = pageTitle.isEmpty ? host : pageTitle
+                    return (trailURL, resolvedTitle)
+                }
+                await MainActor.run {
+                    WOWorkspaceStore.shared.noteBrowserTrail(
+                        sessionId: ctx.sessionId, url: record.0, title: record.1)
+                }
+            }
+        }
+
         // ── 截图 / fetch 产物落盘（ConcurrentTools:582-615 语义）──────
         // 落会话 browser 桶（=guest /var/wanwo/browser/）。
         // 【批2 B⑥】B3 遗留"B4 后补"兑现（批2 简报 2A B⑥）：结果文本在

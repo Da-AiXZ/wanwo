@@ -194,9 +194,12 @@ struct WORootFrame: View {
         // WOAppFrame overlayLayer 槽：该槽整体 allowsHitTesting(false)
         //（z20 穿透层，子项 opt-in 不成立——父级 false 剪枝子树命中），
         // 把手挂本层才可点。hidden 态且有会话才在。
+        // 【修 2-8 2026-10-18 用户拍板】blank 会话（未发消息固定）不显示——
+        // 右栏只在已固定会话可用（isBlank=事件语义：无标题且零事件）。
         .overlay(alignment: .topTrailing) {
             if let sid = sessionId,
-               workspaceStore.layout(for: sid) == .hidden {
+               workspaceStore.layout(for: sid) == .hidden,
+               !isBlankSession(sid, sessions: snapshot.sessions) {
                 WORightPanelHandle {
                     workspaceStore.setLayout(.split, sessionId: sid)
                 }
@@ -246,6 +249,12 @@ struct WORootFrame: View {
     private var workspaceLayoutSignature: String {
         let sid = appState.currentSessionId ?? ""
         return "\(sid)|\(workspaceStore.layout(for: sid).rawValue)"
+    }
+
+    /// 【修 2-8】blank 会话判定（dsh 事件语义：无标题且零事件=未发消息占位）。
+    private func isBlankSession(_ id: String, sessions: [SessionSummary]) -> Bool {
+        guard let summary = sessions.first(where: { $0.id == id }) else { return true }
+        return WOWorkspaceTreeDeriver.isBlank(summary)
     }
 
     // MARK: - 快照（列表+运行状态+派生输入，一次求值共用）

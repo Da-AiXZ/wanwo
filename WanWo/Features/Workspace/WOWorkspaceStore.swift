@@ -126,6 +126,10 @@ struct WOWorkspaceOpenOptions {
     var requestedBy: WOWorkspaceOpenRequester = .user
     /// 打开即激活（cc-haha activate；background=false 时恒 true）。
     var activate: Bool = true
+    /// 【修 2-5（2026-10-18 用户拍板）】恒新开：跳过单例 kind 复用——用户点
+    /// launcher/「+」= 每次新开一签；AI 联动（.file/.browser agent 通道）不走
+    /// 此项，维持复用语义（防 AI 每次工具结果堆新签）。
+    var forceNew: Bool = false
 
     enum WOWorkspaceOpenRequester: String { case user, agent }
 }
@@ -254,6 +258,34 @@ final class WOWorkspaceStore: ObservableObject {
         if lastClosedUndo?.token == token { lastClosedUndo = nil }
     }
 
+    /// 【修 2-6】新开页签自动滚到可见（ScrollViewReader anchor .trailing）；
+    /// 【切换器】AI 浏览导航轨迹（per-session；浏览器2原型 tabs-view 语义——
+    /// AI 每次导航成功=切换器一个条目，用户可切回/可关闭；手动导航不记）。
+    struct BrowserTrailEntry: Identifiable, Equatable {
+        let id: UUID
+        let url: URL
+        let title: String
+        let at: Date
+    }
+
+    @Published private(set) var browserTrail: [String: [BrowserTrailEntry]] = [:]
+
+    /// AI navigate 成功追加（BrowserUseTool execute 调；连续同 URL 去重）。
+    func noteBrowserTrail(sessionId: String, url: URL, title: String) {
+        var trail = browserTrail[sessionId] ?? []
+        if let last = trail.last, last.url == url { return }
+        trail.append(BrowserTrailEntry(id: UUID(), url: url,
+                                       title: title, at: Date()))
+        browserTrail[sessionId] = trail
+    }
+
+    /// 条目关闭（卡片 ×；仅移出轨迹，不影响 WKWebView 历史）。
+    func removeBrowserTrail(sessionId: String, entryId: UUID) {
+        guard var trail = browserTrail[sessionId] else { return }
+        trail.removeAll { $0.id == entryId }
+        browserTrail[sessionId] = trail
+    }
+
     /// 页签资源释放钩子（真删通知——浏览器页面/终端 shell 的宿主侧回收；
     /// 视图卸载自身也会释放，此钩子为显式兜底）。
     var tabReleaseHandler: ((WorkspaceTab) -> Void)?
@@ -329,9 +361,11 @@ final class WOWorkspaceStore: ObservableObject {
         // 复用分支只匹配 .singleton，.file 恒走新建 → 每次深链多一个"文件"
         // 页签（批P2 复测①真机实证）；且新建视图初装错过 pendingFileOpen
         // （onChange 只监变化）→ 首次不加载、第二次才开（同实证）。
+        // 【修 2-5 2026-10-18】forceNew（用户点 launcher/「+」）跳过单例复用
+        // ——同类页签恒新开；.file 恒复用不受影响（AI/深链通道）。
         let reuseKind: WorkspaceTabKind?
         switch target {
-        case .singleton(let kind): reuseKind = kind
+        case .singleton(let kind): reuseKind = options.forceNew ? nil : kind
         case .file: reuseKind = .files
         case .browser: reuseKind = nil
         }
@@ -362,7 +396,15 @@ final class WOWorkspaceStore: ObservableObject {
         let tab: WorkspaceTab
         switch target {
         case .singleton(let kind):
-            tab = .singleton(kind)
+            if options.forceNew {
+                // forceNew 路径 id 必须唯一（singleton 工厂 id=kind.rawValue，
+                // 同类二开会撞 ForEach/ZStack 身份）。
+                tab = WorkspaceTab(id: nextId(kind.rawValue), kind: kind,
+                                   preview: false, createdAt: Date(),
+                                   url: nil, title: nil, loadError: nil)
+            } else {
+                tab = .singleton(kind)
+            }
         case .browser(let url):
             tab = .browser(initialURL: url)
         case .file:

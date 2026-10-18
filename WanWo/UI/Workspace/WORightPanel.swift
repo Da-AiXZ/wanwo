@@ -2,23 +2,27 @@
 //  WORightPanel.swift
 //  WanWo
 //
-//  【批 2a-1 右栏骨架重做（2026-10-18 用户拍板「除侧聊 dock 外全部按原型」）】
-//  语义源 = 右侧栏原型.html 逐段（行号锚点见各节）+ 旧 WorkspaceRightSidebarView
-//  的路由/状态语义整建搬迁（六页签内容零改动；ZStack 全量挂载保活语义保留）。
-//  状态源不变 = WOWorkspaceStore（hidden/split/full 三态恰对应原型
-//  closed/normal/full——launcher 是 tabs 空态的面板内容，不是独立 mode）。
-//  本体替代旧视图成为 WORootFrame detailsRegion 挂载件；旧视图暂留防回退
-//  （零引用态，收官批随 C 层清理删除）。
-//
-//  原型规格锚点（右侧栏原型.html）：
-//    · bar     :990-1016  [tabs 弹性 | + 44 | gap | 全屏 44 交叉淡入 | 关闭 44]
-//    · tab     :139-169   高 36 / r9 / max 190 / 字 12.5 / 图标 op .72→1 /
-//                × 22 视觉+44 热区 / active #f1f1f3+边 5.5%+影 0 1 2 4%
-//    · 渐隐    :127-133   溢出方向 mask 渐隐 14/18px（VS Code 式）
-//    · launcher:229-255   垂直居中 / 行 16px 竖 padding / 字 14.5 /
-//                kbd 徽标 11 mono / itemIn 交错 72ms+90ms
-//    · pop     :294-327   r12 / 边 10% / 阴影 0 22 50 16% / 行交错 26ms+40ms
-//  动效三式（paneIn/itemIn/把手入场）在 Motion.swift「右栏三式」节。
+//  【批 2a-1 修 2（2026-10-18 用户真机反馈十项）· 语义源 = 右侧栏原型.html
+//  + codex 截图规范（用户逐条拍板）】在 2c83da6 骨架上的修正批：
+//    1. 收起/展开动画补原型同款两属性（原型 :98-113 逐行对照）：layout→hidden
+//       时内容 opacity→0（0.3s 先完成）+ offset→28px（0.42s 与列宽同步）——
+//       列宽压缩重排被淡出掩盖（此前只有 width 一个属性，内容全程可见地被
+//       挤压重排 = 用户指认的"由一排到一列怪重排"）；展开反向。
+//    2. launcher 交错浮入真正生效：details 列恒挂载 → onAppear 在不可见时
+//       已播完——改 epoch 门：右栏每次 hidden→可见，行 id 重建、onAppear
+//       重触发；itemIn 本体改两帧法（onAppear 同帧提交被首帧吞，Motion.swift）。
+//    3. bar 布局（codex 截图规范）：空态只有全屏+关闭贴右（无 +）；+ 仅页签态
+//       出现、跟随末签右侧；bar 下分隔线删除（原型 border 做错了）。
+//    4. 页签 chip：Button 化+woPressable 按压（0.97）；× 热区 44→30（误触修复）；
+//       水平 padding 加宽。
+//    5. + 打开同类页签恒新开（options.forceNew——推翻单例复用；AI 联动/file
+//       深链仍复用，见 WOWorkspaceStore）。
+//    6. 新开页签自动滚到可见（ScrollViewReader anchor .trailing）；两端渐隐改
+//       覆盖式常显（溢出时双端白渐变 overlay——不依赖滚动 offset 追踪）。
+//    7. 「+」pop 逐值对齐原型 :294-327：min-width 190 / 描边 borderL2(10%) /
+//       阴影 y22+3 / 出场 translateY(-8)+scale(.975) 浮出 / 行图标 15px；
+//       锚定 + 钮正下方（tabs 宽 + 右缘钳制）。
+//  六页签内容零改动；ZStack 保活；WOAppFrame 三栏契约不碰。
 //
 
 import SwiftUI
@@ -34,10 +38,19 @@ struct WORightPanel: View {
 
     /// 「+」弹出菜单（原型 addBtn → pop 浮层）。
     @State private var showAddMenu = false
-
-    // 页签条溢出追踪（动态渐隐 mask 的输入）。
-    @State private var tabScrollOffset: CGFloat = 0
+    /// 收起视觉（原型 .panel closed 态同款：opacity 0 + 右移 28——掩盖列宽压缩）。
+    @State private var collapsedVisual = false
+    /// launcher 交错重播代数（hidden→可见时 +1，行 id 重建、onAppear 重触发）。
+    @State private var launcherEpoch = 0
+    /// 页签条内容宽（溢出渐隐判定 + pop 锚定基准）。
     @State private var tabContentWidth: CGFloat = 0
+    /// 页签条可视宽（溢出判定）。
+    @State private var tabViewportWidth: CGFloat = 0
+    /// 面板宽（pop 右缘钳制）。
+    @State private var panelWidth: CGFloat = 0
+
+    /// 是否溢出（页签条内容宽 > 可视宽）。
+    private var tabsOverflow: Bool { tabContentWidth > tabViewportWidth + 1 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,7 +60,14 @@ struct WORightPanel: View {
         .background(WOAlias.bgBase)
         // 宽度交给父级列（details 契约 400 / 全屏 viewport——旧件批B3 语义保留）。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // 「+」弹出菜单（挂 panel 左上垂下；锚定近似点见 addMenuOverlay 注）。
+        .background(panelWidthReader)
+        // 【修 2-1】原型 .panel closed 态同款：收起 = 淡出 + 右移，与列宽收缩
+        // 并行，掩盖压缩重排（opacity 0.3s 先完成、offset 0.42s 与列宽同曲线）。
+        .opacity(collapsedVisual ? 0 : 1)
+        .animation(collapseOpacityMotion, value: collapsedVisual)
+        .offset(x: collapsedVisual ? 28 : 0)
+        .animation(collapseOffsetMotion, value: collapsedVisual)
+        // 「+」弹出菜单（锚定 + 钮正下方；右缘钳制）。
         .overlay(alignment: .topLeading) { addMenuOverlay }
         // 弹层开着时点面板任意处先收弹层（pop 语义：浮层外即 dismiss）。
         .contentShape(Rectangle())
@@ -65,145 +85,160 @@ struct WORightPanel: View {
                 workspacePath: environment.guestWorkspacePath(
                     for: Self.sessionID(of: selection) ?? ""))
         }
+        .onChange(of: sessionState.layout) { newLayout in
+            // 【修 2-1】收起视觉状态机 + 【修 2-2】launcher 重播门。
+            collapsedVisual = (newLayout == .hidden)
+            if newLayout != .hidden { launcherEpoch += 1 }
+        }
         .onAppear {
             store.updateReviewAvailability(
                 sessionId: Self.sessionID(of: environment.selection),
                 workspacePath: environment.guestWorkspacePath(
                     for: Self.sessionID(of: environment.selection) ?? ""))
+            collapsedVisual = (sessionState.layout == .hidden)
         }
     }
 
-    /// 当前选中会话 id（各页签数据锚；旧件同名静态的调用方=页签内容视图，
-    /// 本体保留同签名供它们继续消费）。
+    /// 淡出时长（原型 opacity .34s→取 0.3——比列宽 0.42 先完成，压缩尾段不可见）。
+    private var collapseOpacityMotion: Animation? {
+        UIAccessibility.isReduceMotionEnabled
+            ? .easeOut(duration: 0.15)
+            : .easeOut(duration: 0.3)
+    }
+
+    /// 位移时长（与列宽 rail 同曲线同时长 = 完全同步）。
+    private var collapseOffsetMotion: Animation? {
+        UIAccessibility.isReduceMotionEnabled
+            ? .easeOut(duration: 0.15)
+            : WOMotion.bezier(duration: WOMotion.sidebarRailDuration)
+    }
+
+    /// 面板宽 preference 源。
+    private var panelWidthReader: some View {
+        GeometryReader { geo in
+            Color.clear.preference(key: WOPanelWidthKey.self, value: geo.size.width)
+        }
+        .onPreferenceChange(WOPanelWidthKey.self) { panelWidth = $0 }
+    }
+
+    /// 当前选中会话 id（各页签数据锚；旧件同名静态的调用方=页签内容视图）。
     static func sessionID(of selection: RootSelection) -> String? {
         if case .session(let id) = selection { return id }
         return nil
     }
 
-    // MARK: - 顶栏 bar（原型 :990-1016）
+    // MARK: - 顶栏 bar（codex 截图规范：空态两钮贴右；页签态 tabs+add 在左）
 
     private var topBar: some View {
         HStack(spacing: 0) {
-            tabBar
-            addButton
-            Spacer(minLength: 8) // 原型 .bar-gap（flex:1, min-width:8）
+            if !sessionState.tabs.isEmpty {
+                tabBar
+                addButton
+            }
+            Spacer(minLength: 8) // 弹性空隙（无页签时把两钮推到右缘）
             fullscreenButton
             closeButton
         }
         .padding(.horizontal, 8)
         .frame(height: 48) // 原型 tabs padding 6×2 + tab 36 = 48
         .background(WOAlias.bgBase)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(WOStatic.panelInk55).frame(height: 1)
-        }
+        // 分隔线删除（2026-10-18 用户拍板：codex 全屏/关闭下方无分隔）。
         .zIndex(2)
     }
 
-    // MARK: 页签条（弹性区；溢出方向渐隐）
+    // MARK: 页签条（弹性区；溢出覆盖式渐隐 + 新签自动滚入）
 
     private var tabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(sessionState.tabs) { tab in
-                    tabChip(tab)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(sessionState.tabs) { tab in
+                        tabChip(tab)
+                            .id(tab.id)
+                    }
+                }
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: WOTabContentWidthKey.self,
+                                           value: g.size.width)
+                })
+            }
+            .background(GeometryReader { g in
+                Color.clear.preference(key: WOTabViewportKey.self, value: g.size.width)
+            })
+            .onPreferenceChange(WOTabContentWidthKey.self) { tabContentWidth = $0 }
+            .onPreferenceChange(WOTabViewportKey.self) { tabViewportWidth = $0 }
+            // 【修 2-6】新开页签自动滚到可见（新签露出、旧签挤左——用户拍板）。
+            .onChange(of: sessionState.tabs) { tabs in
+                if let last = tabs.last {
+                    proxy.scrollTo(last.id, anchor: .trailing)
                 }
             }
-            .background(GeometryReader { g in
-                Color.clear.preference(key: WOTabContentWidthKey.self,
-                                       value: g.size.width)
-            })
-            .background(GeometryReader { g in
-                Color.clear.preference(key: WOTabScrollOffsetKey.self,
-                                       value: g.frame(in: .named("woTabStrip")).minX)
-            })
-        }
-        .coordinateSpace(name: "woTabStrip")
-        .onPreferenceChange(WOTabContentWidthKey.self) { tabContentWidth = $0 }
-        .onPreferenceChange(WOTabScrollOffsetKey.self) { tabScrollOffset = $0 }
-        // 溢出两端渐隐（原型 mask 14/18px；仅溢出方向淡出）。
-        .mask {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(LinearGradient(stops: tabFadeStops(width: geo.size.width),
-                                         startPoint: .leading, endPoint: .trailing))
-            }
+            // 【修 2-6】溢出两端覆盖式渐隐（白渐变盖在 chips 上——替代滚动
+            // offset 追踪 mask，稳定生效；滚到头时端头亦淡出=已登记近似）。
+            .overlay(alignment: .leading) { tabEdgeFade(leading: true) }
+            .overlay(alignment: .trailing) { tabEdgeFade(leading: false) }
         }
     }
 
-    /// 渐隐 mask 停靠点（原型 --fade-l 14 / --fade-r 18；未溢出=全显）。
-    private func tabFadeStops(width: CGFloat) -> [Gradient.Stop] {
-        let safeWidth = max(width, 1)
-        let overflow = tabContentWidth > safeWidth + 1
-        if !overflow {
-            let solid = Gradient.Stop(color: .black, location: 0)
-            let solidEnd = Gradient.Stop(color: .black, location: 1)
-            return [solid, solidEnd]
-        }
-        let maxOffset = tabContentWidth - safeWidth
-        let fadeL: CGFloat = tabScrollOffset < -1 ? 14 : 0
-        let fadeR: CGFloat = tabScrollOffset > maxOffset + 1 ? 0 : 18
-        var stops: [Gradient.Stop] = []
-        var leftEdge: CGFloat = 0
-        if fadeL > 0 {
-            leftEdge = min(fadeL / safeWidth, 0.45)
-            stops.append(Gradient.Stop(color: .clear, location: 0))
-            stops.append(Gradient.Stop(color: .black, location: leftEdge))
-        } else {
-            stops.append(Gradient.Stop(color: .black, location: 0))
-        }
-        if fadeR > 0 {
-            let rightStart = max((safeWidth - fadeR) / safeWidth, leftEdge + 0.01)
-            stops.append(Gradient.Stop(color: .black, location: rightStart))
-            stops.append(Gradient.Stop(color: .clear, location: 1))
-        } else {
-            stops.append(Gradient.Stop(color: .black, location: 1))
-        }
-        return stops
+    /// 端头渐隐（原型 mask 14/18px 的覆盖式等价物；仅溢出时显示）。
+    private func tabEdgeFade(leading: Bool) -> some View {
+        let width: CGFloat = leading ? 14 : 18
+        let start = leading ? WOAlias.bgBase : WOAlias.bgBase.opacity(0)
+        let end = leading ? WOAlias.bgBase.opacity(0) : WOAlias.bgBase
+        let gradient = LinearGradient(stops: [
+            Gradient.Stop(color: start, location: 0),
+            Gradient.Stop(color: end, location: 1)
+        ], startPoint: .leading, endPoint: .trailing)
+        return Rectangle()
+            .fill(gradient)
+            .frame(width: tabsOverflow ? width : 0)
+            .allowsHitTesting(false)
     }
 
-    // MARK: 页签 chip（原型 :139-169）
+    // MARK: 页签 chip（原型 :139-169；Button 化+按压；× 热区 30）
 
     private func tabChip(_ tab: WorkspaceTab) -> some View {
         let isActive = tab.id == sessionState.activeTabID
         let label = tabChipTitle(tab)
         // 原型 .bar-tabs.fit：放得下时解除宽度上限（单签完整标题）。
         let maxWidth: CGFloat? = sessionState.tabs.count == 1 ? nil : 190
-        return HStack(spacing: 6) {
-            Image(systemName: tab.kind.iconName)
-                .font(.system(size: 12))
-                .foregroundColor(isActive ? WOAlias.labelPrimary : WOAlias.labelSecondary)
-                .opacity(isActive ? 1 : 0.72)
-            Text(label)
-                .font(.system(size: 12.5))
-                .foregroundColor(isActive ? WOAlias.labelPrimary : WOAlias.labelSecondary)
-                .lineLimit(1)
-                .frame(maxWidth: maxWidth, alignment: .leading)
-            Button {
-                store.closeTabs(sessionId: sessionId, tabId: tab.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(WOAlias.labelTertiary)
-                    .frame(width: 22, height: 22)
-                    .background(RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.clear))
-                    .contentShape(Rectangle().size(width: 44, height: 44))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭" + label + "页签")
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 7)
-        .frame(height: 36)
-        .background(RoundedRectangle(cornerRadius: 9)
-            .fill(isActive ? WOStatic.panelTabActiveBg : Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 9)
-            .strokeBorder(isActive ? WOStatic.panelInk55 : Color.clear, lineWidth: 1))
-        .shadow(color: Color.black.opacity(isActive ? 0.04 : 0), radius: 1, y: 1)
-        .contentShape(RoundedRectangle(cornerRadius: 9))
-        .onTapGesture {
+        return Button {
             store.activateTab(sessionId: sessionId, tabId: tab.id)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: tab.kind.iconName)
+                    .font(.system(size: 12))
+                    .foregroundColor(isActive ? WOAlias.labelPrimary : WOAlias.labelSecondary)
+                    .opacity(isActive ? 1 : 0.72)
+                Text(label)
+                    .font(.system(size: 12.5))
+                    .foregroundColor(isActive ? WOAlias.labelPrimary : WOAlias.labelSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: maxWidth, alignment: .leading)
+                Button {
+                    store.closeTabs(sessionId: sessionId, tabId: tab.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(WOAlias.labelTertiary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle().size(width: 30, height: 30))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭" + label + "页签")
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 8)
+            .frame(height: 36)
+            .background(RoundedRectangle(cornerRadius: 9)
+                .fill(isActive ? WOStatic.panelTabActiveBg : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(isActive ? WOStatic.panelInk55 : Color.clear, lineWidth: 1))
+            .shadow(color: Color.black.opacity(isActive ? 0.04 : 0), radius: 1, y: 1)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
         }
+        .buttonStyle(.plain)
+        .woPressable()
     }
 
     /// 页签标题（旧件语义搬迁：浏览器=回写标题 → host → kind 词汇）。
@@ -292,7 +327,8 @@ struct WORightPanel: View {
         }
     }
 
-    /// launcher（原型 :229-255；五入口垂直居中 + kbd 徽标 + 交错入场）。
+    /// launcher（原型 :229-255；五入口垂直居中 + kbd 徽标 + 交错入场；
+    /// epoch 门：右栏每次展开行 id 重建 → 交错在可见时机重播）。
     private var launcher: some View {
         let kinds = store.candidateKinds()
         return VStack(spacing: 2) {
@@ -300,7 +336,8 @@ struct WORightPanel: View {
                 Button {
                     WOWorkspaceOpenRouter.open(.init(
                         sessionId: sessionId,
-                        target: .singleton(kind)))
+                        target: .singleton(kind),
+                        options: .init(forceNew: true)))
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: kind.iconName)
@@ -320,27 +357,24 @@ struct WORightPanel: View {
                                 .padding(.vertical, 2.5)
                                 .background(RoundedRectangle(cornerRadius: 6)
                                     .fill(WOStatic.panelInk55))
-                                // 原型 .kbd 独立 cardIn（delay i*72+190ms）——
-                                // 比宿主行（90ms）晚 100ms 浮入。
+                                // 原型 .kbd 独立 cardIn（delay i*72+190ms）。
                                 .woItemIn(index: index, step: 0.072, base: 0.19)
                         }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 16)
-                    .background(RoundedRectangle(cornerRadius: 9)
-                        .fill(Color.clear))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .woPressable()
+                // epoch 变化 → 行 id 变化 → 视图重建 → woItemIn onAppear 重播
+                //（恒挂载下 onAppear 只在首挂载触发的根治）。
+                .id(kind.rawValue + "-e" + String(launcherEpoch))
                 .woItemIn(index: index)
             }
         }
         .padding(.horizontal, 26)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        // tabs 清空→launcher 重现：if/else 分支切换=identity 重置，行
-        // onAppear 每次重播交错（与原型 DOM 重建语义一致）。
-        .id("wo-launcher")
     }
 
     /// kbd 徽标文案（原型 :1545-1549 原字面；trajectory 原型无此项，留空）。
@@ -383,7 +417,15 @@ struct WORightPanel: View {
         }
     }
 
-    // MARK: - 「+」弹出菜单（原型 pop :294-327）
+    // MARK: - 「+」弹出菜单（原型 pop :294-327 逐值对齐）
+
+    /// pop 锚定 x：+ 钮正下方 = 水平 padding 8 + tabs 内容宽 + 间距 4；
+    /// 右缘钳制（浮层 minWidth 190 预留）。
+    private var addMenuAnchorX: CGFloat {
+        let natural = tabContentWidth + 20
+        let maxLeading = max(panelWidth - 230, 8)
+        return min(natural, maxLeading)
+    }
 
     @ViewBuilder
     private var addMenuOverlay: some View {
@@ -395,14 +437,15 @@ struct WORightPanel: View {
                         showAddMenu = false
                         WOWorkspaceOpenRouter.open(.init(
                             sessionId: sessionId,
-                            target: .singleton(kind)))
+                            target: .singleton(kind),
+                            options: .init(forceNew: true)))
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: kind.iconName)
-                                .font(.system(size: 14))
+                                .font(.system(size: 15))
                                 .foregroundColor(WOAlias.labelSecondary)
                                 .opacity(0.75)
-                                .frame(width: 18)
+                                .frame(width: 19)
                             Text(kind.title)
                                 .font(.system(size: 13.5))
                                 .foregroundColor(WOAlias.labelPrimary)
@@ -410,8 +453,6 @@ struct WORightPanel: View {
                         }
                         .padding(.horizontal, 11)
                         .padding(.vertical, 12.5)
-                        .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(Color.clear))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -420,23 +461,25 @@ struct WORightPanel: View {
                 }
             }
             .padding(5)
-            .frame(width: 230, alignment: .leading)
+            .frame(minWidth: 190, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12)
                 .fill(WOAlias.bgBase))
             .overlay(RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(WOStatic.panelInk55, lineWidth: 1))
+                .strokeBorder(WOAlias.borderL2, lineWidth: 1))
             .shadow(color: Color.black.opacity(0.16), radius: 25, y: 11)
             .shadow(color: Color.black.opacity(0.07), radius: 5, y: 1.5)
-            // 锚定近似：+ 钮 x 随 tabs 弹性宽变化，本浮层挂 panel 左上垂下
-            //（tabs 通常 0-2 枚，观感差可忽略；精确锚定登记后置）。
-            .padding(.leading, 12)
-            .padding(.top, 54)
-            .transition(.opacity.combined(with: .move(edge: .top)))
+            // 原型 .pop.open 出场形态：translateY(-8)+scale(.975) 浮出（顶部锚点）。
+            .scaleEffect(showAddMenu ? 1 : 0.975, anchor: .top)
+            .offset(y: showAddMenu ? 0 : -8)
+            .opacity(showAddMenu ? 1 : 0)
+            .animation(WOMotion.bezier(duration: 0.42), value: showAddMenu)
+            .padding(.leading, addMenuAnchorX)
+            .padding(.top, 50)
         }
     }
 }
 
-// MARK: - preference keys（页签条溢出追踪）
+// MARK: - preference keys（页签条溢出追踪 + pop 钳制）
 
 private struct WOTabContentWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -445,7 +488,14 @@ private struct WOTabContentWidthKey: PreferenceKey {
     }
 }
 
-private struct WOTabScrollOffsetKey: PreferenceKey {
+private struct WOTabViewportKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct WOPanelWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
@@ -456,8 +506,8 @@ private struct WOTabScrollOffsetKey: PreferenceKey {
 
 /// 右栏收起态的打开入口（与原型同款：视口右上 14/14、44px、白 86% 毛玻璃、
 /// r10、边 1px、阴影 0 8 24 10%；入场 scale .7 + translateX 10 → none）。
-/// 挂载点 = WORootFrame overlay 层（details 列宽 0 时仍可见可点——收起态
-/// details 列自带禁触门禁，把手必须活在其外）。
+/// 挂载点 = WORootFrame mainFrame 外层 overlay（收起态 details 列禁触门禁
+/// 在外，把手必须活在其外；WOAppFrame overlayLayer 槽整体禁触不可用）。
 struct WORightPanelHandle: View {
     let onOpen: () -> Void
     @State private var shown = false
@@ -487,11 +537,14 @@ struct WORightPanelHandle: View {
         .offset(x: reduceMotion || shown ? 0 : 10)
         .onAppear {
             guard !shown else { return }
-            if reduceMotion {
-                withAnimation(.easeOut(duration: 0.15)) { shown = true }
-            } else {
-                withAnimation(WOMotion.bezier(duration: WOMotion.panelHandleIn)) {
-                    shown = true
+            // 两帧法（同 WOItemInModifier——onAppear 同帧提交被首帧吞）。
+            DispatchQueue.main.async {
+                if reduceMotion {
+                    withAnimation(.easeOut(duration: 0.15)) { shown = true }
+                } else {
+                    withAnimation(WOMotion.bezier(duration: WOMotion.panelHandleIn)) {
+                        shown = true
+                    }
                 }
             }
         }
