@@ -178,7 +178,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 ## 三 l、深水区研究终审（2026-10-18 晚，analysis/lld-uaf-d6-research-20261018.md + issue 草稿 analysis/lld-upstream-issue-draft.md）
 
-- **lld UAF 根因（上游源码级实锤，swift-6.4.0-RELEASE 与 llvm main 同构）**：`lld/MachO/SymbolTable.cpp` 的 `dupSymDiags`（D134794 引入）文件级静态 **无 clear**（对照 undefs 有 clear=疏漏）；元素 `const Symbol *sym` 指向 per-link SymbolTable arena——同进程第二次链接 arena 释放后 Writer::run **无条件重放**残留诊断 → `toString(*悬空 sym)` UAF。src1/src2 是 std::string 值拷贝（StringRef 悬空论否证）。lld CLI 单进程单链接不触发→上游无感知。**万我侧拦截已落地（⑥）+上游 issue 草稿就绪（含 .ips 栈/地址证据，待用户拍板提交 llvm-project）**。
+- **lld UAF 根因（上游源码级实锤，swift-6.4.0-RELEASE 与 llvm main 同构）**：`lld/MachO/SymbolTable.cpp` 的 `dupSymDiags`（D134794 引入）文件级静态 **无 clear**（对照 undefs 有 clear=疏漏）；元素 `const Symbol *sym` 指向 per-link SymbolTable arena——同进程第二次链接 arena 释放后 Writer::run **无条件重放**残留诊断 → `toString(*悬空 sym)` UAF。src1/src2 是 std::string 值拷贝（StringRef 悬空论否证）。lld CLI 单进程单链接不触发→上游无感知。**万我侧拦截已落地（⑥）+上游 issue 已提交：llvm-project#233265（2026-10-19 00:3x，用户授权经 gh 账号 Da-AiXZ 提交，https://github.com/llvm/llvm-project/issues/233265）**。
 - **D6 根因（本地源码实锤）**：万我 guest rootfs=iSH fakefs 混合模式——目录元数据在 **meta.db paths 表**（fake-db.c，`ensureFakefsMetadata` 直写该表；RootfsInstaller.swift:366 自证注释「Register in fakefs meta.db so iSH kernel can see the file」），文件内容在真实 FS。host 直写不注册→guest readdir 不可见（lookup 实时兼容）。**元数据补注册已落地（⑤）**。
 
 ## 三 h、N6 三小件验证 + AI 深度压测报告处置（2026-10-17，第三份事件流 70007 事件）
@@ -213,3 +213,18 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **iSH guest 侧两分支（JIT 恢复/guest 线程泊车）零改动**；SIGABRT 本就未由 iSH 拦截，行为不变。
 
 **登记后续**：lld `reportPendingDuplicateSymbols` UAF 精确残留点（llvm-project swift-6.4.0-RELEASE lld/MachO 内核，候选=ErrorHandler 全局 static/context 悬挂指针）——上游级深挖；受控复现（A1 duplicate main→删→重建）作为兜底加固的真机验收，预期「不再闪退+AI 收到 recovered 诊断」。
+
+## N7a、签名链落位第一段（2026-10-19，方案 analysis/n7-signing-chain-plan.md，用户拍板三项：交付语义=BuildArtifacts/密码 Keychain/adhoc 证书可用）
+
+**来源与裁剪**：LiveContainer 49 文件 + OpenSSL.xcframework 整体自 0.10.3（`_nyxian_probe/0.10.3/Nyxian-0.10.3/Nyxian/LindChain/`）。**编译面裁剪**：仅 ZSign 纯净子集 15 文件（zsigner.m + zsign.mm/Utils.mm + 5 .cpp + common/7 .cpp——include 闭包仅 openssl+标准库）；LC 层 .m（LCBootstrap/LCUtils/LCMachOUtils/utils）依赖闭包大（Private/litehook/ProcEnvironment/applicationmgmtd，host 直查源码实锤）落目录不编译（N8/N9 按需扩大）；Tweaks 9 文件（guest appex 专属）同。
+
+**接缝结论（三方对照实锤）**：①万我 NXBuilder.swift .run 分支与 0.10.3 Core/Builder.swift:295-325 逐行同构，唯 `trust_nxt2_sign` 是 main 专属（ksurface 微内核体系，0.10.3 全树零命中——main 版 ProcEnvironment +40,400 行重构引入）②**替代=ZSigner.adhocSignMachOAtPath:bundleId:entitlementData:（0.10.3 Builder.swift:437 utility 分支上游先例，纯 ZSign 无内核依赖）**③checkSigningSetup（main UI/CodeSigCheck.swift）0.10.3 无对应物，万我自实现④LDEApplicationWorkspace=0.10.3 guest daemon（applicationmgmtd），N9 范畴不落位⑤kext 分支符号（ksurface_fs_install_kext_at_path 等）依赖越狱形态，维持 WANWO_BUILD_RUN 守卫。
+
+**结构适配（diff 登记）**：
+| # | 项 | 说明 |
+|---|---|---|
+| 1 | OpenSSLHeaders/openssl/ 重排头目录（新建，140 头） | xcframework Headers **平铺**（实测无 openssl/ 子目录、无符号链接）——`<openssl/xxx.h>` 尖括号引用无法从 Headers 根解析；重排副本供 ZSign 编译（HSEARCH 第 7 根）。0.10.3 官方 pbxproj **从未编译 ZSign**（零引用实锤）——无官方先例可抄，此为万我首接定案 |
+| 2 | LCUtils 证书读取未适配 | 0.10.3 原实现读 NSUserDefaults（LCCertificateData/Password）——N7b 证书 UI 时按万我存储（Keychain）适配该函数或走 ZSigner 直调绕过 |
+| 3 | OpenSSL embed | 官方 pbxproj 同形态（CodeSignOnCopy+embed Frameworks）；XcodeGen embed 坑同款——ios.yml 手动 cp+计数门（含 Products 未产出时从 xcframework ios-arm64 切片直取兜底） |
+
+**N7b/c 待施**：证书 UI（设置页 section+Keychain+validateCertificate）→ .run 分支接缝改写（trust_nxt2_sign→ZSigner.adhocSignMachO + checkSigningSetup→万我 SigningSetup + installApplication 维持守卫抛 N9 指引 + WANWO_BUILD_RUN/WANWO_INSTALL 双门）。

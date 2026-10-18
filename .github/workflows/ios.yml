@@ -80,6 +80,9 @@ jobs:
           mkdir -p "Payload/WanWo.app/Frameworks"
           cp -R "build/Build/Products/Release-iphoneos/CoreCompiler.framework" "Payload/WanWo.app/Frameworks/"
           cp -R "build/Build/Products/Release-iphoneos/MobileDevelopmentKit.framework" "Payload/WanWo.app/Frameworks/"
+          # N7a：OpenSSL.framework embed（ZSign 运行时动态依赖；XcodeGen embed 坑
+          # 同款——手动 cp 兜底；三方对照 0.10.3 官方同形态 CodeSignOnCopy）
+          cp -R "build/Build/Products/Release-iphoneos/OpenSSL.framework" "Payload/WanWo.app/Frameworks/" 2>/dev/null || echo "OpenSSL.framework 未在 Products（见下方计数门）"
           # 修⑪（真机 crash 实证 WanWo-2026-10-17-105200.ips：dyld "Library
           # missing @rpath/lib_CompilerSwiftBasicFormat.dylib"，引用者=CC 本体）：
           # CC 以动态链接消费 14 个 SupportLibs dylib（本地 Mach-O 解析实证
@@ -92,7 +95,18 @@ jobs:
           FW_N=$(ls "Payload/WanWo.app/Frameworks/" | grep -c '\.framework$')
           echo "dylib 数: ${DYLIB_N} (expect 14) / framework 数: ${FW_N} (expect 2)"
           test "${DYLIB_N}" -eq 14 || { echo "!! dylib embed 失败"; exit 1; }
-          test "${FW_N}" -eq 2 || { echo "!! framework embed 失败"; exit 1; }
+          # N7a：OpenSSL.framework 计数门（3=CC+MDK+OpenSSL）——ZSign 动态依赖
+          # 运行时必须同层可见；若 Products 未产出（XcodeGen framework 引用形态
+          # 差异），显式失败暴露而非静默缺库
+          echo "frameworks: $(ls "Payload/WanWo.app/Frameworks/" | grep '\.framework$' | tr '\n' ' ')"
+          test "${FW_N}" -ge 2 || { echo "!! framework embed 失败"; exit 1; }
+          if ! ls "Payload/WanWo.app/Frameworks/" | grep -q '^OpenSSL\.framework$'; then
+            # Products 无 OpenSSL.framework 时从 xcframework 切片直取（二进制同源）
+            mkdir -p "Payload/WanWo.app/Frameworks/OpenSSL.framework"
+            cp -R "Vendor/nyxian/LindChain/OpenSSL.xcframework/ios-arm64/OpenSSL.framework/" "Payload/WanWo.app/Frameworks/OpenSSL.framework/"
+            echo "OpenSSL.framework 从 xcframework 切片直取落位"
+          fi
+          test -f "Payload/WanWo.app/Frameworks/OpenSSL.framework/OpenSSL" || { echo "!! OpenSSL embed 失败"; exit 1; }
           zip -qry "WanWo-${{ github.sha }}.ipa" Payload
           ls -lh WanWo-*.ipa
           unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/CoreCompiler" || { echo "!! embed 失败"; exit 1; }

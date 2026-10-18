@@ -98,6 +98,27 @@ targets:
       - path: Vendor/nyxian/LindChain/IDEBuilder/NXPhaseEngine.m
       - path: Vendor/nyxian/LindChain/IDEBuilder/NXPhaseRunner.m
       - path: Vendor/nyxian/LindChain/IDEBuilder/LDEFilesFinder.m
+      # ── N7a 签名链落位（analysis/n7-signing-chain-plan.md）：LiveContainer
+      # 的 ZSign 纯净编译子集（15 文件，仅依赖 openssl+标准库）。LC 层 .m
+      #（LCBootstrap/LCUtils/LCMachOUtils/utils）依赖闭包大（Private/litehook/
+      # ProcEnvironment/applicationmgmtd）——落目录不编译，N8/N9 按需扩大；
+      # Tweaks 9 文件同（guest appex 专属，N9）。签名入口走 ZSigner（zsigner.m
+      # →zsign.hpp extern "C" ✓）。
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/zsigner.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/zsign.mm
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/Utils.mm
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/archo.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/bundle.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/macho.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/openssl.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/signing.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/base64.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/fs.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/json.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/log.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/sha.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/timer.cpp
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/util.cpp
       - path: Vendor/nyxian/LindChain/Utils/Swizzle.c
       - path: Vendor/nyxian/LindChain/Utils/entitlement.c
       - path: Vendor/nyxian/LindChain/Utils/NXOSVersion.swift
@@ -127,6 +148,9 @@ targets:
         embed: true
       - target: MobileDevelopmentKit
         embed: true
+      # N7a：OpenSSL（ZSign 硬依赖；0.10.3 自带 xcframework 含 ios-arm64 切片）
+      - framework: path: Vendor/nyxian/LindChain/OpenSSL.xcframework
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang
@@ -148,7 +172,10 @@ targets:
         # 第 6 根：WanWo/Features/BuildExt（NXBootstrap.m 引号 import XCButtonCompat.h）。
         # ⚠️ YAML 同 key 后者覆盖前者（run 39002278710 实证：N3b 数组形式被
         # 本条覆盖致桥接头 NXBootstrap.h not found）——本条为唯一 HEADER_SEARCH_PATHS。
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt"
+        # N7a 增第 7 根：OpenSSLHeaders（openssl/ 子目录重排——xcframework Headers 平铺
+        # 无法解析 <openssl/xxx.h>，ZSign 全部尖括号 openssl 引用经此根命中；头源=
+        # OpenSSL.xcframework/ios-arm64 切片 140 头，diff 登记 gpl-compliance §N7）
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer"
         # N3b 修③（run 39003398834 实证）：桥接头 import MDKOSVersion 触发
         # MobileDevelopmentKit module 构建，MDKThreadPool.h:29 #import
         # <CoreCompiler/CCUtils.h> 在 -I Vendor/nyxian 加宽后命中 CC 源码树头
