@@ -149,7 +149,7 @@ targets:
       - target: MobileDevelopmentKit
         embed: true
       # N7a：OpenSSL（ZSign 硬依赖；0.10.3 自带 xcframework 含 ios-arm64 切片）
-      - framework: path: Vendor/nyxian/LindChain/OpenSSL.xcframework
+      - framework: Vendor/nyxian/LindChain/OpenSSL.xcframework
         embed: true
     settings:
       base:
