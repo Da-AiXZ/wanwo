@@ -190,23 +190,6 @@ struct WORootFrame: View {
             details: { detailsRegion },
             overlayLayer: { EmptyView() }
         )
-        // 批 2a-1：悬浮把手（原型 .handle——收起态打开入口）。⚠️ 不能挂
-        // WOAppFrame overlayLayer 槽：该槽整体 allowsHitTesting(false)
-        //（z20 穿透层，子项 opt-in 不成立——父级 false 剪枝子树命中），
-        // 把手挂本层才可点。hidden 态且有会话才在。
-        // 【修 2-8 2026-10-18 用户拍板】blank 会话（未发消息固定）不显示——
-        // 右栏只在已固定会话可用（isBlank=事件语义：无标题且零事件）。
-        .overlay(alignment: .topTrailing) {
-            if let sid = sessionId,
-               workspaceStore.layout(for: sid) == .hidden,
-               !isBlankSession(sid, sessions: snapshot.sessions) {
-                WORightPanelHandle {
-                    workspaceStore.setLayout(.split, sessionId: sid)
-                }
-                .padding(.top, 14)
-                .padding(.trailing, 14)
-            }
-        }
         .overlay { renameModal }
         .overlay { deleteModal }
         // 新会话挂组 toast（digest-H 文案「已挂到工作区「X」」；发射点=
@@ -249,12 +232,6 @@ struct WORootFrame: View {
     private var workspaceLayoutSignature: String {
         let sid = appState.currentSessionId ?? ""
         return "\(sid)|\(workspaceStore.layout(for: sid).rawValue)"
-    }
-
-    /// 【修 2-8】blank 会话判定（dsh 事件语义：无标题且零事件=未发消息占位）。
-    private func isBlankSession(_ id: String, sessions: [SessionSummary]) -> Bool {
-        guard let summary = sessions.first(where: { $0.id == id }) else { return true }
-        return WOWorkspaceTreeDeriver.isBlank(summary)
     }
 
     // MARK: - 快照（列表+运行状态+派生输入，一次求值共用）
@@ -532,12 +509,14 @@ struct WORootFrame: View {
     @ViewBuilder
     private func centerRegion(widthHint: CGFloat) -> some View {
         if let sessionId = appState.currentSessionId {
-            // 批C1 曾定右栏开关钮在顶栏；批 2a-1（2026-10-18 用户拍板「右栏
-            // 按原型」）：原型闭环 = bar closeBtn（关）↔ 悬浮把手（开）——
-            // 顶栏开关钮退役（hidden 态与把手位置重叠，双入口冗余）。
-            // onToggleRightSidebar 缝保留（签名不动，nil=不渲染钮）。
+            // 批C1：右栏开关钮在顶栏（WOConversationHead）——批12+右栏重构
+            // 批1：切换改 store.toggleWorkspace（hidden↔split 单值三态；full
+            // 不经由 toggle，"toggle 不许吞掉对话"）。
             WOChatView(environment: environment, sessionId: sessionId,
                        widthHint: widthHint,
+                       onToggleRightSidebar: {
+                           workspaceStore.toggleWorkspace(sessionId: sessionId)
+                       },
                        onOpenAgentBrowser: { url in
                            // 批12+右栏批2 修（2026-09-27 用户实测"轻提示点两次
                            // 建两个浏览页"）：轻提示点击改走 AI 页签复用路径
@@ -554,8 +533,7 @@ struct WORootFrame: View {
         }
     }
 
-    // MARK: - 详情栏（右栏：批 2a-1 骨架重做——WORightPanel 按原型接管，
-    // 六页签内容零改动；旧 WorkspaceRightSidebarView 转零引用态暂留防回退）
+    // MARK: - 详情栏（右栏：M6.6 旧件接线——五页签容器真功能）
 
     @ViewBuilder
     private var detailsRegion: some View {
@@ -563,9 +541,9 @@ struct WORootFrame: View {
             // 批B2：有会话恒挂载（dsh AppFrame.tsx:35-38「右栏宽 0 时保持挂载
             // 不卸载」）——批12+右栏重构批1：状态源换 WOWorkspaceStore（按会话
             // 作用域），收起=layout hidden（列宽 0 + 禁触门禁保留）。
-            WORightPanel(store: workspaceStore,
-                         environment: environment,
-                         sessionId: sessionId)
+            WorkspaceRightSidebarView(store: workspaceStore,
+                                      environment: environment,
+                                      sessionId: sessionId)
         } else {
             WOSlotPlaceholder(text: nil, quiet: false)
         }

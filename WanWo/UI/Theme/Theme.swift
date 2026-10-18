@@ -113,15 +113,6 @@ public enum WOStatic {
     public static let red500 = woRGB(239, 68, 68)
     public static let red600 = woRGB(236, 19, 19)
     public static let red900 = woRGB(87, 12, 12)
-
-    // right-panel（右侧栏原型.html 逐值；2026-10-18 用户拍板「右栏重做按原型」，
-    // 11-ui-design §三.6 数值裁决序：原型已验收数值 > dsh 原件值 > 旧实现值）
-    /// 页签激活底（原型 .tab.active background #f1f1f3）。
-    public static let panelTabActiveBg = woRGB(241, 241, 243)
-    /// 中性墨 5.5%（原型页签激活描边 rgba(0,0,0,.055)/kbd 徽标底同值——一处定义两处消费）。
-    public static let panelInk55 = woRGBA(0, 0, 0, 0.055)
-    /// 中性墨 4%（原型激活页签阴影 rgba(0,0,0,.04) 同族底色）。
-    public static let panelInk45 = woRGBA(0, 0, 0, 0.045)
 }
 
 // MARK: - T.2 语义别名（--dsw-alias-*，浅色档；对应 enum WOAlias）
@@ -225,11 +216,6 @@ public enum WOAlias {
     // toast / tooltip
     public static let toastBg = WOStatic.neutralBluish800
     public static let tooltipBg = WOStatic.neutralBluish850
-
-    // right-panel（右侧栏原型.html 逐值；2026-10-18 用户拍板）
-    /// 悬浮把手底（原型 .handle background rgba(255,255,255,.86)，
-    /// 配 .ultraThinMaterial 背景层 = backdrop blur 14 + saturate 150% 对应物）。
-    public static let panelHandleBg = woRGBA(255, 255, 255, 0.86)
 }
 
 // MARK: - T.2 具象（--dsw-specific-*，浅色档；对应 enum WOSpecific）

@@ -36,7 +36,7 @@ struct WorkspaceFileTabView: View {
     @ObservedObject private var workspaceStore = WOWorkspaceStore.shared
 
     private var sessionID: String? {
-        WORightPanel.sessionID(of: environment.selection)
+        WorkspaceRightSidebarView.sessionID(of: environment.selection)
     }
 
     /// 会话 guest 工作区前缀（header cwd 单一真值源；批12+工作区贯穿）。

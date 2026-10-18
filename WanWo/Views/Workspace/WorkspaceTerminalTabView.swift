@@ -151,7 +151,7 @@ struct WorkspaceTerminalTabView: View {
     init(environment: AppEnvironment) {
         self.environment = environment
         _viewModel = StateObject(wrappedValue: WorkspaceTerminalViewModel(
-            sessionID: WORightPanel.sessionID(of: environment.selection)))
+            sessionID: WorkspaceRightSidebarView.sessionID(of: environment.selection)))
     }
 
     var body: some View {
@@ -205,7 +205,7 @@ struct WorkspaceTerminalTabView: View {
         .task { await viewModel.bootIfNeeded() }
         .onChange(of: environment.selection) { selection in
             viewModel.updateSession(
-                WORightPanel.sessionID(of: selection))
+                WorkspaceRightSidebarView.sessionID(of: selection))
         }
     }
 
