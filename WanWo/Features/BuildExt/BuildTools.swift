@@ -349,7 +349,11 @@ struct BuildLogTool: AgentTool {
             let project = try BuildToolSupport.resolveProject(workspace: ctx.workspace, name: name)
             let db = DebugDatabase.getDatabase(
                 ofPath: project.cacheURL.appendingPathComponent("debug.json").path)
-            db.reuseDatabase()
+            // 【0.0s 透明化 2026-10-18】原此处调 db.reuseDatabase()——读取前把
+            // Internal 桶清空，而 init/运行失败诊断恰在 Internal 桶（BuildSmoke
+            // 0.0s 实证：build_log 永远「无诊断条目」）。删除之——build_log 现在
+            // 能看到初始化/运行失败的 Internal 条目（官方 NXBuilder init 每轮
+            // 构建开始仍会重置 Internal，历史不跨构建累积）。
             let items = db.debugObjects.values.flatMap(\.debugItems)
             if items.isEmpty { return .success("（无诊断条目）") }
             let lines = items.map { "[\($0.severity)] \($0.message)" }

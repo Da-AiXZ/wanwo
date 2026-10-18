@@ -65,10 +65,11 @@ final class BuildService: @unchecked Sendable {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
     }
 
-    /// 构建器初始化链白盒体检（只读零副作用）。0.0s 失败且零诊断时调用：
-    /// NXBuilder init 的 sync 失败路径静默 return nil 无任何诊断落盘
-    ///（NXBuilder.swift:45，2026-10-18 BuildSmoke 实证——plist 正常仍 0.0s），
-    /// 此探针给出最可能原因。
+    /// 构建器初始化链白盒体检（v2：只读四项 + 缓存孤儿差集 + init 链重演）。
+    /// 0.0s 失败且零诊断时调用。v1 四项全绿仍失败（BuildSmoke 复测实证），
+    /// v2 补两层：①缓存 .o 与当前源文件映射差集（AI 报告的「幽灵 .o」磁盘实据）
+    /// ②init 链逐步重演（sync→scanner→PhaseEngine——各步副作用与正式构建
+    /// 等价且幂等）。
     static func initChainProbe(project: NXProject) -> String {
         var findings: [String] = []
         let fm = FileManager.default
@@ -90,10 +91,76 @@ final class BuildService: @unchecked Sendable {
         if !fm.fileExists(atPath: plistPath) {
             findings.append("Config/Project.plist 缺失")
         }
-        if findings.isEmpty {
-            return "未发现显性异常（初始化失败的确切原因需查 debug.json——用 build_log 查看）"
+        // ── 缓存孤儿差集（期望 .o = 相对源路径 + ".o"，与官方
+        // NXExpectedObjectFileURLForFileURL 一致 NXUtils.m:69-73）──
+        if cacheExists {
+            let diff = Self.cacheObjectDiff(project: project)
+            if diff.ghosts > 0 {
+                findings.append("缓存中存在 " + String(diff.ghosts) + " 个已失去源文件的对象（" + diff.ghostList + "）")
+            }
         }
+        // ── init 链重演（与 NXBuilder.init 顺序对齐；失败即报死点）──
+        let syncOK = project.syncFolderStructureToCache()
+        if !syncOK {
+            findings.append("重演第 1 步失败：syncFolderStructureToCache 返回 NO（缓存同步静默失败——NXBuilder init 会因此静默返回 nil 且零落盘）")
+            return Self.renderFindings(findings)
+        }
+        let scanner: MDKDependencyScanner? = MDKDependencyScanner(arguments: project.projectConfig.compilerFlags)
+        if scanner == nil {
+            findings.append("重演第 2 步失败：MDKDependencyScanner 创建返回 nil（CC 层初始化异常）")
+            return Self.renderFindings(findings)
+        }
+        do {
+            _ = try NXPhaseEngine(project: project)
+        } catch {
+            findings.append("重演第 3 步失败：NXPhaseEngine 初始化——" + String(describing: error))
+            return Self.renderFindings(findings)
+        }
+        findings.append("init 链重演全通过（sync/scanner/PhaseEngine 均正常）——失败点不在初始化链，疑似构建运行阶段失败且其 Internal 诊断被历史 reuse 洗掉（本版已修复该清洗，下次失败将直显）")
+        return Self.renderFindings(findings)
+    }
+
+    static func renderFindings(_ findings: [String]) -> String {
         return findings.joined(separator: "；")
+    }
+
+    /// 缓存孤儿对象差集。ghosts=数量；ghostList=前 5 个相对路径。
+    static func cacheObjectDiff(project: NXProject) -> (ghosts: Int, ghostList: String) {
+        let fm = FileManager.default
+        var expected: Set<String> = []
+        guard let srcEn = fm.enumerator(at: project.url, includingPropertiesForKeys: nil) else {
+            return (0, "")
+        }
+        for case let fileURL as URL in srcEn {
+            let path = fileURL.path
+            if path.contains("/Resources") || path.contains("/Config") {
+                continue
+            }
+            let ext = fileURL.pathExtension.lowercased()
+            if ext == "swift" || ext == "c" || ext == "cpp" || ext == "m" || ext == "mm" {
+                let rel = path.hasPrefix(project.url.path) ? String(path.dropFirst(project.url.path.count + 1)) : path
+                expected.insert(rel + ".o")
+            }
+        }
+        var ghostNames: [String] = []
+        var ghostCount = 0
+        guard let cacheEn = fm.enumerator(at: project.cacheURL, includingPropertiesForKeys: nil) else {
+            return (0, "")
+        }
+        for case let fileURL as URL in cacheEn {
+            if fileURL.pathExtension != "o" {
+                continue
+            }
+            let rel = fileURL.path.hasPrefix(project.cacheURL.path) ? String(fileURL.path.dropFirst(project.cacheURL.path.count + 1)) : fileURL.path
+            if !expected.contains(rel) {
+                ghostCount += 1
+                if ghostNames.count < 5 {
+                    ghostNames.append(rel)
+                }
+            }
+        }
+        let list = ghostNames.joined(separator: "、")
+        return (ghostCount, list)
     }
 
     /// 工程源文件计数（.swift/.c/.cpp/.m/.mm，排除 Resources/Config；-1=不可枚举）。
@@ -189,8 +256,14 @@ final class BuildService: @unchecked Sendable {
             let elapsed = Date().timeIntervalSince(started)
             let db = DebugDatabase.getDatabase(
                 ofPath: project.cacheURL.appendingPathComponent("debug.json").path)
-            db.reuseDatabase()
-            // 【N6 压测反馈】诊断可定位化（保守形态重做——嵌套函数+正则链
+            // 【0.0s 透明化 2026-10-18】此处原调 db.reuseDatabase()——它把 Internal
+            // 桶整个重置为空（Project+Debug.swift:236-238），而初始化/运行失败的
+            // 诊断（"Nothing to build"/"Failed to run project" 等）恰恰落在
+            // Internal 桶——读取前清空=永远「零诊断」（BuildSmoke 0.0s 实证）。
+            // 编译诊断在 File 桶不受影响，故呈二分：编译失败可见、init 失败静默。
+            // 删掉展示层这次 reuse（官方 NXBuilder init 的 reuse 保留——每轮构建
+            // 开始仍会重置 Internal，展示层不再二次清洗）。
+            // 诊断可定位化（保守形态重做——嵌套函数+正则链
             // 疑触发 swiftc 崩溃 run 39032097279/rerun，见 §三 g）。
             let rootPrefix = project.url.standardizedFileURL.path + "/"
             // file 在 DebugObject 的键上（MDKSourceLocation 只有行列）。
