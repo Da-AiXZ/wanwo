@@ -38,8 +38,12 @@ struct WORightPanel: View {
 
     /// 「+」弹出菜单（原型 addBtn → pop 浮层）。
     @State private var showAddMenu = false
-    /// 收起视觉（原型 .panel closed 态同款：opacity 0 + 右移 28——掩盖列宽压缩）。
-    @State private var collapsedVisual = false
+    /// 收起视觉（原型 .panel closed 态同款）双时钟：淡出 0.2s easeOut（比列宽
+    /// 0.42 快一半，压缩前段内容即消失）+ 右移 28px 与列宽 rail 同曲线同步。
+    /// （修2 二轮：v1 的 .animation(value:) 链真机无感——改 onChange 内
+    /// withAnimation 显式事务 + fade/slide 拆双 state 各配时长。）
+    @State private var collapseFade = false
+    @State private var collapseSlide = false
     /// launcher 交错重播代数（hidden→可见时 +1，行 id 重建、onAppear 重触发）。
     @State private var launcherEpoch = 0
     /// 页签条内容宽（溢出渐隐判定 + pop 锚定基准）。
@@ -61,12 +65,10 @@ struct WORightPanel: View {
         // 宽度交给父级列（details 契约 400 / 全屏 viewport——旧件批B3 语义保留）。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(panelWidthReader)
-        // 【修 2-1】原型 .panel closed 态同款：收起 = 淡出 + 右移，与列宽收缩
-        // 并行，掩盖压缩重排（opacity 0.3s 先完成、offset 0.42s 与列宽同曲线）。
-        .opacity(collapsedVisual ? 0 : 1)
-        .animation(collapseOpacityMotion, value: collapsedVisual)
-        .offset(x: collapsedVisual ? 28 : 0)
-        .animation(collapseOffsetMotion, value: collapsedVisual)
+        // 【修 2-1】原型 .panel closed 态同款：淡出（0.2s，列宽前半段内容即
+        // 消失）+ 右移 28px（0.42s 与列宽 rail 同曲线）——压缩重排被掩盖。
+        .opacity(collapseFade ? 0 : 1)
+        .offset(x: collapseSlide ? 28 : 0)
         // 「+」弹出菜单（锚定 + 钮正下方；右缘钳制）。
         .overlay(alignment: .topLeading) { addMenuOverlay }
         // 弹层开着时点面板任意处先收弹层（pop 语义：浮层外即 dismiss）。
@@ -86,8 +88,15 @@ struct WORightPanel: View {
                     for: Self.sessionID(of: selection) ?? ""))
         }
         .onChange(of: sessionState.layout) { newLayout in
-            // 【修 2-1】收起视觉状态机 + 【修 2-2】launcher 重播门。
-            collapsedVisual = (newLayout == .hidden)
+            // 【修 2-1】收起视觉状态机（withAnimation 显式事务——.animation(value:)
+            // 链真机无感的修正）+ 【修 2-2】launcher 重播门。
+            let nowHidden = (newLayout == .hidden)
+            if nowHidden != collapseFade || nowHidden != collapseSlide {
+                withAnimation(.easeOut(duration: 0.2)) { collapseFade = nowHidden }
+                withAnimation(WOMotion.bezier(duration: WOMotion.sidebarRailDuration)) {
+                    collapseSlide = nowHidden
+                }
+            }
             if newLayout != .hidden { launcherEpoch += 1 }
         }
         .onAppear {
@@ -95,36 +104,23 @@ struct WORightPanel: View {
                 sessionId: Self.sessionID(of: environment.selection),
                 workspacePath: environment.guestWorkspacePath(
                     for: Self.sessionID(of: environment.selection) ?? ""))
-            collapsedVisual = (sessionState.layout == .hidden)
+            collapseFade = (sessionState.layout == .hidden)
+            collapseSlide = collapseFade
         }
-    }
-
-    /// 淡出时长（原型 opacity .34s→取 0.3——比列宽 0.42 先完成，压缩尾段不可见）。
-    private var collapseOpacityMotion: Animation? {
-        UIAccessibility.isReduceMotionEnabled
-            ? .easeOut(duration: 0.15)
-            : .easeOut(duration: 0.3)
-    }
-
-    /// 位移时长（与列宽 rail 同曲线同时长 = 完全同步）。
-    private var collapseOffsetMotion: Animation? {
-        UIAccessibility.isReduceMotionEnabled
-            ? .easeOut(duration: 0.15)
-            : WOMotion.bezier(duration: WOMotion.sidebarRailDuration)
-    }
-
-    /// 面板宽 preference 源。
-    private var panelWidthReader: some View {
-        GeometryReader { geo in
-            Color.clear.preference(key: WOPanelWidthKey.self, value: geo.size.width)
-        }
-        .onPreferenceChange(WOPanelWidthKey.self) { panelWidth = $0 }
     }
 
     /// 当前选中会话 id（各页签数据锚；旧件同名静态的调用方=页签内容视图）。
     static func sessionID(of selection: RootSelection) -> String? {
         if case .session(let id) = selection { return id }
         return nil
+    }
+
+    /// 面板宽 preference 源（pop 右缘钳制用）。
+    private var panelWidthReader: some View {
+        GeometryReader { geo in
+            Color.clear.preference(key: WOPanelWidthKey.self, value: geo.size.width)
+        }
+        .onPreferenceChange(WOPanelWidthKey.self) { panelWidth = $0 }
     }
 
     // MARK: - 顶栏 bar（codex 截图规范：空态两钮贴右；页签态 tabs+add 在左）
@@ -162,9 +158,29 @@ struct WORightPanel: View {
                                            value: g.size.width)
                 })
             }
-            .background(GeometryReader { g in
-                Color.clear.preference(key: WOTabViewportKey.self, value: g.size.width)
-            })
+            // 【修 3】tabBar 宽度=页签内容宽（不吞弹性空间）——「+」因此紧贴
+            // 末签右侧（此前 ScrollView 弹性全宽把 + 推到右缘）；超可用宽时
+            // 收缩为可用宽（chips 滚动）。
+            .frame(width: min(tabContentWidth + 1,
+                              max(panelWidth - 156, 60)))
+            // 【修 7】溢出两端渐隐——mask 让 chips 自身在端头淡出（白罩在白
+            // 底 chips 上无对比已废；对话标题栏/dock 渐隐同族的独立罩对白底
+            // 无效，故回 mask 语义、静态双端、溢出判定保留）。
+            .mask {
+                GeometryReader { geo in
+                    let w = max(geo.size.width, 1)
+                    let stops: [Gradient.Stop] = tabsOverflow
+                        ? [Gradient.Stop(color: .clear, location: 0),
+                           Gradient.Stop(color: .black, location: min(14 / w, 0.4)),
+                           Gradient.Stop(color: .black, location: max((w - 18) / w, 0.6)),
+                           Gradient.Stop(color: .clear, location: 1)]
+                        : [Gradient.Stop(color: .black, location: 0),
+                           Gradient.Stop(color: .black, location: 1)]
+                    Rectangle().fill(LinearGradient(stops: stops,
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing))
+                }
+            }
             .onPreferenceChange(WOTabContentWidthKey.self) { tabContentWidth = $0 }
             .onPreferenceChange(WOTabViewportKey.self) { tabViewportWidth = $0 }
             // 【修 2-6】新开页签自动滚到可见（新签露出、旧签挤左——用户拍板）。
@@ -173,26 +189,7 @@ struct WORightPanel: View {
                     proxy.scrollTo(last.id, anchor: .trailing)
                 }
             }
-            // 【修 2-6】溢出两端覆盖式渐隐（白渐变盖在 chips 上——替代滚动
-            // offset 追踪 mask，稳定生效；滚到头时端头亦淡出=已登记近似）。
-            .overlay(alignment: .leading) { tabEdgeFade(leading: true) }
-            .overlay(alignment: .trailing) { tabEdgeFade(leading: false) }
         }
-    }
-
-    /// 端头渐隐（原型 mask 14/18px 的覆盖式等价物；仅溢出时显示）。
-    private func tabEdgeFade(leading: Bool) -> some View {
-        let width: CGFloat = leading ? 14 : 18
-        let start = leading ? WOAlias.bgBase : WOAlias.bgBase.opacity(0)
-        let end = leading ? WOAlias.bgBase.opacity(0) : WOAlias.bgBase
-        let gradient = LinearGradient(stops: [
-            Gradient.Stop(color: start, location: 0),
-            Gradient.Stop(color: end, location: 1)
-        ], startPoint: .leading, endPoint: .trailing)
-        return Rectangle()
-            .fill(gradient)
-            .frame(width: tabsOverflow ? width : 0)
-            .allowsHitTesting(false)
     }
 
     // MARK: 页签 chip（原型 :139-169；Button 化+按压；× 热区 30）
@@ -222,7 +219,7 @@ struct WORightPanel: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(WOAlias.labelTertiary)
                         .frame(width: 22, height: 22)
-                        .contentShape(Rectangle().size(width: 30, height: 30))
+                        .contentShape(Rectangle().size(width: 25, height: 25))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭" + label + "页签")
@@ -357,8 +354,11 @@ struct WORightPanel: View {
                                 .padding(.vertical, 2.5)
                                 .background(RoundedRectangle(cornerRadius: 6)
                                     .fill(WOStatic.panelInk55))
-                                // 原型 .kbd 独立 cardIn（delay i*72+190ms）。
-                                .woItemIn(index: index, step: 0.072, base: 0.19)
+                                // 原型 .kbd 独立 cardIn——delay 提至 0.5：
+                                // 列宽展开（0.42s）大半完成后行内容才揭示，
+                                // 浮入动画须在可见窗口内播（v1 base 0.19 时
+                                // 行主体被列宽揭示淹没只有 kbd 可见的教训）。
+                                .woItemIn(index: index, step: 0.072, base: 0.5)
                         }
                     }
                     .padding(.horizontal, 10)
@@ -368,9 +368,11 @@ struct WORightPanel: View {
                 .buttonStyle(.plain)
                 .woPressable()
                 // epoch 变化 → 行 id 变化 → 视图重建 → woItemIn onAppear 重播
-                //（恒挂载下 onAppear 只在首挂载触发的根治）。
+                //（恒挂载下 onAppear 只在首挂载触发的根治）；delay 0.35 起——
+                // 列宽展开 83% 后行区域已揭示，浮入全程可见（真机反馈"只有
+                // kbd 有动画"=行浮入被列宽揭示淹没的修正）。
                 .id(kind.rawValue + "-e" + String(launcherEpoch))
-                .woItemIn(index: index)
+                .woItemIn(index: index, step: 0.072, base: 0.35)
             }
         }
         .padding(.horizontal, 26)
@@ -461,7 +463,9 @@ struct WORightPanel: View {
                 }
             }
             .padding(5)
-            .frame(minWidth: 190, alignment: .leading)
+            // 定宽 190（原型 min-width 190 的触屏恒定形态；此前 minWidth 无
+            // 上限被行内 Spacer 撑宽=用户反馈"太宽"）。
+            .frame(width: 190, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12)
                 .fill(WOAlias.bgBase))
             .overlay(RoundedRectangle(cornerRadius: 12)
