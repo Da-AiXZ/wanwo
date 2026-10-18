@@ -321,6 +321,18 @@ extern void jit_crash_trampoline(void);
 
 /// Handles SIGSEGV/SIGBUS from JIT code (stale TLB pointers from concurrent CoW).
 /// Uses ucontext PC manipulation to redirect to jit_crash_trampoline.
+// 【兜底加固 · 2026-10-18】boot 前旧信号 handler 存档。
+// CoreCompiler 的 llvm_init()（dyld constructor，早于本 boot）经
+// llvm::CrashRecoveryContext::Enable() 全局注册了 SIGSEGV/SIGBUS/SIGILL/SIGTRAP/
+// SIGABRT/SIGFPE handler（swift-6.4.0-RELEASE 源码实证：Enable 一次性安装，
+// RunSafely 仅 setjmp）。本函数装 iSH handler 会覆盖它们——保存旧 handler，
+// 供 jit_crash_handler 非 iSH 线程分支交回：lld/CC 内核在 RunSafely 内崩溃时
+// 被 longjmp 兜底转为一条链接诊断（App 存活），而非整个 App 闪退
+//（10-17 23:38 lld reportPendingDuplicateSymbols UAF 真机实证）。
+static struct sigaction g_prev_nonish_sa[4];
+static const int g_prev_nonish_signals[4] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP};
+static bool g_prev_nonish_saved = false;
+
 static void jit_crash_handler(int sig, siginfo_t *info, void *ctx) {
 #ifdef __aarch64__
     if ((sig == SIGSEGV || sig == SIGBUS) && in_jit) {
@@ -363,15 +375,28 @@ static void jit_crash_handler(int sig, siginfo_t *info, void *ctx) {
     // `in_jit` is only ever set on iSH execution threads. For non-iSH threads (e.g. Swift
     // async tasks, networking, UI), we must NOT intercept the signal — doing so kills the
     // thread via pthread_exit, which crashes the app (FOUNDATION 1 termination).
-    // Instead, reset the signal to default and re-raise so the system crash reporter
-    // handles it normally.
     //
-    // Note: `in_jit` is 0 here (the in_jit==1 case was handled above). We use a separate
-    // thread-local marker set when iSH threads start, to distinguish iSH threads with
-    // in_jit==0 (between JIT runs) from non-iSH threads (never set).
+    // 【兜底加固 · 2026-10-18】非 iSH 线程崩溃：交回 boot 前的旧 handler，而不是直接
+    // SIG_DFL。语义（swift-6.4.0-RELEASE CrashRecoveryContext.cpp 逐行实证）：
+    // - 崩溃在 llvm::CrashRecoveryContext::RunSafely 内（lld/CC 链接内核）→ LLVM
+    //   handler 查线程本地上下文成功 → siglongjmp 兜底 → CCLinkerJobExecute 收到
+    //   失败并转为链接诊断，进程存活；
+    // - 崩溃在其他上下文 → LLVM handler 无线程本地上下文，自行 Disable()+raise()
+    //   回 SIG_DFL → 结果与旧路径等价（crash report），无死循环（LLVM 官方语义）。
+    // 恢复 handler 后直接 return：信号在本 handler 执行期内被 block，返回时内核
+    // 按 pending 重递送（或重执行 faulting 指令后再递送），进入刚恢复的旧 handler。
+    // 旧顾虑（不能 pthread_exit 杀 FOUNDATION 线程）不变——本路径从不 pthread_exit。
     extern __thread int ish_thread_marker;
     if (!ish_thread_marker) {
-        // Not an iSH thread — restore default handler and re-raise
+        if (g_prev_nonish_saved) {
+            for (int i = 0; i < 4; i++) {
+                if (g_prev_nonish_signals[i] == sig) {
+                    sigaction(sig, &g_prev_nonish_sa[i], NULL);
+                    return;
+                }
+            }
+        }
+        // 无存档（理论不可达：CoreCompiler constructor 先于 iSH boot）——维持旧行为。
         struct sigaction sa_default = {0};
         sa_default.sa_handler = SIG_DFL;
         sigaction(sig, &sa_default, NULL);
@@ -441,14 +466,16 @@ static void install_jit_crash_handler(void) {
     struct sigaction sa = {0};
     sa.sa_sigaction = jit_crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGBUS, &sa, NULL);
-    sigaction(SIGILL, &sa, NULL);
-    sigaction(SIGTRAP, &sa, NULL);
+    // 【兜底加固 · 2026-10-18】第三参保存被覆盖的旧 handler（CoreCompiler constructor
+    // 经 CrashRecoveryContext::Enable() 注册的那套）——非 iSH 线程崩溃时交回。
+    for (int i = 0; i < 4; i++) {
+        sigaction(g_prev_nonish_signals[i], &sa, &g_prev_nonish_sa[i]);
+    }
+    g_prev_nonish_saved = true;
     // Note: SIGABRT intentionally NOT handled — it's used by the system
     // (assert(), Swift runtime, malloc failure) and intercepting it prevents
     // normal crash reporting and can mask OOM conditions.
-    NSLog(@"ISHKernel: JIT crash recovery handler installed");
+    NSLog(@"ISHKernel: JIT crash recovery handler installed (prev handlers saved)");
 }
 
 // Forward declaration of private methods for C callbacks

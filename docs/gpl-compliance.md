@@ -162,3 +162,17 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | D7 | 宏插件缺失（@Observable/@Model） | 官方工具链边界——登记（模板文档提示随批 2） |
 
 **build_ipa 经 run_code 通道的"interrupted"**：长阻塞超 harness 时限被打断，AI 自适应从 extension-event 读结果——事件通道兜底有效，登记（阶段 2 可考虑异步任务形态）。
+
+## 三 i、闪退定罪与兜底加固（2026-10-18，真机 .ips+事件流 87002 行+源码四级定罪）
+
+**闪退现场（10-17 23:38:07.6，iPad13,4 iOS 16.6.1）**：同一进程内「duplicate symbol: main 链接失败 → 删探针文件 → 立即重建」的第二次链接中，`lld::macho::reportPendingDuplicateSymbols()`（writeResult 路径）构造错误字符串时 UAF（memmove 踩已释放 MALLOC_LARGE 块边界）→ SIGSEGV → 全 App 闪退。跨进程重建正常（restart 后 Demo BUILD OK 0.7s 无诊断）；官方 `syncFolderStructureToCache`（NXProject.m:412）stale .o 清理有效、源文件列表每次现扫（NXPhaseEngine.m:32）——排除 stale .o 假说，定性为 **lld 库形态进程内二连跑状态残留**（精确残留点在 llvm-project lld 内核，登记深挖）。LLVM 两层 CrashRecoveryContext::RunSafely 全程旁路的机制=CoreCompiler `llvm_init()`（constructor）Enable() 注册的全局 handler 被 iSH `install_jit_crash_handler()`（boot 时）覆盖；非 iSH 线程分支 SIG_DFL+re-raise 直接死。「回合被中断」事件=InterruptedTurnClosers resume 修复合成（设计内）。
+
+**vendored 改动（2 处，行为补全非语义变更）**：
+| 文件 | 改动 | 理由 |
+|---|---|---|
+| `Vendor/nyxian/CoreCompiler/Tools/Linker/CCLinker.cpp` | ①`int retCode;`→`int retCode = 1;`（初始化）②`CRC.RunSafely(...)` 接返回值，false 时追加诊断行 `[CoreCompiler] linker internal crash recovered (CrashRecoveryContext); rebuild may need a clean state` 并置 retCode=1 | 官方原样在「崩溃被兜底」路径上读未初始化 retCode（UB，可能误报成功）且无恢复分支——兜底加固生效后该路径成为活路径，必须行为正确 |
+| `Platform/ISHKernel.m`（万我自有层，非 vendored） | `install_jit_crash_handler()` 保存被覆盖的旧 handler（sigaction 第三参）；`jit_crash_handler` 非 iSH 线程分支由「SIG_DFL+re-raise」改为「恢复旧 handler+return 交回」 | 交回后：崩溃在 RunSafely 内→LLVM longjmp 兜底转诊断（进程存活）；其他上下文→LLVM 官方 Disable()+raise() 回 SIG_DFL，结果与旧路径等价、无死循环（swift-6.4.0-RELEASE CrashRecoveryContext.cpp 逐行实证） |
+
+**iSH guest 侧两分支（JIT 恢复/guest 线程泊车）零改动**；SIGABRT 本就未由 iSH 拦截，行为不变。
+
+**登记后续**：lld `reportPendingDuplicateSymbols` UAF 精确残留点（llvm-project swift-6.4.0-RELEASE lld/MachO 内核，候选=ErrorHandler 全局 static/context 悬挂指针）——上游级深挖；受控复现（A1 duplicate main→删→重建）作为兜底加固的真机验收，预期「不再闪退+AI 收到 recovered 诊断」。
