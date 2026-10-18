@@ -161,6 +161,21 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 **批 2 剩余（挂起待 BuildPanelView=2a-2 随右栏重启）**：级别中文化+配色图标/fix-it 折叠/拆阶段耗时+编译文件数/产物摘要面（原"BuildPanelView 承载"四件——展示层宿主视图未建）；批量模式深度改造/AppIcon 占位脚手架/并发构建独立输出目录（低优先）。
 
+## 三 k、批 2 第一批装机审计与两修（2026-10-18 晚）
+
+**审计方法与结论**：事件流 27379 行分层全量（5 user/17 组审批/81 call+result/11 build 事件/120 reasoning/264 trace）+报告逐条对质+源码对质。**批 2 第一批 7 项测试全 PASS 收官**；17 组审批全发生全放行（用户确认手点）；D1 文件 App 可见性实证。
+
+**两修（84dac84 后补丁）**：
+
+| # | 项 | 根因与修法 |
+|---|---|---|
+| 1 | 宏预检 files 相对化失效 | 双侧路径形态失配（/var/mobile 符号链接 vs /private/var/mobile 真实）致 hasPrefix 失配→绝对路径直出。修：rootPath 与枚举路径双侧 resolvingSymlinksInPath 对齐真实路径。拦截功能本就正常，纯输出质量。 |
+| 2 | DeriveFold harness 断层（AI 收不到工具文本） | build_ipa 先落 extension/build 事件（modelVisible→折叠成 user 消息）后落 tool/result，DeriveFold 步骤 4「普通消息关闭未决对」把 result 判孤立剔除→步骤 5 合成 "tool execution was interrupted before completion" 占位——AI 永远收不到 BUILD OK/optimize 状态/workspace ipa 文本，只能靠 extension-event 兜底（装机审计实锤：34 处 interrupted 全在 AI 侧 reasoning/报告，事件流 tool/result 完整且 81/81 一一对应）。修：折叠时未决调用（openCalls 非空）期间的 extension 消息推迟缓存，收齐 results 后按序 flush——保持 provider-valid（assistant→tools→user）顺序；步骤 4/5 防御保留。**dsh 语义源对照**：repair.ts 的 interruptedTurnClosers 为崩溃恢复专用（逐 turn 重置+仅尾部合成），且 dsh 无 extensionEvent 机制——本修属万我扩展自适应，非语义偏离。 |
+
+**升级登记（原 §三 h 末尾"build_ipa 经 run_code 通道的 interrupted"）**：该现象非 run_code 通道特有——所有先落 modelVisible 事件再落 result 的工具调用（本版即 build_ipa 全部 11 次）都触发占位合成；宏预检（失败路径不写事件）与 project_create/reset/delete（不写 build 事件）不受影响——与本次根因分析完全吻合。本修后工具文本直达 AI。
+
+**审计新发现登记（低优先/待拍板）**：①BuildArtifacts 文件名用 displayName（中文名→"测试.ipa"，与 ipaURL 名不同源；对文件 App 直观，用户拍板保持现状）②诊断 file 键含 uuid 尾段（[1385895/Broken.swift:4:24]）=官方 debug.json 键形态既有 ③D6 精细画像：guest readdir 陈旧但完整路径 lookup 实时，AI 已自适应，危害降级 ④预检失败不写 debug.json（AI 建议+code 字段透出——低优先）⑤guest readdir 陈旧修复涉及 vendored iSH 内核缓存语义（fs/path.c）——高风险，建议 prompt 级提示强化替代（AI bash 工具描述加"目录列表可能陈旧，以 fs 工具为准"）。
+
 ## 三 h、N6 三小件验证 + AI 深度压测报告处置（2026-10-17，第三份事件流 70007 事件）
 
 **三小件生效实证**：guest bash path 22 次、诊断三件（file:line:col/级别名/相对化）全对（`[error] [ContentView.swift:8:9]`）、自修复闭环（BuildSmoke/Demo 失败→修→成功）。**AI 走 run_code（JSCore PTC）通道派发**——39/39 审批、35 次编译全通，等效验证双呈现模式。

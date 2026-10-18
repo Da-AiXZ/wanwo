@@ -351,9 +351,13 @@ final class BuildService: @unchecked Sendable {
         }
         var hitFiles = 0
         var samples: [String] = []
-        let rootPath = project.url.standardizedFileURL.path
+        // 【批 2 修 2026-10-18】rootPath 与枚举路径双侧 resolvingSymlinksInPath
+        // 对齐真实路径——装机审计实锤：/var/mobile（符号链接形态）与
+        // /private/var/mobile（真实形态）混用致 hasPrefix 失配，files 列表
+        // 退化成绝对路径直出（拦截功能不受影响，纯输出质量）。
+        let rootPath = project.url.standardizedFileURL.resolvingSymlinksInPath().path
         for case let fileURL as URL in en {
-            let path = fileURL.path
+            let path = fileURL.resolvingSymlinksInPath().path
             if path.contains("/Resources") || path.contains("/Config") {
                 continue
             }

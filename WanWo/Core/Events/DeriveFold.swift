@@ -58,14 +58,33 @@ struct DeriveFold {
 
         // 3. 线性折叠。
         var messages: [ChatMessage] = []
+        // 【harness 断层修 2026-10-18】extensionEvent(modelVisible) 折叠出的 user
+        // 消息若插在 assistant(tool_calls) 与其 tool/result 之间（装机审计实锤：
+        // build_ipa 先落 build 事件后落 result，时序 event@672 < result@673），
+        // 步骤 4 的「普通消息关闭未决对」把该 result 判孤立剔除→步骤 5 合成
+        // interrupted 占位——AI 永远收不到工具文本（BUILD OK/optimize 状态/
+        // workspace ipa 行），只能靠 extension-event 兜底闭环。修法=未决调用
+        // 期间的 extension 消息推迟缓存，收齐 results 后按序 flush（保持
+        // provider-valid：assistant→tools→user）；dsh 语义源（repair.ts）无
+        // extensionEvent 机制，属万我扩展自适应登记 docs/gpl-compliance。
+        var openCalls = Set<String>()
+        var deferredExtensions: [ChatMessage] = []
         for event in events {
             if shadowed.contains(event.seq) { continue }
             switch event.payload {
             case .userMessage(let text):
+                if !deferredExtensions.isEmpty {
+                    messages.append(contentsOf: deferredExtensions)
+                    deferredExtensions.removeAll()
+                }
                 let images = imagesBySeq[event.seq]
                 messages.append(ChatMessage(role: .user, content: text,
                                             images: images))
             case .assistantMessage(_, _, let message, _, _):
+                if !deferredExtensions.isEmpty {
+                    messages.append(contentsOf: deferredExtensions)
+                    deferredExtensions.removeAll()
+                }
                 let text = message.content.compactMap { block -> String? in
                     if case .text(let t) = block { return t }
                     return nil
@@ -84,6 +103,9 @@ struct DeriveFold {
                     if case .reasoning(let t) = block { return t }
                     return nil
                 }.joined()
+                for call in calls {
+                    openCalls.insert(call.id)
+                }
                 messages.append(ChatMessage(role: .assistant, content: text,
                                             toolCalls: calls.isEmpty ? nil : calls,
                                             reasoning: reasoning.isEmpty ? nil : reasoning))
@@ -92,7 +114,16 @@ struct DeriveFold {
                 let contentText = isError ? content : content
                 messages.append(ChatMessage(role: .tool, content: contentText,
                                             toolCallID: callId))
+                openCalls.remove(callId)
+                if openCalls.isEmpty && !deferredExtensions.isEmpty {
+                    messages.append(contentsOf: deferredExtensions)
+                    deferredExtensions.removeAll()
+                }
             case .compactionSummary(_, let summary, _, _, _, _):
+                if !deferredExtensions.isEmpty {
+                    messages.append(contentsOf: deferredExtensions)
+                    deferredExtensions.removeAll()
+                }
                 messages.append(ChatMessage(
                     role: .user,
                     content: "<compaction-summary>\n\(summary)\n</compaction-summary>"))
@@ -102,10 +133,15 @@ struct DeriveFold {
                     // model-visible：标准信封 user 消息进派生（model-visible=logged
                     // 的消费侧；首个 model-visible 业务事件注册时可按需细化表示，
                     // 机制位一次到位——v2.4 修订①「按投影规则决定是否进派生」）。
-                    messages.append(ChatMessage(
+                    let extensionMessage = ChatMessage(
                         role: .user,
                         content: "<extension-event kind=\"\(kind)\">\n"
-                            + Self.extensionPayloadText(payload) + "\n</extension-event>"))
+                            + Self.extensionPayloadText(payload) + "\n</extension-event>")
+                    if openCalls.isEmpty {
+                        messages.append(extensionMessage)
+                    } else {
+                        deferredExtensions.append(extensionMessage)
+                    }
                 }
             default:
                 break
