@@ -392,11 +392,11 @@ final class BuildService: @unchecked Sendable {
     /// 挂载/adopt 同源），零 vendored 改动。guestMount = 工作区在 guest 侧的
     /// 挂载根（与 guestPathHint 同源 sessionCwd）；nil 则保守跳过（仅失去
     /// guest 可见性，构建本身不受影响）。
-    static func registerProjectTreeInFakefs(project: NXProject, workspaceRoot: URL, guestMount: String?) {
+    static func registerProjectTreeInFakefs(projectURL: URL, workspaceRoot: URL, guestMount: String?) {
         guard let guestMount, !guestMount.isEmpty else { return }
         let fm = FileManager.default
         let wsRoot = workspaceRoot.standardizedFileURL.path
-        let projPath = project.url.standardizedFileURL.path
+        let projPath = projectURL.standardizedFileURL.path
         guard projPath.hasPrefix(wsRoot + "/") else { return }
         // 相对工作区根 = "/BuildProjects/<name>/<uuid>"
         let projRel = String(projPath.dropFirst(wsRoot.count))
@@ -404,7 +404,7 @@ final class BuildService: @unchecked Sendable {
         let nameDirRel = (projRel as NSString).deletingLastPathComponent
         IshExecutorBridge.ensureFakefsMetadata(for: guestMount + nameDirRel, isDirectory: true)
         IshExecutorBridge.ensureFakefsMetadata(for: guestMount + projRel, isDirectory: true)
-        guard let en = fm.enumerator(at: project.url, includingPropertiesForKeys: [.isDirectoryKey]) else {
+        guard let en = fm.enumerator(at: projectURL, includingPropertiesForKeys: [.isDirectoryKey]) else {
             return
         }
         for case let fileURL as URL in en {

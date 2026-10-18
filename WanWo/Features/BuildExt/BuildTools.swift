@@ -52,7 +52,7 @@ enum BuildTools {
                             writer: SessionWriter,
                             sessionCwd: String?) {
         registry.register(ProjectCreateTool(writer: writer, sessionCwd: sessionCwd))
-        registry.register(ProjectListTool())
+        registry.register(ProjectListTool(sessionCwd: sessionCwd))
         registry.register(ProjectReadTool())
         registry.register(ProjectDeleteTool())
         registry.register(ProjectResetTool(writer: writer, sessionCwd: sessionCwd))
@@ -151,7 +151,7 @@ struct ProjectCreateTool: AgentTool {
             // 过，跳过。
             if created {
                 BuildService.registerProjectTreeInFakefs(
-                    project: project, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
+                    projectURL: project.url, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
             }
             let note = created ? "created" : "reused (existing project with same name)"
             let sources = (try? FileManager.default.contentsOfDirectory(
@@ -179,10 +179,22 @@ struct ProjectListTool: AgentTool {
     let description = "List build projects in the session workspace (name, executable, bundle id, deployment target)."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
+    private let sessionCwd: String?
+    init(sessionCwd: String?) {
+        self.sessionCwd = sessionCwd
+    }
+
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         let projects = BuildService.shared.listProjects(workspaceRoot: ctx.workspace.rootURL)
+        // 【D6 收尾 2026-10-19】存量工程兜底补注册——建树早于补注册机制的
+        // 历史工程（A1 等，装机复测实锤 guest MISSING）在首次 project_list
+        // 时自动治好；幂等（ensureFakefsMetadata 内置存在性检查）。
+        for item in projects {
+            BuildService.registerProjectTreeInFakefs(
+                projectURL: item.url, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
+        }
         if projects.isEmpty {
             return .success("（无工程——先 project_create）")
         }
@@ -325,7 +337,7 @@ struct ProjectResetTool: AgentTool {
                 interfaceKind: NXProjectInterfaceKind.swiftUI)
             // 【D6 根治】重铺的脚手架目录树补注册 fakefs 元数据
             BuildService.registerProjectTreeInFakefs(
-                project: project, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
+                projectURL: project.url, workspaceRoot: ctx.workspace.rootURL, guestMount: sessionCwd)
             let sources = (try? FileManager.default.contentsOfDirectory(
                 at: project.url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
                 .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
