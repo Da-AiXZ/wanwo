@@ -472,7 +472,7 @@ struct WORightPanelHandle: View {
                 .foregroundColor(WOAlias.labelSecondary)
                 .frame(width: 44, height: 44)
                 .background(RoundedRectangle(cornerRadius: 10)
-                    .fill(WOStatic.panelHandleBg)
+                    .fill(WOAlias.panelHandleBg)
                     .background(.ultraThinMaterial,
                                 in: RoundedRectangle(cornerRadius: 10)))
                 .overlay(RoundedRectangle(cornerRadius: 10)
