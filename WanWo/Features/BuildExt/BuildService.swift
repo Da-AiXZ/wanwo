@@ -65,6 +65,57 @@ final class BuildService: @unchecked Sendable {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
     }
 
+    /// 构建器初始化链白盒体检（只读零副作用）。0.0s 失败且零诊断时调用：
+    /// NXBuilder init 的 sync 失败路径静默 return nil 无任何诊断落盘
+    ///（NXBuilder.swift:45，2026-10-18 BuildSmoke 实证——plist 正常仍 0.0s），
+    /// 此探针给出最可能原因。
+    static func initChainProbe(project: NXProject) -> String {
+        var findings: [String] = []
+        let fm = FileManager.default
+        let dirExists = fm.fileExists(atPath: project.url.path)
+        if !dirExists {
+            findings.append("工程目录不存在（" + project.url.path + "）")
+        }
+        let sourceCount = Self.countCodeFiles(in: project.url)
+        if sourceCount == 0 {
+            findings.append("源文件 0 个（构建器要求至少 1 个 .swift/.c/.cpp/.m/.mm——删除型测试后的常见残留态）")
+        } else if sourceCount < 0 {
+            findings.append("源文件扫描失败（工程目录不可枚举）")
+        }
+        let cacheExists = fm.fileExists(atPath: project.cacheURL.path)
+        if !cacheExists {
+            findings.append("缓存目录不存在（" + project.cacheURL.path + "）——初始化的缓存同步会静默失败")
+        }
+        let plistPath = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist").path
+        if !fm.fileExists(atPath: plistPath) {
+            findings.append("Config/Project.plist 缺失")
+        }
+        if findings.isEmpty {
+            return "未发现显性异常（初始化失败的确切原因需查 debug.json——用 build_log 查看）"
+        }
+        return findings.joined(separator: "；")
+    }
+
+    /// 工程源文件计数（.swift/.c/.cpp/.m/.mm，排除 Resources/Config；-1=不可枚举）。
+    static func countCodeFiles(in dir: URL) -> Int {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else {
+            return -1
+        }
+        var count = 0
+        for case let fileURL as URL in en {
+            let path = fileURL.path
+            if path.contains("/Resources") || path.contains("/Config") {
+                continue
+            }
+            let ext = fileURL.pathExtension.lowercased()
+            if ext == "swift" || ext == "c" || ext == "cpp" || ext == "m" || ext == "mm" {
+                count += 1
+            }
+        }
+        return count
+    }
+
     /// 取（或经官方工厂创建）工程。同名已存在 → 复用（AI 增量写码场景）。
     /// 返回 (project, created)。
     func createOrReuseProject(workspaceRoot: URL,
@@ -169,6 +220,27 @@ final class BuildService: @unchecked Sendable {
                 let key = r.file + ":" + String(r.line) + ":" + String(r.col) + ":" + r.message
                 if seenKeys.insert(key).inserted { uniq.append(r) }
             }
+            // 【污染检测 2026-10-18】同进程内一次链接失败后 CC/lld 全局状态残留
+            //（复现实证：空符号名 8 连发 + A1/Verify2 构建报 Demo 工程的 .o 路径
+            //（不同缓存目录、物理上不可能是真实链接输入）+ stop_build 无效 +
+            // 重启 App 即愈）。两个特征任一命中即提示重启，避免 AI 反复盲试。
+            var contaminationHint = ""
+            if !result {
+                let ownUUID = project.cacheURL.lastPathComponent
+                var suspect = false
+                for r in uniq {
+                    let msg = r.message
+                    if msg.contains("duplicate symbol: \n") || msg.hasSuffix("duplicate symbol: ") {
+                        suspect = true
+                    }
+                    if (msg.contains("/Cache/") || msg.contains("Cache//")) && !msg.contains(ownUUID) {
+                        suspect = true
+                    }
+                }
+                if suspect {
+                    contaminationHint = "\n⚠️ 检测到构建服务状态污染特征（空符号名/他工程缓存路径）——同进程残留影响，重启 App 后可恢复；stop_build 无法清除。"
+                }
+            }
             // 零插值形态（type-check 超时第 4 次实证——插值链全部改拼接）。
             var lines2: [String] = []
             for r in uniq.prefix(50) {
@@ -184,14 +256,25 @@ final class BuildService: @unchecked Sendable {
             }
             let summary: String
             if lines2.isEmpty {
-                // 【压测报告 D3】零诊断文案分 success/failure 两态——success 空
-                // 诊断是正常态，误显失败指路文案纯属噪音（真机实证）。
-                summary = result
-                    ? "构建成功，无诊断"
-                    : "（零诊断失败——优先检查 Config/Project.plist 的 XML 完整性；如反复 0 秒失败，建议换新工程名重建——同名复用不会重置已损坏工程）"
+                if result {
+                    // 【压测报告 D3】零诊断文案分 success/failure 两态——success 空
+                    // 诊断是正常态，误显失败指路文案纯属噪音（真机实证）。
+                    summary = "构建成功，无诊断"
+                } else {
+                    // 【0.0s 透明化 2026-10-18】失败且零诊断=大概率初始化阶段静默
+                    // 失败（NXBuilder init 的 sync 失败路径 return nil 零落盘；实测
+                    // BuildSmoke：plist 正常仍 0.0s，原"检查 XML"指路误导）。
+                    var zeroDiag = "（零诊断失败——大概率构建器初始化阶段静默失败。白盒体检："
+                    zeroDiag = zeroDiag + Self.initChainProbe(project: project)
+                    zeroDiag = zeroDiag + "。进一步：build_log 查看本工程 debug.json（阶段引擎失败会留 Internal 条目）；或换新工程名重建——同名复用不会重置已损坏工程）"
+                    summary = zeroDiag
+                }
             } else {
-                summary = lines2.joined(separator: "\n")
-                    + (uniq.count > 50 ? "\n…（仅显示前 50 条，共 " + String(uniq.count) + " 条——修一批再构建看下一批）" : "")
+                var tail = ""
+                if uniq.count > 50 {
+                    tail = "\n…（仅显示前 50 条，共 " + String(uniq.count) + " 条——修一批再构建看下一批）"
+                }
+                summary = lines2.joined(separator: "\n") + tail + contaminationHint
             }
 
             let buildResult = BuildResult(
