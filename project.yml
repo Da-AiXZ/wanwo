@@ -175,7 +175,7 @@ targets:
         # N7a 增第 7 根：OpenSSLHeaders（openssl/ 子目录重排——xcframework Headers 平铺
         # 无法解析 <openssl/xxx.h>，ZSign 全部尖括号 openssl 引用经此根命中；头源=
         # OpenSSL.xcframework/ios-arm64 切片 140 头，diff 登记 gpl-compliance §N7）
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign/common"
         # N3b 修③（run 39003398834 实证）：桥接头 import MDKOSVersion 触发
         # MobileDevelopmentKit module 构建，MDKThreadPool.h:29 #import
         # <CoreCompiler/CCUtils.h> 在 -I Vendor/nyxian 加宽后命中 CC 源码树头
