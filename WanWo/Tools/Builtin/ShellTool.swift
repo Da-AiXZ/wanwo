@@ -53,6 +53,8 @@ struct ShellTool: AgentTool {
     let description = "Run a shell command inside the session's Alpine (busybox ash) environment. "
         + "Standard POSIX sh syntax; bash-only syntax is detected and bash is installed on demand. "
         + "Working directory is the session workspace (/var/wanwo/workspace). Output is sanitized and truncated. "
+        + "Note: guest directory listings (ls/find) can be stale for recently created files (kernel dir-cache lag); "
+        + "reading a known full path always works — verify file existence with the fs tools (glob/read), never with guest ls. "
         // M5-A J2：run_in_background 增量文案（dsh tool-bash :69-72 逐字；
         // job_output/job_kill 于 J3 装配——文案先行引用，dsh 同形态）。
         + "Set `run_in_background: true` for long-running commands: the call returns a job id immediately; "
