@@ -305,7 +305,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 ## N8、运行侧底座落位（2026-10-19 晚，方案 analysis/n8-runtime-foundation-plan.md，用户四项拍板全过；N8a+N8b+pe_smoke 一批）
 
-**来源与锚定**：Nyxian-0.10.3（本地快照 `_nyxian_probe/0.10.3/Nyxian-0.10.3/`，N7a 同源快照）。**编译面镜像依据（pbxproj 亲自复读，两处与任务书/方案预估不符，见"读到的偏差"）**：宿主=emexDE 例外集 798BBD33（Nyxian 树编入 −19 件=JBSupport 2 + LCBootstrap 1 + Tweaks 5 + ProcEnvironment 根部 guest 10）+ LiveProcess 组例外集 79BF9840（追加 3 件宿主代理面）；appex=LiveProcess target 例外集 79BF983D（追加 6 件）+ Nyxian 组例外集 79BF9A97（**追加 38 件**，方案预估"约 40"）。
+**来源与锚定**：Nyxian-0.10.3（本地快照 `_nyxian_probe/0.10.3/Nyxian-0.10.3/`，N7a 同源快照）。**编译面镜像依据（pbxproj 亲自复读，两处与任务书/方案预估不符，见"读到的偏差"）**：宿主=emexDE 例外集 798BBD33（Nyxian 树编入 −19 件=JBSupport 2 + LCBootstrap 1 + Tweaks 6（Dead10ccFix/Dyld/NSFileManager+GuestHooks/NSUserDefaults/SecItem/UIKit+GuestHooksInit——QA 审计勘误：原写 Tweaks 5 系算术误差）+ ProcEnvironment 根部 guest 10）+ LiveProcess 组例外集 79BF9840（追加 3 件宿主代理面）；appex=LiveProcess target 例外集 79BF983D（追加 6 件）+ Nyxian 组例外集 79BF9A97（**追加 38 件**，方案预估"约 40"）。
 
 ### 落位清单（计数 217 文件）
 
@@ -362,7 +362,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 |---|---|
 | `WanWo/Features/BuildExt/ApplicationManagementCompat.swift` | 见上 #2 |
 | `WanWo/Features/BuildExt/PESmoke.swift` | pe_smoke 冒烟工具（形态 A）：status（只读：liveProcessIsAvailable+PEBootstrapRegistry endpoint 数+两 daemon pid/autorestart 直译）/probe（只读：PEContainer containerRoot+isReadableFileAtPath 两次 XPC 往返证明句柄传输）/recycle（驱动级审批：terminate→轮询 autorestart 新 pid→宿主存活报告）。AgentTool 注册走 BuildTools.registerAll（8→9 件），recycle 走 ctx.escalationApprover（build_ipa 同缝 fail closed） |
-| `WanWo/Features/BuildExt/SigningSetupService.swift` N8 段 | 官方 main checkSigningSetup ①②段收口（N7b 预留 stub）：`extensionExists`（PlugIns/WanWoLiveProcess.appex 存在性=liveProcessIsAvailable 同判据）+`extensionAllowsDebug`/`profileAllowsDebug`（读导入 profile get-task-allow——万我语义适配：官方读 appex 内嵌 profile，万我 unsigned 分发权威 profile=用户导入三件套；解析复用 N7c 字节级 range(of:) 形态）+`runtimeSetupSummary` 组合读视图（不弹 alert——万我无 NXWindowServer rootVC 呈现缝） |
+| `WanWo/Features/BuildExt/SigningSetupService.swift` N8 段 | 官方 main checkSigningSetup ①②段收口（N7b 预留 stub）：`extensionExists`（PlugIns/WanWoLiveProcess.appex fileExists——liveProcessIsAvailable 的等义实现而非同函数，QA 勘误：liveProcessIsAvailable 真实消费者=PESmoke）+`extensionAllowsDebug`/`profileAllowsDebug`（读导入 profile get-task-allow——万我语义适配：官方读 appex 内嵌 profile，万我 unsigned 分发权威 profile=用户导入三件套；解析复用 N7c 字节级 range(of:) 形态）+`runtimeSetupSummary` 组合读视图（不弹 alert——万我无 NXWindowServer rootVC 呈现缝） |
 | `WanWo/Bridge/WanWo-Bridging-Header.h` | 追加 5 头：PEProcessManager/PEBootstrapRegistry/PELaunchServiceRegistry/PEExtension/PEContainer（链上全部纯 ObjC/C 可桥） |
 
 ### 读到的偏差（亲自读 pbxproj/源码与任务书或方案不符处）
