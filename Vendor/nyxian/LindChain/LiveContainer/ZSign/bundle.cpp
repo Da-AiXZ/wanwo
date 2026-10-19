@@ -335,10 +335,18 @@ bool ZBundle::SignNode(jvalue& jvNode)
 
 	if (m_bForceSign || jvCodeRes.is_null()) { // create
         // LiveContainer don't need CodeResources
-//		if (!GenerateCodeResources(strBaseFolder, jvCodeRes)) {
-//			ZLog::ErrorV(">>> Create CodeResources failed! %s\n", strBaseFolder.c_str());
-//			return false;
-//		}
+        // 【万我 N7c 修 2026-10-19】标准签名交付模式（wanwo_zsign_host_identity
+        // ==NO）恢复 GenerateCodeResources 调用——CodeResources 空壳（实测
+        // 194B integer 0）导致资源 seal 缺失（embedded.mobileprovision 等
+        // 非代码文件不被封存）→ installd「无法验证其完整性」（轻松签实测
+        // 实锤）。LC 容器模式保持官方跳过行为。diff 登记
+        // docs/gpl-compliance.md §N7c。
+        if (!wanwo_zsign_host_identity()) {
+            if (!GenerateCodeResources(strBaseFolder, jvCodeRes)) {
+                ZLog::ErrorV(">>> Create CodeResources failed! %s\n", strBaseFolder.c_str());
+                return false;
+            }
+        }
 	} else if (jvNode.has("changed")) { // use existsed
 		for (size_t i = 0; i < jvNode["changed"].size(); i++) {
 			string strFile = jvNode["changed"][i].as_cstr();

@@ -713,6 +713,15 @@ bool ZSignAsset::InitSimple(const void* strSignerPKeyData, int strSignerPKeyData
     jvalue jvProv;
     string strProvContent;
     m_strEntitleData = "";
+    // 【万我 N7c 修 2026-10-19】InitSimple 原实现不填 m_strProvData（仅
+    // InitFromFiles 路径填）→ ZBundle::ConfigureFolderSign 的
+    // 「m_strProvData 非空才写 embedded.mobileprovision」条件永远为假 →
+    // 包内 profile 永久缺失 → 安装时报「无法验证其完整性」（轻松签实测
+    // 实锤；zsign.mm:65 传入的 dontGenerateEmbeddedMobileProvision 参数
+    // 在 bundle.cpp 内零消费=死参数）。补存 prov 数据恢复 zsign 上游语义
+    // （标准签名交付需要内嵌 profile；LC 容器模式经开关见 bundle.cpp）。
+    // diff 登记 docs/gpl-compliance.md §N7c。
+    m_strProvData.assign((const char*)strProvisionData, strProvisionDataSize);
     if (GetCMSContent2(strProvisionData, strProvisionDataSize, strProvContent))
     {
         if (jvProv.read_plist(strProvContent))

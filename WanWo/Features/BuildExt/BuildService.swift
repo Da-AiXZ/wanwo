@@ -503,6 +503,11 @@ final class BuildService: @unchecked Sendable {
     /// 改 Data 字节级搜索 ⑤补写 profile/清 zsign_cache.json 必须**在 ZSign
     /// 之后**（ConfigureFolderSign 先 RemoveFileV 删 profile 再按 flag 跳过
     /// 重写；zsign_cache.json 由 StartSign 完成时写出——签名前操作全部无效）。
+    /// 【第四轮】「无法验证其完整性」真因=InitSimple 不填 m_strProvData
+    ///（profile 永久缺失）+CodeResources 空壳（GenerateCodeResources 被官方
+    /// 注释）→ 资源 seal 缺失。修复=openssl.cpp InitSimple 补存 prov +
+    /// bundle.cpp 恢复 GenerateCodeResources（均条件化于 wanwo_zsign_host_
+    /// identity 开关）；本方法的后置 profile 补写删除（zsign 内部接管）。
     /// 返回 (成功, 描述)。
     static func signAndRepackage(project: NXProject) -> (ok: Bool, message: String) {
         guard let p12 = CertificateStore.loadCertificateData(),
@@ -570,20 +575,13 @@ final class BuildService: @unchecked Sendable {
         guard signOK else {
             return (false, signMessage)
         }
-        // ③ ZSign 后补写 embedded.mobileprovision + 清理 zsign_cache.json
-        //   （都在 zip 前落定——见②时序说明）
-        do {
-            try profile.write(
-                to: project.bundleURL.appendingPathComponent("embedded.mobileprovision"),
-                options: .atomic)
-        } catch {
-            return (false, "签名后置失败：描述文件写入错误（" + error.localizedDescription + "）")
-        }
-        let junkNames = ["zsign_cache.json", "zsign_cache"]
-        for junk in junkNames {
-            let junkURL = project.bundleURL.appendingPathComponent(junk)
-            try? FileManager.default.removeItem(at: junkURL)
-        }
+        // ③ 【第四轮修正】embedded.mobileprovision 由 zsign 内部写入（本轮
+        //    修复 InitSimple 补存 m_strProvData 后 ConfigureFolderSign 的
+        //    「prov 非空才写」条件恢复生效——且写入先于 CodeResources 生成，
+        //    资源 seal 完整覆盖）；CodeResources 由恢复的 GenerateCodeResources
+        //    生成（标准模式）。仅清理 zsign_cache.json（StartSign 末尾写出）。
+        let junkURL = project.bundleURL.appendingPathComponent("zsign_cache.json")
+        try? FileManager.default.removeItem(at: junkURL)
         if !alignmentNote.isEmpty {
             signMessage = signMessage + alignmentNote
         }
