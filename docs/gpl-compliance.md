@@ -241,4 +241,18 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 **N7a 最终形态（CI 全绿）**：LiveContainer 49 文件+OpenSSL.xcframework 落 vendored；ZSign 纯净子集 15 文件编译；HSEARCH 10 根；LDFLAGS+FSEARCH 直连 OpenSSL；ios.yml embed 双保险（cp+xcframework 直取+test -f 硬门）。
 
-**N7c 修正版接缝要点**：vendored NXBuilder.swift .run 分支维持 WANWO_BUILD_RUN 宏关闭（main 版符号面 vs 0.10.3 vendored 库接口差异——LCUtils.signMachOWithoutPatchAtURL 仅 main 有、validateCertificate 两版签名不同、LCMapMachO 为 main 形态）；万我 BuildService 层按 0.10.3 Builder.install(.RunningApp) 语义重实现签名编排（BuildResult.bundleURL→ZSigner.signWithAppPath，**不 patch**——LCPatchExecSlice="Literally convert an executable to a dylib"属 LC 容器化运行核心，归 N9 与 litehook.c 一起）；证书 UI 官方只导 p12+密码（prov=宿主 embedded.mobileprovision）→万我 unsigned 分发需导入式 profile（LiveContainer 上游三件套形态）+Keychain 存密码。
+**N7c 修正版接缝要点**：vendored NXBuilder.swift .run 分支维持 WANWO_BUILD_RUN 宏关闭（main 版符号面 vs 0.10.3 vendored 库接口差异——LCUtils.signMachOWithoutPatchAtURL 仅 main 有、validateCertificate 两版签名不同、LCMapMachO 为 main 形态）；万我 BuildService 层按 0.10.3 Builder.install(.RunningApp) 语义重实现签名编排（BuildResult.bundleURL→ZSigner.signWithAppPath，**不 patch**——LCPatchExecSlice="Literally convert an executable to dylib"属 LC 容器化运行核心，归 N9 与 litehook.c 一起）；证书 UI 官方只导 p12+密码（prov=宿主 embedded.mobileprovision）→万我 unsigned 分发需导入式 profile（LiveContainer 上游三件套形态）+Keychain 存密码。
+
+## N7b、证书管理三件（2026-10-19，方案 §二 N7b-1/2/3，用户拍板：签名 bundle 交付 BuildArtifacts/密码 Keychain/用户有 adhoc p12+profile）
+
+**性质**：万我层新写（零 vendored 改动）——语义移植自 0.10.3 官方证书 UI（CertificateController/CertificateImporter）与 main 版 checkSigningSetup（UI/CodeSigCheck.swift），SwiftUI 呈现。
+
+| # | 万我落点（新文件） | 来源 | 裁剪/适配 diff |
+|---|---|---|---|
+| 1 | `WanWo/Features/BuildExt/CertificateStore.swift` | 官方 CertificateImporter 存储语义（NSUserDefaults 三键 LCCertificateData/Password/UpdateDate） | ①载体升级：密码→Keychain（kSecClassGenericPassword，service `com.wanwo.signing` 与 credentials/mcp 同形隔离，复用 KeychainStore 既有 SecItem 形态——用户拍板）；p12/profile 二进制大件→沙盒 Application Support/WanWoSigning/ 文件（Keychain 适合小 secret，大件文件+沙盒保护是平台主流）②官方只导 p12+密码（prov 取宿主 embedded.mobileprovision）→万我 unsigned 分发无宿主有效 profile，改导入式三件套（LiveContainer 上游形态）③接口：save(p12:password:profile:)/loadCertificateData()/loadPassword()/loadProfileData()/isConfigured/importDate/clear |
+| 2 | `WanWo/Views/Settings/CertificateSettingsView.swift` | 0.10.3 CertificateController（状态行+导入入口）+ CertificateImporter（导入表单） | ①UIKit 表单→SwiftUI List/Form（文案语义照抄："Certificate Valid Till"→"有效期至"、密码 hint "i.e 123456" 原样、导入失败红字=官方 NotifyUser(.error) 行内化）②状态行三态：未配置灰/有效绿（checkCert status==0+expirationDate）/失败红——官方 updateCertificateState 同构③导入 sheet 两段 fileImporter（p12+mobileprovision——比官方多一段描述文件选择器）+SecureField+提交；官方 Data(contentsOf:) 直读→补 security-scoped 作用域纪律④新增「清除证书」（官方无——万我三件可逆管理，confirmationDialog 二次确认） |
+| 3 | `WanWo/Features/BuildExt/SigningSetupService.swift` | main 版 checkSigningSetup（UI/CodeSigCheck.swift:61，140 行三段） | ①extension 存在性/entitlement 两段（extensionExists+get-task-allow）**不做**——万我暂无 appex，服务 LC 容器化运行链归 N8/N9②validateCertificate 段改 ZSigner.checkCertWithProv:key:pass: 直调（ZSigner 主 App 编译面 N7a 落位；LCUtils.validateCertificate 底层同此调用，绕过其 NSUserDefaults 证书读取缝）；prov=用户导入的 mobileprovision 数据（非宿主 embedded）③async/await 桥接（withCheckedContinuation），产出 SigningCertificateStatus 读视图（N7c 签名编排 gate 共用） |
+| 4 | `SettingsPanelView.swift` 枚举扩展 | — | SettingsPane 加 `.certificate` 案（title 签名证书/icon checkmark.seal/destination CertificateSettingsView）+contentBody 路由；WOSettingsModal.paneContent 穷尽 switch 同步；UIBatch3Tests 分区计数断言 8→9 合法演化（CI修17 判卷先例） |
+| 5 | `WanWo/Bridge/WanWo-Bridging-Header.h` | — | 加 `#import <LindChain/LiveContainer/ZSign/zsigner.h>`（纯 ObjC 仅 Foundation，可桥；既有注释风格照抄） |
+
+**ZSigner 桥接实际形态**：`checkCertWithProv:key:pass:completionHandler:` → Swift `ZSigner.checkCert(withProv:key:pass:completionHandler:)`（首参 merge 进方法名）；block `(int, NSDate*, NSString*)` → `(Int32, Date?, String?)`；返回 int 为同步前置失败码（丢弃，回调路径为权威判定；status==0=有效）。

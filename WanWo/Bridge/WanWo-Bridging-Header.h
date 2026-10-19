@@ -35,3 +35,8 @@
 #import <LindChain/IDEBuilder/NXPhaseEngine.h>
 #import <LindChain/IDEBuilder/LDEFilesFinder.h>
 #import <LindChain/Utils/Zip.h>
+
+// N7b BuildExt：ZSigner 证书校验/签名（Swift 侧 SigningSetupService
+// checkCert 消费；N7c 签名编排 signWithAppPath 同类）。zsigner.h 纯 ObjC
+// （仅 Foundation），可桥；ZSigner 类已在主 App 编译面（N7a 落位 15 文件）。
+#import <LindChain/LiveContainer/ZSign/zsigner.h>

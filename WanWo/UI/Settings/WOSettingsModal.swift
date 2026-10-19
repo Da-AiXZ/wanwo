@@ -273,6 +273,8 @@ struct WOSettingsModal: View {
             TeamBoardView(environment: environment)
         case .mounts:
             MountedFoldersSettingsView()
+        case .certificate:
+            CertificateSettingsView()
         case .diagnostics:
             EventStreamView(environment: environment)
         }

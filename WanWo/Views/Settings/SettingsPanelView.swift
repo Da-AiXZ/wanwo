@@ -36,6 +36,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
     case memory
     case team
     case mounts
+    case certificate
     case diagnostics
 
     var id: String { rawValue }
@@ -50,6 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "记忆"
         case .team: return "Teams"
         case .mounts: return "外挂载文件夹"
+        case .certificate: return "签名证书"
         case .diagnostics: return "诊断"
         }
     }
@@ -64,6 +66,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "brain"
         case .team: return "person.3"
         case .mounts: return "externaldrive.badge.plus"
+        case .certificate: return "checkmark.seal"
         case .diagnostics: return "list.bullet.rectangle"
         }
     }
@@ -78,6 +81,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "长期记忆沉淀与清空"
         case .team: return "Agent Teams 花名册与任务板（只读）"
         case .mounts: return "外挂载文件夹管理"
+        case .certificate: return "Adhoc 签名证书导入与校验（N7 链）"
         case .diagnostics: return "事件流（只读）"
         }
     }
@@ -92,6 +96,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .memory: return "MemorySettingsView"
         case .team: return "TeamBoardView"
         case .mounts: return "MountedFoldersSettingsView"
+        case .certificate: return "CertificateSettingsView"
         case .diagnostics: return "EventStreamView"
         }
     }
@@ -268,6 +273,8 @@ struct SettingsPanelView: View {
             TeamBoardView(environment: environment)
         case .mounts:
             MountedFoldersSettingsView()
+        case .certificate:
+            CertificateSettingsView()
         case .diagnostics:
             EventStreamView(environment: environment)
         }
