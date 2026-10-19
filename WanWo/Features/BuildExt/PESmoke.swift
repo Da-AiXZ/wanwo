@@ -52,12 +52,16 @@ enum PESmokeService {
             lines.append("bootstrap registry: unavailable")
         } else {
             let bootstrap = bootstrapOpt!
-            let registryDict = bootstrap.registry
-            let endpointCount = registryDict.count
-            lines.append("bootstrap endpoints registered: " + String(endpointCount))
-            let sortedIDs = registryDict.keys.sorted()
-            for identifier in sortedIDs {
-                lines.append("  endpoint: " + identifier)
+            let registryDictOpt = bootstrap.registry
+            if registryDictOpt == nil {
+                lines.append("bootstrap endpoints registered: (nil registry)")
+            } else {
+                let registryDict = registryDictOpt! as NSDictionary
+                lines.append("bootstrap endpoints registered: " + String(registryDict.count))
+                let sortedIDs = registryDict.allKeys.compactMap { $0 as? String }.sorted()
+                for identifier in sortedIDs {
+                    lines.append("  endpoint: " + identifier)
+                }
             }
         }
 
@@ -77,7 +81,7 @@ enum PESmokeService {
             let svc = serviceOpt!
             var line = "service " + identifier
                 + ": exec=" + (svc.executablePath ?? "-")
-                + " autorestart=" + String(svc.autoRestart)
+                + " autorestart=" + String(svc.shouldAutorestart)
             let processOpt = svc.process
             if processOpt != nil {
                 let pid = processOpt!.pid
@@ -102,8 +106,8 @@ enum PESmokeService {
     /// 与 isReadableFileAtPath 两次复读（官方 probe 面语义）。
     static func probeReport() -> String {
         let container = PEContainer.shared()
-        let fdObjectOpt = container.fdObjectForItemAtPath(
-            Bundle.main.bundlePath, withFlags: 0, withMode: 0)
+        let fdObjectOpt = container.fdObjectForItem(
+            atPath: Bundle.main.bundlePath, withFlags: 0, withMode: 0)
         if fdObjectOpt == nil {
             return "probe FAILED: fdObject nil（XPC 往返超时/连接失败——containerd daemon 未起？先 pe_smoke mode=status）"
         }
