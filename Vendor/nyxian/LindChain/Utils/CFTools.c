@@ -23,81 +23,29 @@
 #include <assert.h>
 #include <malloc/malloc.h>
 
-Boolean CFSwap(CFTypeRef ref1,
-               CFTypeRef ref2)
+void CFOverwrite(CFTypeRef dst,
+                 CFTypeRef src)
 {
-    if(ref1 == NULL || ref2 == NULL || CFGetTypeID(ref1) != CFGetTypeID(ref2))
-    {
-        return false;
-    }
+    assert(src != NULL && dst != NULL);
+    
+    /* literally overwriting object, this is normal memory */
+    CFTypeID srcID = CFGetTypeID(src);
+    CFTypeID dstID = CFGetTypeID(dst);
+    assert(srcID == dstID);
     
     /*
      * CFRuntimeBase = isa (8) + refcount/flags (8) = 16 bytes
      * skip it... preserve identity (pointer) and retain count
-     *
-     * lol it is just malloc memory :3
      */
-    size_t len = malloc_size(ref1);
-    if(len != malloc_size(ref2))
-    {
-        return false;
-    }
+    size_t src_size = malloc_size(src);
+    size_t size = malloc_size(dst);
+    assert(src_size <= size);
     
-    /* lets do the magic */
-    UInt8 buffer[len];
-    memcpy(buffer + cfheader_size(), (UInt8*)ref1 + cfheader_size(), len - cfheader_size());
-    memcpy((UInt8*)ref1 + cfheader_size(), (UInt8*)ref2 + cfheader_size(), len - cfheader_size());
-    memcpy((UInt8*)ref2 + cfheader_size(), buffer + cfheader_size(), len - cfheader_size());
-    return true;
-}
-
-static inline CFIndex __CFBundleGetBinaryTypeOffset(CFBundleRef hostBundle)
-{
-    static CFIndex discoveredOffset = -1;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        uint32_t *ptr = (uint32_t *)hostBundle;
-        for(CFIndex i = 4; i < 30; i++)
-        {
-            if(ptr[i] == __CFBundleDYLDExecutableBinary || ptr[i] == __CFBundleDYLDFrameworkBinary)
-            {
-                discoveredOffset = i * sizeof(uint32_t);
-                return;
-            }
-        }
-    });
-    return discoveredOffset;
-}
-
-void CFBundleSetBinaryType(CFBundleRef bundle,
-                           __CFPBinaryType type)
-{
-    if(bundle == NULL)
-    {
-        return;
-    }
+    /*
+     * retain everything in src payload first
+     * so objects survive when dst's old pointers get orphaned.
+     */
+    CFRetain(src);
     
-    CFIndex offset = __CFBundleGetBinaryTypeOffset(bundle);
-    if(offset < 0)
-    {
-        return;
-    }
-    
-    ((UInt8*)bundle)[offset] = (UInt8)type;
-}
-
-__CFPBinaryType CFBundleGetBinaryType(CFBundleRef bundle)
-{
-    if(bundle == NULL)
-    {
-        return __CFBundleUnknownBinary;
-    }
-    
-    CFIndex offset = __CFBundleGetBinaryTypeOffset(bundle);
-    if(offset < 0)
-    {
-        return __CFBundleUnknownBinary;
-    }
-    
-    return (__CFPBinaryType)((UInt8*)bundle)[offset];
+    memcpy((uint8_t *)dst + cfheader_size(), (uint8_t *)src + cfheader_size(), size - cfheader_size());
 }

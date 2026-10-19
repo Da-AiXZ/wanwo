@@ -28,21 +28,6 @@
 
 #define cfheader_size() sizeof(CFRuntimeBase)
 
-typedef enum {
-    __CFBundleUnknownBinary,
-    __CFBundleCFMBinary,
-    __CFBundleDYLDExecutableBinary,
-    __CFBundleDYLDBundleBinary,
-    __CFBundleDYLDFrameworkBinary,
-    __CFBundleDLLBinary,
-    __CFBundleUnreadableBinary,
-    __CFBundleNoBinary,
-    __CFBundleELFBinary
-} __CFPBinaryType;
-
-Boolean CFSwap(CFTypeRef ref1, CFTypeRef ref2);
-
-void CFBundleSetBinaryType(CFBundleRef bundle, __CFPBinaryType type);
-__CFPBinaryType CFBundleGetBinaryType(CFBundleRef bundle);
+void CFOverwrite(CFTypeRef dst, CFTypeRef src);
 
 #endif /* CFTOOLS_H */

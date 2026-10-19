@@ -565,9 +565,11 @@ targets:
       - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/ktfp.c
       - path: Vendor/nyxian/LindChain/ProcEnvironment/vfork.c
       # 官方例外集件=0.10.3 Utils/{CFTools.c,Swizzle.m,Zip.m}——万我树同路径
-      # 同名件为 main 版（CFTools.c 字节一致；Zip.m=main 版替代 0.10.3 版，
-      # 头契约一致、appex 编译单元零调用差异，登记 §N8；Swizzle.m=0.10.3 版
-      # 本批落位）。逐一路径照列（万我纪律：同一源文件 appex 自己再编一遍）
+      # 同名件已换版/替代（CFTools.h/.c=N8 修②换 0.10.3 版——main 版 CFSwap
+      # API 零消费者、0.10.3 版 CFOverwrite 为 LCBootstrap.m:93 必需；Zip.m=
+      # main 版替代 0.10.3 版，头契约一致、appex 编译单元零调用差异；
+      # Swizzle.m=0.10.3 版本批落位。均登记 §N8）。逐一路径照列
+      # （万我纪律：同一源文件 appex 自己再编一遍）
       - path: Vendor/nyxian/LindChain/Utils/CFTools.c
       - path: Vendor/nyxian/LindChain/Utils/Swizzle.m
       - path: Vendor/nyxian/LindChain/Utils/Zip.m
