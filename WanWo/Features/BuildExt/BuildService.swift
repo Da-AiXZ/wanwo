@@ -543,14 +543,16 @@ final class BuildService: @unchecked Sendable {
         } else {
             alignmentNote = "；⚠️ 描述文件解析失败，bundle id 未对齐——产物可能因身份不匹配无法安装"
         }
-        // ② 【时序关键】ZSign 签名（官方同款 semaphore 形态）。
-        //    embedded.mobileprovision 补写与 zsign_cache.json 清理都必须在
-        //    ZSign **之后**：ConfigureFolderSign 内部先 RemoveFileV 删
-        //    embedded.mobileprovision、再按 bDontGenerateEmbeddedMobileProvision=
-        //    YES（zsign.mm:65 官方硬编码）跳过重写——签名前补写会被内部删除；
-        //    zsign_cache.json 由 StartSign 完成时写出（bundle.cpp:711）——签名
-        //    前清理无效。profile 文件（非代码资源）不被签名 blob 覆盖，后写
-        //    安全；系统安装/启动时读取它。
+        // ② ZSign 签名（官方同款 semaphore 形态）。
+        //    【第四轮后时序语义】profile 由 zsign 内部写入（InitSimple 补存
+        //    m_strProvData → ConfigureFolderSign 的「prov 非空才写」恢复生效
+        //    → RemoveFileV 后写入，先于 CodeResources 枚举——清单含 profile）；
+        //    CodeResources 由标准模式恢复的 GenerateCodeResources 生成（完整
+        //    资源 seal）；zsign_cache.json 仍由 StartSign 末尾写出——清理须在
+        //    ZSign 之后（见③）。第二、三轮的「签名前/后补写 profile」方案均
+        //    被第四轮取代（前者被 ConfigureFolderSign 删除、后者缺资源 seal）。
+        //    zsign.mm:121 对 signFailedFiles 非空仍回调 success=YES——error
+        //    非空时如实上报。
         let semaphore = DispatchSemaphore(value: 0)
         var signOK = false
         var signMessage = ""
