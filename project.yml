@@ -580,11 +580,18 @@ targets:
         INFOPLIST_FILE: WanWoLiveProcess/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_ENTITLEMENTS: WanWoLiveProcess/LiveProcess.entitlements
-        # 官方 1287-1316 同构（-DCLIENT_ENV / HSEARCH 两根）
+        # 官方 1287-1316 同构（-DCLIENT_ENV / HSEARCH 两根）；万我加两根——
+        # 官方同步组对 target 内全部头建 headermap（裸名 quoted include 可解析：
+        # Tweaks 的 "UIKitPrivate.h"/"utils.h"），逐文件列法无 headermap 等价物，
+        # 补 LindChain/Private 与 LindChain/LiveContainer 两根直解（run 39272921786
+        # 实证 UIKitPrivate.h not found；include 闭包全量清点法：裸名 quoted
+        # include 仅此两处跨目录）
         OTHER_CFLAGS: "-DCLIENT_ENV"
         HEADER_SEARCH_PATHS:
           - "$(PROJECT_DIR)/Vendor/nyxian"
           - "$(PROJECT_DIR)/WanWoLiveProcess"
+          - "$(PROJECT_DIR)/Vendor/nyxian/LindChain/Private"
+          - "$(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer"
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
