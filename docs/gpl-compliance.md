@@ -354,7 +354,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 1. **NotificationServer**（PEProcessManager.m:144 消费）：官方 0.10.3 LindChain 层 `Project/Project+NotificationServer.swift` 字节级提取落位+宿主编入（NXOSVersion.swift 先例；纯 UIKit/Foundation 自包含）。零逻辑 diff。
 2. **ApplicationManagementViewController**（LDEApplicationWorkspace.m:364/371 observer 回调）：万我侧新建 `WanWo/Features/BuildExt/ApplicationManagementCompat.swift`（@objc 同名类，+shared+两个 no-op 回调——XCButtonCompat 先例；协议回调不可缺，缺失=daemon 侧 ObjC 消息派发异常）。vendored 零额外 diff。
-3. **TerminalViewObjC/TerminalView**（NXWindowSessionTerminal.m 整文件依赖 UI/UIInit/Terminal.swift→SwiftTerm SPM+currentTheme/gibDynamicColor）：整实现包进 WANWO_BUILD_UI 宏守卫（NXBuilder.swift buildProjectWithArgumentUI 先例 §三 c #5），宏不定义=空编译单元零符号泄漏，N10 接入 SwiftTerm 后开宏激活。备选（SwiftTerm SPM 接入+多层 UI shim）未动工。
+3. **TerminalViewObjC/TerminalView**（NXWindowSessionTerminal.m 整文件依赖 UI/UIInit/Terminal.swift→SwiftTerm SPM+currentTheme/gibDynamicColor）：整实现包进 WANWO_BUILD_UI 宏守卫（NXBuilder.swift buildProjectWithArgumentUI 先例 §三 c #5），宏不定义=空编译单元零符号泄漏；**N10 UI 批次接 SwiftTerm SPM 后开宏激活**（主理人批准处置③：守卫只包 .m 实现体、NXWindowSessionTerminal.h 声明面无守卫编译自洽——全树仅其自身 .m 引用；SwiftTerm SPM 引入属 N10 用户拍板项，本批禁止引入）。备选（SwiftTerm SPM 接入+多层 UI shim）未动工。
 
 ### 万我层新增（非官方代码）
 
