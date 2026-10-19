@@ -284,3 +284,21 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 3. **profile 解析失败根因**——mobileprovision=CMS(DER) 二进制容器，String(utf8) 整包解码失败 → bundleIdFromProfile 改 Data 字节级 range(of:) 搜索（二进制安全）。
 4. **时序修正**——ConfigureFolderSign 内部先 RemoveFileV 删 embedded.mobileprovision 再按 zsign.mm:65 flag 跳过重写（签名前补写被内部删除）；zsign_cache.json 由 StartSign 完成时写出（bundle.cpp:711）→ 补写+清理全部移到 ZSign 之后、zip 之前。
 5. 缓存机制澄清：zsign 读缓存在 `./.zsign_cache/`（CWD 相对——万我 CWD=/ 不可写→缓存天然失效→每次 force 全量签名，无增量问题）；`zsign_cache.json`（bundle 内）仅是写出物。CodeResources 不生成=官方刻意（:320 注释「LiveContainer don't need CodeResources」，iOS 校验读主二进制 blob，非致命）。
+
+### N7 正式收官（2026-10-19 20:3x，用户实测：签名 ipa 轻松签直装成功——N7a/b/c/d 四段全闭环）
+
+**最终形态**：`build_ipa(sign=true)` → bundle id 对齐证书 profile → zsign 内部嵌入 embedded.mobileprovision（InitSimple 补存 prov 后 ConfigureFolderSign 条件恢复）→ 完整 CodeResources 资源 seal（标准模式恢复 GenerateCodeResources）→ 签名 identifier/entitlements/Info.plist 三方一致 → 轻松签直装通过「完整性」校验。
+
+**签名链 diff 总账（vendored 3 文件，全部条件化于 wanwo_zsign_host_identity 开关，N9 零返工）**：
+| 文件 | diff | 语义 |
+|---|---|---|
+| bundle.cpp:53-54 | 身份覆写包进 `if (wanwo_zsign_host_identity())` | NO=标准（identifier=包对齐值）/ YES=LC 容器（=宿主，0.10.3 原行为） |
+| bundle.cpp:319 | 恢复 GenerateCodeResources（`!开关` 时） | NO=完整资源 seal / YES=官方跳过（LC don't need） |
+| openssl.cpp InitSimple | 补存 m_strProvData（`!开关` 时） | NO=zsign 内部写 profile / YES=不写（LC 容器体系管理） |
+| zsigner.h/.m | 新增开关函数+setter | 默认 NO；N9 落位时 LC 运行链显式 YES |
+
+**四轮修复链**：①第三轮=身份覆写开关化（用户质询 N9 影响成立——LC 容器模型需要覆写让 guest 签名身份=宿主，dlopen 过 AMFI）②第四轮=InitSimple 补存+CodeResources 恢复（用户对照实验定罪：同证书同包，全能签产物轻松签直装正常、zsign 产物「无法验证其完整性」——变量收敛到 zsign 产物；AI 取证实锤 CodeResources 空壳+profile 缺失）③复查=InitSimple 条件化补齐（LC 模式行为偏差）。
+
+**验证矩阵**：N7a 真机冒烟（test 工程 37KB→50KB 签名版）✓ / N7b 证书导入+OCSP 校验（「证书有效」绿态）✓ / N7c sign 参数全链 ✓ / N7d 轻松签直装能跑 ✓。
+
+**流程教训沉淀**：①pbxproj 考古必须先查 Xcode 16 文件系统同步组（grep 文件名验证法失效）②SwiftUI 同视图多 presentation 修饰符必炸（单实例+分流）③Smoke workflow 绿≠主 App 编译绿 ④vendored 魔改的三态语义必须条件化保 N9（用户质询驱动）⑤对照实验（同证书同包换签名工具）是定位签名问题最快路径。
