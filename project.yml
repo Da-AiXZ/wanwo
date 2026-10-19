@@ -125,6 +125,10 @@ targets:
       # - path: Vendor/nyxian/LindChain/Utils/Swizzle.c  ← N8 退役（见上注）
       - path: Vendor/nyxian/LindChain/Utils/entitlement.c
       - path: Vendor/nyxian/LindChain/Utils/NXOSVersion.swift
+      # N8 修⑦：宿主补编 0.10.3 Swizzle.m——attrstrnilfix.m（宿主编入面）
+      # 引用 swizzle_objc_method（0.10.3 API；run 39304577904 链接实证）。
+      # main 版 Swizzle.c 退役（见上注），无重复符号。
+      - path: Vendor/nyxian/LindChain/Utils/Swizzle.m
       # N3b：SDK + Shared 三 zip 内嵌资源（拍板 ③ 零网络；单文件形态——
       # D2 先例 folder 展开冲突，四 zip 文件名全唯一；NXBootstrap 侧路径
       # 已同步平铺适配，diff 登记 docs/gpl-compliance.md §N3b）
