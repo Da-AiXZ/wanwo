@@ -319,7 +319,11 @@ targets:
         # ② -larchive——N3b 新接的 Zip.m 用 libarchive；官方同款机制=SDK
         #   自带 libarchive.tbd（iOS 系统私有库，运行时走 dyld 共享缓存，
         #   不 embed；官方 pbxproj L275 SDKROOT/usr/lib/libarchive.tbd）。
-        OTHER_LDFLAGS: "$(inherited) -lish -lish_emu -lfakefs -framework CoreCompiler -framework MobileDevelopmentKit -framework OpenSSL -larchive"
+        # N8 修⑥：Private 私有框架 tbd 四件作为链接输入（官方 Xcode 16 同步组
+        # 把树内 .tbd 自动收进 Frameworks 链接阶段；逐文件列法无等价物——run
+        # 39297725695 实证 _OBJC_CLASS_$_FBProcess/RBSTarget undefined。全路径
+        # 链接输入=CCSupportLibs dylib 先例同款；FSEARCH 第 4 根供 clang 头面）
+        OTHER_LDFLAGS: "$(inherited) -lish -lish_emu -lfakefs -framework CoreCompiler -framework MobileDevelopmentKit -framework OpenSSL -larchive $(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks/FrontBoard.framework/FrontBoard.tbd $(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks/FrontBoardServices.framework/FrontBoardServices.tbd $(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks/BackBoardServices.framework/BackBoardServices.tbd $(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks/RunningBoardServices.framework/RunningBoardServices.tbd"
         CLANG_ENABLE_MODULES: YES
         # 万我 M6.1 增（B1b）：entitlements（HealthKit/HomeKit/NFC，按 OpenMinis
         # src/ios/Minis.entitlements 原样引入，见 WanWo.entitlements 注释）
