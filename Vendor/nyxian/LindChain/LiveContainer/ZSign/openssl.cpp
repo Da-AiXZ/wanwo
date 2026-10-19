@@ -8,6 +8,10 @@
 #include <openssl/pkcs12.h>
 #include <openssl/conf.h>
 
+// 【万我 N7c 修】容器身份覆写开关——实现于 zsigner.m（语义见 bundle.cpp
+// 消费点注释：NO=标准签名交付；YES=LC 容器模式）。
+extern "C" bool wanwo_zsign_host_identity(void);
+
 const char* ZSignAsset::s_szAppleDevCACertG3 = ""
 "-----BEGIN CERTIFICATE-----\n"
 "MIIEUTCCAzmgAwIBAgIQfK9pCiW3Of57m0R6wXjF7jANBgkqhkiG9w0BAQsFADBi\n"
@@ -719,9 +723,12 @@ bool ZSignAsset::InitSimple(const void* strSignerPKeyData, int strSignerPKeyData
     // 包内 profile 永久缺失 → 安装时报「无法验证其完整性」（轻松签实测
     // 实锤；zsign.mm:65 传入的 dontGenerateEmbeddedMobileProvision 参数
     // 在 bundle.cpp 内零消费=死参数）。补存 prov 数据恢复 zsign 上游语义
-    // （标准签名交付需要内嵌 profile；LC 容器模式经开关见 bundle.cpp）。
-    // diff 登记 docs/gpl-compliance.md §N7c。
-    m_strProvData.assign((const char*)strProvisionData, strProvisionDataSize);
+    // （标准签名交付需要内嵌 profile；LC 容器模式经开关保持官方行为=
+    // 不填不写，guest 包 profile 由容器体系管理）。条件化与 bundle.cpp 的
+    // 覆写/CodeResources 开关同源。diff 登记 docs/gpl-compliance.md §N7c。
+    if (!wanwo_zsign_host_identity()) {
+        m_strProvData.assign((const char*)strProvisionData, strProvisionDataSize);
+    }
     if (GetCMSContent2(strProvisionData, strProvisionDataSize, strProvContent))
     {
         if (jvProv.read_plist(strProvContent))
