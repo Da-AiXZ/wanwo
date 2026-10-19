@@ -25,8 +25,10 @@ final class ApplicationManagementViewController: NSObject {
         return instance
     }
 
-    /// observer 回调 no-op（应用管理 UI 归 N9/N10；installer 结果经 pe_smoke/日志面可观测）
-    @objc func applicationWasInstalled(_ app: LDEApplicationObject?) {
+    /// observer 回调 no-op（应用管理 UI 归 N9/N10；installer 结果经 pe_smoke/日志面可观测）。
+    /// app 参数用 Any?（万我壳不消费对象；消除对 vendored LDEApplicationObject 的
+    /// Swift 导入面依赖——selector 不变，daemon 侧 ObjC 派发只匹配 selector）。
+    @objc func applicationWasInstalled(_ app: Any?) {
         // no-op（万我壳）
     }
 

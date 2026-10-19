@@ -35,6 +35,8 @@ enum PESmokeService {
     static let recycleTimeoutSeconds: TimeInterval = 20
 
     /// status：只读状态直译（klog 同信息面）。
+    /// 注：vendored 头未标 nullability，shared() 经 Swift 导入为 Optional——
+    /// 全部 Optional binding 处理（run 39277671039 实证非 IUO）。
     static func statusReport() -> String {
         var lines: [String] = []
 
@@ -45,30 +47,40 @@ enum PESmokeService {
             lines.append("extension: WanWoLiveProcess.appex MISSING in PlugIns (liveProcessIsAvailable=false, ignition 不会启动)")
         }
 
-        let bootstrap = PEBootstrapRegistry.shared()
-        let registryDict = bootstrap.registry
-        let endpointCount = registryDict.count
-        lines.append("bootstrap endpoints registered: " + String(endpointCount))
-        let sortedIDs = registryDict.keys.sorted()
-        for identifier in sortedIDs {
-            lines.append("  endpoint: " + identifier)
+        let bootstrapOpt = PEBootstrapRegistry.shared()
+        if bootstrapOpt == nil {
+            lines.append("bootstrap registry: unavailable")
+        } else {
+            let bootstrap = bootstrapOpt!
+            let registryDict = bootstrap.registry
+            let endpointCount = registryDict.count
+            lines.append("bootstrap endpoints registered: " + String(endpointCount))
+            let sortedIDs = registryDict.keys.sorted()
+            for identifier in sortedIDs {
+                lines.append("  endpoint: " + identifier)
+            }
         }
 
-        let launchRegistry = PELaunchServiceRegistry.shared()
+        let launchRegistryOpt = PELaunchServiceRegistry.shared()
+        if launchRegistryOpt == nil {
+            lines.append("launch service registry: unavailable")
+            return lines.joined(separator: "\n")
+        }
+        let launchRegistry = launchRegistryOpt!
         let services = [containerdIdentifier, installdIdentifier]
         for identifier in services {
-            let service = launchRegistry.service(forIdentifier: identifier)
-            if service == nil {
+            let serviceOpt = launchRegistry.service(forIdentifier: identifier)
+            if serviceOpt == nil {
                 lines.append("service " + identifier + ": NOT REGISTERED（plist 缺失或 ignition 未跑）")
                 continue
             }
-            let svc = service!
+            let svc = serviceOpt!
             var line = "service " + identifier
                 + ": exec=" + (svc.executablePath ?? "-")
                 + " autorestart=" + String(svc.autoRestart)
-            let process = svc.process
-            if process != nil {
-                let pid = process!.pid
+            let processOpt = svc.process
+            if processOpt != nil {
+                let pid = processOpt!.pid
                 if pid > 0 {
                     line = line + " pid=" + String(pid) + " RUNNING"
                 } else {
@@ -84,59 +96,65 @@ enum PESmokeService {
     }
 
     /// probe：XPC 往返证明（宿主代理面 → containerd daemon）。
-    /// PEContainer 方法内部为官方同款 2s 超时 semaphore 形态，阻塞安全。
+    /// 第一跳用显式 nullable 的 fdObjectForItemAtPath（host bundle 路径传给
+    /// daemon 开 fd——nil=超时/连接失败，非 nil=对象跨 XPC 成功；避免审计区
+    /// 非空 containerRoot 的运行时 nil 陷阱）；daemon 存活后再做 containerRoot
+    /// 与 isReadableFileAtPath 两次复读（官方 probe 面语义）。
     static func probeReport() -> String {
         let container = PEContainer.shared()
-        // 第一跳：containerRoot（NSURL 对象跨 XPC 返回 appex NSHomeDirectory()）
-        let root = container.containerRoot
-        if root == nil {
-            return "probe FAILED: containerRoot nil（XPC 往返超时/连接失败——containerd daemon 未起？先 pe_smoke mode=status）"
+        let fdObjectOpt = container.fdObjectForItemAtPath(
+            Bundle.main.bundlePath, withFlags: 0, withMode: 0)
+        if fdObjectOpt == nil {
+            return "probe FAILED: fdObject nil（XPC 往返超时/连接失败——containerd daemon 未起？先 pe_smoke mode=status）"
         }
-        let rootURL = root!
-        let rootPath = rootURL.path
-        // 第二跳：对容器根做 BOOL 往返（isReadableFileAtPath 官方 probe 面）
-        let readable = container.isReadableFile(atPath: rootPath)
         var lines: [String] = []
-        lines.append("probe round-trip 1 (containerRoot): OK -> " + rootPath)
+        lines.append("probe round-trip 1 (fdObjectForItemAtPath host bundle): OK（FDObject 经 XPC 返回）")
+        let rootPath = container.containerRoot.path
+        lines.append("probe round-trip 2 (containerRoot): OK -> " + rootPath)
+        let readable = container.isReadableFile(atPath: rootPath)
         if readable {
-            lines.append("probe round-trip 2 (isReadableFileAtPath root): OK (true)")
-        } else {
-            lines.append("probe round-trip 2 (isReadableFileAtPath root): returned false（容器根不可读——异常态）")
-        }
-        if readable {
+            lines.append("probe round-trip 3 (isReadableFileAtPath root): OK (true)")
             lines.append("XPC handle transport: VERIFIED（对象跨 XPC + 连接全链畅通）")
+        } else {
+            lines.append("probe round-trip 3 (isReadableFileAtPath root): false（容器根不可读——异常态）")
+            lines.append("XPC handle transport: PARTIAL（对象往返 ✓，BOOL 复读 ✗）")
         }
         return lines.joined(separator: "\n")
     }
 
     /// recycle：terminate → autorestart 新 pid → 宿主存活（驱动级，需审批）。
     static func recycleReport(serviceIdentifier: String) -> String {
-        let launchRegistry = PELaunchServiceRegistry.shared()
-        let service = launchRegistry.service(forIdentifier: serviceIdentifier)
-        if service == nil {
+        let launchRegistryOpt = PELaunchServiceRegistry.shared()
+        if launchRegistryOpt == nil {
+            return "recycle FAILED: launch service registry unavailable"
+        }
+        let launchRegistry = launchRegistryOpt!
+        let serviceOpt = launchRegistry.service(forIdentifier: serviceIdentifier)
+        if serviceOpt == nil {
             return "recycle FAILED: service " + serviceIdentifier + " not registered（先 pe_smoke mode=status 看 ignition 态）"
         }
-        let svc = service!
-        let oldProcess = svc.process
-        if oldProcess == nil {
+        let svc = serviceOpt!
+        let oldProcessOpt = svc.process
+        if oldProcessOpt == nil {
             return "recycle FAILED: service " + serviceIdentifier + " has no live process（daemon 未在跑）"
         }
-        let oldPid = oldProcess!.pid
+        let oldProcess = oldProcessOpt!
+        let oldPid = oldProcess.pid
         if oldPid <= 0 {
             return "recycle FAILED: pid=" + String(oldPid) + "（daemon 无有效 pid）"
         }
 
         // 驱动级 terminate（官方 PEProcess.terminate→SIGKILL→processDidExit；
         // autorestart 走 PELaunchService.exitingCallback→ignition）
-        _ = oldProcess!.terminate()
+        _ = oldProcess.terminate()
 
         // 轮询新 pid（新 PEProcess 对象被 ignition 装回 _process）
         var newPid: Int32 = 0
         let deadline = Date().addingTimeInterval(recycleTimeoutSeconds)
         while Date() < deadline {
-            let current = svc.process
-            if current != nil {
-                let candidate = current!.pid
+            let currentOpt = svc.process
+            if currentOpt != nil {
+                let candidate = currentOpt!.pid
                 if candidate > 0 && candidate != oldPid {
                     newPid = candidate
                     break
