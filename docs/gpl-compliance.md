@@ -307,7 +307,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 
 **来源与锚定**：Nyxian-0.10.3（本地快照 `_nyxian_probe/0.10.3/Nyxian-0.10.3/`，N7a 同源快照）。**编译面镜像依据（pbxproj 亲自复读，两处与任务书/方案预估不符，见"读到的偏差"）**：宿主=emexDE 例外集 798BBD33（Nyxian 树编入 −19 件=JBSupport 2 + LCBootstrap 1 + Tweaks 5 + ProcEnvironment 根部 guest 10）+ LiveProcess 组例外集 79BF9840（追加 3 件宿主代理面）；appex=LiveProcess target 例外集 79BF983D（追加 6 件）+ Nyxian 组例外集 79BF9A97（**追加 38 件**，方案预估"约 40"）。
 
-### 落位清单（计数 216 文件）
+### 落位清单（计数 217 文件）
 
 | 万我落点 | 来源（0.10.3） | 文件数 |
 |---|---|---|
@@ -315,7 +315,7 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | `Vendor/nyxian/LindChain/litehook/` | 同名整目录 | 4 |
 | `Vendor/nyxian/LindChain/Private/` | 同名整目录（含 4 .tbd） | 11 |
 | `Vendor/nyxian/LindChain/WindowServer/` | 同名整目录 | 16 |
-| `Vendor/nyxian/LindChain/Debugger/{Utils.c,Utils.h}` | 同名（appex 编入面 Debugger/Utils.c 消费） | 2 |
+| `Vendor/nyxian/LindChain/Debugger/{Utils.c,Utils.h,Logger.h}` | 同名（Utils.c=appex 编入面；Logger.h=N8 修⑤补——ServerSession.m:26 import 链必需，其 LogTextView 零符号消费、Logger.m 不落位） | 3 |
 | `Vendor/nyxian/LindChain/Utils/Swizzle.m` + `Swizzle.h`(0.10.3 版覆写) | 同名 | 2 |
 | `Vendor/nyxian/LindChain/Project/Project+NotificationServer.swift` | 同名（字节级提取，NXOSVersion 先例） | 1 |
 | `Vendor/nyxian/Shared/LaunchServices/{containerd,installd}.plist` | 同名（品牌折算） | 2 |
