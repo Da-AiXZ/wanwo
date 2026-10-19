@@ -167,8 +167,10 @@ struct CertificateImportSheet: View {
     @State private var profileURL: URL?
     /// p12 导出密码（官方 hint "i.e 123456" 语义）。
     @State private var password = ""
-    @State private var isP12PickerPresented = false
-    @State private var isProfilePickerPresented = false
+    /// 文件选择器呈现（单一实例——装机复测实证：同视图挂两个 .fileImporter
+    /// 时 SwiftUI presentation 互相抢占，仅最后一个生效（描述文件能弹、p12
+    /// 静默无反应）——合并为单选择器按扩展名自动分流，两行入口共用。
+    @State private var isFilePickerPresented = false
     /// 提交失败信息（官方 NotificationServer.NotifyUser(.error) 同语义，
     /// sheet 内改行内红字）。
     @State private var errorMessage: String?
@@ -182,7 +184,7 @@ struct CertificateImportSheet: View {
                         title: "证书文件 (p12)",
                         selectedName: p12FileName,
                         systemImage: "key.fill",
-                        isPresented: $isP12PickerPresented)
+                        isPresented: $isFilePickerPresented)
                 } footer: {
                     Text("从证书颁发机构导出的 .p12 身份证书（含私钥）。")
                 }
@@ -191,7 +193,7 @@ struct CertificateImportSheet: View {
                         title: "描述文件 (mobileprovision)",
                         selectedName: profileFileName,
                         systemImage: "doc.text.fill",
-                        isPresented: $isProfilePickerPresented)
+                        isPresented: $isFilePickerPresented)
                 } footer: {
                     Text("与证书配套的 adhoc 描述文件（.mobileprovision）。")
                 }
@@ -220,14 +222,17 @@ struct CertificateImportSheet: View {
                 }
             }
             .fileImporter(
-                isPresented: $isP12PickerPresented,
-                allowedContentTypes: [Self.typeForExtension("p12")]) { result in
-                p12URL = Self.selectedURL(from: result)
-            }
-            .fileImporter(
-                isPresented: $isProfilePickerPresented,
-                allowedContentTypes: [Self.typeForExtension("mobileprovision")]) { result in
-                profileURL = Self.selectedURL(from: result)
+                isPresented: $isFilePickerPresented,
+                // 全量 .data（UTType(tag:) 动态解析的 UTI 在文档选择器呈现
+                // 上不可靠——p12 选择器静默失败实证之一）；选错类型由
+                // routePickedFile 按扩展名校验给行内红字。
+                allowedContentTypes: [.data]) { result in
+                guard let url = Self.selectedURL(from: result) else { return }
+                Self.routePickedFile(
+                    url,
+                    toP12: { p12URL = $0 },
+                    toProfile: { profileURL = $0 },
+                    onError: { errorMessage = $0 })
             }
         }
     }
@@ -315,11 +320,25 @@ struct CertificateImportSheet: View {
         return try Data(contentsOf: url)
     }
 
-    /// 扩展名 → UTType（找不到注册类型回退 .data 全量；try? 单步拆——
-    /// UTType(tag:) 是 throws 构造器）。
-    private static func typeForExtension(_ ext: String) -> UTType {
-        let resolved = try? UTType(
-            tag: ext, tagClass: .filenameExtension, conformingTo: .data)
-        return resolved ?? .data
+    /// 扩展名 → UTType（已废弃——UTType(tag:) 动态解析的 UTI 在文档选择器
+    /// 呈现上不可靠，统一走 [.data] + 扩展名分流）。
+
+    /// 选择结果按扩展名分流（p12 → 证书段；mobileprovision → 描述文件段；
+    /// 其他 → 行内红字提示。全拆步防插值链雷区形态）。
+    private static func routePickedFile(
+        _ url: URL,
+        toP12: (URL) -> Void,
+        toProfile: (URL) -> Void,
+        onError: (String) -> Void) {
+        let ext = url.pathExtension.lowercased()
+        if ext == "p12" {
+            toP12(url)
+            return
+        }
+        if ext == "mobileprovision" {
+            toProfile(url)
+            return
+        }
+        onError("请选择 .p12 证书或 .mobileprovision 描述文件（当前为 ." + ext + "）")
     }
 }

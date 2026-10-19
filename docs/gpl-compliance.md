@@ -256,3 +256,5 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 5 | `WanWo/Bridge/WanWo-Bridging-Header.h` | — | 加 `#import <LindChain/LiveContainer/ZSign/zsigner.h>`（纯 ObjC 仅 Foundation，可桥；既有注释风格照抄） |
 
 **ZSigner 桥接实际形态**：`checkCertWithProv:key:pass:completionHandler:` → Swift `ZSigner.checkCert(withProv:key:pass:completionHandler:)`（首参 merge 进方法名）；block `(int, NSDate*, NSString*)` → `(Int32, Date?, String?)`；返回 int 为同步前置失败码（丢弃，回调路径为权威判定；status==0=有效）。
+
+**N7b 装机复测修（2026-10-19 14:5x，用户实测反馈「证书栏点击没反应/描述文件正常」）**：CertificateSettingsView 同视图双 `.fileImporter` 修饰符 SwiftUI presentation 抢占（仅最后声明者生效——描述文件能弹、p12 静默无反应），叠加 `UTType(tag:)` 动态解析 UTI 在文档选择器呈现的不可靠性。修=合并单一 fileImporter（allowedContentTypes=[.data] 全量）+ 按扩展名 routePickedFile 自动分流（p12/mobileprovision→对应段，其他→行内红字），typeForExtension 废弃删除。教训：SwiftUI 同视图多 presentation 修饰符必炸——单实例+分流是文件多类型选择的防弹形态。
