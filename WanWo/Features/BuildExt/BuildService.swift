@@ -446,21 +446,22 @@ final class BuildService: @unchecked Sendable {
     // MARK: N7c · 签名编排（用户导入证书 → ZSign 签 bundle → 重打包 ipa）
 
     /// 从 mobileprovision 数据解析 Entitlements 的 application-identifier
-    /// → 提取 bundle id 部分。mobileprovision = CMS(DER) 包裹的明文 plist
-    ///（社区通用解析法：截取 <?xml … </plist> 字节段后
-    /// PropertyListSerialization 解析，零外部依赖）。
+    /// → 提取 bundle id 部分。mobileprovision = CMS(DER) 二进制容器包裹的
+    /// 明文 plist——【装机复测修】String(utf8) 解码整包会因 CMS 二进制
+    /// 字节失败（轻松签实测解析失败实证）→ 改 Data 字节级搜索（range(of:)
+    /// 二进制安全）定位 <?xml … </plist> 段后 PropertyListSerialization
+    /// 解析，零外部依赖。
     /// 返回 (bundleId, isWildcard)：application-identifier 形如
     /// "TEAMID.com.xxx" → bundleId="com.xxx"；以 "*" 结尾 = 通配 profile。
     static func bundleIdFromProfile(_ data: Data) -> (bundleId: String, isWildcard: Bool)? {
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        guard let start = text.range(of: "<?xml"),
-              let end = text.range(of: "</plist>") else {
+        guard let startRange = data.range(of: Data("<?xml".utf8)),
+              let endRange = data.range(of: Data("</plist>".utf8)),
+              endRange.upperBound > startRange.lowerBound else {
             return nil
         }
-        let xml = String(text[start.lowerBound..<end.upperBound])
-        guard let xmlData = xml.data(using: .utf8),
-              let plist = try? PropertyListSerialization.propertyList(
-                  from: xmlData, options: [], format: nil) as? [String: Any] else {
+        let xmlData = data.subdata(in: startRange.lowerBound..<endRange.upperBound)
+        guard let plist = try? PropertyListSerialization.propertyList(
+            from: xmlData, options: [], format: nil) as? [String: Any] else {
             return nil
         }
         guard let entitlements = plist["Entitlements"] as? [String: Any],
@@ -484,15 +485,24 @@ final class BuildService: @unchecked Sendable {
     /// bundle 内容 → ipa 必须重 zip（官方 package() 同款
     /// zipDirectoryAtPath——桥接头 <LindChain/Utils/Zip.h>）。
     ///
-    /// 【装机复测修 2026-10-19】轻松签实测「装上后点开无法安装」三根因：
-    /// ①vendored zsign.mm:65 硬编码 bDontGenerateEmbeddedMobileProvision=
-    /// YES——不生成 embedded.mobileprovision（官方行为，guest 包 profile 由
-    /// 其容器体系自带）→ 本方法签名前补写 profile 进 bundle ②profile 的
-    /// application-identifier（非通配）与包 CFBundleIdentifier 错配 → 签名
-    /// 前把 Info.plist 改写为 profile 的 bundle id（共享证书标准做法——
-    /// 轻松签/爱思签同款；通配 profile 跳过）③zsign.mm:121 对
-    /// signFailedFiles 非空仍回调 YES → signError 非空时如实上报「部分
-    /// 文件签名失败」。另清理 zsign_cache.json 残留（AI 实测进包垃圾）。
+    /// 【装机复测修 2026-10-19 · 第一轮】轻松签实测「装上后点开无法安装」
+    /// 三根因：①zsign.mm:65 硬编码不生成 embedded.mobileprovision ②profile
+    /// 的 application-identifier（非通配）与包 CFBundleIdentifier 错配 → 签
+    /// 名前把 Info.plist 改写为 profile 的 bundle id ③zsign.mm:121 对
+    /// signFailedFiles 非空仍回调 YES → 如实上报。
+    /// 【装机复测修 · 第二轮】复测仍失败——事件流取证
+    /// signFailedFiles="TestApp.app//private/var/.../WanWo.app/WanWo"（宿主
+    /// 可执行路径被拼进签名对象）→ 源码对质 bundle.cpp:53-54：0.10.3 把
+    /// Info.plist 的 CFBundleExecutable/CFBundleIdentifier **覆写为宿主
+    /// App 值**（getExecutablePath/getBundleIdentifier——LiveContainer 容
+    /// 器化魔改：guest 签名身份=LC 宿主）→ 签名 identifier=宿主 id+主二进
+    /// 制路径解析失败（TestApp 在 files 循环被错身份签名）→ 修复=vendored
+    /// 删除两行覆写恢复 zsign 上游语义（diff 登记 gpl-compliance §N7c；
+    /// 上轮的 Info.plist 对齐修复在删除后**才真正生效**——此前被覆写绕过）
+    /// ④profile 的 utf8 解码失败（CMS 二进制包裹）→ bundleIdFromProfile
+    /// 改 Data 字节级搜索 ⑤补写 profile/清 zsign_cache.json 必须**在 ZSign
+    /// 之后**（ConfigureFolderSign 先 RemoveFileV 删 profile 再按 flag 跳过
+    /// 重写；zsign_cache.json 由 StartSign 完成时写出——签名前操作全部无效）。
     /// 返回 (成功, 描述)。
     static func signAndRepackage(project: NXProject) -> (ok: Bool, message: String) {
         guard let p12 = CertificateStore.loadCertificateData(),
@@ -528,23 +538,14 @@ final class BuildService: @unchecked Sendable {
         } else {
             alignmentNote = "；⚠️ 描述文件解析失败，bundle id 未对齐——产物可能因身份不匹配无法安装"
         }
-        // ② 补写 embedded.mobileprovision（zsign 官方形态不生成——见头注①）
-        do {
-            try profile.write(
-                to: project.bundleURL.appendingPathComponent("embedded.mobileprovision"),
-                options: .atomic)
-        } catch {
-            return (false, "签名前置失败：描述文件写入错误（" + error.localizedDescription + "）")
-        }
-        // ③ 清理 zsign 上一次残留（进包垃圾——装机实测 zsign_cache.json）
-        let junkNames = ["zsign_cache.json", "zsign_cache"]
-        for junk in junkNames {
-            let junkURL = project.bundleURL.appendingPathComponent(junk)
-            try? FileManager.default.removeItem(at: junkURL)
-        }
-        // ④ ZSign 签名（官方同款 semaphore 形态）。zsign.mm:121 对
-        //    signFailedFiles 非空仍回调 success=YES——error 非空时如实上报
-        //    「部分文件签名失败」（AI 装机实测：半成品包曾被报「签名完成」）。
+        // ② 【时序关键】ZSign 签名（官方同款 semaphore 形态）。
+        //    embedded.mobileprovision 补写与 zsign_cache.json 清理都必须在
+        //    ZSign **之后**：ConfigureFolderSign 内部先 RemoveFileV 删
+        //    embedded.mobileprovision、再按 bDontGenerateEmbeddedMobileProvision=
+        //    YES（zsign.mm:65 官方硬编码）跳过重写——签名前补写会被内部删除；
+        //    zsign_cache.json 由 StartSign 完成时写出（bundle.cpp:711）——签名
+        //    前清理无效。profile 文件（非代码资源）不被签名 blob 覆盖，后写
+        //    安全；系统安装/启动时读取它。
         let semaphore = DispatchSemaphore(value: 0)
         var signOK = false
         var signMessage = ""
@@ -557,7 +558,7 @@ final class BuildService: @unchecked Sendable {
                     signMessage = "签名完成，但部分文件签名失败（产物可能不可用）：" + err.localizedDescription
                 } else {
                     signOK = true
-                    signMessage = "签名完成（证书与描述文件已嵌入，可安装）"
+                    signMessage = "签名完成（证书已嵌入，可安装）"
                 }
             } else {
                 signOK = false
@@ -569,10 +570,24 @@ final class BuildService: @unchecked Sendable {
         guard signOK else {
             return (false, signMessage)
         }
+        // ③ ZSign 后补写 embedded.mobileprovision + 清理 zsign_cache.json
+        //   （都在 zip 前落定——见②时序说明）
+        do {
+            try profile.write(
+                to: project.bundleURL.appendingPathComponent("embedded.mobileprovision"),
+                options: .atomic)
+        } catch {
+            return (false, "签名后置失败：描述文件写入错误（" + error.localizedDescription + "）")
+        }
+        let junkNames = ["zsign_cache.json", "zsign_cache"]
+        for junk in junkNames {
+            let junkURL = project.bundleURL.appendingPathComponent(junk)
+            try? FileManager.default.removeItem(at: junkURL)
+        }
         if !alignmentNote.isEmpty {
             signMessage = signMessage + alignmentNote
         }
-        // ⑤ 重打包（签名改变 bundle 内容——ipa 必须重 zip；官方 package()
+        // ④ 重打包（签名改变 bundle 内容——ipa 必须重 zip；官方 package()
         //    同款函数）
         zipDirectoryAtPath(project.payloadURL.path, project.packageURL.path, true)
         return (true, signMessage)

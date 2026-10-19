@@ -277,3 +277,10 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 2. **bundle id 错配**——用户证书 profile 为固定 id（application-identifier=NL6UD7G49R.com.cert.account.t260930000125 非通配）vs 工程 Info.plist=com.wanwo.testapp → 签名前读 profile（CMS 包裹明文 plist 截取解析，零依赖）改写 Info.plist CFBundleIdentifier 对齐（共享证书标准做法=轻松签/爱思签同款；通配 profile 跳过；解析失败诚实注记）。交付产物身份=profile 身份。
 3. **signFailedFiles 被吞**——zsign.mm:121 部分文件签名失败仍回调 YES → signAndRepackage 对 error 非空的 success 如实上报「部分文件签名失败（产物可能不可用）」。
 4. 顺带清理 zsign_cache.json 残留（AI 实测进包垃圾）；「打包快照过期」假说被源码否证（Zip.m zipDirectoryAtPath 全量枚举无过滤无缓存——是 zsign 压根没写）；_CodeSignature/CodeResources 不落盘非致命（iOS 校验读主二进制 blob 内资源清单）。设备 AI 侧「沙箱无签名工具无法单独签名」判断正确（CertificateStore 在 host 沙盒，guest 不可见=设计）。
+
+**N7c 装机复测修·第二轮（2026-10-19 18:4x，复测仍失败+事件流 19649 行再取证）**：signNote 暴露 `signFailedFiles="TestApp.app//private/var/containers/.../WanWo.app/WanWo"`（宿主可执行路径拼进签名对象）+「描述文件解析失败」。源码对质定罪：
+1. **bundle.cpp:53-54 双覆写（vendored diff，本轮唯一 vendored 改动）**——0.10.3 把 Info.plist 的 CFBundleExecutable/CFBundleIdentifier 覆写为宿主 App 值（getExecutablePath/getBundleIdentifier——LiveContainer 容器化魔改：guest 签名身份=LC 宿主，zsign_cache.json 的 bundle_id=com.wanwo.juyang.TNHMJ2JNPJ 实锤）。后果：①签名 identifier=宿主 id 与包 Info.plist/entitlements 三方错乱 ②SignFolder 按 bundle_executable 定位主二进制→怪路径→Init 失败→signFailedFiles+跳过（:303-308）③上轮 Info.plist 对齐修复被覆写绕过。**修复=删除两行恢复 zsign 上游语义**（上游 feather/zsign 无此覆写）；与上轮 Info.plist 对齐修复组合后 identifier=entitlements=Info.plist=证书 profile id 三方一致。
+2. **TestApp 主二进制的真实签名路径**：GetObjectsToSign 把它按普通 64-bit macho 收进 files 循环（:253-271）用 config["bundle_id"]（=覆写后宿主 id）签名——上轮 md5 变化=被错身份签名；删除覆写后 files 循环与 SignFolder 同源对齐。
+3. **profile 解析失败根因**——mobileprovision=CMS(DER) 二进制容器，String(utf8) 整包解码失败 → bundleIdFromProfile 改 Data 字节级 range(of:) 搜索（二进制安全）。
+4. **时序修正**——ConfigureFolderSign 内部先 RemoveFileV 删 embedded.mobileprovision 再按 zsign.mm:65 flag 跳过重写（签名前补写被内部删除）；zsign_cache.json 由 StartSign 完成时写出（bundle.cpp:711）→ 补写+清理全部移到 ZSign 之后、zip 之前。
+5. 缓存机制澄清：zsign 读缓存在 `./.zsign_cache/`（CWD 相对——万我 CWD=/ 不可写→缓存天然失效→每次 force 全量签名，无增量问题）；`zsign_cache.json`（bundle 内）仅是写出物。CodeResources 不生成=官方刻意（:320 注释「LiveContainer don't need CodeResources」，iOS 校验读主二进制 blob，非致命）。

@@ -50,8 +50,18 @@ bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bG
 
 	jvalue jvInfo;
 	jvInfo.read_plist(strInfoPlistData);
-    jvInfo["CFBundleExecutable"] = getExecutablePath();
-    jvInfo["CFBundleIdentifier"] = getBundleIdentifier();
+	// 【万我 N7c 修 2026-10-19】上游 0.10.3 在此覆写 CFBundleExecutable/
+	// CFBundleIdentifier 为宿主 App 值（getExecutablePath/getBundleIdentifier
+	// ——LiveContainer 容器化魔改：guest 签名身份=LC 宿主）。万我场景=标准
+	// 签名交付（非 LC 容器运行）：覆写导致 ①主二进制路径解析为
+	// "TestApp.app//private/var/.../WanWo.app/WanWo" 怪路径 → SignFolder 失败
+	// 进 signFailedFiles ②签名 identifier=宿主 bundle id → 与包
+	// Info.plist/entitlements 三方错乱 → 安装后点开「无法安装」（轻松签实测
+	// 实锤）。删除两行=恢复 zsign 上游语义（用 Info.plist 原值）；bundle id
+	// 与证书 profile 的对齐由万我 BuildService.signAndRepackage 在签名前
+	// 完成（改写 Info.plist）。diff 登记 docs/gpl-compliance.md §N7c。
+	// jvInfo["CFBundleExecutable"] = getExecutablePath();
+	// jvInfo["CFBundleIdentifier"] = getBundleIdentifier();
 	string strBundleId = jvInfo["CFBundleIdentifier"];
 	string strBundleExe = jvInfo["CFBundleExecutable"];
 	string strBundleVersion = jvInfo["CFBundleVersion"];
