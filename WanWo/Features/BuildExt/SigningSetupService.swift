@@ -80,6 +80,66 @@ enum SigningSetupService {
             message: message)
     }
 
+    // MARK: N8 · extension 两段收口（官方 main checkSigningSetup ①②段语义，
+    // N7b 预留 stub 的本批收口；diff 登记 docs/gpl-compliance.md §N8）
+
+    /// ① extensionExists：PlugIns/WanWoLiveProcess.appex 存在性（官方
+    /// NXApplicationState.extensionExists 同语义；vendored PEExtension.m 的
+    /// liveProcessIsAvailable 同判据——start_environment constructor 的
+    /// ignition 启动闸门，缺失=extension-less 模式 guest 不可运行）。
+    static var extensionExists: Bool {
+        guard let plugInsPath = Bundle.main.builtInPlugInsPath else {
+            return false
+        }
+        let appexPath = plugInsPath + "/WanWoLiveProcess.appex"
+        return FileManager.default.fileExists(atPath: appexPath)
+    }
+
+    /// ② entitlement 判定：读导入 profile 的 get-task-allow（万我语义适配——
+    /// 官方读 appex 内嵌 profile 的 get-task-allow；万我 unsigned 分发的权威
+    /// profile = 用户导入三件套，guest 签名身份由它决定——N7c bundle id 对齐
+    /// 同源。appex 随整包重签后其 profile 即用户导入件，语义一致）。
+    static func extensionAllowsDebug() -> Bool {
+        guard let profileData = CertificateStore.loadProfileData() else {
+            return false
+        }
+        return Self.profileAllowsDebug(profileData)
+    }
+
+    /// profile 数据 → Entitlements["get-task-allow"] 布尔判定。解析复用 N7c
+    /// 字节级 range(of:) 形态（mobileprovision=CMS 包裹明文 plist，二进制安全；
+    /// String(utf8) 整包解码会因 CMS 二进制字节失败——N7c 装机实证）。
+    static func profileAllowsDebug(_ data: Data) -> Bool {
+        guard let startRange = data.range(of: Data("<?xml".utf8)),
+              let endRange = data.range(of: Data("</plist>".utf8)),
+              endRange.upperBound > startRange.lowerBound else {
+            return false
+        }
+        let xmlData = data.subdata(in: startRange.lowerBound..<endRange.upperBound)
+        guard let plist = try? PropertyListSerialization.propertyList(
+                from: xmlData, options: [], format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any] else {
+            return false
+        }
+        return (entitlements["get-task-allow"] as? Bool) ?? false
+    }
+
+    /// 组合读视图（官方 checkSigningSetup 三段语义 ①②③；③=validateCertificate
+    /// 既有。万我不弹 alert——无官方 NXWindowServer rootVC 呈现缝，文本回流）。
+    static func runtimeSetupSummary() async -> String {
+        if !extensionExists {
+            return "extension MISSING（PlugIns/WanWoLiveProcess.appex 不存在——extension-less 模式，guest 不可运行）"
+        }
+        if !extensionAllowsDebug() {
+            return "extension entitlement FAIL（导入 profile 无 get-task-allow——需 Developer 证书 profile，Distribution profile 不支持）"
+        }
+        let status = await validateCertificate()
+        if status.isValid {
+            return "signing setup OK（extension 存在 ✓ / get-task-allow ✓ / 证书有效）"
+        }
+        return "certificate INVALID（extension ✓ / get-task-allow ✓，但 checkCert 失败：" + status.message + "）"
+    }
+
     // MARK: - 内部承载
 
     /// checkCert 回调一次快照（continuation 只能 resume 一次——值类型承载）。

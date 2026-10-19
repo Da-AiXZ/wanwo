@@ -40,3 +40,16 @@
 // checkCert 消费；N7c 签名编排 signWithAppPath 同类）。zsigner.h 纯 ObjC
 // （仅 Foundation），可桥；ZSigner 类已在主 App 编译面（N7a 落位 15 文件）。
 #import <LindChain/LiveContainer/ZSign/zsigner.h>
+
+// N8 BuildExt：PE 运行侧宿主面（pe_smoke 冒烟工具消费；SigningSetupService
+// extensionExists/entitlement 判定消费 liveProcessIsAvailable）。链上头全部
+// 纯 ObjC/C 可桥：PEProcessManager.h 链 PEProcess.h→Private/UIKitPrivate/
+// NXWindowServer/FDMapObject/Surface proc；PELaunchServiceRegistry.h 链
+// PELaunchService.h；PEContainer.h（宿主代理面，主 App 编入面 N8）链
+// FDObject/Surface entitlement。<LindChain/Services/...> 代理头经主 target
+// HEADER_SEARCH_PATHS 第 8 根 WanWoLiveProcess 解析。
+#import <LindChain/ProcEnvironment/Process/PEProcessManager.h>
+#import <LindChain/ProcEnvironment/Process/PEBootstrapRegistry.h>
+#import <LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.h>
+#import <LindChain/ProcEnvironment/Process/PEExtension.h>
+#import <LindChain/Services/containerd/PEContainer.h>

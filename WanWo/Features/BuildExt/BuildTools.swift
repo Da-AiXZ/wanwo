@@ -44,9 +44,9 @@ enum BuildEvents {
 // MARK: - 工具族装配
 
 enum BuildTools {
-    /// 注册 8 件（project_create/project_list/project_read/project_delete/
-    /// project_reset/build_ipa/build_log/stop_build——build_and_run 属
-    /// 阶段 2）。writer 注入供 build 事件发射。
+    /// 注册 9 件（project_create/project_list/project_read/project_delete/
+    /// project_reset/build_ipa/build_log/stop_build/pe_smoke——build_and_run
+    /// 属阶段 2）。writer 注入供 build 事件发射。
     static func registerAll(into registry: ToolRegistry,
                             sessionId: String,
                             writer: SessionWriter,
@@ -59,6 +59,8 @@ enum BuildTools {
         registry.register(BuildIPATool(writer: writer, sessionCwd: sessionCwd))
         registry.register(BuildLogTool())
         registry.register(StopBuildTool())
+        // N8c：运行侧底座冒烟（形态 A——方案拍板项 4；recycle 审批级）
+        registry.register(PESmokeTool())
     }
 
     /// guest bash 视角路径提示（会话桶在 guest 侧的挂载点=sessionCwd）——
