@@ -380,3 +380,17 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 - ignition 递归重试无退避（官方形状）：daemon 起不来会自旋刷日志——pe_smoke status 可观测；万我侧加重试上限需 vendored diff，登记不动（观察优先）。
 - ksurface_kinit constructor 时序：PEExtension.m start_environment 在宿主启动最早期跑（建 mach port+listener+拉两 daemon）——boot 面回归观察项。
 - Media.xcassets 随 appex resources（TouchBarBezel colorset）——UI 集成 N10，暂无消费方。
+
+### N8 CI 六连修轨迹（每轮消一类错，include/符号闭包全量清点法；2026-10-19 晚，run 39311485682 SUCCESS 13m27s + cc-mdk-smoke 39311485516 SUCCESS 双绿收官）
+
+| # | run 实证 | 根因与修法 |
+|---|---|---|
+| ① | 39272921786 | appex `UIKitPrivate.h file not found`——官方 Xcode 16 同步组对 target 内全部头建 **headermap**（裸名 quoted include 可解析），逐文件列法无等价物；appex HSEARCH 补 `LindChain/{Private,LiveContainer}` 两根（include 闭包全量清点裸名 quoted include 仅 Tweaks 两处跨目录） |
+| ② | 39275217653 | `CFOverwrite` undeclared——CFTools.h/.c 为 **main 版**（CFSwap API）与 0.10.3 版（CFOverwrite，LCBootstrap.m:93 必需）同路径不同契约；main 版全仓零消费者 → 换版 0.10.3（Swizzle 先例同构） |
+| ③ | 39277671039 | Swift 导入面三类：PE*Registry.`shared()` 导入为 **Optional 非 IUO**（改 Optional binding）；审计区 `containerRoot` 非可选（运行时 nil 陷阱——probe 第一跳改显式 nullable 的 fdObjectForItem）；ApplicationManagement observer 回调参数改 `Any?`（selector 不变，消除 vendored 类型 Swift 导入依赖——PEProcessManager.h 条件 import 链未达 LDEApplicationObject） |
+| ④ | 39281440880 | Swift 导入名收尾：`bootstrap.registry` 属性层 Optional+NSDictionary 桥读、`shouldAutorestart`（getter 名胜出）、`fdObjectForItem(atPath:)`（Swift 改名） |
+| ⑤ | 39297725695 前一轮 | `Debugger/Logger.h file not found`（ServerSession.m:26 import 链——首读清点只读了 ServerSession.h 未读 .m 的疏漏）；LogTextView 零符号消费，Logger.h 落位 Logger.m 不落位；全量 `<LindChain/...>` 引用×双树存在性扫描确认无其余缺口 |
+| ⑥ | 39297725695 | 宿主链接 `_OBJC_CLASS_$_FBProcess/RBSTarget` undefined——官方同步组把树内 **4 个 .tbd 自动收进 Frameworks 链接阶段**，逐文件列法缺链接输入；OTHER_LDFLAGS 追加 Private/Frameworks 四 tbd 全路径（CCSupportLibs dylib 先例） |
+| ⑦ | 39304577904 | 宿主链接 `_swizzle_objc_method` undefined（attrstrnilfix.m 引 0.10.3 API）——宿主补编 0.10.3 Swizzle.m（宿主符号面全量清点仅此一文件；main 版 Swizzle.c 已退役无重复符号） |
+
+**Xcode 16 同步组 vs 逐文件列法三差异（本轮实证，N9+ 施工纪律）**：①headermap 裸名解析（补 HSEARCH 根）②.tbd 自动进链接阶段（补全路径链接输入）③头文件全员在编（本纪律 headers 不进 sources——仅需按符号闭包补编对应 .m）。
