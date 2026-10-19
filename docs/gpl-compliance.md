@@ -223,8 +223,22 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **结构适配（diff 登记）**：
 | # | 项 | 说明 |
 |---|---|---|
-| 1 | OpenSSLHeaders/openssl/ 重排头目录（新建，140 头） | xcframework Headers **平铺**（实测无 openssl/ 子目录、无符号链接）——`<openssl/xxx.h>` 尖括号引用无法从 Headers 根解析；重排副本供 ZSign 编译（HSEARCH 第 7 根）。0.10.3 官方 pbxproj **从未编译 ZSign**（零引用实锤）——无官方先例可抄，此为万我首接定案 |
+| 1 | OpenSSLHeaders/openssl/ 重排头目录（新建，140 头） | xcframework Headers **平铺**（实测无 openssl/ 子目录、无符号链接）——`<openssl/xxx.h>` 尖括号引用无法从 Headers 根解析；重排副本供 ZSign 编译（HSEARCH 第 7 根）。【N7 重考古修正 2026-10-19】压缩前「官方从未编译 ZSign」结论**错误**：0.10.3 用 Xcode 16 文件系统同步组（Nyxian/ 全树默认编入 emexDE 主 App，例外清单仅排除 18 文件——ZSign 全部+LCUtils.m+LCMachOUtils.m 均在官方主 App 编入面；grep 文件名验证法对同步组形态天然失效）。官方头解析机制=FRAMEWORK_SEARCH_PATHS+macOS 大小写不敏感 FS（`<openssl/ssl.h>` 命中 OpenSSL.framework/Headers）；万我重排副本等效且 CI 验证绿，保留 |
 | 2 | LCUtils 证书读取未适配 | 0.10.3 原实现读 NSUserDefaults（LCCertificateData/Password）——N7b 证书 UI 时按万我存储（Keychain）适配该函数或走 ZSigner 直调绕过 |
 | 3 | OpenSSL embed | 官方 pbxproj 同形态（CodeSignOnCopy+embed Frameworks）；XcodeGen embed 坑同款——ios.yml 手动 cp+计数门（含 Products 未产出时从 xcframework ios-arm64 切片直取兜底） |
 
 **N7b/c 待施**：证书 UI（设置页 section+Keychain+validateCertificate）→ .run 分支接缝改写（trust_nxt2_sign→ZSigner.adhocSignMachO + checkSigningSetup→万我 SigningSetup + installApplication 维持守卫抛 N9 指引 + WANWO_BUILD_RUN/WANWO_INSTALL 双门）。
+
+### N7a 重考古修正与收官（2026-10-19，run 39157577438 SUCCESS 10m21s）
+
+**四处压缩前错误结论修正**（方案定稿版 analysis/n7-signing-chain-plan.md §〇）：
+1. 「官方从未编译 ZSign」→ 同步组全量编入（见上表 #1 修正）
+2. 「trust_nxt2_sign 替代=adhocSignMachO」→ trust_nxt2_sign（main signing.c:257）与 macho_after_sign（0.10.3 trust.c:212）**同族**：均为标准签名后追加 ksurface entitlement token（EC 私钥签 blob，NXTR/NXT2 tag）——服务 Nyxian 自家运行时进程信任，**非标准签名**。N7 无 ksurface 消费方→跳过；**NXSignMachOWithNyxianEntitlements 官方默认 true**（NXProject.m:82）→ N7c 须出厂 gate false（export 分支开 WANWO_BUILD_RUN 也会撞 vendored trust_nxt2_sign 调用）；N8/N9 落位 PEProcessManager/LiveProcess 时再启用
+3. 「OpenSSL 头解析无官方先例」→ 官方机制=FRAMEWORK_SEARCH_PATHS+大小写不敏感 FS+同步组 xcframework 自动链接/Embed
+4. 「ZSign 首编通过（Smoke 绿）」→ 绿的是 CC-MDK Smoke（不含主 App）；iOS Build 实际红，经四连修复绿
+
+**N7a CI 四连修轨迹**：①182fa87 YAML 双冒号非法 ②4391923 HSEARCH+ZSign/common（fs.cpp 引号 include 不跨目录）③bb684e3 HSEARCH+ZSign/ 根（"Utils.hpp"/"common/xxx.h" 跨目录形态；15 文件 include 全量清点 45 条后仅此一缺）④4ccad43 OpenSSL 链接直连——XcodeGen xcframework deps 条目不生成 -framework 旗标（Ld 统计实证），删无效 deps+OTHER_LDFLAGS 并入 -framework OpenSSL+FRAMEWORK_SEARCH_PATHS 指 ios-arm64 切片（ld 不直接吃 xcframework）。
+
+**N7a 最终形态（CI 全绿）**：LiveContainer 49 文件+OpenSSL.xcframework 落 vendored；ZSign 纯净子集 15 文件编译；HSEARCH 10 根；LDFLAGS+FSEARCH 直连 OpenSSL；ios.yml embed 双保险（cp+xcframework 直取+test -f 硬门）。
+
+**N7c 修正版接缝要点**：vendored NXBuilder.swift .run 分支维持 WANWO_BUILD_RUN 宏关闭（main 版符号面 vs 0.10.3 vendored 库接口差异——LCUtils.signMachOWithoutPatchAtURL 仅 main 有、validateCertificate 两版签名不同、LCMapMachO 为 main 形态）；万我 BuildService 层按 0.10.3 Builder.install(.RunningApp) 语义重实现签名编排（BuildResult.bundleURL→ZSigner.signWithAppPath，**不 patch**——LCPatchExecSlice="Literally convert an executable to a dylib"属 LC 容器化运行核心，归 N9 与 litehook.c 一起）；证书 UI 官方只导 p12+密码（prov=宿主 embedded.mobileprovision）→万我 unsigned 分发需导入式 profile（LiveContainer 上游三件套形态）+Keychain 存密码。
