@@ -119,7 +119,10 @@ targets:
       - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/sha.cpp
       - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/timer.cpp
       - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/common/util.cpp
-      - path: Vendor/nyxian/LindChain/Utils/Swizzle.c
+      # N8：Swizzle 面换版 0.10.3（宿主原先编的 main 版 Swizzle.c 全仓 grep 零消费者
+      # 实证，退役出编译面——文件保留在树（CFTools.c 先例）但不再编；appex 侧编
+      # 0.10.3 Swizzle.m（Tweaks 消费 swizzle_objc_method 0.10.3 API）。登记 §N8。
+      # - path: Vendor/nyxian/LindChain/Utils/Swizzle.c  ← N8 退役（见上注）
       - path: Vendor/nyxian/LindChain/Utils/entitlement.c
       - path: Vendor/nyxian/LindChain/Utils/NXOSVersion.swift
       # N3b：SDK + Shared 三 zip 内嵌资源（拍板 ③ 零网络；单文件形态——
@@ -138,6 +141,101 @@ targets:
       # 拷贝保留目录结构——RootfsPatch.bundle 先例，Main.c×2 异目录共存）
       - path: Vendor/nyxian/Shared/Templates.bundle
         buildPhase: resources
+      # ── N8（analysis/n8-runtime-foundation-plan.md）：运行侧底座宿主面——
+      # 官方 0.10.3 emexDE 编译面镜像（pbxproj 例外集 798BBD33：Nyxian 树编入
+      # −19 件；79BF9840：LiveProcess 组追加 3 件）。逐文件列法（万我纪律），
+      # headers 一律不进 sources。ProcEnvironment 编入=全部 .m/.c 除官方排除的
+      # 10 个根部 guest 件（application/cred/ioctl/libproc/posix_spawn/proxy/
+      # syscall/sysctl/tfp/vfork——appex 专属，在 WanWoLiveProcess target 编）。
+      # 附编 LiveContainer/{LCUtils,LCMachOUtils}.m（官方 emexDE 未排除=在编；
+      # Object/MachOObject.m 的 _OBJC_CLASS_$_LCUtils/_checkCodeSignature 链接
+      # 闭包必需）与 LindChain/Project/Project+NotificationServer.swift（官方
+      # 0.10.3 LindChain 层文件，PEProcessManager.m:144 消费，字节级提取——
+      # NXOSVersion.swift 先例）。diff 全登记 docs/gpl-compliance.md §N8。
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/environment.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/attrstrnilfix.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/panic.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/ArchiveObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/FDObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/FDMapObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/MachOObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/PEMachPort.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/PEObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PEBootstrapRegistry.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PEExtension.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PELaunchService.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PEProcess.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Process/PEProcessManager.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Server/Server.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Server/ServerSession.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/entitlement.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/extra/relax.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/key.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/obj/alloc.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/obj/event.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/obj/reference.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/permit.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/counter.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/fork.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/insert.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/list.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/lookup.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/proc.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/proc/remove.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/radix/radix.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/surface.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/getent.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/gettast.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/handoffep.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/pectl.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/procpath.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/setent.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/compat/waittask.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/getgid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/getpid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/getsid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/getuid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/setgid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/setsid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/cred/setuid.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/host/ioctl.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/host/sysctl.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/proc/kill.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/proc/wait4.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/sys/syscall.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/trust.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/tty/attach.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/tty/lookup.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/tty/tty.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/tty/utils.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Syscall/mach_syscall_client.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Syscall/mach_syscall_server.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Syscall/payload.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/fd.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/klog.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/ktfp.c
+      - path: Vendor/nyxian/LindChain/litehook/litehook.c
+      - path: Vendor/nyxian/LindChain/Private/UIKitPrivate.m
+      - path: Vendor/nyxian/LindChain/Private/mach/fileport.m
+      - path: Vendor/nyxian/LindChain/WindowServer/NXAppTile.m
+      - path: Vendor/nyxian/LindChain/WindowServer/NXWindowServer.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Session/NXWindowSessionApplication.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Session/NXWindowSessionTerminal.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Window/NXResizeHandle.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Window/NXWindow.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Window/NXWindowBar.m
+      - path: Vendor/nyxian/LindChain/WindowServer/Window/NXWindowSession.m
+      # LiveProcess 组追加给 emexDE 的 3 件（daemon 的宿主代理面，pbxproj 79BF9840）
+      - path: WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationObject.m
+      - path: WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.m
+      - path: WanWoLiveProcess/LindChain/Services/containerd/PEContainer.m
+      # MachOObject.m 链接闭包（官方 emexDE 同编——LC 两件不在其排除清单）
+      - path: Vendor/nyxian/LindChain/LiveContainer/LCUtils.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/LCMachOUtils.m
+      # PEProcessManager.m 消费的 NotificationServer（官方 0.10.3 LindChain 层
+      # 文件字节级提取；NXOSVersion.swift 先例）
+      - path: Vendor/nyxian/LindChain/Project/Project+NotificationServer.swift
     # ── N2（13 号设计）：编译链接线接入主 App——CC/MDK framework 自动
     # embed 进 ipa（Frameworks/ 目录，运行时 dlopen）。构建顺序由
     # target 依赖驱动：CC/MDK 先行（cc-mdk-smoke 同款工具链消费）。
@@ -148,6 +246,11 @@ targets:
         embed: true
       - target: MobileDevelopmentKit
         embed: true
+      # N8：WanWoLiveProcess appex 构建顺序依赖（不 embed——XcodeGen embed 坑
+      # 已知，ios.yml Package 步骤手动 cp 进 PlugIns/；N7a OpenSSL 同款先例）。
+      # 注：本文件存在两个 target 级 dependencies 块（YAML 重复 key），此依赖
+      # 两处同写（见下方第二块）——无论 Yams 取何语义均生效。
+      - target: WanWoLiveProcess
       # N7a：OpenSSL 链接走 OTHER_LDFLAGS -framework OpenSSL + FRAMEWORK_SEARCH_PATHS
       # 指切片（XcodeGen xcframework deps 条目不生成 -framework 旗标——run 39156465610
       # Ld 统计实证只有 CC/MDK；embed 由 ios.yml 手动 cp+xcframework 直取兜底）
@@ -162,6 +265,11 @@ targets:
           # N7a：OpenSSL.xcframework ios-arm64 切片（ld framework 搜索命中
           # OpenSSL.framework 二进制；xcframework 整体 ld 不直接吃）
           - "$(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSL.xcframework/ios-arm64"
+          # N8：Private 私有框架 tbd 四件（BackBoardServices/FrontBoard/
+          # FrontBoardServices/RunningBoardServices）——官方 emexDE 同款
+          #（pbxproj :1794-1798 FRAMEWORK_SEARCH_PATHS 含 Private/Frameworks；
+          # FB*/RBS* 私有类符号经此根解析）
+          - "$(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks"
         # 用户手绘应用图标（2026-09-22 提供）：单尺寸 1024 asset catalog 通用图标
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.0.1"
@@ -177,8 +285,11 @@ targets:
         # 本条覆盖致桥接头 NXBootstrap.h not found）——本条为唯一 HEADER_SEARCH_PATHS。
         # N7a 增第 7 根：OpenSSLHeaders（openssl/ 子目录重排——xcframework Headers 平铺
         # 无法解析 <openssl/xxx.h>，ZSign 全部尖括号 openssl 引用经此根命中；头源=
-        # OpenSSL.xcframework/ios-arm64 切片 140 头，diff 登记 gpl-compliance §N7）
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign/common $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign"
+        # OpenSSL.xcframework/ios-arm64 切片 140 头，diff 登记 gpl-compliance §N7）。
+        # N8 增第 8 根：WanWoLiveProcess（宿主代理面头 <LindChain/Services/...>——
+        # Vendor/nyxian 树内无 Services/，PEProcessManager.m/PEProcess.m/PEContainer.m
+        # 的代理头经此根命中；官方 emexDE HEADER_SEARCH_PATHS 含 LiveProcess/ 同构）
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign/common $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign $(PROJECT_DIR)/WanWoLiveProcess"
         # N3b 修③（run 39003398834 实证）：桥接头 import MDKOSVersion 触发
         # MobileDevelopmentKit module 构建，MDKThreadPool.h:29 #import
         # <CoreCompiler/CCUtils.h> 在 -I Vendor/nyxian 加宽后命中 CC 源码树头
@@ -190,7 +301,9 @@ targets:
         # explicit modules）里该警告 clang 默认开启且参数带 [-Werror]——
         # CLANG_WARN_...=NO 只是"不加旗标"压不住默认开启的警告，须显式
         # -Wno-。同官方既定结构语义（CCUtils include 官方绿跑合法）。
-        OTHER_CFLAGS: "$(inherited) -Wno-non-modular-include-in-framework-module"
+        # N8：在同 key 值上追加 -DHOST_ENV（YAML 同 key 后者覆盖前者——万我实测坑，
+        # 绝不另开同名 key；官方 emexDE OTHER_CFLAGS="-DHOST_ENV" 同语义）
+        OTHER_CFLAGS: "$(inherited) -Wno-non-modular-include-in-framework-module -DHOST_ENV"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor/libs"
         # 【回退登记】weak_library 方案（弱链接 WebKit Swift overlay）实测链接期
         # 即需文件存在（-weak_library 全路径缺失=ld 报 Build input file cannot
@@ -215,6 +328,9 @@ targets:
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) GUEST_ARM64=1 ISH_INTERNAL=1"
         # iSH 头里的 C 声明以 ObjC(.m) 编译；QCExecutor.m 需 ObjC++? 实为 .m 即可（纯 C API）
     dependencies:
+      # N8：appex 构建顺序依赖（与上方第一处 dependencies 块同写——YAML 重复
+      # key 双保险；embed 由 ios.yml 手动 cp）
+      - target: WanWoLiveProcess
       - sdk: libsqlite3.tbd
       - sdk: libz.tbd
       - sdk: libbz2.tbd
@@ -389,6 +505,99 @@ targets:
         DEFINES_MODULE: YES
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
+
+  # ── N8：运行侧 appex（官方 0.10.3 LiveProcess target 1:1 镜像，品牌折算
+  # WanWoLiveProcess / com.wanwo.juyang.LiveProcess）──
+  # 编译面 = 官方 LiveProcess target 两个例外集逐件换算（pbxproj：79BF983D
+  # 「LiveProcess 组追加 6 件」+ 79BF9A97「Nyxian 组追加 38 件」；同步组例外
+  # 语义 = target 未引用组 → 例外即追加清单）。appex 自编面（LiveContainer
+  # LC 层/Tweaks/ZSign Utils.mm、ProcEnvironment guest 子集、Utils 三件）——
+  # 与主 App 各自独立编译同一源文件（官方同构）。settings 同构官方
+  #（pbxproj 1287-1316：-DCLIENT_ENV / HSEARCH 两根 / LD_RUNPATH 三项 /
+  # -Wl,-U 两私有类 + -larchive / SKIP_INSTALL / 16.0 / DEAD_CODE_STRIPPING=NO
+  # / GCC_OPTIMIZATION_LEVEL=s）。不进 schemes；主 target dependencies 已挂
+  # 构建顺序；embed 由 ios.yml 手动 cp（XcodeGen embed 坑）。
+  WanWoLiveProcess:
+    type: app-extension
+    platform: iOS
+    sources:
+      # 官方 LiveProcess 组 6 件（79BF983D）
+      - path: WanWoLiveProcess/main.m
+      - path: WanWoLiveProcess/ResecureDecoder.m
+      - path: WanWoLiveProcess/LindChain/ServiceKit/Service.m
+      - path: WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationObject.m
+      - path: WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspaceInternal.m
+      - path: WanWoLiveProcess/LindChain/Services/containerd/PEContainerService.m
+      # 官方 Nyxian 组追加 38 件（79BF9A97，路径换算万我树）
+      - path: Vendor/nyxian/LindChain/Debugger/Utils.c
+      - path: Vendor/nyxian/LindChain/litehook/litehook.c
+      - path: Vendor/nyxian/LindChain/LiveContainer/LCBootstrap.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/LCMachOUtils.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/Dead10ccFix.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/Dyld.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/NSFileManager+GuestHooks.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/NSUserDefaults.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/SecItem.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/Tweaks/UIKit+GuestHooksInit.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/utils.m
+      - path: Vendor/nyxian/LindChain/LiveContainer/ZSign/Utils.mm
+      - path: Vendor/nyxian/LindChain/Private/mach/fileport.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/application.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/attrstrnilfix.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/cred.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/environment.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/ioctl.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/libproc.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/ArchiveObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/FDMapObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/FDObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/PEMachPort.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Object/PEObject.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/panic.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/posix_spawn.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/proxy.m
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Surface/extra/relax.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/syscall.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Syscall/mach_syscall_client.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/sysctl.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/tfp.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/fd.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/Utils/ktfp.c
+      - path: Vendor/nyxian/LindChain/ProcEnvironment/vfork.c
+      # 官方例外集件=0.10.3 Utils/{CFTools.c,Swizzle.m,Zip.m}——万我树同路径
+      # 同名件为 main 版（CFTools.c 字节一致；Zip.m=main 版替代 0.10.3 版，
+      # 头契约一致、appex 编译单元零调用差异，登记 §N8；Swizzle.m=0.10.3 版
+      # 本批落位）。逐一路径照列（万我纪律：同一源文件 appex 自己再编一遍）
+      - path: Vendor/nyxian/LindChain/Utils/CFTools.c
+      - path: Vendor/nyxian/LindChain/Utils/Swizzle.m
+      - path: Vendor/nyxian/LindChain/Utils/Zip.m
+      # 官方 Resources phase（Media.xcassets，LiveProcess 同步组内资源）
+      - path: WanWoLiveProcess/Media.xcassets
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwo.juyang.LiveProcess
+        INFOPLIST_FILE: WanWoLiveProcess/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: WanWoLiveProcess/LiveProcess.entitlements
+        # 官方 1287-1316 同构（-DCLIENT_ENV / HSEARCH 两根）
+        OTHER_CFLAGS: "-DCLIENT_ENV"
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/Vendor/nyxian"
+          - "$(PROJECT_DIR)/WanWoLiveProcess"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+        OTHER_LDFLAGS:
+          - "-Wl,-U,_OBJC_CLASS_$_FBSSceneParameters"
+          - "-Wl,-U,_OBJC_CLASS_$_LSApplicationWorkspace"
+          # 官方 Frameworks 阶段 libarchive.tbd（SDK 自带系统私有库，不 embed）
+          - "-larchive"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        SKIP_INSTALL: YES
+        DEAD_CODE_STRIPPING: NO
+        GCC_OPTIMIZATION_LEVEL: s
 
 # 测试 scheme（本地 xcodebuild test 用；主流水线构建路径不受影响）。
 schemes:

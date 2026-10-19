@@ -5,3 +5,6 @@
 
 # vendored: Nyxian 源码字节级纪律（禁行尾归一，防 CRLF 污染——probe 仓教训）
 Vendor/nyxian/** -text
+
+# N8：WanWoLiveProcess appex 源（0.10.3 LiveProcess 整目录折算落位，字节级纪律同 Vendor/nyxian）
+WanWoLiveProcess/** -text

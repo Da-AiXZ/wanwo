@@ -22,21 +22,22 @@
 #ifndef LINDCHAIN_UTILS_SWIZZLE_H
 #define LINDCHAIN_UTILS_SWIZZLE_H
 
-#import <CoreFoundation/CoreFoundation.h>
+#import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-typedef enum: UInt8 {
-    kSwizzleReturnSuccess,
-    kSwizzleReturnArguments,
-    kSwizzleReturnMethodType,
-} SwizzleReturn;
+enum SWIZZLE_RETURN
+{
+    SWIZZLE_RETURN_SUCCESS              = 0b00000000,
+    SWIZZLE_RETURN_ARGUMENTS            = 0b00000001,
+    SWIZZLE_RETURN_METHOD_TYPE          = 0b00000010
+};
 
-typedef enum: UInt8 {
-    kSwizzleMethodTypeClass,
-    kSwizzleMethodTypeInstance,
-    kSwizzleMethodTypeUnknown,
-} SwizzleMethodType;
+enum SWIZZLE_METHOD_TYPE
+{
+    SWIZZLE_METHOD_TYPE_CLASS    = 0b00000000,
+    SWIZZLE_METHOD_TYPE_INSTANCE = 0b00000001
+};
 
-SwizzleReturn SwizzleObjCMethod(SEL originalAction, Class originalClass, SEL replacementAction, Class replacementClass, SwizzleMethodType swizzleMethodType);
+unsigned char swizzle_objc_method(SEL originalAction, Class originalClass, SEL replacementAction, Class replacementClass);
 
 #endif /* LINDCHAIN_UTILS_SWIZZLE_H */

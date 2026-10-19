@@ -107,10 +107,30 @@ jobs:
             echo "OpenSSL.framework 从 xcframework 切片直取落位"
           fi
           test -f "Payload/WanWo.app/Frameworks/OpenSSL.framework/OpenSSL" || { echo "!! OpenSSL embed 失败"; exit 1; }
+          # N8：WanWoLiveProcess.appex 手动 embed（XcodeGen embed 坑同款——主
+          # target dependencies 已挂构建顺序，Products 直取 cp 进 PlugIns/）
+          mkdir -p "Payload/WanWo.app/PlugIns"
+          cp -R "build/Build/Products/Release-iphoneos/WanWoLiveProcess.appex" "Payload/WanWo.app/PlugIns/"
+          # N8：Shared/LaunchServices 两 plist 落位（PELaunchServiceRegistry 读
+          # mainBundle/Shared/LaunchServices/——目录结构必须保真；XcodeGen folder
+          # 展开坑 → Package 步骤 cp + 计数门，RootfsPatch/Templates 同款纪律）
+          mkdir -p "Payload/WanWo.app/Shared/LaunchServices"
+          cp Vendor/nyxian/Shared/LaunchServices/containerd.plist "Payload/WanWo.app/Shared/LaunchServices/"
+          cp Vendor/nyxian/Shared/LaunchServices/installd.plist "Payload/WanWo.app/Shared/LaunchServices/"
+          # N8 计数门：appex 目录 + 两 plist（宿主运行时 ignition 的输入）
+          test -d "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex" || { echo "!! WanWoLiveProcess.appex embed 失败"; exit 1; }
+          test -f "Payload/WanWo.app/Shared/LaunchServices/containerd.plist" || { echo "!! containerd.plist 缺失"; exit 1; }
+          test -f "Payload/WanWo.app/Shared/LaunchServices/installd.plist" || { echo "!! installd.plist 缺失"; exit 1; }
+          ls -lh "Payload/WanWo.app/PlugIns/" "Payload/WanWo.app/Shared/LaunchServices/"
           zip -qry "WanWo-${{ github.sha }}.ipa" Payload
           ls -lh WanWo-*.ipa
           unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/CoreCompiler" || { echo "!! embed 失败"; exit 1; }
           unzip -l "WanWo-${{ github.sha }}.ipa" | grep -c "Frameworks/lib_CompilerSwift" || { echo "!! dylib embed 失败"; exit 1; }
+          # N8：ipa 内 appex 与 LaunchServices 计数门（unzip -l 验证）
+          unzip -l "WanWo-${{ github.sha }}.ipa" | grep -q "PlugIns/WanWoLiveProcess.appex/" || { echo "!! ipa 内无 appex"; exit 1; }
+          unzip -l "WanWo-${{ github.sha }}.ipa" | grep -q "Shared/LaunchServices/containerd.plist" || { echo "!! ipa 内无 containerd.plist"; exit 1; }
+          unzip -l "WanWo-${{ github.sha }}.ipa" | grep -q "Shared/LaunchServices/installd.plist" || { echo "!! ipa 内无 installd.plist"; exit 1; }
+          echo "N8 计数门全通过（PlugIns/WanWoLiveProcess.appex + Shared/LaunchServices×2）"
 
       - name: Link diagnostics (on failure)
         if: failure()

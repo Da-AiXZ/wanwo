@@ -302,3 +302,81 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **验证矩阵**：N7a 真机冒烟（test 工程 37KB→50KB 签名版）✓ / N7b 证书导入+OCSP 校验（「证书有效」绿态）✓ / N7c sign 参数全链 ✓ / N7d 轻松签直装能跑 ✓。
 
 **流程教训沉淀**：①pbxproj 考古必须先查 Xcode 16 文件系统同步组（grep 文件名验证法失效）②SwiftUI 同视图多 presentation 修饰符必炸（单实例+分流）③Smoke workflow 绿≠主 App 编译绿 ④vendored 魔改的三态语义必须条件化保 N9（用户质询驱动）⑤对照实验（同证书同包换签名工具）是定位签名问题最快路径。
+
+## N8、运行侧底座落位（2026-10-19 晚，方案 analysis/n8-runtime-foundation-plan.md，用户四项拍板全过；N8a+N8b+pe_smoke 一批）
+
+**来源与锚定**：Nyxian-0.10.3（本地快照 `_nyxian_probe/0.10.3/Nyxian-0.10.3/`，N7a 同源快照）。**编译面镜像依据（pbxproj 亲自复读，两处与任务书/方案预估不符，见"读到的偏差"）**：宿主=emexDE 例外集 798BBD33（Nyxian 树编入 −19 件=JBSupport 2 + LCBootstrap 1 + Tweaks 5 + ProcEnvironment 根部 guest 10）+ LiveProcess 组例外集 79BF9840（追加 3 件宿主代理面）；appex=LiveProcess target 例外集 79BF983D（追加 6 件）+ Nyxian 组例外集 79BF9A97（**追加 38 件**，方案预估"约 40"）。
+
+### 落位清单（计数 216 文件）
+
+| 万我落点 | 来源（0.10.3） | 文件数 |
+|---|---|---|
+| `Vendor/nyxian/LindChain/ProcEnvironment/` | `Nyxian/LindChain/ProcEnvironment/` 整目录 | 154 |
+| `Vendor/nyxian/LindChain/litehook/` | 同名整目录 | 4 |
+| `Vendor/nyxian/LindChain/Private/` | 同名整目录（含 4 .tbd） | 11 |
+| `Vendor/nyxian/LindChain/WindowServer/` | 同名整目录 | 16 |
+| `Vendor/nyxian/LindChain/Debugger/{Utils.c,Utils.h}` | 同名（appex 编入面 Debugger/Utils.c 消费） | 2 |
+| `Vendor/nyxian/LindChain/Utils/Swizzle.m` + `Swizzle.h`(0.10.3 版覆写) | 同名 | 2 |
+| `Vendor/nyxian/LindChain/Project/Project+NotificationServer.swift` | 同名（字节级提取，NXOSVersion 先例） | 1 |
+| `Vendor/nyxian/Shared/LaunchServices/{containerd,installd}.plist` | 同名（品牌折算） | 2 |
+| `WanWoLiveProcess/` | 0.10.3 `LiveProcess/` 整目录（含 Media.xcassets） | 24 |
+
+字节级纪律：`.gitattributes` 增 `WanWoLiveProcess/** -text`（同 Vendor/nyxian 纪律）。
+
+### 编译面（project.yml 逐文件列法）
+
+- **宿主（WanWo target）+80 编译单元**：ProcEnvironment 63（全部 .m/.c −10 根部 guest 件；headers 一律不进 sources）+ litehook.c 1 + Private 2（UIKitPrivate.m/fileport.m）+ WindowServer 8 + WanWoLiveProcess 代理面 3（LDEApplicationObject/LDEApplicationWorkspace/PEContainer.m=官方 79BF9840）+ **LCUtils.m/LCMachOUtils.m 2（官方 emexDE 未排除=在编；MachOObject.m 的 `_OBJC_CLASS_$_LCUtils`/`_checkCodeSignature` 链接闭包必需——N7a"落目录不编译"随 N8 扩面收口）** + Project+NotificationServer.swift 1。
+- **退役 1**：`Utils/Swizzle.c`（main 版）出宿主编译面——全仓 grep 零消费者实证；文件保留在树（CFTools.c 先例）。原因：appex Tweaks 消费 0.10.3 `swizzle_objc_method` API，与 main 版 `SwizzleObjCMethod` 同头路径不同契约——`Swizzle.h` 覆写为 0.10.3 版后 main 版 Swizzle.c 不再可编。
+- **appex（WanWoLiveProcess target，type: app-extension）44 编译单元 + 1 资源**：官方 79BF983D 6 件 + 79BF9A97 38 件逐件换算（LiveContainer LC 层/Tweaks/ZSign Utils.mm/ProcEnvironment guest 子集/Utils 三件）；`Utils/CFTools.c`（万我树字节一致）与 `Utils/Zip.m`（万我 main 版替代 0.10.3 版——头契约超集一致、appex 编译单元零调用差异）复用既有落位；`Media.xcassets` resources。settings 同构官方 1287-1316（PRODUCT_BUNDLE_IDENTIFIER=com.wanwo.juyang.LiveProcess / -DCLIENT_ENV / HSEARCH 两根 / LD_RUNPATH 三项 / -Wl,-U,_OBJC_CLASS_$_FBSSceneParameters,-Wl,-U,_OBJC_CLASS_$_LSApplicationWorkspace,-larchive / SKIP_INSTALL / 16.0 / DEAD_CODE_STRIPPING=NO / GCC_OPTIMIZATION_LEVEL=s / INFOPLIST_FILE+GENERATE_INFOPLIST_FILE+CODE_SIGN_ENTITLEMENTS=LiveProcess.entitlements）。
+- **主 target settings 合并（单 key 纪律）**：OTHER_CFLAGS 追加 `-DHOST_ENV`；HEADER_SEARCH_PATHS 追加第 8 根 `$(PROJECT_DIR)/WanWoLiveProcess`（`<LindChain/Services/...>` 宿主代理头）；FRAMEWORK_SEARCH_PATHS 追加 `$(PROJECT_DIR)/Vendor/nyxian/LindChain/Private/Frameworks`（官方 :1794-1798 同款——FB*/RBS* 私有类经 4 个 .tbd 解析）。dependencies 增 `- target: WanWoLiveProcess`（无 embed——ios.yml 手动 cp；注：project.yml 既有两个 target 级 dependencies 块 YAML 重复 key，pyyaml last-wins 实证生效块为第二块，依赖两处同写双保险）。
+- **ios.yml**：Package 步骤 cp appex → `Payload/WanWo.app/PlugIns/`、cp 两 plist → `Payload/WanWo.app/Shared/LaunchServices/`（目录结构保真——PELaunchServiceRegistry 读 mainBundle/Shared/LaunchServices/）+ 计数门 test -d/-f×3 + unzip -l 三查。
+
+### 品牌折算与 vendored diff 总账（逐处）
+
+| # | 文件:行 | 前后 | 性质 |
+|---|---|---|---|
+| 1 | ProcEnvironment/Process/PEProcessManager.m:30 | `<emexDE-Swift.h>`→`<WanWo-Swift.h>` | 任务书列明 |
+| 2 | ProcEnvironment/Process/PEExtension.m:37,76 | `LiveProcess.appex`→`WanWoLiveProcess.appex` ×2 | 任务书列明（1 文件 2 处） |
+| 3 | ProcEnvironment/Process/PEProcess.m:99 | sceneID 前缀 `@"LiveProcess"`→`@"WanWoLiveProcess"` | 任务书列明 |
+| 4 | WindowServer/Session/NXWindowSessionTerminal.m:26 | `<emexDE-Swift.h>`→`<WanWo-Swift.h>`（守卫内） | 任务书列明 |
+| 5 | WanWoLiveProcess/.../LDEApplicationWorkspace.m:28 | `<emexDE-Swift.h>`→`<WanWo-Swift.h>` | 任务书列明 |
+| 6 | WanWoLiveProcess/.../LDEApplicationWorkspace.m:71 | `connectToService:@"com.cr4zy.installd"`→`com.wanwo.installd` | **任务书未列，grep 自查铁律命中**——宿主代理连接串须与折算后 plist 对齐，否则 connect 失败 |
+| 7 | WanWoLiveProcess/.../PEContainer.m:65 | `connectToService:@"com.cr4zy.containerd"`→`com.wanwo.containerd` | 同上（XPC 往返/probe 必需） |
+| 8 | WanWoLiveProcess/.../PEContainerService.m:36 | `servcieIdentifier` 返回值→`com.wanwo.containerd` | 同上（daemon 身份+PECTL_LS_SET_ENDPOINT 注册键） |
+| 9 | WanWoLiveProcess/.../LDEApplicationWorkspaceInternal.m:563 | `servcieIdentifier` 返回值→`com.wanwo.installd` | 同上 |
+| 10 | WanWoLiveProcess/.../LDEApplicationWorkspaceInternal.m:104 | dispatch queue label→`com.wanwo.installd.workspace` | 同上（品牌串） |
+| 11 | Shared/LaunchServices/containerd.plist:6 / installd.plist:6 | `com.cr4zy.containerd/installd`→`com.wanwo.*` | 任务书列明（PEIntegratedServiceClass 类名不动） |
+| 12 | WanWoLiveProcess/Info.plist:11,14 | CFBundleURLName `com.kdt.livecontainer.extensionurlscheme`→`com.wanwo.juyang.liveprocess`；scheme `liveprocess`→`wanwo-liveprocess` | 任务书列明（NSExtension AR viewer/FALSEPREDICATE/XPCService 原样） |
+| 13 | ProcEnvironment/Surface/sys/compat/pectl.h:29 | 注释示例串 `com.cr4zy.containerd`→`com.wanwo.containerd` | grep 自查铁律命中（注释，机械折算） |
+| 14 | NXWindowSessionTerminal.m 全文件 | 整实现包进 `#if defined(WANWO_BUILD_UI) && WANWO_BUILD_UI`（头部换 `<Foundation/Foundation.h>`+守卫内 `WanWo-Swift.h`，文件尾加 #endif；其余逐行与官方一致） | **见"读到的偏差"#3** |
+
+### UI 层 Swift 符号缺口三处置（任务书 diff 清单未覆盖，均走万我先例，主理人报备在案）
+
+1. **NotificationServer**（PEProcessManager.m:144 消费）：官方 0.10.3 LindChain 层 `Project/Project+NotificationServer.swift` 字节级提取落位+宿主编入（NXOSVersion.swift 先例；纯 UIKit/Foundation 自包含）。零逻辑 diff。
+2. **ApplicationManagementViewController**（LDEApplicationWorkspace.m:364/371 observer 回调）：万我侧新建 `WanWo/Features/BuildExt/ApplicationManagementCompat.swift`（@objc 同名类，+shared+两个 no-op 回调——XCButtonCompat 先例；协议回调不可缺，缺失=daemon 侧 ObjC 消息派发异常）。vendored 零额外 diff。
+3. **TerminalViewObjC/TerminalView**（NXWindowSessionTerminal.m 整文件依赖 UI/UIInit/Terminal.swift→SwiftTerm SPM+currentTheme/gibDynamicColor）：整实现包进 WANWO_BUILD_UI 宏守卫（NXBuilder.swift buildProjectWithArgumentUI 先例 §三 c #5），宏不定义=空编译单元零符号泄漏，N10 接入 SwiftTerm 后开宏激活。备选（SwiftTerm SPM 接入+多层 UI shim）未动工。
+
+### 万我层新增（非官方代码）
+
+| 件 | 说明 |
+|---|---|
+| `WanWo/Features/BuildExt/ApplicationManagementCompat.swift` | 见上 #2 |
+| `WanWo/Features/BuildExt/PESmoke.swift` | pe_smoke 冒烟工具（形态 A）：status（只读：liveProcessIsAvailable+PEBootstrapRegistry endpoint 数+两 daemon pid/autorestart 直译）/probe（只读：PEContainer containerRoot+isReadableFileAtPath 两次 XPC 往返证明句柄传输）/recycle（驱动级审批：terminate→轮询 autorestart 新 pid→宿主存活报告）。AgentTool 注册走 BuildTools.registerAll（8→9 件），recycle 走 ctx.escalationApprover（build_ipa 同缝 fail closed） |
+| `WanWo/Features/BuildExt/SigningSetupService.swift` N8 段 | 官方 main checkSigningSetup ①②段收口（N7b 预留 stub）：`extensionExists`（PlugIns/WanWoLiveProcess.appex 存在性=liveProcessIsAvailable 同判据）+`extensionAllowsDebug`/`profileAllowsDebug`（读导入 profile get-task-allow——万我语义适配：官方读 appex 内嵌 profile，万我 unsigned 分发权威 profile=用户导入三件套；解析复用 N7c 字节级 range(of:) 形态）+`runtimeSetupSummary` 组合读视图（不弹 alert——万我无 NXWindowServer rootVC 呈现缝） |
+| `WanWo/Bridge/WanWo-Bridging-Header.h` | 追加 5 头：PEProcessManager/PEBootstrapRegistry/PELaunchServiceRegistry/PEExtension/PEContainer（链上全部纯 ObjC/C 可桥） |
+
+### 读到的偏差（亲自读 pbxproj/源码与任务书或方案不符处）
+
+1. **appex Nyxian 组追加件=38 件非"约 40"**（79BF9A97 实数，含 Debugger/Utils.c——万我树原无 Debugger 落位，本批补 2 文件）。
+2. **任务书品牌 diff 清单漏 5 处 com.cr4zy.* 源码字面**（上表 #6-#10+pectl.h 注释）——全部为宿主↔daemon 服务标识配对面（connectToService/servcieIdentifier），不改则折算后 plist 与代码侧标识错配、XPC 连接必败；按"grep 自查落位树无 com.cr4zy 残留"铁律全折算并逐处登记。
+3. **NXWindowSessionTerminal.m（WindowServer 16 件之一，拍板项 2 要求全编）整文件依赖 UI 层 Swift 符号链**（TerminalViewObjC→Terminal.swift→SwiftTerm SPM 包+currentTheme+gibDynamicColor），万我均未落位——按原样必编译失败。处置=整实现 WANWO_BUILD_UI 守卫（文件保留编译面、默认空 TU），主理人报备在案；备选=SwiftTerm SPM 接入（需用户拍板远程 SPM 依赖，未动工）。
+4. **宿主链接闭包补件**：方案/任务书未列 LCUtils.m/LCMachOUtils.m——官方 emexDE 未排除=在编（N7a 时"LC 层落目录不编译"结论对宿主面而言不完整）；MachOObject.m（宿主编入面 Object 六件之一）硬引用 `_OBJC_CLASS_$_LCUtils`/`_checkCodeSignature`。已按官方镜像编入（依赖闭包 Private/litehook 本批齐备）。
+5. **宿主不编 LiveContainer/utils.m**（官方 emexDE 编入=全树语义）：万我最小面内零消费者（surface.m 的 `_NSGetExecutablePath` 由 libSystem 提供；builtin_vm_protect/aarch64_emulate 等仅 appex 面 LCBootstrap/Tweaks/Dyld.m 消费——appex 已编）。面差异登记。
+6. **project.yml 双 dependencies 块**：YAML 重复 key，pyyaml last-wins 实证生效块=第二块（此前 CC/MDK embed 条目从未生效——N2 修⑥"死配置"画像同源，构建顺序实际由 scheme 驱动）；本批依赖写两处双保险，存量不动。
+
+### 已知风险（承方案 §三，增量）
+
+- 私有类链接：宿主经 Private/Frameworks 四 tbd+官方同款 FSEARCH；appex 官方零 FSEARCH 仅 -Wl,-U 两私有类——镜像官方，若 Xcode 26.6 SDK 导出面差异→链接期 undefined，预案=按官方形态逐个补 -Wl,-U（先案不动）。
+- ignition 递归重试无退避（官方形状）：daemon 起不来会自旋刷日志——pe_smoke status 可观测；万我侧加重试上限需 vendored diff，登记不动（观察优先）。
+- ksurface_kinit constructor 时序：PEExtension.m start_environment 在宿主启动最早期跑（建 mach port+listener+拉两 daemon）——boot 面回归观察项。
+- Media.xcassets 随 appex resources（TouchBarBezel colorset）——UI 集成 N10，暂无消费方。
