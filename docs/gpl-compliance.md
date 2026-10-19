@@ -271,3 +271,9 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 4 | 出厂 gate（NXSignMachOWithNyxianEntitlements=false） | 新建工程显式写 false（官方默认 true NXProject.m:82）——防 WANWO_BUILD_RUN 开宏当天 vendored .export/.run 分支撞未落位的 trust_nxt2_sign（ksurface token 体系归 N8/N9）；键缺失才写（幂等，AI 显式改 true 尊重之） |
 
 **接缝状态**：N7a（引擎编译面）→ N7b（证书三件+校验 gate）→ N7c（编排接线）全通，剩 N7d=用户 adhoc 证书端到端（sign=true 构建→产物巨魔安装运行）。trust_nxt2_sign/macho_after_sign（ksurface token）与 installApplication/spawn 维持 N8/N9。
+
+**N7c 装机复测修（2026-10-19 17:5x，用户轻松签实测「签名 ipa 装上后点开提示无法安装」+事件流 17518 行审计+源码对质三根因）**：
+1. **embedded.mobileprovision 缺失**——vendored zsign.mm:65 硬编码 `bDontGenerateEmbeddedMobileProvision=YES`（0.10.3 官方行为：guest 包 profile 由其容器体系自带）→ 万我侧签名前补写 profile 进 bundle（零 vendored 改动）。
+2. **bundle id 错配**——用户证书 profile 为固定 id（application-identifier=NL6UD7G49R.com.cert.account.t260930000125 非通配）vs 工程 Info.plist=com.wanwo.testapp → 签名前读 profile（CMS 包裹明文 plist 截取解析，零依赖）改写 Info.plist CFBundleIdentifier 对齐（共享证书标准做法=轻松签/爱思签同款；通配 profile 跳过；解析失败诚实注记）。交付产物身份=profile 身份。
+3. **signFailedFiles 被吞**——zsign.mm:121 部分文件签名失败仍回调 YES → signAndRepackage 对 error 非空的 success 如实上报「部分文件签名失败（产物可能不可用）」。
+4. 顺带清理 zsign_cache.json 残留（AI 实测进包垃圾）；「打包快照过期」假说被源码否证（Zip.m zipDirectoryAtPath 全量枚举无过滤无缓存——是 zsign 压根没写）；_CodeSignature/CodeResources 不落盘非致命（iOS 校验读主二进制 blob 内资源清单）。设备 AI 侧「沙箱无签名工具无法单独签名」判断正确（CertificateStore 在 host 沙盒，guest 不可见=设计）。
