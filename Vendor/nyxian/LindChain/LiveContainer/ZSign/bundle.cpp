@@ -41,6 +41,14 @@ bool ZBundle::FindAppFolder(const string& strFolder, string& strAppFolder)
 
 extern "C" const char *getExecutablePath(void);
 extern "C" const char *getBundleIdentifier(void);
+// 【万我 N7c 修 2026-10-19】容器身份覆写开关——实现于 zsigner.m
+//（wanwo_zsign_host_identity）。语义：YES=LiveContainer 容器模式（覆写
+// CFBundleExecutable/CFBundleIdentifier 为宿主值——guest 代码跑在宿主
+// 进程内，签名身份必须=宿主才能过内核校验，N9 运行链用）；NO=标准签名
+// 交付模式（0.10.3 的无条件覆写对独立 app 交付是三方身份错乱——轻松签
+// 实测「装上后点开无法安装」实锤）。默认 NO；N9 落位时在 LC 运行链调用
+// 签名前经 ZSigner.wanwo_setHostIdentityOverride:YES 显式开启。
+extern "C" bool wanwo_zsign_host_identity(void);
 
 bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bGetName)
 {
@@ -50,18 +58,17 @@ bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bG
 
 	jvalue jvInfo;
 	jvInfo.read_plist(strInfoPlistData);
-	// 【万我 N7c 修 2026-10-19】上游 0.10.3 在此覆写 CFBundleExecutable/
-	// CFBundleIdentifier 为宿主 App 值（getExecutablePath/getBundleIdentifier
-	// ——LiveContainer 容器化魔改：guest 签名身份=LC 宿主）。万我场景=标准
-	// 签名交付（非 LC 容器运行）：覆写导致 ①主二进制路径解析为
-	// "TestApp.app//private/var/.../WanWo.app/WanWo" 怪路径 → SignFolder 失败
-	// 进 signFailedFiles ②签名 identifier=宿主 bundle id → 与包
-	// Info.plist/entitlements 三方错乱 → 安装后点开「无法安装」（轻松签实测
-	// 实锤）。删除两行=恢复 zsign 上游语义（用 Info.plist 原值）；bundle id
-	// 与证书 profile 的对齐由万我 BuildService.signAndRepackage 在签名前
-	// 完成（改写 Info.plist）。diff 登记 docs/gpl-compliance.md §N7c。
-	// jvInfo["CFBundleExecutable"] = getExecutablePath();
-	// jvInfo["CFBundleIdentifier"] = getBundleIdentifier();
+	// 【万我 N7c 修 2026-10-19】覆写条件化（原为无条件覆写——LiveContainer
+	// 容器化魔改）。容器模式语义保留可开关（N9 运行链用）；标准交付模式
+	// （默认）恢复 zsign 上游行为：identifier/executable 用 Info.plist 原值，
+	// bundle id 与证书 profile 的对齐由万我 BuildService.signAndRepackage
+	// 在签名前完成（改写 Info.plist）。此前无条件覆写导致标准模式下签名
+	// identifier=宿主 id+主二进制路径解析失败 → 轻松签实测「装上后点开无
+	// 法安装」。diff 登记 docs/gpl-compliance.md §N7c。
+	if (wanwo_zsign_host_identity()) {
+		jvInfo["CFBundleExecutable"] = getExecutablePath();
+		jvInfo["CFBundleIdentifier"] = getBundleIdentifier();
+	}
 	string strBundleId = jvInfo["CFBundleIdentifier"];
 	string strBundleExe = jvInfo["CFBundleExecutable"];
 	string strBundleVersion = jvInfo["CFBundleVersion"];

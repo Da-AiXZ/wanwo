@@ -10,7 +10,23 @@
 
 NSProgress* currentZSignProgress;
 
+// 【万我 N7c 修 2026-10-19】容器身份覆写开关（bundle.cpp GetSignFolderInfo
+// 消费）。默认 NO=标准签名交付模式（签名身份=包 Info.plist 对齐证书后的
+// 值——N7c 交付场景）；YES=LiveContainer 容器模式（覆写 CFBundleExecutable/
+// CFBundleIdentifier 为宿主 App 值——guest 代码跑在宿主进程内签名身份必须
+// =宿主，N9 运行链在调用签名前经 wanwo_setHostIdentityOverride:YES 开启）。
+// 0.10.3 原行为=无条件 YES（无开关）——轻松签实测对独立 app 交付是三方
+// 身份错乱。diff 登记 docs/gpl-compliance.md §N7c。
+static BOOL s_wanwo_host_identity = NO;
+
+BOOL wanwo_zsign_host_identity(void) {
+    return s_wanwo_host_identity ? YES : NO;
+}
+
 @implementation ZSigner
++ (void)wanwo_setHostIdentityOverride:(BOOL)on {
+    s_wanwo_host_identity = on ? YES : NO;
+}
 + (NSProgress*)signWithAppPath:(NSString *)appPath prov:(NSData *)prov key:(NSData *)key pass:(NSString *)pass
              completionHandler:(void (^)(BOOL success, NSError *error))completionHandler {
     NSProgress* ans = [NSProgress progressWithTotalUnitCount:1000];
