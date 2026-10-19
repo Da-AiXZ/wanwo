@@ -368,11 +368,13 @@ struct BuildIPATool: AgentTool {
     let name = "build_ipa"
     let description = "Build the project into an ipa (full official pipeline: swiftc compile → link → Payload package). "
         + "Pre-checks macros (#Preview/@Observable/@Model are unavailable — build would fail). "
+        + "Optionally signs the .app with the imported certificate (sign=true — Settings → Signing Certificate). "
         + "Requires user approval (ask once). Returns build result with diagnostics — fix errors and rebuild."
     let parameters = JSONValue.schemaObject(
         properties: [
             "name": .stringSchema(description: "Project name to build."),
             "optimize": .booleanSchema(description: "Compile with -O (faster runtime, slower compile; persisted in project NXSwiftFlags). Default false."),
+            "sign": .booleanSchema(description: "After a successful build, sign the .app with the imported certificate (Settings → Signing Certificate) and repackage the ipa — installable output. Requires a configured certificate; skipped on build failure. Default false."),
         ],
         required: ["name"])
 
@@ -391,6 +393,17 @@ struct BuildIPATool: AgentTool {
             return .failure("missing \"name\"", code: "INVALID_ARGS")
         }
         let optimize = args.objectValue?["optimize"]?.boolValue ?? false
+        let sign = args.objectValue?["sign"]?.boolValue ?? false
+
+        // 【N7c】sign=true 且证书未配置 → 构建前快速失败（不浪费数分钟 CPU
+        // 才发现签不了；引导文案指向设置导入）。
+        if sign && !CertificateStore.isConfigured {
+            return .failure(
+                "signing requested but no certificate is configured — ask the user to import "
+                    + "p12 + mobileprovision + password in Settings → 签名证书 (Signing Certificate), "
+                    + "then rebuild with sign=true.",
+                code: "SIGN_NOT_CONFIGURED", name: "BuildError")
+        }
 
         // 工程定位提前到审批前（批 2：工程不存在/名字错不必让用户白批一次）
         let project: NXProject
@@ -431,8 +444,9 @@ struct BuildIPATool: AgentTool {
 
         // 审批（危险级 askOnce——提权呈现缝，browser_use 同一呈现；nil → fail closed）
         if let approver = ctx.escalationApprover {
-            let outcome = await approver("build_ipa", ctx.callId,
-                                         "编译工程 \"\(name)\" 为 ipa（占用设备 CPU 数分钟）")
+            let actionText = sign ? "编译并签名工程 \"\(name)\" 为 ipa（占用设备 CPU 数分钟；签名用已导入证书）"
+                                  : "编译工程 \"\(name)\" 为 ipa（占用设备 CPU 数分钟）"
+            let outcome = await approver("build_ipa", ctx.callId, actionText)
             guard outcome == .allowedOnce else {
                 return .failure("user did not approve the build (outcome: \(outcome.rawValue))",
                                 code: "BUILD_NOT_APPROVED", name: "BuildError")
@@ -463,23 +477,26 @@ struct BuildIPATool: AgentTool {
 
         // 官方全链（MDK 线程池；阻塞本工具车道直到完成）
         let result: BuildResult = await withCheckedContinuation { cont in
-            BuildService.shared.build(project: project) { r in
+            BuildService.shared.build(project: project, sign: sign) { r in
                 cont.resume(returning: r)
             }
         }
 
         // 诊断双去向 ②：build 事件持久化（modelVisible——AI 下一回合读到）
-        let eventPayload: JSONValue = .object([
+        var eventFields: [String: JSONValue] = [
             "name": .string(name),
             "result": .string(result.success ? "success" : "failure"),
             "phase": .string("export"),
             "elapsed": .string(String(format: "%.1fs", result.elapsedSeconds)),
             "ipaURL": .string(result.ipaURL.path),
             "diagnostics": .string(String(result.diagnosticsSummary.prefix(2000))),
-        ])
+        ]
+        if let signNote = result.signNote {
+            eventFields["sign"] = .string(signNote)
+        }
         _ = try? await writer.append(.extensionEvent(
             kind: BuildEvents.eventKind,
-            payload: eventPayload))
+            payload: .object(eventFields)))
 
         if result.success {
             let guestHint = BuildTools.guestPathHint(result.ipaURL.path, workspaceRoot: ctx.workspace.rootURL,
@@ -515,10 +532,15 @@ struct BuildIPATool: AgentTool {
                 }
             }
             let artifactLine = artifactPath.map { "\nworkspace ipa: \($0)（文件 App/读工具可直取）" } ?? ""
+            // 【N7c】签名注记（sign=true 时：成功/失败原因；nil=未请求）。
+            var signLine = ""
+            if let signNote = result.signNote {
+                signLine = "\nsign: " + signNote
+            }
             return .success("""
-                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)
+                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)\(signLine)
                 ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
-                bundle(.app, N7 签名/N9 guest 取用): \(result.bundleURL.path)
+                bundle(.app, N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
                 diagnostics: \(result.diagnosticsSummary)
                 """)

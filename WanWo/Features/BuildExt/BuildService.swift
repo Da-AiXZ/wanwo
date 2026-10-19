@@ -38,6 +38,9 @@ struct BuildResult: Sendable {
     let buildLogPath: String
     /// 诊断摘要（Internal 桶最近条目——工具输出直给 AI 自修复）。
     let diagnosticsSummary: String
+    /// 【N7c】签名编排结果注记（sign=true 时：nil=未请求签名；成功=「签名完成」；
+    /// 失败=失败原因——构建本体成功、签名独立报告，AI 可重试签名）。
+    let signNote: String?
     let elapsedSeconds: Double
 }
 
@@ -219,6 +222,7 @@ final class BuildService: @unchecked Sendable {
         // 语义等价旧行为）；NXDisplayName 仍独立服务 CFBundleDisplayName
         //（合规 §三 g 实证的官方正确姿势）。
         _ = Self.overwriteOutputPathTemplate(project: project)
+        _ = Self.overwriteSigningGateTemplate(project: project)
         return (project, true)
     }
 
@@ -439,6 +443,66 @@ final class BuildService: @unchecked Sendable {
         lldContaminated = true
     }
 
+    // MARK: N7c · 签名编排（用户导入证书 → ZSign 签 bundle → 重打包 ipa）
+
+    /// 【N7c】对构建产出的 .app 做 ZSign 签名并重打包 ipa。证书三件来自
+    /// CertificateStore（N7b：p12+profile 沙盒文件、密码 Keychain）。官方
+    /// 对照：0.10.3 Builder.install(.RunningApp) 签名段（semaphore 等待
+    /// ZSigner 回调形态，semaphore.wait 阻塞 MDK 线程为官方同款）；prov=
+    /// 用户导入 profile（万我 unsigned 分发无宿主 embedded——导入式语义）；
+    /// 不 patch（LCPatchExecSlice 属 LC 容器化运行，归 N9）。签名改变
+    /// bundle 内容 → ipa 必须重 zip（官方 package() 同款
+    /// zipDirectoryAtPath——桥接头 <LindChain/Utils/Zip.h>）。
+    /// 返回 (成功, 描述)。
+    static func signAndRepackage(project: NXProject) -> (ok: Bool, message: String) {
+        guard let p12 = CertificateStore.loadCertificateData(),
+              let profile = CertificateStore.loadProfileData(),
+              let password = CertificateStore.loadPassword() else {
+            return (false, "未配置签名证书——请到 设置→签名证书 导入 p12+描述文件+密码")
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var signOK = false
+        var signMessage = ""
+        _ = ZSigner.sign(withAppPath: project.bundleURL.path,
+                         prov: profile, key: p12, pass: password,
+                         completionHandler: { success, error in
+            signOK = success
+            if success {
+                signMessage = "签名完成（证书与描述文件已嵌入，可安装）"
+            } else {
+                signMessage = "签名失败：" + (error?.localizedDescription ?? "未知错误")
+            }
+            semaphore.signal()
+        })
+        semaphore.wait()
+        guard signOK else {
+            return (false, signMessage)
+        }
+        zipDirectoryAtPath(project.payloadURL.path, project.packageURL.path, true)
+        return (true, signMessage)
+    }
+
+    /// 【N7c 出厂 gate】新建工程显式写 NXSignMachOWithNyxianEntitlements=false
+    ///（官方默认 true——NXProject.m:82）。语义：vendored NXBuilder 的
+    /// .export/.run 分支在 WANWO_BUILD_RUN 开宏后会调 trust_nxt2_sign
+    ///（ksurface token 追加——N7 无消费方，token 体系归 N8/N9）；出厂 false
+    /// 保证宏开启当天不撞未落位符号。D2 同款 best effort 幂等。
+    static func overwriteSigningGateTemplate(project: NXProject) -> Bool {
+        let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
+        guard let read = NSDictionary(contentsOf: plistURL) else { return false }
+        // 只在键缺失时写入（幂等：AI 显式改 true 的尊重之——N8/N9 启用 token 时走显式路径）
+        guard read["NXSignMachOWithNyxianEntitlements"] == nil else { return true }
+        let dict = NSMutableDictionary(dictionary: read)
+        dict["NXSignMachOWithNyxianEntitlements"] = false
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+            try data.write(to: plistURL, options: .atomic)
+        } catch {
+            return false
+        }
+        return project.reload()
+    }
+
     /// 单飞行门。返回 false = 已有构建在途（stop_build/等待后重试）。
     func beginBuild() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -460,7 +524,11 @@ final class BuildService: @unchecked Sendable {
     }
 
     /// 官方全链构建（.export）。completion 在 MDK 线程池线程回调。
-    func build(project: NXProject, completion: @escaping (BuildResult) -> Void) {
+    /// 【N7c】sign=true 且构建成功 → ZSign 签名 bundle（用户导入证书）+
+    /// 重打包 ipa——官方对照：0.10.3 Builder.install(.RunningApp) 签名段
+    ///（semaphore 等待 ZSigner 回调形态；不 patch——LCPatchExecSlice 属
+    /// LC 容器化运行归 N9）。
+    func build(project: NXProject, sign: Bool = false, completion: @escaping (BuildResult) -> Void) {
         let started = Date()
         NXBuilder.buildProject(withProject: project, buildType: .export) { [weak self] result, _ in
             let elapsed = Date().timeIntervalSince(started)
@@ -560,7 +628,18 @@ final class BuildService: @unchecked Sendable {
                 summary = lines2.joined(separator: "\n") + tail + contaminationHint
             }
 
-            let buildResult = BuildResult(
+            // 【lld 污染标志】链接阶段 duplicate symbol 失败 → lld 静态残留
+            //（dupSymDiags 无 clear），同进程后续链接有 UAF 闪退风险——置位
+            // 供工具层事前拦截（BuildIPATool）。
+            Self.markLldContaminatedIfDuplicate(summary)
+            // 【N7c 签名编排】构建成功才签（失败产物无 bundle 可签）；签名
+            // 失败不翻构建结果——ipa（未签名版）仍有效，AI 可修证书后重试。
+            var signNote: String? = nil
+            if result && sign {
+                let outcome = Self.signAndRepackage(project: project)
+                signNote = outcome.message
+            }
+            let finalResult = BuildResult(
                 success: result,
                 projectName: project.projectConfig.displayName ?? "Unknown",
                 projectURL: project.url,
@@ -569,13 +648,9 @@ final class BuildService: @unchecked Sendable {
                 ipaURL: project.packageURL,
                 buildLogPath: project.cacheURL.appendingPathComponent("debug.json").path,
                 diagnosticsSummary: summary.isEmpty ? "（无诊断条目）" : summary,
+                signNote: signNote,
                 elapsedSeconds: elapsed)
-            // 【lld 污染标志】链接阶段 duplicate symbol 失败 → lld 静态残留
-            //（dupSymDiags 无 clear），同进程后续链接有 UAF 闪退风险——置位
-            // 供工具层事前拦截（BuildIPATool）。
-            Self.markLldContaminatedIfDuplicate(buildResult.diagnosticsSummary)
-            _ = self // BuildService 无状态依赖；保留 weak 形态防环
-            completion(buildResult)
+            completion(finalResult)
         }
     }
 }

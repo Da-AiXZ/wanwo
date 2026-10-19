@@ -258,3 +258,16 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **ZSigner 桥接实际形态**：`checkCertWithProv:key:pass:completionHandler:` → Swift `ZSigner.checkCert(withProv:key:pass:completionHandler:)`（首参 merge 进方法名）；block `(int, NSDate*, NSString*)` → `(Int32, Date?, String?)`；返回 int 为同步前置失败码（丢弃，回调路径为权威判定；status==0=有效）。
 
 **N7b 装机复测修（2026-10-19 14:5x，用户实测反馈「证书栏点击没反应/描述文件正常」）**：CertificateSettingsView 同视图双 `.fileImporter` 修饰符 SwiftUI presentation 抢占（仅最后声明者生效——描述文件能弹、p12 静默无反应），叠加 `UTType(tag:)` 动态解析 UTI 在文档选择器呈现的不可靠性。修=合并单一 fileImporter（allowedContentTypes=[.data] 全量）+ 按扩展名 routePickedFile 自动分流（p12/mobileprovision→对应段，其他→行内红字），typeForExtension 废弃删除。教训：SwiftUI 同视图多 presentation 修饰符必炸——单实例+分流是文件多类型选择的防弹形态。
+
+### N7c、签名编排（2026-10-19 15:2x，方案 §二 N7c 修正版接缝表落地）
+
+**范围**：build_ipa 加 `sign` 布尔参数——构建成功后 ZSign 签 bundle（用户导入证书三件）+ 重打包 ipa（可安装产物）。**不 patch**（LCPatchExecSlice="convert executable to dylib"属 LC 容器化运行核心，归 N9 与 litehook 一起）。
+
+| # | 项 | 说明 |
+|---|---|---|
+| 1 | BuildResult.signNote 字段 | 签名编排独立注记（nil=未请求/成功=「签名完成」/失败=原因）——构建本体成功与签名结果分离，AI 可针对性重试；build 事件 payload 增 sign 键（AI 跨回合可读） |
+| 2 | BuildService.signAndRepackage | 官方 0.10.3 Builder.install(.RunningApp) 签名段同构：semaphore 等待 ZSigner.signWithAppPath 回调（semaphore.wait 阻塞 MDK 线程=官方同款形态）→ zipDirectoryAtPath 重打包（桥接头 Zip.h 既有）；prov=用户导入 profile（导入式三件套语义） |
+| 3 | BuildIPATool sign 参数 | sign=true 且 CertificateStore.isConfigured=false → 构建前快速失败 SIGN_NOT_CONFIGURED（不浪费数分钟 CPU）；审批文案条件化（「编译并签名」）；输出 sign 行 |
+| 4 | 出厂 gate（NXSignMachOWithNyxianEntitlements=false） | 新建工程显式写 false（官方默认 true NXProject.m:82）——防 WANWO_BUILD_RUN 开宏当天 vendored .export/.run 分支撞未落位的 trust_nxt2_sign（ksurface token 体系归 N8/N9）；键缺失才写（幂等，AI 显式改 true 尊重之） |
+
+**接缝状态**：N7a（引擎编译面）→ N7b（证书三件+校验 gate）→ N7c（编排接线）全通，剩 N7d=用户 adhoc 证书端到端（sign=true 构建→产物巨魔安装运行）。trust_nxt2_sign/macho_after_sign（ksurface token）与 installApplication/spawn 维持 N8/N9。
