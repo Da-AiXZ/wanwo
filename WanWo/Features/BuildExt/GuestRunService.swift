@@ -224,7 +224,9 @@ final class GuestRunService: @unchecked Sendable {
         activeProcess = nil
         activeBundleID = ""
         lock.unlock()
-        GuestWindowBridge.hideGuestOverlayIfNoWindowsAfterDelay(1.0)
+        // （Swift 导入名：ObjC hideGuestOverlayIfNoWindowsAfterDelay: →
+        //  hideGuestOverlayIfNoWindows(afterDelay:)——CI 实证，按导入名调用）
+        GuestWindowBridge.hideGuestOverlayIfNoWindows(afterDelay: 1.0)
     }
 
     /// 是否有活跃 guest 进程登记（app run 门路径 / utility 终端路径通用）。
@@ -296,17 +298,20 @@ final class GuestRunService: @unchecked Sendable {
                                      withMappingToLoc: 101)
 
         // ── spawn（官方 Builder.swift:348 同参）────────────────────────
+        // （spawnProcess 返回 pid_t/Int32——pid 以 Int 收敛供会话/文案统一
+        //  使用；process(forProcessIdentifier:) 仍取原始 Int32 形态）
         let items: [AnyHashable: Any] = ["PEMapObject": map]
-        let pid = manager.spawnProcess(withBundleIdentifier: bundleID,
-                                       withItems: items,
-                                       withKernelSurfaceProcess: nil,
-                                       doRestartIfRunning: true)
+        let spawnedPid: pid_t = manager.spawnProcess(withBundleIdentifier: bundleID,
+                                                     withItems: items,
+                                                     withKernelSurfaceProcess: nil,
+                                                     doRestartIfRunning: true)
+        let pid = Int(spawnedPid)
         guard pid > 0 else {
             let msg = "spawnProcess 失败（pid=" + String(pid) + "）——可查 installd 注册态"
                 + "（pe_smoke）与 LDEApplicationObject.isLaunchAllowed（工程未安装/被卸载？）"
             return GuestRunSpawnResult.failure(msg)
         }
-        guard let process = manager.process(forProcessIdentifier: pid) else {
+        guard let process = manager.process(forProcessIdentifier: spawnedPid) else {
             let msg = "spawn 返回 pid=" + String(pid) + " 但无 PEProcess 记录（进程秒退？）"
             return GuestRunSpawnResult.failure(msg)
         }
@@ -489,7 +494,7 @@ final class GuestRunService: @unchecked Sendable {
         // A2：窗口清空判定隐藏+归还键窗（官方进程退出关窗走 processDidExit
         // 内 dispatch_async(main) 异步链——PEProcess.m:286-294——传 1.0s 余量
         // 防竞态误判；主队列 FIFO 保证判定排在官方 closeWindow dispatch 后）。
-        GuestWindowBridge.hideGuestOverlayIfNoWindowsAfterDelay(1.0)
+        GuestWindowBridge.hideGuestOverlayIfNoWindows(afterDelay: 1.0)
 
         // run 门放行（C v2：endRun 从工具 defer 移到会话收尾——spawn 成功的
         // 会话独占门生命周期；失败路径由工具层 endRun）。
