@@ -31,6 +31,7 @@
 
 #import <Foundation/Foundation.h>
 #import <LindChain/ProcEnvironment/Surface/entitlement.h>
+#import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspaceProtocol.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -41,6 +42,31 @@ FOUNDATION_EXPORT NSErrorDomain const WanWoGuestRunErrorDomain;
 /// NXBundleIdentifier=com.wanwo.testapp）。L1/L2 判别语义见
 /// probeInstalldTestAppRoundTripWithError: 与 docs/gpl-compliance.md §N9。
 FOUNDATION_EXPORT NSString * const WanWoGuestProbeTestAppBundleID;
+
+/// 【N9 装后通知层修复（L2 实锤轮）】installd 装后广播 observer（万我自有
+/// ObjC 类，非 vendored——登记 docs/gpl-compliance.md §N9）。语义出处：
+/// 官方宿主侧 observer = LDEApplicationWorkspace（0.10.3
+/// LDEApplicationWorkspace.m:361-373 applicationWasInstalled:/…WasUninstalled:
+/// → ApplicationManagementViewController UI 呈现）——万我没有应用管理 UI
+/// 呈现层，两方法实现为 no-op + NSLog 调试行（协议方法清单全文核对：
+/// LDEApplicationWorkspaceProtocol.h 仅此两方法）。
+/// 存在动机（L2 实锤链）：daemon 侧 Service.m:66 对**每个新连接**无条件设
+/// remoteObjectInterface=LDEApplicationWorkspaceProtocol 并在
+/// clientDidConnectWithConnection:（LDEApplicationWorkspaceInternal.m:575-587）
+/// 与 installApplicationWithPayloadPath: 内（:280-283）向全部 client 广播
+/// applicationWasInstalled:(LDEApplicationObject*)——万我层连接此前
+/// observer=nil（exportedObject=nil + exportedInterface=NSObject 空协议），
+/// 广播选择器不在导出面 → NSXPCConnection 失效 → install 的 reply 回执丢失
+/// → host 侧 xpcError（install 本体在 daemon 侧每次都成功——判别探针
+/// YES 实锤）。挂本 observer 后导出面=LDEApplicationWorkspaceProtocol，
+/// LDEApplicationObject 经协议方法签名自动放行解码（官方宿主从未调
+/// ResecureDecoder() 仍正常收广播——同机制实证，无需白名单 hook）。
+@interface WanWoGuestInstallObserver : NSObject <LDEApplicationWorkspaceProtocol>
+
+/// 进程级单例（多条连接共用一份 no-op 导出对象——无状态，免每连新建）。
++ (instancetype)sharedObserver;
+
+@end
 
 /// 【N9d 诊断增强】installApplication 包装结果（vendored 版 BOOL 无法区分
 /// reply(NO)/2s 超时/XPC 错误回调——诊断轮核心区分点）。
@@ -103,8 +129,16 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// remoteObjectProxyWithErrorHandler + 2s semaphore——vendored 版
 /// WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.m
 /// :91-119 逐行对照；差异仅三点：①连接不驻留（诊断包装每次新建——官方
-/// 驻留 self.connection）②observer 传 nil（本包装不消费
-/// applicationWasInstalled 回调）③返回枚举区分 installed/rejected/timeout/
+/// 驻留 self.connection）②observer 挂 WanWoGuestInstallObserver
+///（【N9 装后通知层修复（L2 实锤轮）】——原 observer=nil +
+/// exportedInterface=NSObject 空协议形态在 daemon 装后广播
+/// applicationWasInstalled:(LDEApplicationObject*)（
+/// LDEApplicationWorkspaceInternal.m:280-283）时导出面无该选择器 →
+/// NSXPCConnection 失效 → reply 回执丢失 → host 侧 xpcError（判别探针
+/// YES 实锤 install 本体每次都成功）；现导出面=LDEApplicationWorkspaceProtocol
+/// + 导出对象=no-op observer，广播可解码可投递、回执正常返回——官方宿主
+/// LDEApplicationWorkspace.m:71 observer:self 同构）
+/// ③返回枚举区分 installed/rejected/timeout/
 /// xpcError/noConnection/invalidInput——vendored 版 2s 返回后统一
 /// return result 无法区分 reply(NO) 与超时）。
 /// 失败时 error 恒填浅因文案（成功为 nil）。
@@ -121,8 +155,13 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// com.wanwo.probe.nonexistent（不存在→预期 reply=NO）。
 /// 连接形态与 installApplicationAtPath 同款（connectToService + 2s
 /// semaphore + remoteObjectProxyWithErrorHandler），但独立临时连接
-///（不缓存不复用 prepareGuestRun 连接）、observer 传 nil（连接不驻留
-/// 语义同 installApplicationAtPath 既有处理）。
+///（不缓存不复用 prepareGuestRun 连接）；observer 挂
+/// WanWoGuestInstallObserver（【N9 装后通知层修复（L2 实锤轮）】——
+/// daemon clientDidConnectWithConnection: 对每个新连接广播已有 bundles
+///（LDEApplicationWorkspaceInternal.m:575-587），observer=nil 形态下探针
+/// 连接一建立即收广播——此前靠「纯 BOOL reply 先于广播失效到达」时序
+/// 侥幸存活；统一挂 observer 后不再依赖该时序，全部连 installd 的
+/// 万我层连接导出面一致）。
 /// 判定表：①reply 回来（预期 NO）=「installd 回环 OK（reply=NO）——
 /// 连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）」
 /// ②错误回调=「installd 回环 XPC 错误：<原文>——连接层失效（与载荷
@@ -148,7 +187,8 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 ///     方法进入前连接失效。修复方向=fd 传输/解码层）。
 ///   · 错误/超时/连接失败 → 连接层态（如实上报，不参与 L1/L2 判别）。
 /// 连接形态与 probeInstalldRoundTripWithError: 完全同款（独立临时连接、
-/// observer=nil、2s semaphore、remoteObjectProxyWithErrorHandler）；实现
+/// observer 挂 WanWoGuestInstallObserver——【N9 装后通知层修复（L2 实锤
+/// 轮）】统一修，2s semaphore、remoteObjectProxyWithErrorHandler）；实现
 /// 共用 .m 内 static 查询函数（bundleId 参数化，不入 Swift 导出面——避开
 /// 导入器剪枝雷区，本探针方法选择器形状与已实证可导入的回环探针同构）。
 /// 返回值=报告行文本（PESmoke probe 直译输出，格式

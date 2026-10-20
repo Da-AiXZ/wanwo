@@ -554,3 +554,31 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **动机**：回环探针（commit 6a3da26）实证 installd 的 XPC 连接层健康（`applicationInstalledWithBundleID:@"com.wanwo.probe.nonexistent"` 纯 BOOL 回环 reply=NO 干净返回），install=xpcError 失败钉死在 install 的 ArchiveObject 载荷层——载荷层待二分：**L1**=ArchiveObject+fd 解码失败于 daemon（fileport_makefd 在 uid=1 的 installd 内行为异常→guest 从未被安装→修 fd 传输/解码层）；**L2**=install 实际成功、死在装后通知（daemon 广播 `applicationWasInstalled:(LDEApplicationObject*)` 给 observer=nil 连接 + 宿主无 ResecureDecoder 白名单（appex-only，main.m:265）→解码失败→连接失效→reply 丢失→host 侧 xpcError→修通知层）。判别法：用工程真实 bundle id（com.wanwo.testapp，历轮 build_and_run 目标工程）调 `applicationInstalledWithBundleID:withReply:` 查 daemon 侧 bundles 字典——YES=L2 实锤 / NO=L1 实锤；错误/超时/连接失败=连接层态，不参与判别。
 
 **万我层新件**：`GuestRunSupport.probeInstalldTestAppRoundTripWithError:`（薄壳，连接形态与回环探针完全同款；实现共用 .m 内 static 查询函数 WanWoGuestProbeInstalldQuery——bundleId 参数化、文件内私有不入 Swift 导出面；判别目标 id 常量 `WanWoGuestProbeTestAppBundleID`）。消费点：`PESmoke.swift` probe 输出「=== installd 回环 ===」段内追加第二行查询结果（格式「installd 查询 com.wanwo.testapp → YES/NO/错误：<原文>/超时」）。行为语义不变：prepareGuestRun/installApplication 零改动；vendored 树零 diff；纯诊断输出，不设门不拦截。
+
+#### 装后通知层修复（L2 实锤轮）（2026-10-20，判别探针 YES 定案 → install 回执修复，让 prepare 进 spawn）
+
+**判别证据（commit 2f50b98 探针本机实测）**：`installd 查询 com.wanwo.testapp → YES`——guest 已在 daemon 侧 bundles 字典注册（LDEApplicationWorkspaceInternal.m:317-324 查询语义）。结合回环探针（6a3da26，连接层健康）+ e 段历轮 5+ 次 `install=xpcError「Couldn't communicate with a helper application.」`：**installApplicationWithPayloadPath: 在 daemon 侧每次都成功，失败在装后通知层**。
+
+**根因链（L2 实锤，三段逐处源码实证）**：
+
+1. daemon 对**每个新连接**设 `remoteObjectInterface=LDEApplicationWorkspaceProtocol`（ServiceKit/Service.m:66——observerProtocol 取自 LDEApplicationWorkspaceInternal `+observerProtocol`），不受宿主导出面影响；
+2. daemon 在 `installApplicationWithPayloadPath:` **方法内、return YES 之前**向全部 client 广播 `applicationWasInstalled:(LDEApplicationObject*)`（LDEApplicationWorkspaceInternal.m:276-284）；且 `clientDidConnectWithConnection:` 对新连接重放已有 bundles 的同名广播（:575-587）；
+3. 万我层连接（GuestRunSupport installApplicationAtPath + 两探针，commit 0503e31 起）`observer=nil` → connectToService 落成 `exportedObject=nil + exportedInterface=NSObject 空协议`（PELaunchServiceRegistry.m:77-78 无条件赋值）——广播选择器 `applicationWasInstalled:` 不在导出面 → NSXPCConnection 失效 → install 的 reply 回执丢失 → host 侧 remoteObjectProxyWithErrorHandler 触发 → xpcError。
+
+**时序差异（为何回环探针 OK 而 install 死）**：install 的广播先于 reply 发出（方法内 :282 → return YES）→ 连接在 reply 到达前已被击穿；探针的纯 BOOL reply 无前置广播，先于 clientDidConnect 广播失效到达 → 侥幸干净返回。另探针连接建立时 bundles 已非空（testapp 历轮装过）→ clientDidConnect 广播当场可达——两探针同样悬在时序上。
+
+**修法（仅万我层，零 vendored diff）**：
+
+| 项 | 内容 |
+|---|---|
+| `GuestRunSupport.h/.m` 新增 `WanWoGuestInstallObserver` | ObjC 类，实现 `LDEApplicationWorkspaceProtocol` **全部方法**（协议 .h 全文核对：仅 `applicationWasInstalled:` / `applicationWithBundleIdentifierWasUninstalled:` 两方法）；语义对齐官方宿主侧 observer（0.10.3 LDEApplicationWorkspace.m:361-373）但去掉 UI 呈现层（万我没有应用管理 UI）——两方法 no-op + NSLog 调试行。进程级单例 `+sharedObserver` |
+| `installApplicationAtPath` 连接 | `observer:nil/@protocol(NSObject)` → `observer:[WanWoGuestInstallObserver sharedObserver]/@protocol(LDEApplicationWorkspaceProtocol)`（官方宿主 LDEApplicationWorkspace.m:71 `observer:self` 同构） |
+| 两探针连接（WanWoGuestProbeInstalldQuery） | 同上统一挂 observer——全部连 installd 的万我层连接导出面一致，不再依赖「reply 先于广播失效到达」时序 |
+| 判别探针 YES 报告行 | 语义转常态健康指标（「guest 已在 daemon 侧注册」——L2 轮实锤形态的常态化；探针段按边界保留） |
+| `BuildService.prepareGuestRun` | 成功 message 带「guest 已安装（bundle id=…，daemon 侧实际注册 id=磁盘 Info.plist id——容器模式不改写，spawn 段按此 id 查找）」——spawn 传参链（BuildTools.swift :785 `bundleID: prep.bundleID`）自洽；`.xpcError` 浅因文案更新（修复后残余 xpcError=意外态指向） |
+
+**白名单 hook 不需要的判定依据（施工项 2 择路 b——只修导出面，不动 vendored）**：官方 0.10.3 全仓 `ResecureDecoder()` 调用点仅 LiveProcess appex `main.m:265`（grep 实证）——**官方宿主 App（Nyxian target）从未调用**，但其宿主侧 observer（LDEApplicationWorkspace，`observer:self` + `exportedInterface=LDEApplicationWorkspaceProtocol`，LDEApplicationWorkspace.m:71）正常接收 `applicationWasInstalled:(LDEApplicationObject*)` 广播（官方应用管理列表机制，0.10.3 用户实测可用）。即：协议方法签名内的自定义类（LDEApplicationObject 在 `applicationWasInstalled:` 参数位）经 NSXPCInterface 从导出协议方法签名**自动放行解码**——与上轮 FDObject 跨进程解码实证（FDObject 在 PEContainerProtocol 方法签名内自动放行，宿主进程无 hook）同机制。官方白名单不含 LDEApplicationObject 正因官方宿主走协议签名自动放行、无需兜底。故 `ResecureDecoder.m` 零改动、宿主编译面（project.yml）零改动。
+
+**行为语义**：prepare 步骤序（补片→容器签名→token→install）与 e 段分态语义不变；install 成功后 prepare 正常返回 → build_and_run 链进 spawn 段；交付路线（signAndRepackage）、探针段（保留）、`WANWO_BUILD_RUN`（维持不定义）零变化。**vendored 树本轮零 diff**（上轮 bundle.cpp 一处之外无新增）。
+
+**官方对照**：官方宿主 observer=`ApplicationManagementViewController` UI 路径（LDEApplicationWorkspace.m:361-373 dispatch_async 主队列转 UI 刷新）；万我 no-op 路径=同名协议同形实现、去 UI（万我无应用管理呈现层），连接生命周期（不驻留、每次新建）维持万我诊断包装既有语义。

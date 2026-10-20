@@ -656,7 +656,12 @@ final class BuildService: @unchecked Sendable {
     ///   ④ installApplication（N9d 起经 GuestRunSupport 自有包装——官方
     ///      LDEApplicationWorkspace.installApplicationAtBundlePath 等义重写，
     ///      XPC→installd daemon，2s 超时=官方硬编码 LDEApplicationWorkspace.m:117，
-    ///      返回枚举区分 reply(NO)/超时/XPC 错误回调）。
+    ///      返回枚举区分 reply(NO)/超时/XPC 错误回调。【N9 装后通知层修复
+    ///      （L2 实锤轮）】连接 observer 挂 WanWoGuestInstallObserver +
+    ///      exportedInterface=LDEApplicationWorkspaceProtocol（原 observer=nil
+    ///      形态被 daemon 装后广播 applicationWasInstalled:(LDEApplicationObject*)
+    ///      击穿——导出面无该选择器→连接失效→reply 丢失→xpcError；install
+    ///      本体在 daemon 侧每次都成功，判别探针 YES 实锤）。
     /// 与标准签名路径的三点差异（防混淆）：不做 profile bundle id 对齐（容器
     /// 模式磁盘 Info.plist 保持工程 id）；不重打包 ipa（安装取 bundleURL 树）；
     /// 不清 zsign_cache.json（容器模式 zsign 不写缓存产物路径不同——实测
@@ -833,8 +838,16 @@ final class BuildService: @unchecked Sendable {
 
         segments.append("[e install=installed]")
         let detail = "prepare 细目：" + segments.joined(separator: " ")
+        // 【N9 装后通知层修复（L2 实锤轮）】成功消息带实际注册 id：容器模式
+        // 不改写磁盘 Info.plist（buildService 细目 b/c 段实证链），daemon 按
+        // 磁盘 Info.plist 的 CFBundleIdentifier 注册——实际注册 id=工程 id，
+        // spawn 段（GuestRunService.performRun 的 bundleID=prep.bundleID，
+        // BuildTools.swift :785）直接使用本值，传参链自洽。
+        let installedMessage = signMessage + "；token " + bitsHex
+            + "；guest 已安装（bundle id=" + bundleID
+            + "，daemon 侧实际注册 id=磁盘 Info.plist id——容器模式不改写，spawn 段按此 id 查找）"
         return GuestRunPreparation(ok: true,
-                                   message: signMessage + "；token " + bitsHex + "；已安装至容器（installd）",
+                                   message: installedMessage,
                                    entitlementBits: bitsHex,
                                    bundleID: bundleID,
                                    detail: detail)
@@ -880,6 +893,7 @@ final class BuildService: @unchecked Sendable {
             return "2s XPC 超时（installd 无响应——daemon 未起/忙/解压超 2s；候选④）"
         case .xpcError:
             return "XPC 错误回调：" + (error?.localizedDescription ?? "未知")
+                + "（【N9 装后通知层修复（L2 实锤轮）】后 install 连接已挂 observer + 导出面=LDEApplicationWorkspaceProtocol——残余 xpcError 属意外态，按连接层态排查：installd daemon 存活态 pe_smoke mode=status）"
         case .noConnection:
             return "XPC 连接不可达（endpoint/proxy 缺失——installd daemon 未起？pe_smoke mode=status）"
         case .invalidInput:

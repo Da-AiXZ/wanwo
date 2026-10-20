@@ -12,6 +12,7 @@
 #import <LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.h>
 #import <LindChain/ProcEnvironment/Object/ArchiveObject.h>
 #import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.h>
+#import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspaceProtocol.h>
 
 NSErrorDomain const WanWoGuestRunErrorDomain = @"com.wanwo.guestrun";
 
@@ -43,6 +44,56 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     }
     return def;
 }
+
+// ── 【N9 装后通知层修复（L2 实锤轮）】installd 装后广播 observer ──────────
+// 官方宿主侧 observer=LDEApplicationWorkspace（0.10.3
+// LDEApplicationWorkspace.m:361-373——两回调 dispatch_async 主队列转
+// ApplicationManagementViewController UI 呈现）。万我没有应用管理 UI 呈现
+// 层，语义对齐官方宿主侧 observer 但去掉 UI：两方法 no-op + NSLog 调试行。
+// 协议方法清单全文核对（LDEApplicationWorkspaceProtocol.h:27-32）：
+// 仅 applicationWasInstalled:/applicationWithBundleIdentifierWasUninstalled:
+// 两方法——全部实现，无遗漏（NSXPCConnection 导出面要求导出对象实现导出
+// 协议全部方法，否则运行期 doesNotRecognizeSelector 风险）。
+// 解码机制判定（白名单 hook 不需要的证据，本轮判定依据）：
+// 官方 0.10.3 全仓 ResecureDecoder() 调用点仅 LiveProcess appex main.m:265
+//（grep 实证）——官方宿主 App（Nyxian target）从未调用，但其宿主侧 observer
+//（LDEApplicationWorkspace，observer:self + exportedInterface=
+// LDEApplicationWorkspaceProtocol，LDEApplicationWorkspace.m:71）正常接收
+// applicationWasInstalled:(LDEApplicationObject*) 广播（官方应用管理列表
+// 机制，0.10.3 用户实测可用）——即协议方法签名内的自定义类
+//（LDEApplicationObject 在 applicationWasInstalled: 参数位）经
+// NSXPCInterface 从协议方法签名自动放行解码，无需 ResecureDecoder 白名单
+// hook。与上轮 FDObject 跨进程解码实证（FDObject 在 PEContainerProtocol
+// 方法签名内自动放行）同机制。故本轮零 vendored diff（ResecureDecoder.m
+// 不改、宿主编译面不加），仅修导出面。
+@implementation WanWoGuestInstallObserver
+
++ (instancetype)sharedObserver
+{
+    static WanWoGuestInstallObserver *sharedObserver = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedObserver = [[WanWoGuestInstallObserver alloc] init];
+    });
+    return sharedObserver;
+}
+
+// 官方 LDEApplicationWorkspace.m:361-366 宿主侧回调等义（去 UI 呈现层）：
+// 广播到达本身即连接健康的证明——记调试行供 klog/控制台侧事后审读。
+- (void)applicationWasInstalled:(LDEApplicationObject *)app
+{
+    NSLog(@"[WanWoGuestInstallObserver] applicationWasInstalled: %@ (%@)",
+          app.bundleIdentifier, app.bundlePath);
+}
+
+// 官方 LDEApplicationWorkspace.m:368-373 宿主侧回调等义（去 UI 呈现层）。
+- (void)applicationWithBundleIdentifierWasUninstalled:(NSString *)bundleIdentifier
+{
+    NSLog(@"[WanWoGuestInstallObserver] applicationWithBundleIdentifierWasUninstalled: %@",
+          bundleIdentifier);
+}
+
+@end
 
 @implementation GuestRunSupport
 
@@ -258,15 +309,21 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
 
     // connect（官方 connect 段等义：PEBootstrapRegistry endpoint → XPC 连接；
     // 差异：连接不驻留（诊断包装每次新建——官方驻留 self.connection 复用）、
-    // observer=nil（本包装不消费 applicationWasInstalled 回调——导出面给
-    // NSObject 空协议，daemon 侧单向回调派发到 nil 导出对象无害）。
+    // observer 挂 WanWoGuestInstallObserver（【N9 装后通知层修复（L2 实锤
+    // 轮）】——原 observer=nil + exportedInterface=NSObject 空协议形态死因：
+    // daemon installApplicationWithPayloadPath: 装完在方法内广播
+    // applicationWasInstalled:(LDEApplicationObject*)（vendored
+    // LDEApplicationWorkspaceInternal.m:280-283）后才回 YES，广播选择器不在
+    // 导出面 → 连接当场失效 → reply 回执丢失 → host 错误回调 xpcError；
+    // 官方宿主 LDEApplicationWorkspace.m:71 observer:self 同构——导出面=
+    // LDEApplicationWorkspaceProtocol，广播经协议方法签名自动放行解码）。
     NSXPCConnection *connection = nil;
     PELaunchServiceRegistry *registry = [PELaunchServiceRegistry shared];
     if (registry != nil) {
         connection = [registry connectToService:@"com.wanwo.installd"
                                        protocol:@protocol(LDEApplicationWorkspaceProxyProtocol)
-                                       observer:nil
-                               observerProtocol:@protocol(NSObject)];
+                                       observer:[WanWoGuestInstallObserver sharedObserver]
+                               observerProtocol:@protocol(LDEApplicationWorkspaceProtocol)];
     }
     if (connection == nil) {
         if (error != NULL) {
@@ -381,16 +438,22 @@ static NSString *WanWoGuestProbeInstalldQuery(NSString *bundleID, NSString **err
 
     // connect：与 installApplicationAtPath 同款形态（endpoint → XPC 连接），
     // 独立临时连接（不缓存不复用 prepareGuestRun 的连接——探针只读诊断，
-    // 不驻留不污染既有消费链），observer=nil（连接不驻留语义同
-    // installApplicationAtPath 既有处理——daemon 侧单向回调派发到 nil
-    // 导出对象无害）。
+    // 不驻留不污染既有消费链）；observer 挂 WanWoGuestInstallObserver
+    //（【N9 装后通知层修复（L2 实锤轮）】统一修——daemon
+    // clientDidConnectWithConnection:（vendored
+    // LDEApplicationWorkspaceInternal.m:575-587）对每个新连接广播已有
+    // bundles，observer=nil 形态下探针连接一建立即收 LDEApplicationObject
+    // 广播（testapp 历轮已装、bundles 非空）——此前探针靠「纯 BOOL reply
+    // 先于广播失效到达」时序侥幸存活，本轮统一挂 observer 后不再依赖该
+    // 时序（这也正是「回环探针 OK 但 install 死」时序差异的成因之一：
+    // install 的广播在方法内先于 reply 发出）。
     NSXPCConnection *connection = nil;
     PELaunchServiceRegistry *registry = [PELaunchServiceRegistry shared];
     if (registry != nil) {
         connection = [registry connectToService:@"com.wanwo.installd"
                                        protocol:@protocol(LDEApplicationWorkspaceProxyProtocol)
-                                       observer:nil
-                               observerProtocol:@protocol(NSObject)];
+                                       observer:[WanWoGuestInstallObserver sharedObserver]
+                               observerProtocol:@protocol(LDEApplicationWorkspaceProtocol)];
     }
     if (connection == nil) {
         if (error != NULL) {
@@ -441,8 +504,9 @@ static NSString *WanWoGuestProbeInstalldQuery(NSString *bundleID, NSString **err
             return @"installd 回环 OK（reply=NO）——连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）";
         }
         if (isTestappProbe) {
-            // L2 实锤：install 实际成功——失败在装后通知层。
-            return [NSString stringWithFormat:@"installd 查询 %@ → YES——L2 实锤：install 实际成功、死在装后通知（daemon 广播 applicationWasInstalled:LDEApplicationObject 给 observer=nil 连接 + 宿主无 ResecureDecoder 白名单→解码失败→reply 丢失；修通知层）", bundleID];
+            // L2 轮实锤形态：install 实际成功——装后通知层已修复（observer+
+            // 导出面），本查询转常态健康指标（YES=guest 已在 daemon 侧注册）。
+            return [NSString stringWithFormat:@"installd 查询 %@ → YES——guest 已在 daemon 侧注册（N9 判别轮 L2 实锤形态：install 本体成功；装后通知层已修复——observer+导出面，本查询为常态健康指标）", bundleID];
         }
         // 意外形态：probe id 不应存在（如实报告原值，不吞异常）。
         return @"installd 回环 OK（reply=YES——意外：probe id com.wanwo.probe.nonexistent 不应存在，如实上报）";
