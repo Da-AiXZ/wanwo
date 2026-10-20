@@ -341,4 +341,96 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     return result;
 }
 
+// ── 【N9 调试轮】installd 回环探针（纯诊断零行为变更）────────────────────
+// 动机：N9 双轨制修复后（commit 3736209）prepare 细目 e 段仍为
+// install=xpcError，5 次尝试确定性复现，而 installd 的 XPC 从未被单独
+// 验证过（pe_smoke probe 只测 containerd；installApplication 是第一次
+// 真实使用）。本探针用零自定义对象载荷的纯 BOOL 回环方法
+//（applicationInstalledWithBundleID——LDEApplicationWorkspaceProxyProtocol.h:33，
+// daemon 侧 LDEApplicationWorkspaceInternal.m:317-324 查 bundles 字典
+// reply(YES/NO)，查询不存在 id 回 NO 零副作用）单变量隔离层级：
+// 回环 OK→连接层健康→失败在 install 载荷层（ArchiveObject/fd/解码）；
+// 回环错误/超时→连接层失效（与载荷无关）。
+
++ (NSString *)probeInstalldRoundTripWithError:(NSString **)error
+{
+    if (error != NULL) {
+        *error = nil;
+    }
+
+    // connect：与 installApplicationAtPath 同款形态（endpoint → XPC 连接），
+    // 独立临时连接（不缓存不复用 prepareGuestRun 的连接——探针只读诊断，
+    // 不驻留不污染既有消费链），observer=nil（连接不驻留语义同
+    // installApplicationAtPath 既有处理——daemon 侧单向回调派发到 nil
+    // 导出对象无害）。
+    NSXPCConnection *connection = nil;
+    PELaunchServiceRegistry *registry = [PELaunchServiceRegistry shared];
+    if (registry != nil) {
+        connection = [registry connectToService:@"com.wanwo.installd"
+                                       protocol:@protocol(LDEApplicationWorkspaceProxyProtocol)
+                                       observer:nil
+                               observerProtocol:@protocol(NSObject)];
+    }
+    if (connection == nil) {
+        if (error != NULL) {
+            *error = @"XPC 连接不可达（PEBootstrapRegistry endpoint 缺失——installd daemon 未起？pe_smoke mode=status）";
+        }
+        return @"installd 回环连接失败（无连接——连接层失效）";
+    }
+
+    __block BOOL replied = NO;
+    __block BOOL replyResult = NO;
+    __block NSString *xpcErrorText = nil;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+    id proxy = [connection remoteObjectProxyWithErrorHandler:^(NSError *err) {
+        /* semaphores remember the signal, it doesnt have to catch them in time（官方注释同款） */
+        xpcErrorText = err.localizedDescription ?: [err description];
+        dispatch_semaphore_signal(sema);
+    }];
+
+    if (proxy == NULL)
+    {
+        /* semaphores remember the signal, it doesnt have to catch them in time（官方同款分支） */
+        dispatch_semaphore_signal(sema);
+    }
+    else
+    {
+        [proxy applicationInstalledWithBundleID:@"com.wanwo.probe.nonexistent" withReply:^(BOOL replyValue) {
+            replied = YES;
+            replyResult = replyValue;
+            dispatch_semaphore_signal(sema);
+        }];
+    }
+
+    // 2s 超时与 installApplicationAtPath 同值（官方硬编码 vendored :117 同源）。
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)));
+
+    // 三态判定（+连接失败/代理创建失败防御态——报告行直译给 PESmoke）。
+    if (replied) {
+        if (!replyResult) {
+            // 预期形态：probe id 不存在 → daemon 查 bundles 字典回 NO。
+            return @"installd 回环 OK（reply=NO）——连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）";
+        }
+        // 意外形态：probe id 不应存在（如实报告原值，不吞异常）。
+        return @"installd 回环 OK（reply=YES——意外：probe id com.wanwo.probe.nonexistent 不应存在，如实上报）";
+    }
+    if (xpcErrorText != nil) {
+        if (error != NULL) {
+            *error = xpcErrorText;
+        }
+        return [NSString stringWithFormat:@"installd 回环 XPC 错误：%@——连接层失效（与载荷无关）", xpcErrorText];
+    }
+    if (proxy == NULL) {
+        if (error != NULL) {
+            *error = @"remoteObjectProxy 创建失败";
+        }
+        return @"installd 回环失败（remoteObjectProxy 创建失败——连接层失效）";
+    }
+    if (error != NULL) {
+        *error = @"2s XPC 超时（无 reply 无错误回调）";
+    }
+    return @"installd 回环超时";
+}
+
 @end

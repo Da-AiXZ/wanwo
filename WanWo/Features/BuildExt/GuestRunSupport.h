@@ -105,6 +105,27 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 + (WanWoGuestInstallResult)installApplicationAtPath:(NSString *)bundlePath
                                               error:(NSError **)error;
 
+/// 【N9 调试轮 · installd 回环探针（纯诊断零行为变更）】install=xpcError
+/// 层级钉死探针：对 com.wanwo.installd 调
+/// LDEApplicationWorkspaceProxyProtocol.applicationInstalledWithBundleID:
+///（官方源 :33——纯 BOOL 回环、零自定义对象载荷，对比
+/// installApplicationWithArchiveObject 带 fd 载荷；daemon 侧实现
+/// LDEApplicationWorkspaceInternal.m:317-324 查 bundles 字典→reply(YES/NO)，
+/// 查询不存在 id 回 NO 零副作用）。probe id 恒取
+/// com.wanwo.probe.nonexistent（不存在→预期 reply=NO）。
+/// 连接形态与 installApplicationAtPath 同款（connectToService + 2s
+/// semaphore + remoteObjectProxyWithErrorHandler），但独立临时连接
+///（不缓存不复用 prepareGuestRun 连接）、observer 传 nil（连接不驻留
+/// 语义同 installApplicationAtPath 既有处理）。
+/// 判定表：①reply 回来（预期 NO）=「installd 回环 OK（reply=NO）——
+/// 连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）」
+/// ②错误回调=「installd 回环 XPC 错误：<原文>——连接层失效（与载荷
+/// 无关）」③2s 超时=「installd 回环超时」。
+/// 返回值=报告行文本（PESmoke probe 直译输出）；error 出参填失败浅因
+///（NSString 文本，成功/回环 OK 为 nil）——不用 NSError** 避免与
+/// installApplicationAtPath 的六态枚举语义混淆（本探针只钉层级）。
++ (NSString *)probeInstalldRoundTripWithError:(NSString **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

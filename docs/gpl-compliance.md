@@ -530,3 +530,21 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **万我层 diff 边界**：`BuildService.swift`（prepareGuestRun prov 来源+细目 b 段+文档注释；signAndRepackage 零改动）/ `BuildTools.swift`（:796 上轮遗留「S1/S2 自查结果跨回合可读」过时注释修正——纯注释）/ 本文件本节。vendored 仅 bundle.cpp 上表所列；pyyaml 不涉及；WANWO_BUILD_RUN 维持不定义。
 
 **遗留观察项**：①BuildAndRunTool 证书前置门仍用 `CertificateStore.isConfigured`（三件齐全）——运行路线虽只需 p12+密码，但要求三件不阻断双轨制（用户按现状导入三件即可），后续按需放宽；②容器模式 prov 不写入 guest 包（官方 LC 行为）——若 installd 信任链要求 guest 包内嵌 profile，下一轮再评估（当前证据指向主二进制未签为 rejected 主因）。
+
+#### installd 回环探针（2026-10-20，N9 调试轮——install=xpcError 层级钉死，纯诊断零行为变更）
+
+**动机**：双轨制修复（commit 3736209）后 prepare 细目实测=「[a 补片 OK] [b 宿主id=com.wanwo.juyang.TNHMJ2JNPJ | 宿主 embedded profile app-id=com.wanwo.juyang.TNHMJ2JNPJ（身份链一致 ✓）] [c 容器签名 OK（signFailedFiles 消失 ✓ 主二进制已签上）] [d token OK] [e install=xpcError：Couldn't communicate with a helper application.]」——5 次尝试确定性复现（testapp×4+新工程 t2×1，跨宿主重启，elapsed 1.6-3.6s），installd daemon 进程全程存活（pid 稳定），containerd 的 XPC 三往返始终正常（fd 跨 XPC 传输 proven）。但 **installd 的 XPC 从未被单独验证过**——pe_smoke probe 只测 containerd，installApplication 是 installd 通道第一次真实使用，xpcError 的层级（连接层 vs 载荷层）待定。
+
+**探针语义**：官方源已核——`LiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspaceProxyProtocol.h:33` 有 `- (void)applicationInstalledWithBundleID:(NSString*)bundleID withReply:(void (^)(BOOL))reply;`——**纯 BOOL 回环、零自定义对象载荷**（对比 `installApplicationWithArchiveObject` 带 fd 载荷）。daemon 侧实现=`LDEApplicationWorkspaceInternal.m:317-324`（查 bundles 字典→reply(YES/NO)——查询不存在的 id 回 NO，零副作用）。单变量隔离：只换载荷形态（无 ArchiveObject/fd），连接形态不变（connectToService + 2s semaphore + remoteObjectProxyWithErrorHandler 同款），即可把 xpcError 钉到层。
+
+**判定表**：
+
+| 探针结果 | 判定 |
+|---|---|
+| reply 回来（预期 NO，probe id=com.wanwo.probe.nonexistent 不存在） | installd 回环 OK——**连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）** |
+| XPC 错误回调 | installd 回环 XPC 错误——**连接层失效（与载荷无关）** |
+| 2s 超时 | installd 回环超时（daemon 无响应——连接层/daemon 态问题） |
+
+**万我层新件**：`GuestRunSupport.probeInstalldRoundTripWithError:`（ObjC 薄壳，连接形态照 installApplicationAtPath 同款但独立临时连接——不缓存不复用 prepareGuestRun 连接、observer 传 nil 连接不驻留语义同既有处理；返回报告行文本 + NSString* error 出参，不用 NSError** 避免与六态枚举语义混淆）。消费点：`PESmoke.swift` probe 输出在 containerd 三往返之后追加「=== installd 回环 ===」段。桥接头零改动（LDEApplicationWorkspaceProxyProtocol 经 WanWo-Bridging-Header.h:65 既有 LDEApplicationWorkspace.h 头链已进 Swift/ObjC 可见面）。
+
+**行为语义不变声明**：prepareGuestRun/installApplication 零改动（探针独立连接、独立调用点）；vendored 树零 diff；纯诊断输出，不设门不拦截。

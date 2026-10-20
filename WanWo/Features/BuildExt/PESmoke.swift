@@ -123,6 +123,19 @@ enum PESmokeService {
             lines.append("probe round-trip 3 (isReadableFileAtPath root): false（容器根不可读——异常态）")
             lines.append("XPC handle transport: PARTIAL（对象往返 ✓，BOOL 复读 ✗）")
         }
+        // N9 调试轮：installd XPC 回环探针（纯诊断零行为变更）——containerd
+        // 三往返之后追加；纯 BOOL 回环（applicationInstalledWithBundleID，
+        // 零自定义对象载荷）单变量隔离 install=xpcError 的层级
+        //（OK→载荷层 / 错误·超时→连接层）。语义与判定表见
+        // docs/gpl-compliance.md §N9「installd 回环探针」。
+        var installdProbeError: NSString? = nil
+        let installdRoundTrip = GuestRunSupport.probeInstalldRoundTripWithError(&installdProbeError)
+        lines.append("=== installd 回环 ===")
+        lines.append(installdRoundTrip)
+        if installdProbeError != nil {
+            let errorText = String(installdProbeError!)
+            lines.append("installd 回环 error 出参: " + errorText)
+        }
         return lines.joined(separator: "\n")
     }
 
