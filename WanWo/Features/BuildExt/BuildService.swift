@@ -841,7 +841,7 @@ final class BuildService: @unchecked Sendable {
         // 【N9 装后通知层修复（L2 实锤轮）】成功消息带实际注册 id：容器模式
         // 不改写磁盘 Info.plist（buildService 细目 b/c 段实证链），daemon 按
         // 磁盘 Info.plist 的 CFBundleIdentifier 注册——实际注册 id=工程 id，
-        // spawn 段（GuestRunService.performRun 的 bundleID=prep.bundleID，
+        // spawn 段（GuestRunService.spawnRun 的 bundleID=prep.bundleID，
         // BuildTools.swift :785）直接使用本值，传参链自洽。
         let installedMessage = signMessage + "；token " + bitsHex
             + "；guest 已安装（bundle id=" + bundleID

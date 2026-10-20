@@ -655,3 +655,54 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 3. SwiftTerm SPM 在 CI 的 GitHub 可达性（gate 已防静默降级；必要时再议 vendor 化——不推荐）；
 4. 内存：guest UI+窗口呈现+终端同栈（appex 限额观察项）；
 5. NXWindowServer 桌面交互全套（appSwitcher/手势/presentationState）在场不删，万我首版只接 openWindow/close/focus 主链。
+
+### N10d · 首轮真机反馈三案修复（2026-10-20 晚，用户拍板 10-20 23:47：A1+A2 两件套 + C v2 运行会话解耦 + B 呈现修随批）
+
+**背景（三案考古定罪，全部源码实证）**：
+1. **案 A 浮窗吞整屏触摸**：官方 NXWindowLayerView.hitTest（NXWindowServer.m:31-37）只保护 `_windowLayer` 子视图层；NXWindowServer 本身是全屏 UIWindow（背景透明），UIView 级 hitTest 默认「点在 bounds 内+子视图无人认领→返回窗口自身」=吞整屏触摸。GuestWindowBridge.h 头注释原声称「触摸穿透主界面照常可点」不成立（本轮已修正）。残留机制：hideGuestOverlay 全树零调用点→guest 退出后 NXWindowServer 常驻 visible+key→审批卡被吞→第二轮审批 verdict=unavailable→回合中断。
+2. **案 B 浮窗关闭钮=杀进程**：官方语义非 Bug（NXWindowSessionApplication.m:121-135 closeWindow 内 `[_process terminate]`，官方注释 "terminating process so it stops eating our cores x3"）；呈现错位在万我层——signal=9 被杀也标「guest 正常退出」。
+3. **案 C 工具生命周期焊死 guest 进程**：官方 .run 全流程（NXBuilder.swift:294-358）install 完成即 completion 返回（全文零等待退出/零超时杀）；N9 层阻塞等待+timeout_ms 是万我自加编排，N10 浮窗化后 guest=模拟器式常驻交互面，阻塞壳成结构性矛盾。
+
+#### A1：window 级 hitTest 透传（万我层运行时方法覆盖——零 vendored 源码 diff）
+
+- **登记性质**：万我层对 vendored 类（NXWindowServer）的方法覆盖=运行时层适配（ObjC runtime `class_addMethod`），**vendored 源码零 diff**——本节为该覆盖的动机/形态/边界如实登记。
+- **动机**：案 A 根因（window 自身吞触摸——官方单窗口形态无此问题，万我双 UIWindow 形态特有）。
+- **形态（雷区核验）**：`hitTest:withEvent:` 是 UIView 的方法且 NXWindowServer 未重写——`method_exchangeImplementations(class_getInstanceMethod(...))` 会拿到继承链上 UIView 的 Method，交换污染所有 UIView（灾难性，禁用）。实际形态：GuestWindowBridge `+load`（进程内一次 dispatch_once，早于任何 NXWindowServer 实例消费）取 `originalImp = method_getImplementation(class_getInstanceMethod([NXWindowServer class], sel))`（此时为 UIView 实现）→ `class_addMethod` 在 NXWindowServer 本类挂万我 IMP（`imp_implementationWithBlock`）覆盖——万我 IMP 内部以函数指针形态调用 originalImp 后按 NXWindowLayerView 同款语义返回（`hit == self ? nil : hit`）。class_addMethod 返回 NO 时（理论不发生——方法不在本类）退回 `method_setImplementation` 覆盖形态（originalImp 已先取，语义等价 exchange）并 NSLog 报告。
+- **边界核验**：全屏态 maximize（NXWindowServer.m:842-873 把 NXWindow.view 直挂 self）——super 命中 NXWindow.view（非 self）照常认领，不受影响；长按手势仅 iPhone 且 iOS<26 挂载（:304-329），iPad 主路径无手势影响；appSwitcher/tile 等子视图命中链全部经 super 原实现，零行为变化。
+
+#### A2：生命周期收尾（窗口清空时隐藏+归还键窗）
+
+| 项 | 内容 |
+|---|---|
+| hideGuestOverlayIfNoWindowsAfterDelay: | GuestWindowBridge 新增：主队列延迟判定 `NXWindowServer.shared.windows.count == 0` 时调既有 hideGuestOverlay（hidden=YES+归还 key）。delay 参数承接官方进程退出关窗的异步链竞态：processDidExit 内 dispatch_async(main) 关窗（PEProcess.m:286-294），退出回调同步段后窗口可能仍在关闭途中——调用方传 1.0s 余量，主队列 FIFO 保证判定排在官方 closeWindow dispatch 之后 |
+| app 路线收尾点 | RunSession 收尾段（GuestRunService.finalizeRunSession——退出回调后）调用 |
+| utility 路线收尾点 | unregisterUtilityProcess 后同款判定（官方 exitingCallback 关窗链同异步形态，同 1.0s 余量） |
+| ensureActivated 复活路径 | 既有 `server.isHidden → hidden=NO`（GuestWindowBridge.m）零改动，验证即可 |
+
+#### B：退出三态呈现
+
+| 态 | 判定 | 文案 |
+|---|---|---|
+| ①自然退出 | decoded && signal==0 | 「guest 正常退出：exit=N（wait4 raw=R）」（非零加修复提示） |
+| ②超时 | timedOut（优先） | 既有超时文案（存活至超时=GUI 预期形态） |
+| ③a stop_build 终止 | stopRequested 标志（stopActiveRun 置位） | 「guest 已被 stop_build 终止（SIGKILL）+退出注记」 |
+| ③b 外部终止 | signal>0 且非超时非 stop（排除法） | 「guest 被外部终止（signal=N）——浮窗关闭钮=终止进程（官方语义：关窗即杀进程）」 |
+| 状态不可得 | !decoded | 既有 exitContext 缺失文案 |
+
+事件 result 同步改：仅①=success；②③/不可得=failure（signal 被杀不再标「正常退出」）。
+
+#### C v2：运行会话解耦
+
+| 项 | 内容 |
+|---|---|
+| BuildAndRunTool app 路线重定义 | 构建→prepare（签名/安装细目 a-e 全保留）→spawn 成功→**工具立即返回 .success**（pid+prepare 细目+「浮窗已弹出——常驻交互面」注记）；spawn 失败路径保持同步失败返回 |
+| GuestRunSession 常驻段 | performRun（阻塞式）拆为 spawnRun（同步段：管道/spawn/登记/run_log 头/读循环启动）+ 后台会话队列（等退出→收尾：run_log footer→A2 窗口收尾→endRun→guest_run 退出事件 modelVisible 带 exit 注记+输出尾段+run_log 工作区副本） |
+| writer 注入结论 | SessionWriter（WanWo/Storage/SessionWriter.swift:67-162）为 `@unchecked Sendable`，append 经内部 gate（NSLock+CheckedContinuation）串行化且无「工具调用生命周期」约束（写柄由 AppEnvironment sessionWriters 持有至会话关闭）——**工具返回后 append 已核验安全**；RunSession 持强引用，收尾段 `Task { try? await writer.append(...) }` 发退出事件 |
+| 退出事件链 | exitingCallback 先官方语义采集（wait4 raw）再 signal semaphore；收尾由会话队列在 semaphore 之后执行（=先官方后万我序，utility 路线 BuildTools.swift:838-841 同款模式） |
+| run 门 | beginRun 时机不变（build 前）；endRun 从工具 defer 移至 RunSession 收尾（spawn 成功路径）；build/prepare/spawn 失败路径工具内显式 endRun；utility 路线开窗即返（官方语义）本方法内显式 endRun |
+| 重复运行（C-b） | beginRun 失败且 runInFlight 时返回明确失败带活跃 pid（GuestRunService.activeRunInfo——「guest 运行中（pid=X 工程=Y）——stop_build 终止或等其退出；重复运行被拒绝（不自动停旧起新）」）；activeRunInfo 落在 GuestRunService（会话登记的所有者）而非 BuildService——任务书「BuildService 需暴露」按信息归属微调 |
+| timeout（C-a） | 默认**不限时**（.distantFuture 等待）；timeout_ms 可选保留为保护上限（5000-960000ms，到点 terminate→timedOut→既有超时文案）；工具 description/参数说明同步 |
+| stop_build（C 项 7） | 语义不变（AI 的停止按钮）：terminate→exit 回调→收尾→endRun 链路兼容验证；工具层仅在「无活跃会话登记的异常残留态」兜底 endRun 防门卡死 |
+| N9 观测链装备 | prepare 细目 a-e/installd 探针/输出尾段缓冲 80 行/run_log 工作区副本全部保留（副本落盘移由 RunSession 收尾段消费——copyRunLogToWorkspace 改 internal） |
+
+**边界**：**vendored 树本轮零 diff**（A1 为运行时层覆盖，唯一登记例外=本节；GuestWindowBridge.h/.m 为万我自有文件）；交付路线（build_ipa/signAndRepackage）零改动；utility 路线编排零改动（仅补 A2 收尾+endRun 显式化）；N9 管道编排（FDMapObject 三映射+持活 fd 100/101）/退出码捕获（exitingCallback+wait4 解码）/run_log 落盘逻辑逐行保留。

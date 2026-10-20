@@ -21,9 +21,15 @@
 //        异常守卫）+ makeKeyAndVisible（官方同款入口——NXWindowServer.m:
 //        304-329，内部挂 _windowLayer 与 iPhone 长按手势；单次调用防手势
 //        重复叠加）。
-//      · 触摸穿透：无 guest 窗口时 _windowLayer 为空，且 NXWindowLayerView
-//        的 hitTest 对自身返回 nil（NXWindowServer.m:31-37）——触摸穿透到
-//        下层 SwiftUI 主窗口，主界面照常可点。
+//      · 触摸穿透（N10d 修正——首轮真机实证双案 A）：仅 NXWindowLayerView
+//        的 hitTest 对自身返回 nil（NXWindowServer.m:31-37）不够——
+//        NXWindowServer 本身是全屏 UIWindow，UIView 级 hitTest 默认「点在
+//        bounds 内+子视图无人认领→返回窗口自身」=吞整屏触摸（背景透明故
+//        渲染正常、触摸全被吞）。修法=A1 window 级 hitTest 透传（本文件
+//        +load 内对 NXWindowServer 的 hitTest:withEvent: 做万我层覆盖：
+//        原实现命中自身时改返 nil——NXWindowLayerView 同款逻辑提到
+//        window 级；零 vendored 源码 diff，登记 docs/gpl-compliance.md
+//        §N10「A1 运行时方法覆盖」小节）。
 //      · 键窗语义：makeKeyAndVisible 后 NXWindowServer 持 key——guest 终端
 //        （TerminalViewObjC becomeFirstResponder）需要 key window 才能弹
 //        键盘；这是官方单窗口形态天然自洽、万我双窗口需真机验证的点
@@ -60,7 +66,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)ensureActivated;
 
 /// ensureActivated 的任意线程形态（主线程直调；后台线程 dispatch_sync
-/// 主队列——GuestRunService.performRun 专用队列的 spawn 前调用点）。
+/// 主队列——GuestRunService.spawnRun 专用队列的 spawn 前调用点）。
 + (void)ensureActivatedSync;
 
 /// 窗口层显隐切换（工具卡消费的呈现/隐藏接口——设计说明见文件头）。
@@ -68,6 +74,20 @@ NS_ASSUME_NONNULL_BEGIN
 /// hide：窗口隐藏 + 把 key 归还 SwiftUI 主窗口（键盘输入回归主界面）。
 + (void)showGuestOverlay;
 + (void)hideGuestOverlay;
+
+/// 【N10d · A2 生命周期收尾】窗口清空判定隐藏：NXWindowServer.windows 为空
+/// （guest 全部退出/关窗——官方 PEProcess 进程退出自动关窗链已收束）时调
+/// hideGuestOverlay（隐藏 NXWindowServer 本体 + 归还 key）——防 guest 退出
+/// 后 NXWindowServer 常驻 key 吞主界面触摸/审批卡的残留缺陷收口（原
+/// hideGuestOverlay 全树零调用点）。任意线程可调（内部 dispatch 主队列）。
+/// @param delay 判定前的主队列延迟秒数——official closeWindow 走
+/// processDidExit 内 dispatch_async(main) 的异步链（PEProcess.m:286-294），
+/// 退出回调同步段之后窗口可能仍在关闭途中，调用方传 >0 的余量（如 1.0s）
+/// 防竞态误判「窗口尚在」跳过隐藏。
++ (void)hideGuestOverlayIfNoWindowsAfterDelay:(NSTimeInterval)delay;
+
+/// 上式的零延迟便捷形态（窗口关闭链已确认收束的调用点用）。
++ (void)hideGuestOverlayIfNoWindows;
 
 /// 【N10c】utility 终端开窗（主线程调用）：ensureActivated →
 /// NXWindowSessionTerminal initWithUtilityPath → NXWindowServer

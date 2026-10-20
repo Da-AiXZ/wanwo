@@ -8,6 +8,10 @@
 //  安装→spawn→stdio 回流→退出码收尾；运行编排见 GuestRunService.swift，
 //  签名/安装编排见 BuildService.prepareGuestRun）。装配点 AppEnvironment
 //  makeAgentStack（BuildTools.registerAll，writer 注入供 extensionEvent）。
+//  【N10d · C v2】app 路线重定义：spawn 成功工具立即返回（RunSession 常驻
+//  收尾——退出后经 guest_run 事件回报三态退出+输出尾段+run_log 副本）；
+//  默认不限时（timeout_ms 可选保护上限）；重复运行报错带活跃 pid 不自动
+//  停旧起新；stop_build 语义不变（terminate→收尾段放行 run 门）。
 //
 //  审批：build_ipa/build_and_run/project_delete/project_reset 走
 //  ctx.escalationApprover 提权呈现缝（browser_use 同一 ApprovalCoordinator
@@ -605,21 +609,25 @@ struct StopBuildTool: AgentTool {
     let name = "stop_build"
     let description = "Release the build slot if a build finished abnormally, or stop the running guest app (build_and_run). "
         + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot. "
-        + "During a guest run this terminates the guest process (SIGKILL) and releases the run gate. "
+        + "During a guest run this terminates the guest process (SIGKILL); the run session then finalizes in the background "
+        + "(exit event with exit code/output tail/run_log copy reported via guest_run) and releases the run gate. "
         + "Also terminates a registered utility-terminal process (N10) — its terminal window closes with it (official semantics)."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
-        // 【N9b】run 态转语义：终止 guest + 放行 run 门（run 门全生命周期
-        // 持有——stop 后放行下一次 build/run，N9 方案 §三 7 拍板语义）。
+        // 【N9b】run 态转语义：终止 guest（run 门全生命周期持有——stop 后
+        // 放行下一次 build/run，N9 方案 §三 7 拍板语义）。
         // 【N10c】utility 终端路线接线：run 门不长期持有（官方 .run utility
         // 段开窗即返回），活跃进程登记仍在——按登记终止 utility 进程（窗口
         // 随 exitingCallback 关闭——官方同款），无 run 门可放行。
+        // 【N10d · C v2】run 门由 RunSession 收尾段放行（stop→terminate→
+        // exit 回调→收尾→endRun）；本处仅在「无活跃会话登记的异常残留态」
+        // 兜底放行，防 run 门永久卡死。
         if BuildService.shared.isRunInFlight || GuestRunService.shared.hasActiveRegisteredProcess {
             let note = GuestRunService.shared.stopActiveRun()
-            if BuildService.shared.isRunInFlight {
+            if GuestRunService.shared.activeRunInfo() == nil, BuildService.shared.isRunInFlight {
                 BuildService.shared.endRun()
             }
             return .success("guest run 已终止——" + note)
@@ -634,17 +642,25 @@ struct StopBuildTool: AgentTool {
 struct BuildAndRunTool: AgentTool {
     let name = "build_and_run"
     let description = "Full guest hosting pipeline (N9/N10): compile the project → LC container signing (host identity mode) → "
-        + "NXTR entitlement token → installApplication via installd → spawn. App-scheme projects stream stdout/stderr to the tool card "
-        + "and report exit code/signal when the guest exits, with an NXWindow floating window presenting the guest UI (N10). "
-        + "Utility-scheme projects open an interactive terminal window (NXWindowSessionTerminal + SwiftTerm, TTY三映射——官方 .run utility 同款). "
-        + "Full output is persisted to run_log.txt (Cache path) and copied to the workspace (BuildArtifacts/run_log-<HHmmss>.txt, "
-        + "AI-readable) after the run; the result text inlines the last ≤80 output lines (zero output is reported explicitly). "
-        + "Requires user approval (ask once). "
-        + "Holds the run gate for its whole lifecycle: builds are rejected while a run is in flight; stop_build terminates the guest."
+        + "NXTR entitlement token → installApplication via installd → spawn. "
+        + "App-scheme projects: the tool returns immediately after a successful spawn — an NXWindow floating window appears as a "
+        + "persistent interactive surface the user can interact with directly. When the guest later exits (on its own, via stop_build, "
+        + "or via the floating window close button — official semantics: closing the window terminates the process), a guest_run event "
+        + "reports the three-state exit (natural exit code / timeout / terminated), the last ≤80 output lines, and the run_log "
+        + "workspace copy (AI-readable). Full output is persisted to run_log.txt (Cache path) and copied to the workspace "
+        + "(BuildArtifacts/run_log-<HHmmss>.txt). "
+        + "Utility-scheme projects open an interactive terminal window (NXWindowSessionTerminal + SwiftTerm, TTY三映射——官方 .run utility 同款) "
+        + "and return immediately. "
+        + "Default: no timeout — the guest keeps running until it exits or is stopped; timeout_ms is an optional protective cap. "
+        + "One run at a time: a second build_and_run while a run is in flight fails with the active pid (stop_build to terminate, or wait for exit). "
+        + "Requires user approval (ask once)."
     let parameters = JSONValue.schemaObject(
         properties: [
             "name": .stringSchema(description: "Project name to build and run as a guest app."),
-            "timeout_ms": .numberSchema(description: "Optional cap for waiting on guest exit. Default 300000 (5 min), max 960000 (16 min). On timeout the guest is terminated and partial output is reported."),
+            "timeout_ms": .numberSchema(description: "Optional protective cap in milliseconds (range 5000-960000). "
+                + "Default: none — the guest runs until it exits on its own or stop_build/the window close button terminates it "
+                + "(the floating window is a persistent interactive surface, so an indefinite run is expected). "
+                + "When provided, the guest is terminated on timeout and the exit event reports the partial output."),
         ],
         required: ["name"])
 
@@ -655,17 +671,21 @@ struct BuildAndRunTool: AgentTool {
         self.sessionCwd = sessionCwd
     }
 
-    /// 编译占线程池与缓存目录 + run 全程持门——exclusive 车道串行。
+    /// 编译占线程池与缓存目录 + run 门（spawn 成功后由 RunSession 收尾持门
+    /// 至退出）——exclusive 车道串行。
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
 
-    // MARK: 观测链补全（N9 spawn 段真机首抵后——AI 可读性收口）
+    // MARK: 观测链补全（N9 spawn 段真机首抵后——AI 可读性收口；C v2 起
+    // 副本落盘移由 RunSession 收尾段消费，工具层保留实现供其调用）
 
     /// run_log 副本落工作区：源=Cache/<uuid>/run_log.txt（宿主私有路径，
     /// guest bash 与 AI 的 fs 工具都读不到）→ 副本=workspace/BuildArtifacts/
     /// run_log-<HHmmss>.txt（AI read 直取）。源路径为空（spawn 前失败，无
     /// run_log 落盘）或复制失败返回空串——结果文本不带副本路径行。
-    private static func copyRunLogToWorkspace(sourcePath: String,
-                                              workspaceRoot: URL) -> String {
+    /// 【C v2】internal：RunSession 常驻收尾段（GuestRunService，工具返回
+    /// 后）同样消费——退出事件带工作区副本路径。
+    static func copyRunLogToWorkspace(sourcePath: String,
+                                      workspaceRoot: URL) -> String {
         guard !sourcePath.isEmpty else { return "" }
         let fm = FileManager.default
         let dir = workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true)
@@ -699,7 +719,8 @@ struct BuildAndRunTool: AgentTool {
         guard let name = args.objectValue?["name"]?.stringValue else {
             return .failure("missing \"name\"", code: "INVALID_ARGS")
         }
-        var timeoutSeconds: TimeInterval = 300
+        // 【C-a 拍板】默认不限时；timeout_ms 可选保留为保护上限。
+        var timeoutSeconds: TimeInterval? = nil
         if let t = args.objectValue?["timeout_ms"]?.intValue {
             timeoutSeconds = min(960, max(5, Double(t) / 1000.0))
         }
@@ -764,13 +785,20 @@ struct BuildAndRunTool: AgentTool {
                             code: "RUN_NOT_APPROVED", name: "BuildError")
         }
 
-        // run 门（全生命周期：build→prepare→spawn→退出收尾；run 中禁新
-        // build——beginBuild 对 run 在途同样拒绝）
+        // run 门（全生命周期：build→prepare→spawn→[C v2] RunSession 收尾；
+        // run 中禁新 build——beginBuild 对 run 在途同样拒绝）。
+        // 【C-b 拍板】重复运行=明确失败带活跃 pid，不自动停旧起新；endRun
+        // 不再走 defer——spawn 成功由 RunSession 收尾放行，失败路径本方法
+        // 内显式 endRun。
         guard BuildService.shared.beginRun() else {
+            if BuildService.shared.isRunInFlight, let active = GuestRunService.shared.activeRunInfo() {
+                let msg = "guest 运行中（pid=" + String(active.pid) + " 工程=" + active.projectName
+                    + "）——stop_build 终止或等其退出；重复运行被拒绝（不自动停旧起新）"
+                return .failure(msg, code: "RUN_IN_FLIGHT", name: "BuildError")
+            }
             return .failure("another build or guest run is already in flight（等待其结束或 stop_build 后重试）",
                             code: "BUILD_IN_FLIGHT", name: "BuildError")
         }
-        defer { BuildService.shared.endRun() }
 
         // ① 编译（MDK 线程池；sign=false——容器签名归 prepare 段）
         let result: BuildResult = await withCheckedContinuation { cont in
@@ -779,6 +807,7 @@ struct BuildAndRunTool: AgentTool {
             }
         }
         guard result.success else {
+            BuildService.shared.endRun()
             _ = try? await writer.append(.extensionEvent(
                 kind: RunEvents.eventKind,
                 payload: .object([
@@ -797,14 +826,16 @@ struct BuildAndRunTool: AgentTool {
         }
 
         // ══ N10c：utility 终端路线（官方 Builder.swift:358-373 .run utility
-        // 段语义对齐——签名编排→fastpath→自动开窗；run 门在开窗后由 defer
-        // 放行，stop_build 接线走活跃进程登记）══════════════════════════
+        // 段语义对齐——签名编排→fastpath→自动开窗；run 门在返回前显式放行
+        //（C v2：无 RunSession 持门——官方开窗即返回形态），stop_build 接线
+        // 走活跃进程登记）══════════════════════════════════════════════
         if isUtilityProject {
             // ② utility 签名编排（官方 .run utility 段等义：补片→单 macho
             //    ZSign→NXTR token→fastpathUtility——prepareGuestRun 的
             //    utility 对位，见 BuildService.prepareUtilityRun）
             let prep = BuildService.prepareUtilityRun(project: project)
             guard prep.ok else {
+                BuildService.shared.endRun()
                 _ = try? await writer.append(.extensionEvent(
                     kind: RunEvents.eventKind,
                     payload: .object([
@@ -826,7 +857,8 @@ struct BuildAndRunTool: AgentTool {
             //    vendored 官方原样消费）。终端窗口关闭=进程 terminate（官方
             //    closeWindow 同款）；进程退出→官方 exitingCallback 关窗/落
             //    [process exited]。万我层仅叠加 stop_build 接缝：登记活跃
-            //    进程 + exitingCallback 包装（官方回调之后注销登记）。
+            //    进程 + exitingCallback 包装（官方回调之后注销登记+A2 窗口
+            //    收尾——unregisterUtilityProcess 内）。
             let fastPath = prep.utilityPath
             let opened = await MainActor.run { () -> (Bool, String) in
                 var procRef: PEProcess?
@@ -860,6 +892,9 @@ struct BuildAndRunTool: AgentTool {
                 ])))
 
             if opened.0 {
+                // 官方 .run utility 开窗即返回语义——run 门在本方法内显式放行
+                //（C v2：无 RunSession 持门，不再走 defer）。
+                BuildService.shared.endRun()
                 return .success("""
                     UTILITY TERMINAL OPENED（\(name)）
                     \(opened.1)
@@ -868,6 +903,7 @@ struct BuildAndRunTool: AgentTool {
                     运行输出不回流工具卡（TTY 直连终端视图）——诊断可查终端窗口本体。
                     """)
             }
+            BuildService.shared.endRun()
             return .failure("UTILITY TERMINAL FAILED（签名/fastpath 成功，开窗段失败）:\n" + opened.1,
                             code: "TERMINAL_FAILED", name: "BuildError")
         }
@@ -875,6 +911,7 @@ struct BuildAndRunTool: AgentTool {
         // ② 补片→容器签名→NXTR token→安装（官方 .run 签名编排等义）
         let prep = BuildService.prepareGuestRun(project: project)
         guard prep.ok else {
+            BuildService.shared.endRun()
             _ = try? await writer.append(.extensionEvent(
                 kind: RunEvents.eventKind,
                 payload: .object([
@@ -889,91 +926,67 @@ struct BuildAndRunTool: AgentTool {
                             code: "PREPARE_FAILED", name: "BuildError")
         }
 
-        // ③ spawn + stdio 回流 + 退出码收尾（专用队列阻塞执行——semaphore/
-        //    availableData 阻塞不占协作线程池）
+        // ③ spawn + stdio 回流启动（【C v2 拍板】spawn 成功工具立即返回——
+        //    等待与收尾交 RunSession 常驻段：退出后经 guest_run 事件回报
+        //    退出码+输出尾段+run_log 工作区副本；专用队列承载 spawn 段——
+        //    ensureActivatedSync 内部 dispatch_sync 主队列，禁占协作线程池）
         let callId = ctx.callId
         let onShellLine = ctx.onShellLine
-        let outcome: GuestRunOutcome = await withCheckedContinuation { cont in
-            DispatchQueue(label: "wanwo.guestrun.execute").async {
-                let r = GuestRunService.shared.performRun(
+        let wsRoot = ctx.workspace.rootURL
+        let prepDetail = prep.detail
+        let spawn: GuestRunSpawnResult = await withCheckedContinuation { cont in
+            DispatchQueue(label: "wanwo.guestrun.spawn").async {
+                let r = GuestRunService.shared.spawnRun(
                     project: project,
+                    projectName: name,
                     bundleID: prep.bundleID,
                     timeoutSeconds: timeoutSeconds,
+                    prepDetail: prepDetail,
                     onLine: { line in
                         onShellLine(callId, line)
-                    })
+                    },
+                    writer: writer,
+                    workspaceRoot: wsRoot)
                 cont.resume(returning: r)
             }
         }
 
-        // ④ guest_run 事件（modelVisible——退出码/失败原因跨回合可读）
-        // 【N9d】事件 diagnostics 带 prepare 细目（a-e 结构化诊断——成功
-        // 路径同样透出；prepare 失败路径的 diagnostics=prep.message 已含
-        // 细目，见 ② 段）。
-        var runDiagnostics = prep.detail
-        if !runDiagnostics.isEmpty {
-            runDiagnostics = runDiagnostics + "；"
+        // spawn 失败（prepare 成功后的 spawn 段失败——run 门本方法放行）
+        guard spawn.ok, let session = spawn.session else {
+            BuildService.shared.endRun()
+            _ = try? await writer.append(.extensionEvent(
+                kind: RunEvents.eventKind,
+                payload: .object([
+                    "name": .string(name),
+                    "result": .string("failure"),
+                    "phase": .string("spawn"),
+                    "exit": .string("-"),
+                    "runLog": .string(spawn.runLogPath),
+                    "diagnostics": .string(String(prep.detail.prefix(2000)) + "；" + spawn.message),
+                ])))
+            return .failure("SPAWN FAILED（编译/prepare 成功，spawn 段失败）:\n" + spawn.message,
+                            code: "GUEST_SPAWN_FAILED", name: "BuildError")
         }
-        runDiagnostics = runDiagnostics + outcome.message
+
+        // spawn 成功事件（phase=spawn——退出事件由 RunSession 收尾补发
+        // phase=exit，带三态退出注记+输出尾段+run_log 工作区副本）
         _ = try? await writer.append(.extensionEvent(
             kind: RunEvents.eventKind,
             payload: .object([
                 "name": .string(name),
-                "result": .string(outcome.ok ? "success" : "failure"),
-                "phase": .string(outcome.timedOut ? "spawn" : "exit"),
-                "exit": .string(GuestRunService.renderExitNote(
-                    raw: outcome.exitRaw, exitCode: outcome.exitCode,
-                    signal: outcome.signal, decoded: outcome.exitRaw >= 0,
-                    timedOut: outcome.timedOut)),
-                "runLog": .string(outcome.runLogPath),
-                "diagnostics": .string(String(runDiagnostics.prefix(2000))),
+                "result": .string("success"),
+                "phase": .string("spawn"),
+                "exit": .string("-"),
+                "runLog": .string(session.runLogPath),
+                "diagnostics": .string(String(prep.detail.prefix(2000))),
             ])))
 
-        var exitLine = ""
-        if outcome.exitRaw >= 0 {
-            exitLine = "\nexit: " + GuestRunService.renderExitNote(
-                raw: outcome.exitRaw, exitCode: outcome.exitCode,
-                signal: outcome.signal, decoded: true, timedOut: outcome.timedOut)
-        }
-        // 【N9 观测链补全】run_log 副本落工作区（Cache 路径 guest/AI 皆不可
-        // 读——副本进 BuildArtifacts AI fs 直取；仅 spawn 后才有 run_log，
-        // 源路径空=复制跳过返回空串）。
-        let wsLogPath = BuildAndRunTool.copyRunLogToWorkspace(
-            sourcePath: outcome.runLogPath, workspaceRoot: ctx.workspace.rootURL)
-        var wsLogLine = ""
-        if !wsLogPath.isEmpty {
-            wsLogLine = "\nrun log (workspace copy, AI readable): " + wsLogPath
-        }
-        // 结果内联输出尾段（三态带——超时 terminate 态尤其需要，它是 GUI
-        // 应用的常态终点）。仅 run 实际发生（runLogPath 非空）才出尾段节；
-        // 零输出显式标注（区分「spawn 成功在跑主循环」vs「pre-main 挂起」）。
-        var tailLine = ""
-        if !outcome.runLogPath.isEmpty {
-            tailLine = "\n——— guest 输出尾段（最后 ≤80 行）———\n"
-            if outcome.outputTail.isEmpty {
-                tailLine = tailLine
-                    + "（guest 零输出——若非预期，检查 guest 是否 print/是否 pre-main 挂起）"
-            } else {
-                tailLine = tailLine + outcome.outputTail
-            }
-        }
-        let guestHint = BuildTools.guestPathHint(outcome.runLogPath,
-                                                 workspaceRoot: ctx.workspace.rootURL,
-                                                 sessionCwd: sessionCwd)
-        if outcome.ok {
-            return .success("""
-                GUEST RUN OK（\(name)）\(exitLine)
-                \(prep.message)
-                \(prep.detail)\(tailLine)
-                run log: \(outcome.runLogPath)\(guestHint)\(wsLogLine)
-                ——— 依据 stdout/退出码修复源码后重跑 build_and_run 即闭环。
-                """)
-        }
-        return .failure("""
-                GUEST RUN FAILED（\(name)）
-                \(outcome.message)\(exitLine)\(tailLine)
-                run log: \(outcome.runLogPath)\(guestHint)\(wsLogLine)
-                ——— 依据 stdout/stderr 修复后重跑；stop_build 可提前终止 guest。
-                """, code: "GUEST_RUN_FAILED", name: "BuildError")
+        let spawnNote = "pid=" + String(session.pid)
+            + "（浮窗已弹出——常驻交互面，用户可直接交互；stop_build 可终止；"
+            + "guest 退出后经 guest_run 事件回报退出码+输出尾段+run_log 工作区副本）"
+        return .success("GUEST SPAWNED（" + name + "）\n"
+            + spawnNote + "\n"
+            + prep.message + "\n"
+            + prep.detail)
     }
 }
