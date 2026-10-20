@@ -413,3 +413,46 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 - **修法②（源 plist 静态落键）**：`UIMainStoryboardFile=""` 无法走构建设置——Xcode 对构建设置空值不落产物（写不进成品），改在 `WanWoLiveProcess/Info.plist` 源文件静态加 `UIMainStoryboardFile` 键（空字符串；该 plist 为官方文件品牌折算版，本改动登记于本节）。目标=成品键集合与官方完全一致（除品牌/版本值），一次修净。
 - **CI 门扩展**：ios.yml Package 步骤版本键门扩展为「appex 必需键族」断言，逐键 `plutil -extract` echo 实值 + 非空/值断言 + `exit 1`：CFBundleVersion="3"、CFBundleShortVersionString="0.0.1"、CFBundleDisplayName 非空且="WanWoLiveProcess"、UIMainStoryboardFile 存在且空串（`-extract` 空串成功返回空输出，显式区分"取到空串"与"键缺失"）、CFBundleName/CFBundleExecutable 存在非空、NSExtension 存在（字典键走 `xml1 -o /dev/null` 子树断言）。
 - **QA 误判登记（如实记录）**：上轮 QA 曾判 CFBundleDisplayName 缺失"不阻断仅观感"——设备否决（installd 硬拒装）。教训：installd 对 appex plist 校验**逐关推进**，"下一关查什么"必须以官方成品逐键对质为准，禁推理豁免、禁抽样——逐键全量对质一次修净 + 门一次建全。
+
+## N9、guest 承载全链（2026-10-20，方案 analysis/n9-guest-hosting-plan.md，四项拍板全落锤；N9a+N9b+N9c 一批，N9d 真机验收留待装机）
+
+**来源与锚定**：Nyxian-0.10.3（N7/N8 同源快照）。官方编排对照：`.run` 签名段（Nyxian/LindChain/Core/Builder.swift:283-374）+ 安装链（LiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.m installApplicationAtBundlePath——XPC 2s 超时官方硬编码 :117）+ 信任链（ProcEnvironment/Surface/trust.c:212-276 macho_after_sign）+ spawn/stdio（Builder.swift:321-349 + ProcEnvironment/Process/PEProcessManager.m:87-183 + PEProcess.m:269-284）+ LC 补片段（LiveContainer/LCUtils.m:57-100）。**本批零 vendored 改动**。
+
+### 交叉核验（N9 开工前 LC 侧 vendored 树 vs 0.10.3 原件逐文件 diff，N8 落位纪律复核）
+
+- **逐字节一致**：LiveContainer/{LCUtils.m,LCUtils.h,LCBootstrap.m,LCBootstrap.h,LCMachOUtils.m,LCMachOUtils.h,utils.m,utils.h} ×8 + Tweaks ×9 + ProcEnvironment/{Surface/trust.c,Surface/trust.h,Surface/entitlement.h,Surface/proc/fork.m,Object/FDMapObject.m,Object/FDMapObject.h,environment.h} ×7 + ZSign/zsigner.h（万我 N7c 开关版，diff 已登记 §N7c）。
+- **diff 存在且全部为已登记品牌折算（§N8 总账 #1-#10 同源）**：WanWoLiveProcess 代理面 LDEApplicationWorkspace.m（WanWo-Swift.h + com.wanwo.installd）/LDEApplicationWorkspaceInternal.m（queue label + servcieIdentifier）/PEContainer.m（com.wanwo.containerd）/PEContainerService.m + ProcEnvironment/Process/{PEProcessManager.m（WanWo-Swift.h）,PEProcess.m（sceneID 前缀）}。**无未登记 diff，零新改动。**
+
+### 万我层新件（非官方代码）
+
+| 件 | 说明 |
+|---|---|
+| `WanWo/Features/BuildExt/GuestRunSupport.{h,m}` | ObjC 薄壳（C 回调 block 不便 Swift 直调）：①patchGuestExecutableAtPath = LCUtils.signAppBundleWithZSign 补片段等义（LCParseMachO+LCPatchExecSlice+LCPatchAppBundleFixupARM64eSlice，域名牌 com.nyxian.lcutils→com.wanwo.guestrun）；②appendEntitlementTokenToMachOAtPath = macho_after_sign 包装（trust.c:212-276——ksurface 自签 token 追加 EOF，幂等）；③entitlementBitsFromEntitlementsPlist = 官方 NXEntitlementsConfig.entitlement 位映射等义重建（0.10.3 NXProject.m:137-163 逐键对照；键双收 com.wanwo.build.* scaffold 键 + com.nyxian.pe.* 官方别名；get-task-allow 缺省 YES、其余 NO——官方 withDefaultValue 语义照抄）。头注释含官方语义出处行号 |
+| `WanWo/Features/BuildExt/GuestRunService.swift` | run 承载编排：FDMapObject 管道编排（0/1/2+持活 100/101，官方 Builder.swift:322-346 逐行对照）→spawnProcess(withBundleIdentifier:withItems:withKernelSurfaceProcess:nil,doRestartIfRunning:true)→后台线程读 outPipe（行级 onShellLine 缝接工具卡——UI 侧 0.2s 节流，bash 工具同缝不再叠层）→exitingCallback 退出码（FBProcess.exitContext.underlyingContext.legacyCode wait4 原值解码：低 7 位=signal / (raw>>8)&0xFF=exit code，原值一并上报）→run_log 落盘 Cache/<uuid>/run_log.txt（时间戳+stdout/stderr 全量+退出码）。stopActiveRun=stop_build run 态转语义（PEProcess.terminate=SIGKILL）。RunEvents（guest_run kind）注册于此 |
+| `WanWo/Features/BuildExt/BuildService.swift` 增段 | ①run 门 beginRun/endRun/isRunInFlight（与构建门同锁；beginBuild 对 run 在途拒绝——run 中禁新 build，方案 §三 7 拍板）；②prepareGuestRun（官方 .run 签名编排等义：补片→wanwo_setHostIdentityOverride(true) 显式开→ZSigner.sign→finally 复位 NO→macho_after_sign（entitlement=工程 Entitlements.plist 位图）→installApplicationAtBundlePath）。与 signAndRepackage 并列互不污染：不做 profile bundle id 对齐（容器模式磁盘 Info.plist 保持工程 id）/不重打包 ipa/标准交付路径零变化 |
+| `WanWo/Features/BuildExt/BuildTools.swift` 增件 | BuildAndRunTool（第 10 件；审批 askOnce 同 build_ipa——escalation 缝复用；参数 name + timeout_ms 默认 5min 上限 16min，超时 terminate+部分输出上报——官方 .run 无等待语义，万我工具层收尾需要退出码的自适应扩展）；StopBuildTool run 态转语义；BuildEvents.register 装配点同步注册 guest_run kind（modelVisible，v2.4 报批流程） |
+| `WanWo/Bridge/WanWo-Bridging-Header.h` | 追加 2 头（逐头列消费者，最小集原则）：`<LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.h>`（BuildService prepareGuestRun 消费 installApplicationAtBundlePath）+ `"GuestRunSupport.h"`（BuildService/BuildAndRunTool 消费；其引入的 Surface/entitlement.h = PEEntitlement 位图类型进 Swift）。FDMapObject.h/PEProcess.h 经既有 PEProcessManager.h 传递链已在 Swift 可见——不重复引（LCBootstrap.h 宿主侧零消费不引） |
+| `WanWo/Core/Context/Compaction/CondensationWorkingSet.swift` | N9c：Policy.attentionWindow 5→12（N8c 实测窗口窄致重复调用；用户拍板 A 方案；token 涨幅实测待真机观察。B 方案挂起项 S21 登记 analysis/suspension-ledger.md） |
+
+### 开关与调用点清单（N7c 预埋三态开关的本环启用点）
+
+| 开关/门 | 调用点 | 语义 |
+|---|---|---|
+| `wanwo_zsign_host_identity`（zsigner.m s_wanwo_host_identity） | BuildService.prepareGuestRun：签名前 `ZSigner.wanwo_setHostIdentityOverride(true)` → semaphore.wait 返回后复位 NO | YES=容器模式三消费点（bundle.cpp:68 身份覆写 / bundle.cpp:344 CodeResources 跳过 / openssl.cpp:729 prov 不写盘）；仅 run 路径内在位——标准交付（signAndRepackage）零变化 |
+| `NXSignMachOWithNyxianEntitlements`（工程 gate，N7c 出厂 false） | 不动 | 万我不经 vendored NXBuilder 的 .run 分支（WANWO_BUILD_RUN 仍关不定义）——prepareGuestRun 显式直调 trust.h macho_after_sign，零冲突 |
+| `WANWO_BUILD_RUN` | 维持不定义 | vendored NXBuilder .run 分支永不编译 |
+| run 门（beginRun） | BuildAndRunTool.execute 全生命周期 defer endRun；beginBuild 同拒；stop_build run 态转终止 guest | run 中禁新 build；stop 后放行 |
+
+### 读到的偏差（源码实读与任务书/方案不符处）
+
+1. **`project.entitlementsConfig.entitlement` 在万我 vendored 树不存在**：官方 0.10.3 NXEntitlementsConfig 有 `@property PEEntitlement entitlement`（0.10.3 LindChain/Project/NXProject.h:52-54 + NXProject.m:137-163 实现）；万我 vendored NXProject.h/.m 该属性已随 §N4N5 适配删除（N4 实测空引用）。→ 位图映射在万我层等义重建（GuestRunSupport.entitlementBitsFromEntitlementsPlist，逐键对照官方实现；键名适配万我 scaffold 的 kNXT2→com.wanwo.build.* 常量体系——vendored NXProject.m:305-337 出厂 Entitlements.plist 实际写的是 com.wanwo.build.* 键，官方 com.nyxian.pe.* 键别名兼容收录）。
+2. **官方 token 追加时序微差**：官方在签名回调内先 macho_after_sign 再 guard result（失败也追加，Builder.swift:304-313）；万我只在签名成功后追加——token 绑定签名后 cdhash，签名失败的产物 token 必无效（cdhash 失配→spawn 期 verify 失败），早失败早报告，语义等价。
+3. **官方 .run spawn 后不等待**（Builder.swift:348 spawn 即返回）；万我 build_and_run 等待退出收尾（N9b 任务书要求退出码收尾）——加 timeout_ms 自适应（默认 5min/上限 16min，超时 terminate+如实上报），属万我工具层编排自由度（方案 §三 3 同族）。
+
+### 已知风险与未验证项（真机 N9d 验收重点）
+
+- 容器模式身份链四点一致性：签名 identifier（zsign 覆写=宿主 id）/磁盘 Info.plist（工程 id）/installd 注册 id（磁盘 id）/spawn 查找 id（工程 id）——官方 0.10.3 真机已验整链；installd doWeTrustThatBundle 对「签名 identifier≠Info.plist id」组合的接受度是 N9d 首验点（方案 §三 1）。
+- installApplication 2s XPC 超时（官方硬编码）：大 guest 解压可能超时——hello-world 无虞，观察项。
+- macho_after_sign 依赖 ksurface_kinit（N8 起随万我启动 constructor 在位）+ installd/containerd 双 daemon 活——prepareGuestRun 失败文案已引导 pe_smoke 排查。
+- guest UI app 跑在 appex 内存限额内——hello-world 无虞。
+- attentionWindow 12 的 token 涨幅——真机观察（S21 挂起项承载后续研究）。

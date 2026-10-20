@@ -53,3 +53,18 @@
 #import <LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.h>
 #import <LindChain/ProcEnvironment/Process/PEExtension.h>
 #import <LindChain/Services/containerd/PEContainer.h>
+
+// N9b BuildExt：installd 宿主代理面（BuildService guest 安装段消费
+// installApplicationAtBundlePath/applicationInstalledWithBundleID——官方
+// Builder.swift:315 同款调用）。头链：LDEApplicationWorkspaceProtocol.h +
+// LDEApplicationObject.h + LDEApplicationWorkspaceProxyProtocol.h（同目录
+// quoted include 经第 8 根 WanWoLiveProcess 解析）；LDEApplicationObject.h
+// 纯 Foundation/UIKit 可桥。PEProcess/FDMapObject/PEEntitlement 已随上方
+// PEProcessManager.h 传递链与 N8 桥接在 Swift 可见——本头按消费者逐头列，
+// 最小集原则（LCBootstrap.h/宿主不消费的头不引）。
+#import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.h>
+
+// N9a BuildExt：guest 签名补片+NXTR token 薄壳（万我自有件——BuildService
+// prepareGuestRun / BuildAndRunTool 消费；语义出处行号见其头注释）。
+// 其引入的 Surface/entitlement.h（PEEntitlement 位图类型）随本头进 Swift。
+#import "GuestRunSupport.h"

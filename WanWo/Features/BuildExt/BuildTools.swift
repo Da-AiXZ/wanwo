@@ -3,13 +3,15 @@
 //  WanWo
 //
 //  【N6 · BuildExt 工具面】13 号设计环 N6：8 件 AgentTool（批 2 增补
-//  project_delete/project_reset + build_ipa optimize/宏预检；build_and_run
-//  属阶段 2——WANWO_BUILD_RUN 开启时随 N7-N9 注册）。装配点 AppEnvironment
+//  project_delete/project_reset + build_ipa optimize/宏预检）。【N9b】新增
+//  build_and_run（10 件——guest 承载全链：编译→LC 容器签名→NXTR token→
+//  安装→spawn→stdio 回流→退出码收尾；运行编排见 GuestRunService.swift，
+//  签名/安装编排见 BuildService.prepareGuestRun）。装配点 AppEnvironment
 //  makeAgentStack（BuildTools.registerAll，writer 注入供 extensionEvent）。
 //
-//  审批：build_ipa/project_delete/project_reset 走 ctx.escalationApprover
-//  提权呈现缝（browser_use 同一 ApprovalCoordinator.request 呈现；nil
-//  approver → fail closed）。其余低危。
+//  审批：build_ipa/build_and_run/project_delete/project_reset 走
+//  ctx.escalationApprover 提权呈现缝（browser_use 同一 ApprovalCoordinator
+//  .request 呈现；nil approver → fail closed）。其余低危。
 //
 //  诊断双去向（设计文档 §三）：① DebugDatabase（vendored 件原样持久化）；
 //  ② build_ipa 工具输出直给 AI（同回合自修复）+ extensionEvent("build",
@@ -24,6 +26,7 @@ enum BuildEvents {
     static let eventKind = "build"
 
     /// 装配期注册（幂等；AppEnvironment.makeAgentStack 调用）。
+    /// 【N9b】guest run 事件 kind（guest_run）在本装配点同步注册。
     static func register() {
         let registry = ExtensionEventRegistry.shared
         guard !registry.isRegistered(eventKind) else { return }
@@ -38,15 +41,16 @@ enum BuildEvents {
                 ExtensionFieldSchema("diagnostics", .string), // 摘要（截断）
             ],
             projection: .modelVisible))
+        RunEvents.register()
     }
 }
 
 // MARK: - 工具族装配
 
 enum BuildTools {
-    /// 注册 9 件（project_create/project_list/project_read/project_delete/
-    /// project_reset/build_ipa/build_log/stop_build/pe_smoke——build_and_run
-    /// 属阶段 2）。writer 注入供 build 事件发射。
+    /// 注册 10 件（project_create/project_list/project_read/project_delete/
+    /// project_reset/build_ipa/build_log/stop_build/pe_smoke/build_and_run）。
+    /// writer 注入供 build 事件发射。
     static func registerAll(into registry: ToolRegistry,
                             sessionId: String,
                             writer: SessionWriter,
@@ -61,6 +65,8 @@ enum BuildTools {
         registry.register(StopBuildTool())
         // N8c：运行侧底座冒烟（形态 A——方案拍板项 4；recycle 审批级）
         registry.register(PESmokeTool())
+        // N9b：guest 承载全链（编译→容器签名→token→安装→spawn→stdio→退出码）
+        registry.register(BuildAndRunTool(writer: writer, sessionCwd: sessionCwd))
     }
 
     /// guest bash 视角路径提示（会话桶在 guest 侧的挂载点=sessionCwd）——
@@ -593,18 +599,239 @@ struct BuildLogTool: AgentTool {
     }
 }
 
-// MARK: - stop_build（低危）
+// MARK: - stop_build（低危；N9b 扩 run 转语义）
 
 struct StopBuildTool: AgentTool {
     let name = "stop_build"
-    let description = "Release the build slot if a build finished abnormally. "
-        + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot."
+    let description = "Release the build slot if a build finished abnormally, or stop the running guest app (build_and_run). "
+        + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot. "
+        + "During a guest run this terminates the guest process (SIGKILL) and releases the run gate."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
 
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        // 【N9b】run 态转语义：终止 guest + 放行 run 门（run 门全生命周期
+        // 持有——stop 后放行下一次 build/run，N9 方案 §三 7 拍板语义）。
+        if BuildService.shared.isRunInFlight {
+            let note = GuestRunService.shared.stopActiveRun()
+            BuildService.shared.endRun()
+            return .success("guest run 已终止——" + note)
+        }
         BuildService.shared.endBuild()
         return .success("构建槽位已复位（说明：编译进行中无法中途取消——官方构建器无取消接口；本操作仅用于异常残留后放行下一次构建）")
+    }
+}
+
+// MARK: - build_and_run（危险级：审批 + run 门；N9b）
+
+struct BuildAndRunTool: AgentTool {
+    let name = "build_and_run"
+    let description = "Full guest hosting pipeline (N9): compile the project → LC container signing (host identity mode) → "
+        + "NXTR entitlement token → installApplication via installd → spawn the guest process → stream stdout/stderr to the tool card → "
+        + "report exit code/signal when the guest exits. App-scheme projects only (utility projects land in N10 — terminal UI). "
+        + "Full output is persisted to run_log.txt (path in the result) for post-hoc reading. Requires user approval (ask once). "
+        + "Holds the run gate for its whole lifecycle: builds are rejected while a run is in flight; stop_build terminates the guest."
+    let parameters = JSONValue.schemaObject(
+        properties: [
+            "name": .stringSchema(description: "Project name to build and run as a guest app."),
+            "timeout_ms": .numberSchema(description: "Optional cap for waiting on guest exit. Default 300000 (5 min), max 960000 (16 min). On timeout the guest is terminated and partial output is reported."),
+        ],
+        required: ["name"])
+
+    private let writer: SessionWriter
+    private let sessionCwd: String?
+    init(writer: SessionWriter, sessionCwd: String?) {
+        self.writer = writer
+        self.sessionCwd = sessionCwd
+    }
+
+    /// 编译占线程池与缓存目录 + run 全程持门——exclusive 车道串行。
+    func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
+
+    func presentCall(_ args: JSONValue) -> ToolCardIntent? {
+        ToolCardIntent(kind: .terminal,
+                       title: "build_and_run",
+                       detail: args.objectValue?["name"]?.stringValue ?? "")
+    }
+
+    func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
+        guard let name = args.objectValue?["name"]?.stringValue else {
+            return .failure("missing \"name\"", code: "INVALID_ARGS")
+        }
+        var timeoutSeconds: TimeInterval = 300
+        if let t = args.objectValue?["timeout_ms"]?.intValue {
+            timeoutSeconds = min(960, max(5, Double(t) / 1000.0))
+        }
+
+        // 工程定位提前到审批前（build_ipa 同缝——工程不存在/名字错不必白批）
+        let project: NXProject
+        do {
+            project = try BuildToolSupport.resolveProject(workspace: ctx.workspace, name: name)
+        } catch let e as BuildServiceError {
+            return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
+        } catch {
+            return .failure(String(describing: error), code: "PROJECT_ERROR")
+        }
+
+        // utility 工程 → N10（拍板项 4：明确报「N10 支持」，不静默失败）
+        if project.projectConfig.schemeKind != NXProjectSchemeKind.app {
+            return .failure(
+                "utility 工程检测到（schemeKind=utility）——utility 形态的 guest 运行依赖窗口终端 UI（NXWindowSessionTerminal），在 N10 支持；本工具当前仅承载 app 工程。",
+                code: "SCHEME_UNSUPPORTED", name: "BuildError")
+        }
+
+        // 证书前置快速失败（build_ipa 同缝——不浪费数分钟 CPU 才发现签不了）
+        if !CertificateStore.isConfigured {
+            return .failure(
+                "no certificate is configured — guest container signing requires p12 + mobileprovision + password "
+                    + "(Settings → 签名证书), then retry.",
+                code: "SIGN_NOT_CONFIGURED", name: "BuildError")
+        }
+
+        // 宏预检（build_ipa 同缝——external macro 必败，拦下省一次审批+CPU）
+        let macroScan = BuildService.scanMacroUsage(project: project)
+        if macroScan.files > 0 {
+            var macroMsg = "pre-check: " + String(macroScan.files)
+                + " source file(s) use macros unavailable in this toolchain"
+                + " (#Preview / @Observable / @Model — external macro plugins are not bundled, official boundary)."
+                + " Remove the macros and retry."
+            if !macroScan.samples.isEmpty {
+                macroMsg = macroMsg + "\nfiles: " + macroScan.samples.joined(separator: ", ")
+            }
+            return .failure(macroMsg, code: "MACRO_PRECHECK", name: "BuildError")
+        }
+
+        // lld 污染拦截（build_ipa 同缝——上次 duplicate symbol 失败后同进程
+        // 再链接大概率 UAF 闪退）
+        if BuildService.isLldContaminated {
+            return .failure(
+                "build service contamination: a previous build in this process failed with duplicate symbols, "
+                    + "leaking lld linker state. Ask the user to restart the App (kill and relaunch WanWo), then retry.",
+                code: "LLD_CONTAMINATED", name: "BuildError")
+        }
+
+        // 审批（危险级 askOnce——总纲纪律 3：guest spawn 默认询问；nil → fail closed）
+        if let approver = ctx.escalationApprover {
+            let actionText = "编译并拉起 guest 工程 \"" + name
+                + "\"（编译占设备 CPU 数分钟；LC 容器签名/安装/进程拉起在宿主进程内执行）"
+            let outcome = await approver("build_and_run", ctx.callId, actionText)
+            guard outcome == .allowedOnce else {
+                return .failure("user did not approve the guest run (outcome: \(outcome.rawValue))",
+                                code: "RUN_NOT_APPROVED", name: "BuildError")
+            }
+        } else {
+            return .failure("no approval service available（fail closed）",
+                            code: "RUN_NOT_APPROVED", name: "BuildError")
+        }
+
+        // run 门（全生命周期：build→prepare→spawn→退出收尾；run 中禁新
+        // build——beginBuild 对 run 在途同样拒绝）
+        guard BuildService.shared.beginRun() else {
+            return .failure("another build or guest run is already in flight（等待其结束或 stop_build 后重试）",
+                            code: "BUILD_IN_FLIGHT", name: "BuildError")
+        }
+        defer { BuildService.shared.endRun() }
+
+        // ① 编译（MDK 线程池；sign=false——容器签名归 prepare 段）
+        let result: BuildResult = await withCheckedContinuation { cont in
+            BuildService.shared.build(project: project, sign: false) { r in
+                cont.resume(returning: r)
+            }
+        }
+        guard result.success else {
+            _ = try? await writer.append(.extensionEvent(
+                kind: RunEvents.eventKind,
+                payload: .object([
+                    "name": .string(name),
+                    "result": .string("failure"),
+                    "phase": .string("build"),
+                    "exit": .string("-"),
+                    "runLog": .string(result.buildLogPath),
+                    "diagnostics": .string(String(result.diagnosticsSummary.prefix(2000))),
+                ])))
+            return .failure("""
+                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）——按以下诊断修复源码后重新 build_and_run：
+                \(result.diagnosticsSummary)
+                build log: \(result.buildLogPath)
+                """, code: "BUILD_FAILED", name: "BuildError")
+        }
+
+        // ② 补片→容器签名→NXTR token→安装（官方 .run 签名编排等义）
+        let prep = BuildService.prepareGuestRun(project: project)
+        guard prep.ok else {
+            _ = try? await writer.append(.extensionEvent(
+                kind: RunEvents.eventKind,
+                payload: .object([
+                    "name": .string(name),
+                    "result": .string("failure"),
+                    "phase": .string("prepare"),
+                    "exit": .string("-"),
+                    "runLog": .string(result.buildLogPath),
+                    "diagnostics": .string(String(prep.message.prefix(2000))),
+                ])))
+            return .failure("PREPARE FAILED（编译成功，签名/安装段失败——AI 按原因自修复后重跑）:\n" + prep.message,
+                            code: "PREPARE_FAILED", name: "BuildError")
+        }
+
+        // ③ spawn + stdio 回流 + 退出码收尾（专用队列阻塞执行——semaphore/
+        //    availableData 阻塞不占协作线程池）
+        let callId = ctx.callId
+        let onShellLine = ctx.onShellLine
+        let outcome: GuestRunOutcome = await withCheckedContinuation { cont in
+            DispatchQueue(label: "wanwo.guestrun.execute").async {
+                let r = GuestRunService.shared.performRun(
+                    project: project,
+                    bundleID: prep.bundleID,
+                    timeoutSeconds: timeoutSeconds,
+                    onLine: { line in
+                        onShellLine(callId, line)
+                    })
+                cont.resume(returning: r)
+            }
+        }
+
+        // ④ guest_run 事件（modelVisible——退出码/失败原因跨回合可读）
+        _ = try? await writer.append(.extensionEvent(
+            kind: RunEvents.eventKind,
+            payload: .object([
+                "name": .string(name),
+                "result": .string(outcome.ok ? "success" : "failure"),
+                "phase": .string(outcome.timedOut ? "spawn" : "exit"),
+                "exit": .string(GuestRunService.renderExitNote(
+                    raw: outcome.exitRaw, exitCode: outcome.exitCode,
+                    signal: outcome.signal, decoded: outcome.exitRaw >= 0,
+                    timedOut: outcome.timedOut)),
+                "runLog": .string(outcome.runLogPath),
+                "diagnostics": .string(String(outcome.message.prefix(2000))),
+            ])))
+
+        var exitLine = ""
+        if outcome.exitRaw >= 0 {
+            exitLine = "\nexit: " + GuestRunService.renderExitNote(
+                raw: outcome.exitRaw, exitCode: outcome.exitCode,
+                signal: outcome.signal, decoded: true, timedOut: outcome.timedOut)
+        }
+        var tailLine = ""
+        if !outcome.outputTail.isEmpty {
+            tailLine = "\noutput tail:\n" + outcome.outputTail
+        }
+        let guestHint = BuildTools.guestPathHint(outcome.runLogPath,
+                                                 workspaceRoot: ctx.workspace.rootURL,
+                                                 sessionCwd: sessionCwd)
+        if outcome.ok {
+            return .success("""
+                GUEST RUN OK（\(name)）\(exitLine)
+                \(prep.message)\(tailLine)
+                run log: \(outcome.runLogPath)\(guestHint)
+                ——— 依据 stdout/退出码修复源码后重跑 build_and_run 即闭环。
+                """)
+        }
+        return .failure("""
+                GUEST RUN FAILED（\(name)）
+                \(outcome.message)\(exitLine)\(tailLine)
+                run log: \(outcome.runLogPath)\(guestHint)
+                ——— 依据 stdout/stderr 修复后重跑；stop_build 可提前终止 guest。
+                """, code: "GUEST_RUN_FAILED", name: "BuildError")
     }
 }

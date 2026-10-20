@@ -55,6 +55,8 @@ final class BuildService: @unchecked Sendable {
 
     /// 单飞行门（官方 NXBuilder.builds 同语义：并发构建互踩 MDK 线程池/缓存）。
     private var inFlight = false
+    /// 【N9b】guest run 在途标志（与 inFlight 同锁）。
+    private var runInFlight = false
     private let lock = NSLock()
 
     /// 工程根（会话工作区桶下）——BuildTools 由 ctx.workspace.rootURL 注入。
@@ -614,10 +616,144 @@ final class BuildService: @unchecked Sendable {
         return project.reload()
     }
 
-    /// 单飞行门。返回 false = 已有构建在途（stop_build/等待后重试）。
+    // MARK: N9a · guest 承载签名与安装编排（与 signAndRepackage 并列、互不污染）
+
+    struct GuestRunPreparation {
+        let ok: Bool
+        let message: String
+        /// token 位图（十六进制串——诊断/事件注记用）。
+        let entitlementBits: String
+        /// guest bundle id（工程值——磁盘 Info.plist/installd 注册/spawn
+        /// 查找三方同源；签名 identifier=宿主 id 属 zsign 容器模式覆写，
+        /// 不落盘——官方 0.10.3 容器形态同构）。
+        let bundleID: String
+    }
+
+    /// 官方 .run 签名编排等义（0.10.3 Builder.swift:292-357，semaphore 形态
+    /// 照抄 N7c 先例）。调用前提：build(.export) 已成功、bundleURL 树就绪。
+    /// 步骤（官方顺序，逐段）：
+    ///   ① 补片（LCUtils.signAppBundleWithZSign 补片段——GuestRunSupport）；
+    ///   ② 容器模式 ZSign：wanwo_setHostIdentityOverride(true) 显式开 →
+    ///      ZSigner.sign → 签名完复位 NO（开关仅 run 路径内在位；标准交付
+    ///      signAndRepackage 路径零变化）。容器模式语义（zsign 内部三消费
+    ///      点）：签名 identifier=宿主 id / CodeResources 跳过 / embedded
+    ///      .mobileprovision 不写——prov 仍传用户 profile（TeamId+entitlements
+    ///      提取必需，openssl.cpp InitSimple:732-743 对 prov 的读取不经开关）；
+    ///   ③ macho_after_sign 追加 NXTR token（entitlement=工程 Entitlements
+    ///      .plist 位图映射——vendored NXEntitlementsConfig 无 entitlement
+    ///      属性（§N4N5 适配删除），位图映射在 GuestRunSupport 万我层重建）；
+    ///   ④ LDEApplicationWorkspace installApplicationAtBundlePath（XPC→
+    ///      installd daemon，2s 超时=官方硬编码 LDEApplicationWorkspace.m:117）。
+    /// 与标准签名路径的三点差异（防混淆）：不做 profile bundle id 对齐（容器
+    /// 模式磁盘 Info.plist 保持工程 id）；不重打包 ipa（安装取 bundleURL 树）；
+    /// 不清 zsign_cache.json（容器模式 zsign 不写缓存产物路径不同——实测
+    /// 无残留；如有再收）。
+    static func prepareGuestRun(project: NXProject) -> GuestRunPreparation {
+        let bundleID = project.projectConfig.bundleid ?? ""
+        guard !bundleID.isEmpty else {
+            return GuestRunPreparation(ok: false,
+                                       message: "guest 工程bundle id 缺失（Project.plist NXBundleIdentifier）",
+                                       entitlementBits: "-",
+                                       bundleID: bundleID)
+        }
+        guard let p12 = CertificateStore.loadCertificateData(),
+              let profile = CertificateStore.loadProfileData(),
+              let password = CertificateStore.loadPassword() else {
+            return GuestRunPreparation(ok: false,
+                                       message: "未配置签名证书——guest 容器签名需要 p12+描述文件+密码（设置→签名证书）",
+                                       entitlementBits: "-",
+                                       bundleID: bundleID)
+        }
+
+        // ① 补片（官方 LCUtils.signAppBundleWithZSign 补片段等义）
+        do {
+            try GuestRunSupport.patchGuestExecutable(
+                atPath: project.machoURL.path,
+                bundleURL: project.bundleURL)
+        } catch {
+            return GuestRunPreparation(ok: false,
+                                       message: "guest 可执行补片失败（MH_EXECUTE→MH_DYLIB/arm64e fixup）：" + String(describing: error),
+                                       entitlementBits: "-",
+                                       bundleID: bundleID)
+        }
+
+        // ② 容器模式 ZSign（官方 Builder.swift:301 signAppBundleWithZSign +
+        //    开关显式开/复位——N7c 预埋三态开关的本环启用点）
+        ZSigner.wanwo_setHostIdentityOverride(true)
+        let semaphore = DispatchSemaphore(value: 0)
+        var signOK = false
+        var signMessage = ""
+        _ = ZSigner.sign(withAppPath: project.bundleURL.path,
+                         prov: profile, key: p12, pass: password,
+                         completionHandler: { success, error in
+            if success {
+                if let err = error, !err.localizedDescription.isEmpty {
+                    signOK = true
+                    signMessage = "签名完成，但部分文件签名失败（产物可能不可用）：" + err.localizedDescription
+                } else {
+                    signOK = true
+                    signMessage = "容器签名完成（identifier=宿主身份，LC 容器模式）"
+                }
+            } else {
+                signOK = false
+                signMessage = "容器签名失败：" + (error?.localizedDescription ?? "未知错误")
+            }
+            semaphore.signal()
+        })
+        semaphore.wait()
+        // 签名完复位（run 路径专用——标准交付路径默认 NO 不受影响）
+        ZSigner.wanwo_setHostIdentityOverride(false)
+        guard signOK else {
+            return GuestRunPreparation(ok: false,
+                                       message: signMessage,
+                                       entitlementBits: "-",
+                                       bundleID: bundleID)
+        }
+
+        // ③ NXTR token（官方 Builder.swift:304-307——signMachOWithNyxian
+        //    entitlements gate 之后、install 之前；万我不经 gate 直调 trust.h，
+        //    vendored NXBuilder 的 .run 分支永不编译——WANWO_BUILD_RUN 仍关）
+        let plist: [AnyHashable: Any] = project.entitlementsConfig.dictionary
+        let bits = GuestRunSupport.entitlementBits(fromEntitlementsPlist: plist)
+        let bitsHex = "0x" + String(bits, radix: 16)
+        do {
+            try GuestRunSupport.appendEntitlementToken(
+                toMachOAtPath: project.machoURL.path,
+                entitlement: PEEntitlement(rawValue: bits))
+        } catch {
+            return GuestRunPreparation(ok: false,
+                                       message: "NXTR token 追加失败：" + String(describing: error),
+                                       entitlementBits: bitsHex,
+                                       bundleID: bundleID)
+        }
+
+        // ④ 安装（官方 Builder.swift:315——XPC→installd，2s 超时官方硬编码）
+        guard let workspace = LDEApplicationWorkspace.shared() else {
+            return GuestRunPreparation(ok: false,
+                                       message: "LDEApplicationWorkspace 不可用（installd daemon 未起？先 pe_smoke mode=status）",
+                                       entitlementBits: bitsHex,
+                                       bundleID: bundleID)
+        }
+        let installed = workspace.installApplication(atBundlePath: project.bundleURL.path)
+        guard installed else {
+            return GuestRunPreparation(ok: false,
+                                       message: "installApplication 失败（installd 信任校验/解压/XPC 超时——2s 官方超时形态；N7 签名四要素与 token 是通行证，可核对 pe_smoke probe）",
+                                       entitlementBits: bitsHex,
+                                       bundleID: bundleID)
+        }
+
+        return GuestRunPreparation(ok: true,
+                                   message: signMessage + "；token " + bitsHex + "；已安装至容器（installd）",
+                                   entitlementBits: bitsHex,
+                                   bundleID: bundleID)
+    }
+
+    /// 【N9b】run 在途时同样拒绝（run 期间禁新 build——build_and_run 全
+    /// 生命周期持有 run 门，build_ipa 与之互斥；stop_build 在 run 态下转
+    /// 语义为终止 guest 并放行）。
     func beginBuild() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if inFlight { return false }
+        if inFlight || runInFlight { return false }
         inFlight = true
         return true
     }
@@ -632,6 +768,29 @@ final class BuildService: @unchecked Sendable {
     var isBuilding: Bool {
         lock.lock(); defer { lock.unlock() }
         return inFlight
+    }
+
+    // MARK: N9b · guest run 门（与构建门同锁、互斥语义）
+
+    /// run 门（build_and_run 全生命周期持有：build→容器签名→token→安装→
+    /// spawn→退出码收尾）。run 期间 beginBuild 拒绝（run 中禁新 build，
+    /// N9 方案 §三 7 拍板语义）；beginRun 拒绝并发 run 与并发 build。
+    /// stop_build 在 run 态下由工具层转语义（终止 guest→endRun）。
+    func beginRun() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if inFlight || runInFlight { return false }
+        runInFlight = true
+        return true
+    }
+
+    func endRun() {
+        lock.lock(); defer { lock.unlock() }
+        runInFlight = false
+    }
+
+    var isRunInFlight: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return runInFlight
     }
 
     /// 官方全链构建（.export）。completion 在 MDK 线程池线程回调。

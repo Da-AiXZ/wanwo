@@ -33,8 +33,11 @@ enum CondensationWorkingSet {
         /// 事件数上限（超限触发 SOFT 压缩；sdk max_size 默认 240 = settings 语义）。
         var maxSize = 240
         /// 掩码注意力窗口（窗口外旧工具结果替换占位；sdk observation_masking
-        /// attention_window=5）。
-        var attentionWindow = 5
+        /// 原值 5）。【N9c 拍板项 1·方案 A 2026-10-20】5→12：N8c 真机实测
+        /// 窗口 5 过窄——上一轮工具结果频繁落出窗致 AI 重复调用/重复读盘
+        ///（RepeatCallAdviser F020 阈值外的机制性根因）；用户拍板 A 方案。
+        /// token 涨幅实测待真机观察（窗口×2.4，上限受 maxSize=240 约束）。
+        var attentionWindow = 12
         /// 序列化单事件字符串上限（hard reset ×0.8 递减的基数；sdk 老版
         /// max_event_length=10_000 同源）。
         var maxEventChars = 10_000
