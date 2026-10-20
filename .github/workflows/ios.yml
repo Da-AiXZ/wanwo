@@ -119,6 +119,16 @@ jobs:
           cp Vendor/nyxian/Shared/LaunchServices/installd.plist "Payload/WanWo.app/Shared/LaunchServices/"
           # N8 计数门：appex 目录 + 两 plist（宿主运行时 ignition 的输入）
           test -d "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex" || { echo "!! WanWoLiveProcess.appex embed 失败"; exit 1; }
+          # N8 装机复测修：appex 版本键硬门——CI ValidateEmbeddedBinary 不覆盖
+          # 这两键（CI 绿真机装不上的教训），installd "bundleVersion must be
+          # set in placeholder attributes" 拒装根因键必须显式立门。plutil 为
+          # macOS runner 自带。门值与 project.yml appex settings.base 两键同源。
+          APPEX_VER=$(plutil -extract CFBundleVersion raw "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist") || { echo "!! appex CFBundleVersion 缺失（installd 拒装根因键）"; exit 1; }
+          echo "appex CFBundleVersion = ${APPEX_VER} (expect 3)"
+          test "${APPEX_VER}" = "3" || { echo "!! appex CFBundleVersion 值异常: ${APPEX_VER}"; exit 1; }
+          APPEX_SHORT_VER=$(plutil -extract CFBundleShortVersionString raw "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist") || { echo "!! appex CFBundleShortVersionString 缺失（同根因键族）"; exit 1; }
+          echo "appex CFBundleShortVersionString = ${APPEX_SHORT_VER} (expect 0.0.1)"
+          test "${APPEX_SHORT_VER}" = "0.0.1" || { echo "!! appex CFBundleShortVersionString 值异常: ${APPEX_SHORT_VER}"; exit 1; }
           test -f "Payload/WanWo.app/Shared/LaunchServices/containerd.plist" || { echo "!! containerd.plist 缺失"; exit 1; }
           test -f "Payload/WanWo.app/Shared/LaunchServices/installd.plist" || { echo "!! installd.plist 缺失"; exit 1; }
           ls -lh "Payload/WanWo.app/PlugIns/" "Payload/WanWo.app/Shared/LaunchServices/"

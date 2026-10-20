@@ -590,6 +590,22 @@ targets:
         INFOPLIST_FILE: WanWoLiveProcess/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_ENTITLEMENTS: WanWoLiveProcess/LiveProcess.entitlements
+        # N8 装机复测修（设备 installd 拒装实证：IXErrorDomain Code=17
+        # "bundleVersion must be set in placeholder attributes for an app
+        # extension placeholder"）：官方 0.10.3 LiveProcess Debug/Release 两段
+        # 均有 CURRENT_PROJECT_VERSION = $(BUILD_NUMBER)（pbxproj 1283/1327）
+        # 与 MARKETING_VERSION = $(VERSION)（pbxproj 1301/1345）——经
+        # Config.xcconfig 注入，构建期合并进最终 Info.plist；万我此前漏抄
+        # 两键 → GENERATE_INFOPLIST_FILE=YES 产物缺 CFBundleVersion/
+        # CFBundleShortVersionString → installd 拒装（CI ValidateEmbeddedBinary
+        # 不覆盖此键 → CI 绿真机装不上）。取值=与宿主最终 plist 同源对齐
+        # （官方语义即 appex 版本随宿主版本体系——Config.xcconfig VERSION/
+        # BUILD_NUMBER 为官方宿主同款注入源；Apple 亦要求 appex
+        # CFBundleShortVersionString 与宿主一致）：万我宿主 info.properties
+        # CFBundleVersion="3"/CFBundleShortVersionString="0.0.1" → 两键同值。
+        # 回归门：ios.yml Package 步骤 plutil 硬门（CI 查不出的键显式立门）。
+        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.0.1"
         # 官方 1287-1316 同构（-DCLIENT_ENV / HSEARCH 两根）；万我加两根——
         # 官方同步组对 target 内全部头建 headermap（裸名 quoted include 可解析：
         # Tweaks 的 "UIKitPrivate.h"/"utils.h"），逐文件列法无 headermap 等价物，

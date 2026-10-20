@@ -394,3 +394,10 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | ⑦ | 39304577904 | 宿主链接 `_swizzle_objc_method` undefined（attrstrnilfix.m 引 0.10.3 API）——宿主补编 0.10.3 Swizzle.m（宿主符号面全量清点仅此一文件；main 版 Swizzle.c 已退役无重复符号） |
 
 **Xcode 16 同步组 vs 逐文件列法三差异（本轮实证，N9+ 施工纪律）**：①headermap 裸名解析（补 HSEARCH 根）②.tbd 自动进链接阶段（补全路径链接输入）③头文件全员在编（本纪律 headers 不进 sources——仅需按符号闭包补编对应 .m）。
+
+### N8 装机复测修（2026-10-19 深夜；CI 绿真机装不上——installd 拒装 appex）
+
+- **报错链（设备实测）**：installd 拒装 `WanWoLiveProcess.appex`，底层 `IXErrorDomain Code=17 "bundleVersion must be set in placeholder attributes for an app extension placeholder"`。
+- **根因（直接解包 CI 产物 WanWo-98eed56.ipa 实证）**：宿主 plist 两版本键齐全（CFBundleVersion="3"/CFBundleShortVersionString="0.0.1"），appex `Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist` **两键全缺**。官方 0.10.3 LiveProcess Debug/Release 两 build configuration 均有 `CURRENT_PROJECT_VERSION = $(BUILD_NUMBER)`（pbxproj 1283/1327）与 `MARKETING_VERSION = $(VERSION)`（1301/1345），经 Config.xcconfig（`VERSION=0.10.3`/`BUILD_NUMBER=20260523.26.DEBUG`）构建期合并进最终 plist；万我 appex target（project.yml `WanWoLiveProcess:` settings.base）漏抄两键 + GENERATE_INFOPLIST_FILE=YES 产物补齐不了 → 最终 plist 缺键。CI 免签构建 ValidateEmbeddedBinary 不覆盖此键 → CI 绿装不上。
+- **修法**：project.yml appex settings.base 补 `CURRENT_PROJECT_VERSION: "3"` / `MARKETING_VERSION: "0.0.1"`——官方语义即 appex 版本随宿主版本体系注入（Config.xcconfig 同源），万我无 xcconfig 直取与宿主 info.properties 同值对齐（Apple 亦要求 appex CFBundleShortVersionString 与宿主一致）。
+- **CI 防回归门**：ios.yml Package 步骤 appex cp 进 PlugIns 后用 `plutil -extract CFBundleVersion raw` / `CFBundleShortVersionString raw`（macOS runner 自带）取值 echo 并断言 "3"/"0.0.1"，任一缺失/异常 `exit 1`——教训显式立门：CI 查不出的键必须门。
