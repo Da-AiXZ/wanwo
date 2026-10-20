@@ -50,9 +50,11 @@ FOUNDATION_EXPORT NSErrorDomain const WanWoGuestRunErrorDomain;
 /// NXTR entitlement token（ksurface 自签自验）。返回 NO = token 未追加
 ///（此时 guest spawn 链残废——entitlementForExecutableAtPath 读不到
 /// token → proc_fork 无 entitlements → dyld 隐藏钩子族不激活）。
-+ (BOOL)appendEntitlementTokenToMachOAtPath:(NSString *)machoPath
-                                entitlement:(PEEntitlement)entitlement
-                                      error:(NSError **)error;
+/// 选择器形态与 patchGuestExecutableAtPath 同构（动词+宾语+AtPath——
+/// Swift 导入器对中缀 ToMachO 的剪枝不可预测，run 39368919449 实证）。
++ (BOOL)appendEntitlementTokenAtPath:(NSString *)machoPath
+                         entitlement:(PEEntitlement)entitlement
+                               error:(NSError **)error;
 
 /// Config/Entitlements.plist 字典 → PEEntitlement 位图。官方
 /// NXEntitlementsConfig.entitlement 实现等义（0.10.3 NXProject.m:137-163）：

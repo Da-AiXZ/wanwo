@@ -169,7 +169,7 @@ final class GuestRunService: @unchecked Sendable {
                 + "（pe_smoke）与 LDEApplicationObject.isLaunchAllowed（工程未安装/被卸载？）"
             return Self.makeFailure(from: emptyOutcome, message: msg)
         }
-        guard let process = manager.processForProcessIdentifier(pid) else {
+        guard let process = manager.process(forProcessIdentifier: pid) else {
             let msg = "spawn 返回 pid=" + String(pid) + " 但无 PEProcess 记录（进程秒退？）"
             return Self.makeFailure(from: emptyOutcome, message: msg)
         }

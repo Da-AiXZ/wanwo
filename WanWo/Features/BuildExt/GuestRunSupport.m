@@ -81,9 +81,9 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     return YES;
 }
 
-+ (BOOL)appendEntitlementTokenToMachOAtPath:(NSString *)machoPath
-                                entitlement:(PEEntitlement)entitlement
-                                      error:(NSError **)error
++ (BOOL)appendEntitlementTokenAtPath:(NSString *)machoPath
+                         entitlement:(PEEntitlement)entitlement
+                               error:(NSError **)error
 {
     if (machoPath.length == 0) {
         if (error != NULL) {

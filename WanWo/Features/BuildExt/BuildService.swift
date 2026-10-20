@@ -713,12 +713,15 @@ final class BuildService: @unchecked Sendable {
         // ③ NXTR token（官方 Builder.swift:304-307——signMachOWithNyxian
         //    entitlements gate 之后、install 之前；万我不经 gate 直调 trust.h，
         //    vendored NXBuilder 的 .run 分支永不编译——WANWO_BUILD_RUN 仍关）
-        let plist: [AnyHashable: Any] = project.entitlementsConfig.dictionary
-        let bits = GuestRunSupport.entitlementBits(fromEntitlementsPlist: plist)
+        // （NSMutableDictionary → [AnyHashable: Any] 直标不可转——桥接经
+        //  NSDictionary 条件转换，run 39368919449 实证）
+        let plistDict: NSDictionary = project.entitlementsConfig.dictionary
+        let bits = GuestRunSupport.entitlementBits(
+            fromEntitlementsPlist: plistDict as? [AnyHashable: Any] ?? [:])
         let bitsHex = "0x" + String(bits, radix: 16)
         do {
             try GuestRunSupport.appendEntitlementToken(
-                toMachOAtPath: project.machoURL.path,
+                atPath: project.machoURL.path,
                 entitlement: PEEntitlement(rawValue: bits))
         } catch {
             return GuestRunPreparation(ok: false,
