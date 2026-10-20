@@ -15,6 +15,10 @@
 
 NSErrorDomain const WanWoGuestRunErrorDomain = @"com.wanwo.guestrun";
 
+// 【N9 调试轮二分探针】判别查询目标 id（testapp 工程真实 bundle id——
+// Config/Project.plist NXBundleIdentifier，历轮 build_and_run 目标工程）。
+NSString * const WanWoGuestProbeTestAppBundleID = @"com.wanwo.testapp";
+
 // 官方 LCUtils.signAppBundleWithZSign 补片段的域/文案（LCUtils.m:76/82），
 // 万我域名牌折算（com.nyxian.lcutils → com.wanwo.guestrun，语义等义）。
 static NSError *WanWoGuestRunUnsupportedFormatError(void)
@@ -341,22 +345,39 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     return result;
 }
 
-// ── 【N9 调试轮】installd 回环探针（纯诊断零行为变更）────────────────────
+// ── 【N9 调试轮二分探针】installd 装载状态查询（纯诊断零行为变更）────────
 // 动机：N9 双轨制修复后（commit 3736209）prepare 细目 e 段仍为
-// install=xpcError，5 次尝试确定性复现，而 installd 的 XPC 从未被单独
-// 验证过（pe_smoke probe 只测 containerd；installApplication 是第一次
-// 真实使用）。本探针用零自定义对象载荷的纯 BOOL 回环方法
-//（applicationInstalledWithBundleID——LDEApplicationWorkspaceProxyProtocol.h:33，
-// daemon 侧 LDEApplicationWorkspaceInternal.m:317-324 查 bundles 字典
-// reply(YES/NO)，查询不存在 id 回 NO 零副作用）单变量隔离层级：
-// 回环 OK→连接层健康→失败在 install 载荷层（ArchiveObject/fd/解码）；
-// 回环错误/超时→连接层失效（与载荷无关）。
+// install=xpcError，5 次尝试确定性复现。上一轮回环探针（6a3da26）实证
+// installd 的 XPC 连接层健康（纯 BOOL 回环 reply=NO 干净返回），失败钉死
+// 在 install 的 ArchiveObject 载荷层——载荷层再二分为两个候选：
+//   · L1：ArchiveObject+fd 解码失败于 daemon（fileport_makefd 在 uid=1 的
+//     installd 内行为异常）→ guest 从未被安装 → 修 fd 传输/解码层。
+//   · L2：install 实际成功、死在装后通知（daemon 广播
+//     applicationWasInstalled:(LDEApplicationObject*) 给 observer=nil
+//     连接 + 宿主无 ResecureDecoder 白名单（appex-only，main.m:265）→
+//     解码失败 → 连接失效 → reply 丢失 → host 侧 xpcError）→ 修通知层。
+// 判别法：用工程真实 bundle id（com.wanwo.testapp）调
+// applicationInstalledWithBundleID:withReply: 查 daemon 侧 bundles 字典
+//（LDEApplicationWorkspaceInternal.m:317-324）——YES=L2 实锤 / NO=L1 实锤。
+// 实现共用 static 查询函数（bundleId 参数化，文件内私有——不入 Swift
+// 导出面，避开导入器剪枝雷区）；两条公开薄壳方法选择器形状与已实证可
+// 导入的回环探针同构（首段全并入基名 + NSString** 尾参）。
 
-+ (NSString *)probeInstalldRoundTripWithError:(NSString **)error
+static NSString *WanWoGuestProbeInstalldQuery(NSString *bundleID, NSString **error)
 {
     if (error != NULL) {
         *error = nil;
     }
+    if (bundleID.length == 0) {
+        if (error != NULL) {
+            *error = @"probe bundle id 为空";
+        }
+        return @"installd 查询失败（bundle id 入参为空——连接层未测）";
+    }
+
+    // 判别线（testapp）用「installd 查询 <id> → …」格式；回环线
+    //（nonexistent）保留既有报告文案（既有逻辑保留——逐字不动）。
+    BOOL isTestappProbe = [bundleID isEqualToString:WanWoGuestProbeTestAppBundleID];
 
     // connect：与 installApplicationAtPath 同款形态（endpoint → XPC 连接），
     // 独立临时连接（不缓存不复用 prepareGuestRun 的连接——探针只读诊断，
@@ -374,6 +395,9 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     if (connection == nil) {
         if (error != NULL) {
             *error = @"XPC 连接不可达（PEBootstrapRegistry endpoint 缺失——installd daemon 未起？pe_smoke mode=status）";
+        }
+        if (isTestappProbe) {
+            return [NSString stringWithFormat:@"installd 查询 %@ → 连接失败（无连接——连接层未测）", bundleID];
         }
         return @"installd 回环连接失败（无连接——连接层失效）";
     }
@@ -396,7 +420,7 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     }
     else
     {
-        [proxy applicationInstalledWithBundleID:@"com.wanwo.probe.nonexistent" withReply:^(BOOL replyValue) {
+        [proxy applicationInstalledWithBundleID:bundleID withReply:^(BOOL replyValue) {
             replied = YES;
             replyResult = replyValue;
             dispatch_semaphore_signal(sema);
@@ -409,8 +433,16 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     // 三态判定（+连接失败/代理创建失败防御态——报告行直译给 PESmoke）。
     if (replied) {
         if (!replyResult) {
+            if (isTestappProbe) {
+                // L1 实锤：daemon 侧 bundles 字典无此 id——guest 从未装上。
+                return [NSString stringWithFormat:@"installd 查询 %@ → NO——L1 实锤：guest 从未被安装（ArchiveObject+fd 解码失败于 daemon——fileport_makefd@uid=1 行为异常；修 fd 传输/解码层）", bundleID];
+            }
             // 预期形态：probe id 不存在 → daemon 查 bundles 字典回 NO。
             return @"installd 回环 OK（reply=NO）——连接层健康，失败在 install 载荷层（ArchiveObject/fd/解码）";
+        }
+        if (isTestappProbe) {
+            // L2 实锤：install 实际成功——失败在装后通知层。
+            return [NSString stringWithFormat:@"installd 查询 %@ → YES——L2 实锤：install 实际成功、死在装后通知（daemon 广播 applicationWasInstalled:LDEApplicationObject 给 observer=nil 连接 + 宿主无 ResecureDecoder 白名单→解码失败→reply 丢失；修通知层）", bundleID];
         }
         // 意外形态：probe id 不应存在（如实报告原值，不吞异常）。
         return @"installd 回环 OK（reply=YES——意外：probe id com.wanwo.probe.nonexistent 不应存在，如实上报）";
@@ -419,18 +451,37 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
         if (error != NULL) {
             *error = xpcErrorText;
         }
+        if (isTestappProbe) {
+            return [NSString stringWithFormat:@"installd 查询 %@ → 错误：%@（连接层态——不参与 L1/L2 判别）", bundleID, xpcErrorText];
+        }
         return [NSString stringWithFormat:@"installd 回环 XPC 错误：%@——连接层失效（与载荷无关）", xpcErrorText];
     }
     if (proxy == NULL) {
         if (error != NULL) {
             *error = @"remoteObjectProxy 创建失败";
         }
+        if (isTestappProbe) {
+            return [NSString stringWithFormat:@"installd 查询 %@ → 失败（remoteObjectProxy 创建失败——连接层态）", bundleID];
+        }
         return @"installd 回环失败（remoteObjectProxy 创建失败——连接层失效）";
     }
     if (error != NULL) {
         *error = @"2s XPC 超时（无 reply 无错误回调）";
     }
+    if (isTestappProbe) {
+        return [NSString stringWithFormat:@"installd 查询 %@ → 超时（无 reply 无错误回调——连接层态）", bundleID];
+    }
     return @"installd 回环超时";
+}
+
++ (NSString *)probeInstalldRoundTripWithError:(NSString **)error
+{
+    return WanWoGuestProbeInstalldQuery(@"com.wanwo.probe.nonexistent", error);
+}
+
++ (NSString *)probeInstalldTestAppRoundTripWithError:(NSString **)error
+{
+    return WanWoGuestProbeInstalldQuery(WanWoGuestProbeTestAppBundleID, error);
 }
 
 @end

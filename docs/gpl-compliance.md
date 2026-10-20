@@ -548,3 +548,9 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **万我层新件**：`GuestRunSupport.probeInstalldRoundTripWithError:`（ObjC 薄壳，连接形态照 installApplicationAtPath 同款但独立临时连接——不缓存不复用 prepareGuestRun 连接、observer 传 nil 连接不驻留语义同既有处理；返回报告行文本 + NSString* error 出参，不用 NSError** 避免与六态枚举语义混淆）。消费点：`PESmoke.swift` probe 输出在 containerd 三往返之后追加「=== installd 回环 ===」段。桥接头零改动（LDEApplicationWorkspaceProxyProtocol 经 WanWo-Bridging-Header.h:65 既有 LDEApplicationWorkspace.h 头链已进 Swift/ObjC 可见面）。
 
 **行为语义不变声明**：prepareGuestRun/installApplication 零改动（探针独立连接、独立调用点）；vendored 树零 diff；纯诊断输出，不设门不拦截。
+
+#### installd 装载状态判别探针（2026-10-20，N9 调试轮二分——载荷层 L1/L2 判别，纯诊断零行为变更）
+
+**动机**：回环探针（commit 6a3da26）实证 installd 的 XPC 连接层健康（`applicationInstalledWithBundleID:@"com.wanwo.probe.nonexistent"` 纯 BOOL 回环 reply=NO 干净返回），install=xpcError 失败钉死在 install 的 ArchiveObject 载荷层——载荷层待二分：**L1**=ArchiveObject+fd 解码失败于 daemon（fileport_makefd 在 uid=1 的 installd 内行为异常→guest 从未被安装→修 fd 传输/解码层）；**L2**=install 实际成功、死在装后通知（daemon 广播 `applicationWasInstalled:(LDEApplicationObject*)` 给 observer=nil 连接 + 宿主无 ResecureDecoder 白名单（appex-only，main.m:265）→解码失败→连接失效→reply 丢失→host 侧 xpcError→修通知层）。判别法：用工程真实 bundle id（com.wanwo.testapp，历轮 build_and_run 目标工程）调 `applicationInstalledWithBundleID:withReply:` 查 daemon 侧 bundles 字典——YES=L2 实锤 / NO=L1 实锤；错误/超时/连接失败=连接层态，不参与判别。
+
+**万我层新件**：`GuestRunSupport.probeInstalldTestAppRoundTripWithError:`（薄壳，连接形态与回环探针完全同款；实现共用 .m 内 static 查询函数 WanWoGuestProbeInstalldQuery——bundleId 参数化、文件内私有不入 Swift 导出面；判别目标 id 常量 `WanWoGuestProbeTestAppBundleID`）。消费点：`PESmoke.swift` probe 输出「=== installd 回环 ===」段内追加第二行查询结果（格式「installd 查询 com.wanwo.testapp → YES/NO/错误：<原文>/超时」）。行为语义不变：prepareGuestRun/installApplication 零改动；vendored 树零 diff；纯诊断输出，不设门不拦截。

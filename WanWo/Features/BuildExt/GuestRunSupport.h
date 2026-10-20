@@ -36,6 +36,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSErrorDomain const WanWoGuestRunErrorDomain;
 
+/// 【N9 调试轮二分探针】判别查询目标 id——testapp 工程真实 bundle id
+///（历轮 build_and_run 目标工程，Config/Project.plist
+/// NXBundleIdentifier=com.wanwo.testapp）。L1/L2 判别语义见
+/// probeInstalldTestAppRoundTripWithError: 与 docs/gpl-compliance.md §N9。
+FOUNDATION_EXPORT NSString * const WanWoGuestProbeTestAppBundleID;
+
 /// 【N9d 诊断增强】installApplication 包装结果（vendored 版 BOOL 无法区分
 /// reply(NO)/2s 超时/XPC 错误回调——诊断轮核心区分点）。
 typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
@@ -125,6 +131,30 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 ///（NSString 文本，成功/回环 OK 为 nil）——不用 NSError** 避免与
 /// installApplicationAtPath 的六态枚举语义混淆（本探针只钉层级）。
 + (NSString *)probeInstalldRoundTripWithError:(NSString **)error;
+
+/// 【N9 调试轮二分探针（纯诊断零行为变更）】L1/L2 判别查询：对
+/// com.wanwo.installd 用工程真实 bundle id（WanWoGuestProbeTestAppBundleID
+/// =com.wanwo.testapp）调 applicationInstalledWithBundleID:withReply:——
+/// 回环探针（probeInstalldRoundTripWithError:）实证连接层健康、失败钉死在
+/// install 载荷层之后，本查询用「guest 是否已在 daemon 侧注册」把载荷层
+/// 再二分：
+///   · reply=YES → **L2 实锤**：install 实际成功、死在装后通知
+///    （daemon 广播 applicationWasInstalled: LDEApplicationObject 给
+///     observer=nil 连接 + 宿主无 ResecureDecoder 白名单（appex-only，
+///     main.m:265）→ 解码失败 → 连接失效 → reply 丢失 → host 侧 xpcError。
+///     修复方向=通知层：给 install 包装连接配 observer/导出面，或扩白名单）。
+///   · reply=NO → **L1 实锤**：guest 从未被安装（fileport_makefd 在 uid=1
+///     的 installd 内行为异常 → ArchiveObject+fd 解码失败于 daemon →
+///     方法进入前连接失效。修复方向=fd 传输/解码层）。
+///   · 错误/超时/连接失败 → 连接层态（如实上报，不参与 L1/L2 判别）。
+/// 连接形态与 probeInstalldRoundTripWithError: 完全同款（独立临时连接、
+/// observer=nil、2s semaphore、remoteObjectProxyWithErrorHandler）；实现
+/// 共用 .m 内 static 查询函数（bundleId 参数化，不入 Swift 导出面——避开
+/// 导入器剪枝雷区，本探针方法选择器形状与已实证可导入的回环探针同构）。
+/// 返回值=报告行文本（PESmoke probe 直译输出，格式
+/// 「installd 查询 com.wanwo.testapp → YES/NO/错误：<原文>/超时」）；
+/// error 出参填失败浅因（NSString 文本，同回环探针语义）。
++ (NSString *)probeInstalldTestAppRoundTripWithError:(NSString **)error;
 
 @end
 

@@ -136,6 +136,19 @@ enum PESmokeService {
             let errorText = String(installdProbeError!)
             lines.append("installd 回环 error 出参: " + errorText)
         }
+        // N9 调试轮二分探针：判别查询（回环探针实证连接层健康后的载荷层
+        // 二分）——用工程真实 bundle id（com.wanwo.testapp，历轮
+        // build_and_run 目标工程）查 daemon 侧装载状态：YES=L2 实锤
+        //（install 实际成功、死在装后通知层）/ NO=L1 实锤（guest 从未
+        // 装上，修 fd 传输/解码层）。独立临时连接，语义见
+        // docs/gpl-compliance.md §N9「installd 装载状态判别探针」。
+        var testappProbeError: NSString? = nil
+        let testappRoundTrip = GuestRunSupport.probeInstalldTestAppRoundTripWithError(&testappProbeError)
+        lines.append(testappRoundTrip)
+        if testappProbeError != nil {
+            let testappErrorText = String(testappProbeError!)
+            lines.append("installd 查询 com.wanwo.testapp error 出参: " + testappErrorText)
+        }
         return lines.joined(separator: "\n")
     }
 
