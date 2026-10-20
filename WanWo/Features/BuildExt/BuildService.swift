@@ -628,7 +628,7 @@ final class BuildService: @unchecked Sendable {
         /// 不落盘——官方 0.10.3 容器形态同构）。
         let bundleID: String
         /// 【N9d 诊断增强】prepare 细目（a-e 步骤结构化诊断——BuildResult
-        /// 同款只增不改；失败时含失败点浅因，成功时含 S1/S2 签名自查结果）。
+        /// 同款只增不改；失败时含失败点浅因）。
         let detail: String
     }
 
@@ -659,13 +659,14 @@ final class BuildService: @unchecked Sendable {
     ///   b 宿主实际 bundle id（设备上可能为重签后缀形态）vs profile 解析
     ///     app-id 并列展示（候选①身份链错配直接证据）；
     ///   c 容器签名 ZSigner 回调如实透出（signFailedFiles 非空=N7c 二轮
-    ///     同族静默失败证据）+ 回调后立刻 S1 自查（checkCodeSignature——
-    ///     候选②判定点）；
-    ///   d token 追加 + 追加后 S2 自查（S1 真 S2 假=token 破坏签名——
-    ///     候选③判定点）；
+    ///     同族静默失败证据）；
+    ///   d token 追加；
     ///   e installApplication 经 GuestRunSupport 自有包装区分 reply(NO) vs
     ///     2s 超时 vs XPC 错误回调（vendored 版三态同显 NO）。
-    /// S1/S2 只记录不设门（本轮不改行为语义）；失败即停沿用既有失败点。
+    /// S1/S2 签名自查已回退（2026-10-20 真机双闪退实锤雷区——同进程
+    /// F_ADDFILESIGS→改文件→mmap = 内核 CS_KILL Invalid Page，见
+    /// docs/gpl-compliance.md §N9「S1/S2 回退」，禁再引入）。
+    /// 失败即停沿用既有失败点。
     static func prepareGuestRun(project: NXProject) -> GuestRunPreparation {
         let bundleID = project.projectConfig.bundleid ?? ""
         guard !bundleID.isEmpty else {
@@ -753,17 +754,14 @@ final class BuildService: @unchecked Sendable {
                 entitlementBits: "-",
                 bundleID: bundleID)
         }
-        // S1 自查（纯诊断不设门——主二进制签名无效即候选②实锤）
-        let s1 = GuestRunSupport.selfCheckCodeSignature(atPath: machoPath)
+        // （S1 签名自查已回退——2026-10-20 真机 CS_KILL 雷区：S1 的
+        //  F_ADDFILESIGS 让内核装载校验该文件签名后，同进程 macho_after_sign
+        //  修改文件，cd_hash mmap 触页即 Invalid Page 击杀本进程。禁再引入。）
         var cSeg = "[c 容器签名 OK"
         if signPartial {
             // signFailedFiles 非空=签名静默失败直接证据（N7c 二轮同族——
             // zsign.mm:121 对非空仍回 YES），如实透出。
             cSeg = "[c 容器签名 OK(err=" + signMessage + ")"
-        }
-        cSeg = cSeg + " | S1 自查=" + Self.boolText(s1)
-        if !s1 {
-            cSeg = cSeg + "（主二进制签名无效——候选②族：容器模式主二进制路径解析/身份错配）"
         }
         cSeg = cSeg + "]"
         segments.append(cSeg)
@@ -788,14 +786,8 @@ final class BuildService: @unchecked Sendable {
                 entitlementBits: bitsHex,
                 bundleID: bundleID)
         }
-        // S2 自查（纯诊断不设门——S1 真 S2 假=token 追加破坏签名，候选③）
-        let s2 = GuestRunSupport.selfCheckCodeSignature(atPath: machoPath)
-        var dSeg = "[d token OK | S2 自查=" + Self.boolText(s2)
-        if s1 && !s2 {
-            dSeg = dSeg + "（S1 真 S2 假=token 追加破坏签名——候选③）"
-        }
-        dSeg = dSeg + "]"
-        segments.append(dSeg)
+        // （S2 签名自查已回退——同上 CS_KILL 雷区，禁再引入。）
+        segments.append("[d token OK]")
 
         // ④ 安装（官方 Builder.swift:315 同义——经 GuestRunSupport 自有
         //    包装区分 reply(NO)/2s 超时/XPC 错误回调）——步骤 e
@@ -837,10 +829,6 @@ final class BuildService: @unchecked Sendable {
                                    entitlementBits: entitlementBits,
                                    bundleID: bundleID,
                                    detail: detail)
-    }
-
-    private static func boolText(_ value: Bool) -> String {
-        return value ? "true" : "false"
     }
 
     private static func installResultText(_ result: WanWoGuestInstallResult) -> String {

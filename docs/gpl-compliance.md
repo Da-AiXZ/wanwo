@@ -480,3 +480,24 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | `WanWo/Features/BuildExt/BuildTools.swift` 增段 | BuildAndRunTool：guest_run 事件 diagnostics 与成功输出带 prep.detail（prepare 失败路径经 prep.message 既有通道透传，零改动） |
 
 **行为语义不变声明**：签名方式/身份对齐/标准签名路径/补片/token 追加调用序零变化；S1/S2 纯记录不设门；vendored 树本轮零 diff。
+
+#### S1/S2 回退（CS_KILL 雷区）（2026-10-20）
+
+**结论**：N9d 诊断轮新增的 S1/S2 签名自查（`selfCheckCodeSignatureAtPath`，commit 0503e31）在真机触发内核 CS_KILL 双闪退，prepareGuestRun 内两处调用点**全部移除**，流程回到：补片→容器签名→token→install。**其余诊断（b 宿主 id vs profile app-id 并列 / c 容器签名 signFailedFiles 如实透出 / e install 六态枚举包装）全部保留**——它们是定位原始 prepare 失败的关键。
+
+**根因链（实锤）**：S1 的 `checkCodeSignature` 走 `F_ADDFILESIGS`（`F_ADDFILESIGS_RETURN`），让内核装载校验 guest 可执行的签名 → 同进程随后 `macho_after_sign`（token 追加）**修改该文件** → 后续 `cd_hash` mmap 触页 → 内核按已装载签名校验新页，判定 **Invalid Page** → CS 击杀**宿主进程自身**。即：同进程「F_ADDFILESIGS→改文件→mmap」是确定性死亡序列。
+
+**证据（两份 .ips 完全一致）**：
+
+- 故障栈：`cd_hash_of_executable_at_fd` ← `macho_after_sign_fd` ← `macho_after_sign` ← `+[GuestRunSupport appendEntitlementTokenAtPath:]` ← `prepareGuestRun`——死在 token 步（d 段），非 install 步；
+- termination：`CODESIGNING`「Invalid Page」；出错地址=mapped file+87696，恰为 guest 二进制字节数（EOF——追加 token 后触到的新尾页）；
+- 对照：上一轮（无 S1）同流程宿主全程存活；官方 0.10.3（无 S1）同样安全。2/2 复现于加入 S1 之后。
+
+**雷区登记（禁再犯）**：
+
+| 禁止形态 | 说明 |
+|---|---|
+| 对「F_ADDFILESIGS 后同进程还要修改的文件」调 checkCodeSignature | 内核签名装载不随文件修改失效——之后任何 mmap 触页即 Invalid Page 击杀本进程。token 追加（macho_after_sign）前后的自查均属此形态 |
+| 方法保留处置 | `GuestRunSupport.selfCheckCodeSignatureAtPath` 方法体保留（头注释加粗警告），仅作语义封装；prepareGuestRun 调用点零残留。新调用点引入前必须复核目标文件后续是否还会被同进程修改 |
+
+**本轮 diff 边界**：`BuildService.swift`（S1/S2 调用与细目片段移除、S1/S2 相关注释改为雷区注记、boolText 死代码清除）/ `GuestRunSupport.{h,m}`（方法头警告）/ 本文件本节。b/c/e 诊断、install 六态枚举包装、GuestRunService、BuildAndRunTool 零改动；vendored 树零 diff。

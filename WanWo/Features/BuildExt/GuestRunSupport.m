@@ -218,7 +218,11 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     return bits;
 }
 
-// ── 【N9d 诊断增强】签名自查 ──────────────────────────────────────────────
+// ── 【N9d 诊断增强→已回退 · CS_KILL 雷区】签名自查 ─────────────────────
+// ⚠️ **禁用于 F_ADDFILESIGS 后将被修改的文件**——同进程
+// F_ADDFILESIGS→改文件→mmap = 内核 CS_KILL Invalid Page（真机双闪退
+// 实证 2026-10-20；prepareGuestRun 内 S1/S2 调用点已全部移除——
+// 见 docs/gpl-compliance.md §N9「S1/S2 回退」）。方法保留仅作语义封装。
 
 + (BOOL)selfCheckCodeSignatureAtPath:(NSString *)path
 {

@@ -75,10 +75,16 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// 常量值）+ 官方 0.10.3 键（com.nyxian.pe.*，官方 NXProject.m:145-163）。
 + (uint64_t)entitlementBitsFromEntitlementsPlist:(nullable NSDictionary *)plist;
 
-/// 【N9d 诊断增强】签名自查（纯诊断，不设门）：对指定 macho 执行官方
-/// checkCodeSignature（LCMachOUtils.m:392-433——F_ADDFILESIGS_RETURN +
-/// F_CHECK_LV，内核同款校验语义）。返回 NO=主二进制无有效签名（候选②
-/// 判定点：容器模式 zsign 主二进制路径解析静默失败族）。
+/// 【N9d 诊断增强→已回退 · CS_KILL 雷区】签名自查（纯诊断，不设门）：
+/// 对指定 macho 执行官方 checkCodeSignature（LCMachOUtils.m:392-433——
+/// F_ADDFILESIGS_RETURN + F_CHECK_LV，内核同款校验语义）。
+/// ⚠️ **禁用于 F_ADDFILESIGS 后将被修改的文件**——同进程
+/// F_ADDFILESIGS→改文件→mmap = 内核 CS_KILL Invalid Page（真机双闪退
+/// 实证 2026-10-20，两份 .ips 同栈：cd_hash_of_executable_at_fd ←
+/// macho_after_sign ← appendEntitlementTokenAtPath ← prepareGuestRun；
+/// prepareGuestRun 内 S1/S2 调用点已全部移除——见 docs/gpl-compliance.md
+/// §N9「S1/S2 回退」）。方法保留仅作语义封装，新调用点引入前必须复核
+/// 该文件后续是否还会被同进程修改。
 /// LCMachOUtils.h:45 已声明该全局函数——直接 #import 消费，无需前置
 /// extern（LDEApplicationWorkspaceInternal.m:30 的前置声明先例属其编译
 /// 单元无该头的情况）。
