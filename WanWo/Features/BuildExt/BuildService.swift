@@ -627,6 +627,9 @@ final class BuildService: @unchecked Sendable {
         /// 查找三方同源；签名 identifier=宿主 id 属 zsign 容器模式覆写，
         /// 不落盘——官方 0.10.3 容器形态同构）。
         let bundleID: String
+        /// 【N9d 诊断增强】prepare 细目（a-e 步骤结构化诊断——BuildResult
+        /// 同款只增不改；失败时含失败点浅因，成功时含 S1/S2 签名自查结果）。
+        let detail: String
     }
 
     /// 官方 .run 签名编排等义（0.10.3 Builder.swift:292-357，semaphore 形态
@@ -642,19 +645,35 @@ final class BuildService: @unchecked Sendable {
     ///   ③ macho_after_sign 追加 NXTR token（entitlement=工程 Entitlements
     ///      .plist 位图映射——vendored NXEntitlementsConfig 无 entitlement
     ///      属性（§N4N5 适配删除），位图映射在 GuestRunSupport 万我层重建）；
-    ///   ④ LDEApplicationWorkspace installApplicationAtBundlePath（XPC→
-    ///      installd daemon，2s 超时=官方硬编码 LDEApplicationWorkspace.m:117）。
+    ///   ④ installApplication（N9d 起经 GuestRunSupport 自有包装——官方
+    ///      LDEApplicationWorkspace.installApplicationAtBundlePath 等义重写，
+    ///      XPC→installd daemon，2s 超时=官方硬编码 LDEApplicationWorkspace.m:117，
+    ///      返回枚举区分 reply(NO)/超时/XPC 错误回调）。
     /// 与标准签名路径的三点差异（防混淆）：不做 profile bundle id 对齐（容器
     /// 模式磁盘 Info.plist 保持工程 id）；不重打包 ipa（安装取 bundleURL 树）；
     /// 不清 zsign_cache.json（容器模式 zsign 不写缓存产物路径不同——实测
     /// 无残留；如有再收）。
+    /// 【N9d 诊断增强版】prepare 细目按 a-e 步骤结构化采集（纯诊断——
+    /// 签名方式/身份对齐/标准路径零变化，只把每步结果与浅因如实透出）：
+    ///   a 补片成功/失败；
+    ///   b 宿主实际 bundle id（设备上可能为重签后缀形态）vs profile 解析
+    ///     app-id 并列展示（候选①身份链错配直接证据）；
+    ///   c 容器签名 ZSigner 回调如实透出（signFailedFiles 非空=N7c 二轮
+    ///     同族静默失败证据）+ 回调后立刻 S1 自查（checkCodeSignature——
+    ///     候选②判定点）；
+    ///   d token 追加 + 追加后 S2 自查（S1 真 S2 假=token 破坏签名——
+    ///     候选③判定点）；
+    ///   e installApplication 经 GuestRunSupport 自有包装区分 reply(NO) vs
+    ///     2s 超时 vs XPC 错误回调（vendored 版三态同显 NO）。
+    /// S1/S2 只记录不设门（本轮不改行为语义）；失败即停沿用既有失败点。
     static func prepareGuestRun(project: NXProject) -> GuestRunPreparation {
         let bundleID = project.projectConfig.bundleid ?? ""
         guard !bundleID.isEmpty else {
             return GuestRunPreparation(ok: false,
                                        message: "guest 工程bundle id 缺失（Project.plist NXBundleIdentifier）",
                                        entitlementBits: "-",
-                                       bundleID: bundleID)
+                                       bundleID: bundleID,
+                                       detail: "prepare 细目：[b 未达——工程 bundle id 缺失]")
         }
         guard let p12 = CertificateStore.loadCertificateData(),
               let profile = CertificateStore.loadProfileData(),
@@ -662,33 +681,55 @@ final class BuildService: @unchecked Sendable {
             return GuestRunPreparation(ok: false,
                                        message: "未配置签名证书——guest 容器签名需要 p12+描述文件+密码（设置→签名证书）",
                                        entitlementBits: "-",
-                                       bundleID: bundleID)
+                                       bundleID: bundleID,
+                                       detail: "prepare 细目：[b 未达——签名证书未配置]")
         }
 
-        // ① 补片（官方 LCUtils.signAppBundleWithZSign 补片段等义）
+        var segments: [String] = []
+        let machoPath = project.machoURL.path
+
+        // ① 补片（官方 LCUtils.signAppBundleWithZSign 补片段等义）——步骤 a
         do {
             try GuestRunSupport.patchGuestExecutable(
-                atPath: project.machoURL.path,
+                atPath: machoPath,
                 bundleURL: project.bundleURL)
+            segments.append("[a 补片 OK]")
         } catch {
-            return GuestRunPreparation(ok: false,
-                                       message: "guest 可执行补片失败（MH_EXECUTE→MH_DYLIB/arm64e fixup）：" + String(describing: error),
-                                       entitlementBits: "-",
-                                       bundleID: bundleID)
+            segments.append("[a 补片 失败]")
+            return Self.guestPrepFailure(
+                segments: segments,
+                step: "a 补片",
+                reason: "guest 可执行补片失败（MH_EXECUTE→MH_DYLIB/arm64e fixup）：" + String(describing: error),
+                entitlementBits: "-",
+                bundleID: bundleID)
         }
 
-        // ② 容器模式 ZSign（官方 Builder.swift:301 signAppBundleWithZSign +
-        //    开关显式开/复位——N7c 预埋三态开关的本环启用点）
+        // 步骤 b：宿主实际 bundle id vs profile 解析 app-id 并列（候选①
+        // 直接证据——两身份体系错配时此处一目了然）。
+        let hostBundleID = Bundle.main.bundleIdentifier ?? "未知"
+        var profileAppID = "解析失败（Entitlements.application-identifier 不可得）"
+        if let parsed = Self.bundleIdFromProfile(profile) {
+            if parsed.isWildcard {
+                profileAppID = parsed.bundleId + "（通配）"
+            } else {
+                profileAppID = parsed.bundleId
+            }
+        }
+        segments.append("[b 宿主id=" + hostBundleID + " | profile app-id=" + profileAppID + "]")
+
+        // ② 容器模式 ZSign（官方 Builder.swift:301 同款 semaphore 形态）——步骤 c
         ZSigner.wanwo_setHostIdentityOverride(true)
         let semaphore = DispatchSemaphore(value: 0)
         var signOK = false
         var signMessage = ""
+        var signPartial = false
         _ = ZSigner.sign(withAppPath: project.bundleURL.path,
                          prov: profile, key: p12, pass: password,
                          completionHandler: { success, error in
             if success {
                 if let err = error, !err.localizedDescription.isEmpty {
                     signOK = true
+                    signPartial = true
                     signMessage = "签名完成，但部分文件签名失败（产物可能不可用）：" + err.localizedDescription
                 } else {
                     signOK = true
@@ -704,15 +745,30 @@ final class BuildService: @unchecked Sendable {
         // 签名完复位（run 路径专用——标准交付路径默认 NO 不受影响）
         ZSigner.wanwo_setHostIdentityOverride(false)
         guard signOK else {
-            return GuestRunPreparation(ok: false,
-                                       message: signMessage,
-                                       entitlementBits: "-",
-                                       bundleID: bundleID)
+            segments.append("[c 容器签名 失败 err=" + signMessage + "]")
+            return Self.guestPrepFailure(
+                segments: segments,
+                step: "c 容器签名",
+                reason: signMessage,
+                entitlementBits: "-",
+                bundleID: bundleID)
         }
+        // S1 自查（纯诊断不设门——主二进制签名无效即候选②实锤）
+        let s1 = GuestRunSupport.selfCheckCodeSignature(atPath: machoPath)
+        var cSeg = "[c 容器签名 OK"
+        if signPartial {
+            // signFailedFiles 非空=签名静默失败直接证据（N7c 二轮同族——
+            // zsign.mm:121 对非空仍回 YES），如实透出。
+            cSeg = "[c 容器签名 OK(err=" + signMessage + ")"
+        }
+        cSeg = cSeg + " | S1 自查=" + Self.boolText(s1)
+        if !s1 {
+            cSeg = cSeg + "（主二进制签名无效——候选②族：容器模式主二进制路径解析/身份错配）"
+        }
+        cSeg = cSeg + "]"
+        segments.append(cSeg)
 
-        // ③ NXTR token（官方 Builder.swift:304-307——signMachOWithNyxian
-        //    entitlements gate 之后、install 之前；万我不经 gate 直调 trust.h，
-        //    vendored NXBuilder 的 .run 分支永不编译——WANWO_BUILD_RUN 仍关）
+        // ③ NXTR token（官方 Builder.swift:304-307 同序）——步骤 d
         // （NSMutableDictionary → [AnyHashable: Any] 直标不可转——桥接经
         //  NSDictionary 条件转换，run 39368919449 实证）
         let plistDict: NSDictionary = project.entitlementsConfig.dictionary
@@ -721,34 +777,102 @@ final class BuildService: @unchecked Sendable {
         let bitsHex = "0x" + String(bits, radix: 16)
         do {
             try GuestRunSupport.appendEntitlementToken(
-                atPath: project.machoURL.path,
+                atPath: machoPath,
                 entitlement: PEEntitlement(rawValue: bits))
         } catch {
-            return GuestRunPreparation(ok: false,
-                                       message: "NXTR token 追加失败：" + String(describing: error),
-                                       entitlementBits: bitsHex,
-                                       bundleID: bundleID)
+            segments.append("[d token 失败]")
+            return Self.guestPrepFailure(
+                segments: segments,
+                step: "d token 追加",
+                reason: "NXTR token 追加失败：" + String(describing: error),
+                entitlementBits: bitsHex,
+                bundleID: bundleID)
+        }
+        // S2 自查（纯诊断不设门——S1 真 S2 假=token 追加破坏签名，候选③）
+        let s2 = GuestRunSupport.selfCheckCodeSignature(atPath: machoPath)
+        var dSeg = "[d token OK | S2 自查=" + Self.boolText(s2)
+        if s1 && !s2 {
+            dSeg = dSeg + "（S1 真 S2 假=token 追加破坏签名——候选③）"
+        }
+        dSeg = dSeg + "]"
+        segments.append(dSeg)
+
+        // ④ 安装（官方 Builder.swift:315 同义——经 GuestRunSupport 自有
+        //    包装区分 reply(NO)/2s 超时/XPC 错误回调）——步骤 e
+        var installError: NSError?
+        let installResult = GuestRunSupport.installApplication(
+            atPath: project.bundleURL.path,
+            error: &installError)
+        if installResult != .installed {
+            segments.append("[e install=" + Self.installResultText(installResult) + "]")
+            return Self.guestPrepFailure(
+                segments: segments,
+                step: "e installApplication",
+                reason: Self.installShallowCause(installResult, installError),
+                entitlementBits: bitsHex,
+                bundleID: bundleID)
         }
 
-        // ④ 安装（官方 Builder.swift:315——XPC→installd，2s 超时官方硬编码）
-        guard let workspace = LDEApplicationWorkspace.shared() else {
-            return GuestRunPreparation(ok: false,
-                                       message: "LDEApplicationWorkspace 不可用（installd daemon 未起？先 pe_smoke mode=status）",
-                                       entitlementBits: bitsHex,
-                                       bundleID: bundleID)
-        }
-        let installed = workspace.installApplication(atBundlePath: project.bundleURL.path)
-        guard installed else {
-            return GuestRunPreparation(ok: false,
-                                       message: "installApplication 失败（installd 信任校验/解压/XPC 超时——2s 官方超时形态；N7 签名四要素与 token 是通行证，可核对 pe_smoke probe）",
-                                       entitlementBits: bitsHex,
-                                       bundleID: bundleID)
-        }
-
+        segments.append("[e install=installed]")
+        let detail = "prepare 细目：" + segments.joined(separator: " ")
         return GuestRunPreparation(ok: true,
                                    message: signMessage + "；token " + bitsHex + "；已安装至容器（installd）",
                                    entitlementBits: bitsHex,
-                                   bundleID: bundleID)
+                                   bundleID: bundleID,
+                                   detail: detail)
+    }
+
+    // MARK: N9d · prepare 细目组装辅助（平铺——swiftc 雷区纪律：无嵌套函数）
+
+    /// prepare 失败汇总：细目（已完成步骤 + 失败步骤标记）+ 失败点浅因。
+    private static func guestPrepFailure(segments: [String],
+                                         step: String,
+                                         reason: String,
+                                         entitlementBits: String,
+                                         bundleID: String) -> GuestRunPreparation {
+        var detail = "prepare 细目：" + segments.joined(separator: " ")
+        detail = detail + "；失败点：" + step + "（浅因：" + reason + "）"
+        return GuestRunPreparation(ok: false,
+                                   message: detail,
+                                   entitlementBits: entitlementBits,
+                                   bundleID: bundleID,
+                                   detail: detail)
+    }
+
+    private static func boolText(_ value: Bool) -> String {
+        return value ? "true" : "false"
+    }
+
+    private static func installResultText(_ result: WanWoGuestInstallResult) -> String {
+        switch result {
+        case .installed: return "installed"
+        case .rejected: return "rejected"
+        case .timeout: return "timeout"
+        case .xpcError: return "xpcError"
+        case .noConnection: return "noConnection"
+        case .invalidInput: return "invalidInput"
+        @unknown default: return "unknown(" + String(result.rawValue) + ")"
+        }
+    }
+
+    /// install 失败浅因（候选指向：rejected→①身份链错配/解压；timeout→④
+    /// XPC 2s 超时；其余按包装错误文案如实透出）。
+    private static func installShallowCause(_ result: WanWoGuestInstallResult,
+                                            _ error: NSError?) -> String {
+        switch result {
+        case .rejected:
+            return "installd 明确回绝（reply=NO——信任校验/解压失败，非超时；候选①身份链错配高概率：对照 b 段宿主 id 与 profile app-id）"
+        case .timeout:
+            return "2s XPC 超时（installd 无响应——daemon 未起/忙/解压超 2s；候选④）"
+        case .xpcError:
+            return "XPC 错误回调：" + (error?.localizedDescription ?? "未知")
+        case .noConnection:
+            return "XPC 连接不可达（endpoint/proxy 缺失——installd daemon 未起？pe_smoke mode=status）"
+        case .invalidInput:
+            return "安装入参/archive 构造失败：" + (error?.localizedDescription ?? "未知")
+        default:
+            return error?.localizedDescription ?? "未知安装失败"
+        }
     }
 
     /// 【N9b】run 在途时同样拒绝（run 期间禁新 build——build_and_run 全

@@ -9,6 +9,9 @@
 #import "GuestRunSupport.h"
 #import <LindChain/LiveContainer/LCMachOUtils.h>
 #import <LindChain/ProcEnvironment/Surface/trust.h>
+#import <LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.h>
+#import <LindChain/ProcEnvironment/Object/ArchiveObject.h>
+#import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.h>
 
 NSErrorDomain const WanWoGuestRunErrorDomain = @"com.wanwo.guestrun";
 
@@ -213,6 +216,125 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     }
 
     return bits;
+}
+
+// ── 【N9d 诊断增强】签名自查 ──────────────────────────────────────────────
+
++ (BOOL)selfCheckCodeSignatureAtPath:(NSString *)path
+{
+    if (path.length == 0) {
+        return NO;
+    }
+    // LCMachOUtils.m:392-433 全局函数（LCMachOUtils.h:45 已声明——本编译
+    // 单元已 #import 该头，无需 LDEApplicationWorkspaceInternal.m:30 形态
+    // 的前置 extern）。readOnly=true 解析（与官方消费者同参），内核同款
+    // F_ADDFILESIGS_RETURN + F_CHECK_LV 校验语义。
+    return checkCodeSignature(path.UTF8String) ? YES : NO;
+}
+
+// ── 【N9d 诊断增强】installApplication 包装 ───────────────────────────────
+// vendored LDEApplicationWorkspace.m:91-119 逐行对照等义重写（万我层消费
+// 公开 API，vendored 版未动）。
+
++ (WanWoGuestInstallResult)installApplicationAtPath:(NSString *)bundlePath
+                                              error:(NSError **)error
+{
+    if (bundlePath.length == 0) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:6
+                                     userInfo:@{ NSLocalizedDescriptionKey: @"install 入参缺失（bundle path 为空）" }];
+        }
+        return WanWoGuestInstallInvalidInput;
+    }
+
+    // connect（官方 connect 段等义：PEBootstrapRegistry endpoint → XPC 连接；
+    // 差异：连接不驻留（诊断包装每次新建——官方驻留 self.connection 复用）、
+    // observer=nil（本包装不消费 applicationWasInstalled 回调——导出面给
+    // NSObject 空协议，daemon 侧单向回调派发到 nil 导出对象无害）。
+    NSXPCConnection *connection = nil;
+    PELaunchServiceRegistry *registry = [PELaunchServiceRegistry shared];
+    if (registry != nil) {
+        connection = [registry connectToService:@"com.wanwo.installd"
+                                       protocol:@protocol(LDEApplicationWorkspaceProxyProtocol)
+                                       observer:nil
+                               observerProtocol:@protocol(NSObject)];
+    }
+    if (connection == nil) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:7
+                                     userInfo:@{ NSLocalizedDescriptionKey: @"XPC 连接不可达（PEBootstrapRegistry endpoint 缺失——installd daemon 未起？pe_smoke mode=status）" }];
+        }
+        return WanWoGuestInstallNoConnection;
+    }
+
+    ArchiveObject *archiveObject = [ArchiveObject objectForDirectoryAtPath:bundlePath];
+    if (archiveObject == nil) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:8
+                                     userInfo:@{ NSLocalizedDescriptionKey: @"ArchiveObject 构造失败（目录不可 zip——bundle 路径不存在/不可读？）" }];
+        }
+        return WanWoGuestInstallInvalidInput;
+    }
+
+    __block BOOL replied = NO;
+    __block BOOL replyResult = NO;
+    __block NSError *xpcError = nil;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+    id proxy = [connection remoteObjectProxyWithErrorHandler:^(NSError *err) {
+        /* semaphores remember the signal, it doesnt have to catch them in time（官方注释同款） */
+        xpcError = err;
+        dispatch_semaphore_signal(sema);
+    }];
+
+    if (proxy == NULL)
+    {
+        /* semaphores remember the signal, it doesnt have to catch them in time（官方同款分支） */
+        dispatch_semaphore_signal(sema);
+    }
+    else
+    {
+        [proxy installApplicationWithArchiveObject:archiveObject withReply:^(BOOL replyValue) {
+            replied = YES;
+            replyResult = replyValue;
+            dispatch_semaphore_signal(sema);
+        }];
+    }
+
+    // 2s 超时官方硬编码（vendored :117 同值）。
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)));
+
+    // 与 vendored 版的关键差异：回复/超时/错误回调三态可分（vendored 版
+    // 2s 返回后统一 return result——reply(NO) 与超时同显 NO）。
+    WanWoGuestInstallResult result;
+    NSString *detail = nil;
+    if (replied) {
+        if (replyResult) {
+            result = WanWoGuestInstallInstalled;
+        } else {
+            result = WanWoGuestInstallRejected;
+            detail = @"installd 回复拒装（reply=NO——信任校验/解压失败，非超时；对照细目 b 段宿主 id/profile app-id 判候选①身份链错配）";
+        }
+    } else if (xpcError != nil) {
+        result = WanWoGuestInstallXPCError;
+        detail = [NSString stringWithFormat:@"XPC 错误回调（%@）", xpcError.localizedDescription];
+    } else if (proxy == NULL) {
+        result = WanWoGuestInstallNoConnection;
+        detail = @"remoteObjectProxy 创建失败";
+    } else {
+        result = WanWoGuestInstallTimeout;
+        detail = @"2s XPC 超时（无 reply 无错误回调——installd 无响应：daemon 未起/忙/解压超 2s）";
+    }
+
+    if (result != WanWoGuestInstallInstalled && error != NULL) {
+        *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                     code:9
+                                 userInfo:@{ NSLocalizedDescriptionKey: detail ?: @"installApplication 失败" }];
+    }
+    return result;
 }
 
 @end

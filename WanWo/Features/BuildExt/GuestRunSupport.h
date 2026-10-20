@@ -36,6 +36,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSErrorDomain const WanWoGuestRunErrorDomain;
 
+/// 【N9d 诊断增强】installApplication 包装结果（vendored 版 BOOL 无法区分
+/// reply(NO)/2s 超时/XPC 错误回调——诊断轮核心区分点）。
+typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
+    WanWoGuestInstallInstalled    = 0,  ///< installd 回复 YES
+    WanWoGuestInstallRejected     = 1,  ///< installd 回复 NO（信任校验/解压失败，非超时）
+    WanWoGuestInstallTimeout      = 2,  ///< 2s semaphore 超时（无 reply 无错误回调）
+    WanWoGuestInstallXPCError     = 3,  ///< remoteObjectProxyWithErrorHandler 触发（无 reply）
+    WanWoGuestInstallNoConnection = 4,  ///< registry/endpoint/proxy 不可达
+    WanWoGuestInstallInvalidInput = 5,  ///< 入参缺失 / ArchiveObject 构造失败
+};
+
 @interface GuestRunSupport : NSObject
 
 /// 官方 LCUtils.signAppBundleWithZSign 补片段等义（LCUtils.m:57-100）：
@@ -63,6 +74,30 @@ FOUNDATION_EXPORT NSErrorDomain const WanWoGuestRunErrorDomain;
 ///（com.wanwo.build.*，Vendor/nyxian/LindChain/Utils/entitlement.c:35-71
 /// 常量值）+ 官方 0.10.3 键（com.nyxian.pe.*，官方 NXProject.m:145-163）。
 + (uint64_t)entitlementBitsFromEntitlementsPlist:(nullable NSDictionary *)plist;
+
+/// 【N9d 诊断增强】签名自查（纯诊断，不设门）：对指定 macho 执行官方
+/// checkCodeSignature（LCMachOUtils.m:392-433——F_ADDFILESIGS_RETURN +
+/// F_CHECK_LV，内核同款校验语义）。返回 NO=主二进制无有效签名（候选②
+/// 判定点：容器模式 zsign 主二进制路径解析静默失败族）。
+/// LCMachOUtils.h:45 已声明该全局函数——直接 #import 消费，无需前置
+/// extern（LDEApplicationWorkspaceInternal.m:30 的前置声明先例属其编译
+/// 单元无该头的情况）。
++ (BOOL)selfCheckCodeSignatureAtPath:(NSString *)path;
+
+/// 【N9d 诊断增强】installApplication 诊断包装（万我层对公开 API 的消费，
+/// 非 vendored 改动）：照 vendored LDEApplicationWorkspace
+/// installApplicationAtBundlePath 官方形态等义重写（PELaunchServiceRegistry
+/// connectToService + ArchiveObject objectForDirectoryAtPath +
+/// remoteObjectProxyWithErrorHandler + 2s semaphore——vendored 版
+/// WanWoLiveProcess/LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.m
+/// :91-119 逐行对照；差异仅三点：①连接不驻留（诊断包装每次新建——官方
+/// 驻留 self.connection）②observer 传 nil（本包装不消费
+/// applicationWasInstalled 回调）③返回枚举区分 installed/rejected/timeout/
+/// xpcError/noConnection/invalidInput——vendored 版 2s 返回后统一
+/// return result 无法区分 reply(NO) 与超时）。
+/// 失败时 error 恒填浅因文案（成功为 nil）。
++ (WanWoGuestInstallResult)installApplicationAtPath:(NSString *)bundlePath
+                                              error:(NSError **)error;
 
 @end
 

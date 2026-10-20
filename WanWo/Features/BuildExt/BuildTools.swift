@@ -792,6 +792,14 @@ struct BuildAndRunTool: AgentTool {
         }
 
         // ④ guest_run 事件（modelVisible——退出码/失败原因跨回合可读）
+        // 【N9d】事件 diagnostics 带 prepare 细目（a-e 结构化诊断——成功
+        // 路径同样透出，S1/S2 自查结果跨回合可读；prepare 失败路径的
+        // diagnostics=prep.message 已含细目，见 ② 段）。
+        var runDiagnostics = prep.detail
+        if !runDiagnostics.isEmpty {
+            runDiagnostics = runDiagnostics + "；"
+        }
+        runDiagnostics = runDiagnostics + outcome.message
         _ = try? await writer.append(.extensionEvent(
             kind: RunEvents.eventKind,
             payload: .object([
@@ -803,7 +811,7 @@ struct BuildAndRunTool: AgentTool {
                     signal: outcome.signal, decoded: outcome.exitRaw >= 0,
                     timedOut: outcome.timedOut)),
                 "runLog": .string(outcome.runLogPath),
-                "diagnostics": .string(String(outcome.message.prefix(2000))),
+                "diagnostics": .string(String(runDiagnostics.prefix(2000))),
             ])))
 
         var exitLine = ""
@@ -822,7 +830,8 @@ struct BuildAndRunTool: AgentTool {
         if outcome.ok {
             return .success("""
                 GUEST RUN OK（\(name)）\(exitLine)
-                \(prep.message)\(tailLine)
+                \(prep.message)
+                \(prep.detail)\(tailLine)
                 run log: \(outcome.runLogPath)\(guestHint)
                 ——— 依据 stdout/退出码修复源码后重跑 build_and_run 即闭环。
                 """)

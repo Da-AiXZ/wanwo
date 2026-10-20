@@ -456,3 +456,27 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 - macho_after_sign 依赖 ksurface_kinit（N8 起随万我启动 constructor 在位）+ installd/containerd 双 daemon 活——prepareGuestRun 失败文案已引导 pe_smoke 排查。
 - guest UI app 跑在 appex 内存限额内——hello-world 无虞。
 - attentionWindow 12 的 token 涨幅——真机观察（S21 挂起项承载后续研究）。
+
+### N9d · 诊断增强（2026-10-20，真机 4 连失败后的纯诊断轮——零 vendored 改动、零行为语义变更）
+
+**动机**：N9d 真机验收 4 次尝试（TestApp×3 + 全新 N9Probe×1）确定性失败于 prepare 段 installApplication，原错误文案把全部子因混成一句（「installd 信任校验/解压/XPC 超时——2s 官方超时形态」）无法区分。已排除：编译（成功）、XPC 传输（probe 三往返 VERIFIED）、daemon（双活 pid 稳定）、磁盘（20.6G 空闲）、缓存污染（新工程同样失败）、证书链（build_ipa sign=true 成功——签名完成+bundle id 对齐非通配 profile）。剩余候选：①容器模式身份链错配（guest 签名 identifier=宿主 id——设备上宿主被 iLoader 重签 id 带 team 后缀；嵌入 entitlements 却来自用户购买 profile 的 app-id——两身份体系错配→内核校验拒）②容器态 zsign 主二进制路径解析静默失败（N7c 第二轮同族：identifier 覆写激活时 signFailedFiles 含怪路径、主二进制未签上、zsign 仍回 YES）③token 追加破坏签名 ④XPC 2s 超时。
+
+**诊断点清单（按执行顺序，全部万我层；S1/S2 只记录不设门，失败即停沿用既有失败点）**：
+
+| 步骤 | 采集点 | 候选判定 |
+|---|---|---|
+| a 补片 | 成功/失败（既有） | — |
+| b 身份对齐 | 宿主实际 bundle id（Bundle.main.bundleIdentifier——设备上可能为重签后缀形态）vs profile 解析 app-id（BuildService.bundleIdFromProfile 现成）并列展示 | ①直接证据 |
+| c 容器签名 | ZSigner 回调 success/error 如实透出（signFailedFiles 非空=静默失败直接证据——zsign.mm:121 非空仍回 YES）；回调后立刻 S1=checkCodeSignature(guest 可执行) | ②判定点 |
+| d token 追加 | 成功/失败；追加后 S2=checkCodeSignature | ③判定点（S1 真 S2 假=token 破坏签名） |
+| e installApplication | 万我层自有包装区分 installed/rejected/timeout/xpcError/noConnection/invalidInput | ④判定点（timeout）/①倾向（rejected+对照 b 段） |
+
+**万我层新件/增段（非官方代码）**：
+
+| 件 | 说明 |
+|---|---|
+| `WanWo/Features/BuildExt/GuestRunSupport.{h,m}` 增段 | ①`selfCheckCodeSignatureAtPath:` = 官方 checkCodeSignature（LCMachOUtils.m:392-433——F_ADDFILESIGS_RETURN+F_CHECK_LV）直接消费（LCMachOUtils.h:45 已声明，头已在 N9a 引入——无需 LDEApplicationWorkspaceInternal.m:30 形态前置 extern）；②`installApplicationAtPath:error:` + `WanWoGuestInstallResult` 枚举 = vendored LDEApplicationWorkspace.installApplicationAtBundlePath（WanWoLiveProcess :91-119）官方形态**等义重写**（PELaunchServiceRegistry connectToService + ArchiveObject objectForDirectoryAtPath + remoteObjectProxyWithErrorHandler + 2s semaphore 官方同值——万我层对公开 API 的消费非 vendored 改动）。与 vendored 版三点差异：连接不驻留（诊断包装每次新建）/observer 传 nil（不消费 applicationWasInstalled 回调，导出面给 NSObject 空协议）/返回枚举区分三态（vendored 版 2s 返回后统一 return result 无法区分 reply(NO) 与超时） |
+| `WanWo/Features/BuildExt/BuildService.swift` 增段 | GuestRunPreparation 增 `detail` 字段（BuildResult 同款只增不改）；prepareGuestRun 按 a-e 顺序采集拼接 `prepare 细目：[a 补片 OK] [b 宿主id=… \| profile app-id=…] [c 容器签名 OK/err=… \| S1 自查=…] [d token OK \| S2 自查=…] [e install=…]`——每失败步骤附浅因，失败即停（与既有 prepare 失败语义一致）；失败 message=细目+失败点浅因 |
+| `WanWo/Features/BuildExt/BuildTools.swift` 增段 | BuildAndRunTool：guest_run 事件 diagnostics 与成功输出带 prep.detail（prepare 失败路径经 prep.message 既有通道透传，零改动） |
+
+**行为语义不变声明**：签名方式/身份对齐/标准签名路径/补片/token 追加调用序零变化；S1/S2 纯记录不设门；vendored 树本轮零 diff。
