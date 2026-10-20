@@ -125,6 +125,33 @@ final class GuestRunService: @unchecked Sendable {
         return note
     }
 
+    /// 【N10c】utility 终端路线的进程登记（stop_build 接缝）。utility 的
+    /// run 门不长期持有（官方 Builder.swift:367-370 开窗即返回），stop_build
+    /// 接线以活跃进程登记为准（BuildAndRunTool 在终端开窗成功后登记）。
+    /// 终端窗口关闭=进程 terminate（官方 closeWindow 同款——vendored
+    /// NXWindowSessionTerminal.m:203-214 官方原样）。
+    func registerUtilityProcess(_ process: PEProcess, utilityPath: String) {
+        lock.lock()
+        activeProcess = process
+        activeBundleID = (utilityPath as NSString).lastPathComponent
+        lock.unlock()
+    }
+
+    /// 【N10c】utility 进程注销（BuildAndRunTool 挂的 exitingCallback 包装
+    /// 在官方回调之后调用——进程退出即清登记，stop_build 不再打僵尸进程）。
+    func unregisterUtilityProcess() {
+        lock.lock()
+        activeProcess = nil
+        activeBundleID = ""
+        lock.unlock()
+    }
+
+    /// 是否有活跃 guest 进程登记（app run 门路径 / utility 终端路径通用）。
+    var hasActiveRegisteredProcess: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return activeProcess != nil
+    }
+
     /// 执行一次 guest 拉起与收尾（同步阻塞——调用方须在专用队列上跑，
     /// 本方法内部 semaphore/availableData 均阻塞当前线程；工具层经
     /// withCheckedContinuation+专用 DispatchQueue 包装）。
@@ -143,6 +170,18 @@ final class GuestRunService: @unchecked Sendable {
             return Self.makeFailure(from: emptyOutcome,
                                     message: "PEProcessManager 不可用（宿主运行面未初始化——App 启动链异常？）")
         }
+
+        // ── N10b：窗口宿主激活（管道+窗口双形态）────────────────────────
+        // 官方 Builder.swift:321-349 .run app 段同形态：FDMapObject 管道照旧
+        // + 窗口会话叠加——窗口不是万我层另开，而是 vendored PEProcess（零
+        // diff）scene:didCompleteUpdateWithContext:（PEProcess.m:243-267）在
+        // guest FBScene 到达时 dispatch_once 自动 NXWindowSessionApplication
+        // →openWindowWithSession（进程退出自动关窗 :286-294）。本调用只保证
+        // NXWindowServer 单例先于 spawn 以真实 scene 初始化（dispatch_once
+        // 单例：若先经 shared 无 scene 形态懒创建，windowScene 恒 nil →
+        // session openWindow 恒败——N10 方案 §三 1 时序语义；GuestWindowBridge
+        // 头注释为双 UIWindow 设计说明全文）。
+        GuestWindowBridge.ensureActivatedSync()
 
         // ── 管道编排（官方 Builder.swift:322-346 逐行对照）────────────
         let inPipe = Pipe()

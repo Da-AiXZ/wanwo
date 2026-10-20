@@ -196,6 +196,30 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// error 出参填失败浅因（NSString 文本，同回环探针语义）。
 + (NSString *)probeInstalldTestAppRoundTripWithError:(NSString **)error;
 
+/// 【N10c · utility 签名编排薄壳 ①】官方 LCUtils.signMachOAtURL 补片段等义
+///（0.10.3 LCUtils.m:102-131 单 macho 形态——LCParseMachO 回调内 cputype 门
+/// + LCPatchExecSlice(path, header, YES)；utility 无 .app bundle，故无
+/// patchGuestExecutableAtPath:bundleURL: 形态的
+/// LCPatchAppBundleFixupARM64eSlice 段）。官方 .run utility 签名段
+///（Builder.swift:358-364）首步即此补片（signBinaryAtPath→signMachOAtURL）。
+/// 失败返回 NO 并填 error（文案与 app 形态同源）。
++ (BOOL)patchGuestExecutableOnlyAtPath:(NSString *)machoPath
+                                 error:(NSError **)error;
+
+/// 【N10c · utility 签名编排薄壳 ②】官方 LCUtils.signMachOAtURL 签名段等义
+///（LCUtils.m:126-130——ZSigner.signMachOAtPath + prov=宿主 embedded
+/// profile + key/pass=用户导入 p12+密码（官方同构：LCUtils
+/// certificateData/certificatePassword 同为用户导入形态）；单 macho 无
+/// bundle 身份覆写面，wanwo_setHostIdentityOverride 不参与）。选择器形状
+/// 与已实证可导入的 patchGuestExecutableAtPath 同构（动词+宾语+AtPath+
+/// error——ZSigner.signMachOAtPath 直调的 Swift 导入名不可静态确定，
+/// 导入器剪枝雷区纪律）。
++ (BOOL)signUtilityMachOAtPath:(NSString *)machoPath
+                           prov:(NSData *)prov
+                            key:(NSData *)key
+                           pass:(NSString *)pass
+                          error:(NSError **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

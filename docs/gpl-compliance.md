@@ -596,3 +596,62 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 超时语义细化 | guest 跑满 timeout 被 terminate 的结果 message 标注「guest 存活至超时（进程未自行退出）——GUI 应用属预期形态；CLI 应用应自行退出」——区分「拉起后存活」（GUI 应用常态终点）与「秒退」（非超时路径）两种形态，N9 验收判读关键 |
 
 **边界**：prepareGuestRun / spawn 逻辑（PEProcessManager.spawnProcess 同参）/ 退出码捕获（exitingCallback + wait4 解码）零改动；交付路线（signAndRepackage）零改动；**vendored 树本轮零 diff**。官方对照面不变（0.10.3 Builder.swift:321-349 + PEProcess.m:269-284）——本节纯万我工具层编排自由度（结果文本组装与宿主侧落盘路径，官方无对应面）。
+
+## N10、窗口托管与终端（2026-10-20 晚，方案 analysis/n10-window-terminal-plan.md，三项拍板全落锤；前任施工中断，本轮接手核验+补完+修复一批）
+
+### SwiftTerm 引入（拍板项 1）与 Terminal.swift 落位
+
+| 项 | 内容 |
+|---|---|
+| SwiftTerm 1.13.0 SPM | project.yml packages 段：`SwiftTerm` url=github.com/migueldeicaza/SwiftTerm（官方 0.10.3 Package.resolved 同版本同源，revision 8e7a1e1），`exactVersion: "1.13.0"` 锁版本防漂移；target dependencies 引用（TerminalViewObjC 底座） |
+| Terminal.swift 落位 | `WanWo/Features/GuestWindow/Terminal.swift`（万我树内副本，**非 vendored 路径**——vendored 树零 diff）。官方 0.10.3 `Nyxian/UI/UIInit/Terminal.swift`（147 行）逐行比对复核：除下列三处适配外逐行一致。**适配 1**：`currentTheme`（官方 UIInit.swift 全局 LDETheme，属官方 UI 层——万我未落位）引用整段移除，直取 `??` 系统回退值（.secondarySystemBackground / gibDynamicColor(light: .label, dark:)）；**适配 2**：gibDynamicColor（官方 CodeEditor+Theme.swift:84-98）语义等义内联为文件私有副本（dynamicProvider 明暗双轨同源）；**适配 3**：handleThemeChange 保留原结构（uiColorChangeNotif 通知在万我不发生），内容改系统回退重涂 |
+
+### WANWO_BUILD_UI 宏解锁面（与任务书三处守卫逐处核验结论）
+
+| 守卫段 | 处置 | 依据 |
+|---|---|---|
+| vendored NXWindowSessionTerminal.m 全单元（:36-299） | **解锁**（GCC_PREPROCESSOR_DEFINITIONS 加 WANWO_BUILD_UI=1） | 解封后引用符号面逐核闭合：TerminalViewObjC/TerminalViewDelegateObjC 经 `#import <WanWo-Swift.h>` 从万我 Swift 面（GuestWindow/Terminal.swift）供入；ksurface tty/FDMapObject/PEProcessManager/LDEApplicationWorkspace 均在编译面（N8 落位+方法验证） |
+| NXBuilder.swift:365-407（buildProjectWithArgumentUI） | **维持守卫**（Swift 面不定义宏——OTHER_SWIFT_FLAGS 刻意不加） | 段内引用 XCButton/UIDebugViewController/share/NXDocumentManager/UIViewController 导航栏 UI 全套——grep 实证 XCButton/UIDebugViewController/NXDocumentManager/share 仅存在于两守卫段自身，万我编译面无此类（任务书条款：引用缺失 UI 类→如实报告禁硬适配）。万我走工具化路径（BuildAndRunTool），不消费此段 |
+| Project+Debug.swift:245-465 | **维持守卫**（同上） | 同理（官方 debug UI 段，引用官方 UI 层） |
+
+即：**宏为单面定义**（仅 ObjC GCC_PREPROCESSOR_DEFINITIONS）——与任务书「双面定义」字面不同，实态为准并在此登记理由：Swift 面开宏即编译失败（缺失符号），单面定义是唯一可编译形态，语义与任务书意图（解锁①③、核验②如实报告）一致。
+
+### vendored diff 总账（本轮逐行复核，与官方 0.10.3 diff 实证）
+
+唯一 vendored 改动文件仍为 NXWindowSessionTerminal.m（N8 已登记，本轮**零新增 diff**）：
+
+1. 行 26-37：官方 `#import <emexDE-Swift.h>` → 万我适配注释块 + `#import <Foundation/Foundation.h>`（守卫关闭态空编译单元保底）+ `#if defined(WANWO_BUILD_UI) && WANWO_BUILD_UI` + `#import <WanWo-Swift.h>`（emexDE→万我 Swift 桥接名适配，N8 惯例）；
+2. 文件尾：`#endif /* WANWO_BUILD_UI */`。
+
+其余 WindowServer 全家（NXWindowServer.m 995 行/NXWindow/NXWindowSession/NXWindowSessionApplication）逐字节官方原样（本轮 git status Vendor/ 零未提交改动实证）。
+
+### 双 UIWindow 宿主设计（拍板项 2 方案 A）与自动开窗（拍板项 3）
+
+- **GuestWindowBridge.h/.m（万我自有薄壳，非官方代码）**：官方工厂 `sharedWithWindowScene:`/`openWindowWithSession:` 的 Swift 导入名不可静态确定（导入器剪枝雷区纪律——GuestRunSupport.h 同款），跨语言调用收拢薄壳固定形态。`ensureActivated`（主线程幂等）：NXWindowServer 以 foregroundActive UIWindowScene 初始化为**同一 scene 的第二个 UIWindow**（与 SwiftUI 主窗口并存；官方单窗口桌面形态→万我双窗口，零 vendored）+ 首次 makeKeyAndVisible（官方 App 启动同款单次语义，防手势重复叠加）；`showGuestOverlay`/`hideGuestOverlay`（呈现/隐藏切换，hide 归还 key 给主窗口）；`openUtilityTerminalWithPath:processOut:noteOut:`（N10c 终端开窗）。
+- **触摸穿透**：无 guest 窗口时 NXWindowLayerView hitTest 对自身返回 nil（NXWindowServer.m:31-37 官方原样）——主界面照常可点。
+- **键窗语义**：makeKeyAndVisible 后 NXWindowServer 持 key（终端 becomeFirstResponder 需 key window 弹键盘）——双窗口 scene/keyWindow 形态为 N10d 真机验收重点。
+- **app 路线自动开窗**：vendored PEProcess（零 diff）`scene:didCompleteUpdateWithContext:`（PEProcess.m:243-267）在 guest FBScene 到达时 dispatch_once 创建 NXWindowSessionApplication 并 openWindowWithSession——官方 Builder.swift:321-349 .run app 段同语义；FDMapObject 管道照旧+窗口会话叠加（**窗口与 N9 管道 stdio 并存**——run_log/退出码/尾段观测链零回归），进程退出自动关窗（PEProcess.m:286-294）。万我侧时序义务：`GuestWindowBridge ensureActivatedSync` 须先于 spawn 以真实 scene 激活（GuestRunService.spawn 前调用点）——若先经无 scene 懒创建则 openWindow 恒败。
+- **懒创建死局防护（本轮接手修复——前任残缺点）**：NXWindowServer.m `+shared` 实现为 `return [self sharedWithWindowScene:nil]`（无 scene 懒创建）——**永不返回 nil**；前任 GuestWindowBridge.m 的 showGuestOverlay/hideGuestOverlay 用 `[NXWindowServer shared]`+`if (server == nil)` 防护，nil 检查永不触发，激活前调用即触发懒创建死局（dispatch_once 消耗→真实 scene 永远拿不回，openWindow 恒败——恰是头注释自警的形态）。修法：文件内 `static BOOL wanwoServerActivated` 标记（ensureActivated 成功路径置位），三处 shared 消费点（show/hide/openUtilityTerminal）先查标记，未激活不触碰单例；openUtilityTerminal 激活失败带注记早退。
+
+### utility 终端路线（N10c——官方 Builder.swift:358-373 .run utility 段语义对齐）
+
+| 项 | 内容 |
+|---|---|
+| BuildService.prepareUtilityRun | 四步签名编排（官方逐段）：①补片（LCUtils.signMachOAtURL 补片段等义——单 macho LCPatchExecSlice，无 bundle arm64e fixup）→②单 macho ZSign（prov=宿主 embedded profile+私钥=用户导入 p12+密码——万我双轨制同 app 路线；单 macho 无 bundle 身份覆写面）→③NXTR token（entitlementBits→PEEntitlement 位图，官方 macho_after_sign 同序）→④fastpathUtility（daemon 复制+签名，返回运行路径=PEExecutablePath）。S1/S2 签名自查不引入（N9 CS_KILL 雷区） |
+| GuestRunSupport 新增两薄壳 | `patchGuestExecutableOnlyAtPath:error:`（官方 signMachOAtURL 补片段等义）+ `signUtilityMachOAtPath:prov:key:pass:error:`（签名段等义；ZSigner.signMachOAtPath 直调 Swift 导入名不可静态确定——选择器形状与已实证可导入的 patchGuestExecutableAtPath 同构） |
+| BuildTools utility 分叉 | schemeKind≠.app 在编译成功后分叉（编译/审批/宏预检/lld 门共用）→ prepareUtilityRun → `GuestWindowBridge openUtilityTerminalWithPath`（vendored openWindow 内部：TTY 分配+termios+三路 SLAVEFD 映射+utilityHomePath+spawn+tty_attach_proc+TerminalViewObjC——官方原样消费）→ 成功即返回（run 门由 defer 放行——官方 .run utility 开窗即返回同语义）。N9 的「utility 报 N10 支持」占位移除 |
+| stop_build 接线 | 活跃 utility 进程登记（GuestRunService.registerUtilityProcess/unregisterUtilityProcess/hasActiveRegisteredProcess）：stop_build 按登记 terminate（终端窗口随 exitingCallback 关闭——官方同款）；exitingCallback 包装=官方回调后注销登记。run 门不长期持有（官方开窗即返回形态） |
+| 输出形态 | 终端窗口内 stdin/stdout 完整交互（TTY 直连终端视图，输出不回流工具卡——官方同款）；窗口关闭=进程 terminate |
+
+### CI 门与观测
+
+- ios.yml 新增 **N10 SwiftTerm SPM gate**：Package.resolved 存在性 + identity=swiftterm + version=1.13.0 三断言（防 SPM 网络抖动静默降级——resolve 失败时 xcodebuild 可能跳过依赖继续编）；build.log 含 SwiftTerm 编译引用 WARN 级检查。
+- cc-mdk-smoke 触发面含 project.yml（本轮有改动→Smoke 会跑）；vendored 树零 diff。
+
+### 已知风险与未验证项（真机 N10d 验收重点）
+
+1. 双 UIWindow 的 scene/keyWindow 语义（键盘弹出/触摸穿透）——首验项；
+2. guest FBScene 注册链在容器模式+窗口呈现组合首次真机验证；
+3. SwiftTerm SPM 在 CI 的 GitHub 可达性（gate 已防静默降级；必要时再议 vendor 化——不推荐）；
+4. 内存：guest UI+窗口呈现+终端同栈（appex 限额观察项）；
+5. NXWindowServer 桌面交互全套（appSwitcher/手势/presentationState）在场不删，万我首版只接 openWindow/close/focus 主链。

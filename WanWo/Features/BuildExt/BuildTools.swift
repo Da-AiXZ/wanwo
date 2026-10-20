@@ -605,7 +605,8 @@ struct StopBuildTool: AgentTool {
     let name = "stop_build"
     let description = "Release the build slot if a build finished abnormally, or stop the running guest app (build_and_run). "
         + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot. "
-        + "During a guest run this terminates the guest process (SIGKILL) and releases the run gate."
+        + "During a guest run this terminates the guest process (SIGKILL) and releases the run gate. "
+        + "Also terminates a registered utility-terminal process (N10) — its terminal window closes with it (official semantics)."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
@@ -613,9 +614,14 @@ struct StopBuildTool: AgentTool {
     func execute(_ args: JSONValue, _ ctx: ToolExecutionContext) async throws -> ToolOutput {
         // 【N9b】run 态转语义：终止 guest + 放行 run 门（run 门全生命周期
         // 持有——stop 后放行下一次 build/run，N9 方案 §三 7 拍板语义）。
-        if BuildService.shared.isRunInFlight {
+        // 【N10c】utility 终端路线接线：run 门不长期持有（官方 .run utility
+        // 段开窗即返回），活跃进程登记仍在——按登记终止 utility 进程（窗口
+        // 随 exitingCallback 关闭——官方同款），无 run 门可放行。
+        if BuildService.shared.isRunInFlight || GuestRunService.shared.hasActiveRegisteredProcess {
             let note = GuestRunService.shared.stopActiveRun()
-            BuildService.shared.endRun()
+            if BuildService.shared.isRunInFlight {
+                BuildService.shared.endRun()
+            }
             return .success("guest run 已终止——" + note)
         }
         BuildService.shared.endBuild()
@@ -627,9 +633,10 @@ struct StopBuildTool: AgentTool {
 
 struct BuildAndRunTool: AgentTool {
     let name = "build_and_run"
-    let description = "Full guest hosting pipeline (N9): compile the project → LC container signing (host identity mode) → "
-        + "NXTR entitlement token → installApplication via installd → spawn the guest process → stream stdout/stderr to the tool card → "
-        + "report exit code/signal when the guest exits. App-scheme projects only (utility projects land in N10 — terminal UI). "
+    let description = "Full guest hosting pipeline (N9/N10): compile the project → LC container signing (host identity mode) → "
+        + "NXTR entitlement token → installApplication via installd → spawn. App-scheme projects stream stdout/stderr to the tool card "
+        + "and report exit code/signal when the guest exits, with an NXWindow floating window presenting the guest UI (N10). "
+        + "Utility-scheme projects open an interactive terminal window (NXWindowSessionTerminal + SwiftTerm, TTY三映射——官方 .run utility 同款). "
         + "Full output is persisted to run_log.txt (Cache path) and copied to the workspace (BuildArtifacts/run_log-<HHmmss>.txt, "
         + "AI-readable) after the run; the result text inlines the last ≤80 output lines (zero output is reported explicitly). "
         + "Requires user approval (ask once). "
@@ -707,12 +714,11 @@ struct BuildAndRunTool: AgentTool {
             return .failure(String(describing: error), code: "PROJECT_ERROR")
         }
 
-        // utility 工程 → N10（拍板项 4：明确报「N10 支持」，不静默失败）
-        if project.projectConfig.schemeKind != NXProjectSchemeKind.app {
-            return .failure(
-                "utility 工程检测到（schemeKind=utility）——utility 形态的 guest 运行依赖窗口终端 UI（NXWindowSessionTerminal），在 N10 支持；本工具当前仅承载 app 工程。",
-                code: "SCHEME_UNSUPPORTED", name: "BuildError")
-        }
+        // ── N10c：utility 工程 → 终端路线（NXWindowSessionTerminal——官方
+        // .run utility 段语义；app 工程继续走下方 N9 管道路线零回归）。
+        // 分叉点在 ① 编译成功之后（签名编排/开窗形态不同，编译/审批/宏预检/
+        // lld 门共用）——见 ① 段后的 isUtilityProject 分支。
+        let isUtilityProject = project.projectConfig.schemeKind != NXProjectSchemeKind.app
 
         // 证书前置快速失败（build_ipa 同缝——不浪费数分钟 CPU 才发现签不了）
         if !CertificateStore.isConfigured {
@@ -788,6 +794,82 @@ struct BuildAndRunTool: AgentTool {
                 \(result.diagnosticsSummary)
                 build log: \(result.buildLogPath)
                 """, code: "BUILD_FAILED", name: "BuildError")
+        }
+
+        // ══ N10c：utility 终端路线（官方 Builder.swift:358-373 .run utility
+        // 段语义对齐——签名编排→fastpath→自动开窗；run 门在开窗后由 defer
+        // 放行，stop_build 接线走活跃进程登记）══════════════════════════
+        if isUtilityProject {
+            // ② utility 签名编排（官方 .run utility 段等义：补片→单 macho
+            //    ZSign→NXTR token→fastpathUtility——prepareGuestRun 的
+            //    utility 对位，见 BuildService.prepareUtilityRun）
+            let prep = BuildService.prepareUtilityRun(project: project)
+            guard prep.ok else {
+                _ = try? await writer.append(.extensionEvent(
+                    kind: RunEvents.eventKind,
+                    payload: .object([
+                        "name": .string(name),
+                        "result": .string("failure"),
+                        "phase": .string("prepare"),
+                        "exit": .string("-"),
+                        "runLog": .string(result.buildLogPath),
+                        "diagnostics": .string(String(prep.message.prefix(2000))),
+                    ])))
+                return .failure("UTILITY PREPARE FAILED（编译成功，签名/token/fastpath 段失败——AI 按原因自修复后重跑）:\n" + prep.message,
+                                code: "PREPARE_FAILED", name: "BuildError")
+            }
+
+            // ③ 自动开窗（拍板项 3）：官方 Builder.swift:367-370 同语义——
+            //    NXWindowSessionTerminal initWithUtilityPath → NXWindowServer
+            //    openWindowWithSession（openWindow 内部：TTY 分配+termios+
+            //    三路 SLAVEFD 映射+spawn+tty_attach_proc+TerminalViewObjC——
+            //    vendored 官方原样消费）。终端窗口关闭=进程 terminate（官方
+            //    closeWindow 同款）；进程退出→官方 exitingCallback 关窗/落
+            //    [process exited]。万我层仅叠加 stop_build 接缝：登记活跃
+            //    进程 + exitingCallback 包装（官方回调之后注销登记）。
+            let fastPath = prep.utilityPath
+            let opened = await MainActor.run { () -> (Bool, String) in
+                var procRef: PEProcess?
+                var noteRef: NSString?
+                let ok = GuestWindowBridge.openUtilityTerminal(
+                    withPath: fastPath,
+                    processOut: &procRef,
+                    noteOut: &noteRef)
+                if ok, let process = procRef {
+                    GuestRunService.shared.registerUtilityProcess(process, utilityPath: fastPath)
+                    let officialCallback = process.exitingCallback
+                    process.exitingCallback = { officialCallback?(); GuestRunService.shared.unregisterUtilityProcess() }
+                    var note = "utility=" + (fastPath as NSString).lastPathComponent
+                        + " pid=" + String(process.pid)
+                    note = note + "（stop_build 可终止；终端窗口关闭=进程 terminate——官方同款）"
+                    return (true, note)
+                }
+                let failNote = (noteRef as String?) ?? "openUtilityTerminal 失败（无注记）"
+                return (false, failNote)
+            }
+
+            _ = try? await writer.append(.extensionEvent(
+                kind: RunEvents.eventKind,
+                payload: .object([
+                    "name": .string(name),
+                    "result": .string(opened.0 ? "success" : "failure"),
+                    "phase": .string("spawn"),
+                    "exit": .string("-"),
+                    "runLog": .string(result.buildLogPath),
+                    "diagnostics": .string(String(prep.detail.prefix(2000))),
+                ])))
+
+            if opened.0 {
+                return .success("""
+                    UTILITY TERMINAL OPENED（\(name)）
+                    \(opened.1)
+                    \(prep.detail)
+                    终端窗口内 stdin/stdout 完整交互（SwiftTerm——官方 .run utility 同款）；窗口关闭=进程 terminate。
+                    运行输出不回流工具卡（TTY 直连终端视图）——诊断可查终端窗口本体。
+                    """)
+            }
+            return .failure("UTILITY TERMINAL FAILED（签名/fastpath 成功，开窗段失败）:\n" + opened.1,
+                            code: "TERMINAL_FAILED", name: "BuildError")
         }
 
         // ② 补片→容器签名→NXTR token→安装（官方 .run 签名编排等义）

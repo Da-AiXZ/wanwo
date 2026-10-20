@@ -38,6 +38,14 @@ packages:
   SwiftStreamingMarkdown:
     url: https://github.com/microsoft/SwiftStreamingMarkdown
     revision: 5f7c04e0558df6146f90d482edb62cb456986bda
+  # N10a（拍板项 1）：SwiftTerm 1.13.0（MIT；官方 0.10.3 同版本同源——官方
+  # Package.resolved 实证 revision 8e7a1e1；exactVersion 锁版本防漂移）。
+  # 消费面：WanWo/Features/GuestWindow/Terminal.swift（TerminalViewObjC
+  # wrapper 落位）→ vendored NXWindowSessionTerminal.m（WANWO_BUILD_UI 开宏
+  # 后经 WanWo-Swift.h 消费）。登记 docs/gpl-compliance.md §N10。
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: "1.13.0"
 
 targets:
   WanWo:
@@ -293,7 +301,9 @@ targets:
         # N8 增第 8 根：WanWoLiveProcess（宿主代理面头 <LindChain/Services/...>——
         # Vendor/nyxian 树内无 Services/，PEProcessManager.m/PEProcess.m/PEContainer.m
         # 的代理头经此根命中；官方 emexDE HEADER_SEARCH_PATHS 含 LiveProcess/ 同构）
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign/common $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign $(PROJECT_DIR)/WanWoLiveProcess"
+        # N10 增第 9 根：WanWo/Features/GuestWindow（GuestWindowBridge.h——
+        # 桥接头 #import "GuestWindowBridge.h" 解析根；BuildExt 第 6 根先例）
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/include/ish $(SRCROOT)/Vendor/ish $(SRCROOT)/Vendor/include $(SRCROOT)/WanWo/NativeOffload $(PROJECT_DIR)/Vendor/nyxian $(SRCROOT)/WanWo/Features/BuildExt $(SRCROOT)/WanWo/Features/GuestWindow $(PROJECT_DIR)/Vendor/nyxian/LindChain/OpenSSLHeaders $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign/common $(PROJECT_DIR)/Vendor/nyxian/LindChain/LiveContainer/ZSign $(PROJECT_DIR)/WanWoLiveProcess"
         # N3b 修③（run 39003398834 实证）：桥接头 import MDKOSVersion 触发
         # MobileDevelopmentKit module 构建，MDKThreadPool.h:29 #import
         # <CoreCompiler/CCUtils.h> 在 -I Vendor/nyxian 加宽后命中 CC 源码树头
@@ -333,7 +343,18 @@ targets:
         # src/ios/Minis.entitlements 原样引入，见 WanWo.entitlements 注释）
         CODE_SIGN_ENTITLEMENTS: WanWo.entitlements
         # iSH 头文件按 GUEST_ARM64 条件编译（对齐 Vendor/ish/app/GuestARM64.xcconfig）
-        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) GUEST_ARM64=1 ISH_INTERNAL=1"
+        # N10a：WANWO_BUILD_UI=1（仅 ObjC 面——GCC_PREPROCESSOR_DEFINITIONS）。
+        # 解锁 vendored NXWindowSessionTerminal.m 全单元（N8 宏包裹形态
+        # :36-299——TerminalViewObjC 经 WanWo-Swift.h 从万我 Swift 面
+        # GuestWindow/Terminal.swift 供入）。Swift 面（OTHER_SWIFT_FLAGS）
+        # 刻意不定义：vendored Swift 侧两处 WANWO_BUILD_UI 守卫段引用万我
+        # 缺失的官方 UI 层符号（NXBuilder.swift:365-407 buildProjectWithArgumentUI
+        # → share(url:remove:)；Project+Debug.swift:245-465 UIDebugViewController
+        # → CodeEditorViewController），开宏即编译失败——按 N10 任务书
+        # 「引用万我缺失的 UI 类→如实报告（禁硬造适配），守卫面局部维持并
+        # 登记」处置，两段维持守卫（万我走工具化路径，不消费这两段）。
+        # 登记 docs/gpl-compliance.md §N10。
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) GUEST_ARM64=1 ISH_INTERNAL=1 WANWO_BUILD_UI=1"
         # iSH 头里的 C 声明以 ObjC(.m) 编译；QCExecutor.m 需 ObjC++? 实为 .m 即可（纯 C API）
     dependencies:
       # N8：appex 构建顺序依赖（与上方第一处 dependencies 块同写——YAML 重复
@@ -352,6 +373,8 @@ targets:
         product: MCP
       # 批12 T7：流式 Markdown 渲染（助手正文 + 流式正文；exact 0.7.0）
       - package: SwiftStreamingMarkdown
+      # N10a：SwiftTerm 终端库（TerminalViewObjC 底座——utility 终端路线）
+      - package: SwiftTerm
     info:
       path: WanWo/Info.plist
       properties:

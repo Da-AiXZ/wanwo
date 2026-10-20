@@ -70,6 +70,21 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build | tee build.log
 
+      # N10d：SwiftTerm SPM 解析断言（防网络抖动静默降级——SPM resolve 失败
+      # 时 xcodebuild 可能跳过该依赖继续编（TerminalView 符号缺失会在链接期
+      # 才爆/或被宏吞掉），此门以 Package.resolved 双断言锁死：identity 在场
+      # + 版本=1.13.0（拍板项 1 exactVersion 锁定；官方 0.10.3 Package.resolved
+      # 同版本同源 revision 8e7a1e1）。观察项：GitHub 可达性（方案 §三 4）。
+      - name: N10 SwiftTerm SPM gate
+        run: |
+          set -euo pipefail
+          RESOLVED="WanWo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+          test -f "$RESOLVED" || { echo "!! Package.resolved 缺失（SPM 未解析——SwiftTerm 拉取静默降级？）"; exit 1; }
+          grep -q '"identity" : "swiftterm"' "$RESOLVED" || { echo "!! swiftterm 不在 Package.resolved（SPM 解析缺 SwiftTerm）"; exit 1; }
+          grep -q '"version" : "1.13.0"' "$RESOLVED" || { echo "!! SwiftTerm 版本漂移（拍板项 1 锁 1.13.0）"; exit 1; }
+          grep -q "SwiftTerm" build.log || echo "WARN: build.log 无 SwiftTerm 编译引用（检查 target dependencies 接线）"
+          echo "N10 SwiftTerm SPM 门通过（identity 在场 + 版本 1.13.0 锁定）"
+
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload

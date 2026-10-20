@@ -853,6 +853,128 @@ final class BuildService: @unchecked Sendable {
                                    detail: detail)
     }
 
+    // MARK: N10c · utility 终端路线签名编排（官方 Builder.swift:358-373 对齐）
+
+    struct UtilityRunPreparation {
+        let ok: Bool
+        let message: String
+        /// fastpath 安装后的 daemon 侧路径（NXWindowSessionTerminal 的
+        /// PEExecutablePath——官方 Builder.swift:366-368 同源取法）。
+        let utilityPath: String
+        /// prepare 细目（a-d 步骤结构化诊断——GuestRunPreparation 同款）。
+        let detail: String
+    }
+
+    /// 官方 .run utility 签名编排等义（0.10.3 Builder.swift:358-373 逐段；
+    /// 与 app 路线 prepareGuestRun 并列、互不污染——utility 无 .app bundle，
+    /// 无容器 ZSign/installApplication 面）。调用前提：build(.export) 已成功
+    /// （utility 的 machoURL = NXOutputPath=$(CACHEROOT)/$(NXExecutable)——
+    /// NXProject.m:281/:514 官方同款取法）。步骤（官方顺序，逐段）：
+    ///   ① 补片（LCUtils.signMachOAtURL 补片段——单 macho LCPatchExecSlice，
+    ///      无 bundle arm64e fixup——GuestRunSupport 薄壳）；
+    ///   ② 单 macho ZSign（LCUtils.signMachOAtURL 签名段等义：prov=宿主
+    ///      embedded profile + 私钥=用户导入 p12+密码——万我双轨制同 app
+    ///      运行路线；wanwo_setHostIdentityOverride 为 bundle 身份覆写开关，
+    ///      单 macho 无 bundle 面不参与）；
+    ///   ③ NXTR token（官方 Builder.swift:364 同序——macho_after_sign）；
+    ///   ④ fastpathUtility（官方 Builder.swift:366 同义——daemon 复制+签名，
+    ///      返回运行路径=PEExecutablePath）。
+    /// S1/S2 签名自查不引入（N9 CS_KILL 雷区——见 §N9「S1/S2 回退」）。
+    static func prepareUtilityRun(project: NXProject) -> UtilityRunPreparation {
+        let machoPath = project.machoURL.path
+        // 证书三件门（运行路线双轨制同 app：私钥=用户导入 p12+密码——
+        // CertificateStore；prov=宿主本体嵌入 embedded.mobileprovision——
+        // 官方 LCUtils.signMachOAtURL:126-127 同源取法）。
+        guard let p12 = CertificateStore.loadCertificateData(),
+              let password = CertificateStore.loadPassword() else {
+            return UtilityRunPreparation(ok: false,
+                                         message: "未配置签名私钥——utility 签名需要 p12+密码（设置→签名证书）",
+                                         utilityPath: "",
+                                         detail: "prepare 细目：[未达——签名私钥未配置]")
+        }
+        guard let embeddedProfileURL = Bundle.main.url(
+                  forResource: "embedded", withExtension: "mobileprovision"),
+              let hostProfile = try? Data(contentsOf: embeddedProfileURL),
+              !hostProfile.isEmpty else {
+            return UtilityRunPreparation(ok: false,
+                                         message: "宿主本体未嵌入描述文件（embedded.mobileprovision 缺失或不可读）——utility 运行路线要求宿主带开发档 profile；请用重签工具重装宿主",
+                                         utilityPath: "",
+                                         detail: "prepare 细目：[未达——宿主 embedded.mobileprovision 缺失]")
+        }
+
+        var segments: [String] = []
+
+        // ① 补片（官方 LCUtils.signMachOAtURL 补片段等义）——步骤 a
+        do {
+            try GuestRunSupport.patchGuestExecutableOnly(atPath: machoPath)
+            segments.append("[a 补片 OK]")
+        } catch {
+            segments.append("[a 补片 失败]")
+            return Self.utilityPrepFailure(segments: segments,
+                                           reason: "utility 可执行补片失败（MH_EXECUTE→MH_DYLIB/arm64）："
+                                               + String(describing: error))
+        }
+
+        // ② 单 macho ZSign（官方 signMachOAtURL 签名段等义）——步骤 b
+        do {
+            try GuestRunSupport.signUtilityMachO(atPath: machoPath,
+                                                 prov: hostProfile,
+                                                 key: p12,
+                                                 pass: password)
+            segments.append("[b 单macho签名 OK]")
+        } catch {
+            segments.append("[b 单macho签名 失败]")
+            return Self.utilityPrepFailure(segments: segments,
+                                           reason: "utility ZSign 签名失败：" + String(describing: error))
+        }
+
+        // ③ NXTR token（官方 Builder.swift:364 同序）——步骤 c
+        // （NSMutableDictionary → [AnyHashable: Any] 直标不可转——桥接经
+        //  NSDictionary 条件转换，run 39368919449 实证）
+        let plistDict: NSDictionary = project.entitlementsConfig.dictionary
+        let bits = GuestRunSupport.entitlementBits(
+            fromEntitlementsPlist: plistDict as? [AnyHashable: Any] ?? [:])
+        let bitsHex = "0x" + String(bits, radix: 16)
+        do {
+            try GuestRunSupport.appendEntitlementToken(
+                atPath: machoPath,
+                entitlement: PEEntitlement(rawValue: bits))
+        } catch {
+            segments.append("[c token 失败]")
+            return Self.utilityPrepFailure(segments: segments,
+                                           reason: "NXTR token 追加失败：" + String(describing: error))
+        }
+        segments.append("[c token OK " + bitsHex + "]")
+
+        // ④ fastpathUtility（官方 Builder.swift:366 同义——daemon 复制+签名，
+        //    2s 超时=官方硬编码）——步骤 d
+        let fastPath = LDEApplicationWorkspace.shared().fastpathUtility(machoPath)
+        guard let fastPath = fastPath, !fastPath.isEmpty else {
+            segments.append("[d fastpath 失败]")
+            return Self.utilityPrepFailure(segments: segments,
+                                           reason: "fastpathUtility 失败（daemon 未复制/未签名/2s 超时——installd 存活态 pe_smoke mode=status）")
+        }
+        segments.append("[d fastpath OK]")
+
+        let detail = "prepare 细目：" + segments.joined(separator: " ")
+        let okMessage = "utility 签名/token/fastpath 全通过；daemon 侧运行路径=" + fastPath
+        return UtilityRunPreparation(ok: true,
+                                     message: okMessage,
+                                     utilityPath: fastPath,
+                                     detail: detail)
+    }
+
+    /// utility prepare 失败汇总（guestPrepFailure 同构——无 bundleID/位图位）。
+    private static func utilityPrepFailure(segments: [String],
+                                           reason: String) -> UtilityRunPreparation {
+        var detail = "prepare 细目：" + segments.joined(separator: " ")
+        detail = detail + "；失败点（浅因：" + reason + "）"
+        return UtilityRunPreparation(ok: false,
+                                     message: detail,
+                                     utilityPath: "",
+                                     detail: detail)
+    }
+
     // MARK: N9d · prepare 细目组装辅助（平铺——swiftc 雷区纪律：无嵌套函数）
 
     /// prepare 失败汇总：细目（已完成步骤 + 失败步骤标记）+ 失败点浅因。

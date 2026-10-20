@@ -68,3 +68,15 @@
 // prepareGuestRun / BuildAndRunTool 消费；语义出处行号见其头注释）。
 // 其引入的 Surface/entitlement.h（PEEntitlement 位图类型）随本头进 Swift。
 #import "GuestRunSupport.h"
+
+// N10 BuildExt：窗口托管宿主面（NXWindowServer 独立 UIWindow + 终端会话）。
+// NXWindowServer.h 链 NXWindow.h→FoundationPrivate/NXWindowSession.h（纯
+// ObjC 可桥）；NXWindowSessionTerminal.h 链 PEProcess.h（已随 N8
+// PEProcessManager.h 头链进面，重复 include 有 guard）。GuestWindowBridge
+// =万我自有薄壳（官方工厂 sharedWithWindowScene:/openWindowWithSession: 的
+// Swift 导入名不可静态确定——导入器剪枝雷区，跨语言调用收拢薄壳固定形态，
+// 选择器纪律同 GuestRunSupport）。MachOObject 直调不需要（utility 签名走
+// GuestRunSupport 薄壳）。
+#import <LindChain/WindowServer/NXWindowServer.h>
+#import <LindChain/WindowServer/Session/NXWindowSessionTerminal.h>
+#import "GuestWindowBridge.h"

@@ -8,6 +8,7 @@
 
 #import "GuestRunSupport.h"
 #import <LindChain/LiveContainer/LCMachOUtils.h>
+#import <LindChain/LiveContainer/ZSign/zsigner.h>
 #import <LindChain/ProcEnvironment/Surface/trust.h>
 #import <LindChain/ProcEnvironment/Process/PELaunchServiceRegistry.h>
 #import <LindChain/ProcEnvironment/Object/ArchiveObject.h>
@@ -546,6 +547,78 @@ static NSString *WanWoGuestProbeInstalldQuery(NSString *bundleID, NSString **err
 + (NSString *)probeInstalldTestAppRoundTripWithError:(NSString **)error
 {
     return WanWoGuestProbeInstalldQuery(WanWoGuestProbeTestAppBundleID, error);
+}
+
+// ── 【N10c · utility 签名编排薄壳】官方 LCUtils.signMachOAtURL 等义 ─────
+// 语义出处见头注释（官方 .run utility 签名段 Builder.swift:358-364 的
+// signBinaryAtPath 展开形态——LCUtils.m:102-131 逐段对照）。
+
++ (BOOL)patchGuestExecutableOnlyAtPath:(NSString *)machoPath
+                                 error:(NSError **)error
+{
+    if (machoPath.length == 0) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:2
+                                     userInfo:@{ NSLocalizedDescriptionKey: @"补片入参缺失（macho path 为空）" }];
+        }
+        return NO;
+    }
+
+    __block NSError *patchError = nil;
+
+    // 官方形态照抄（LCUtils.m:107-113）：LCParseMachO 回调内 cputype 门 +
+    // LCPatchExecSlice(path, header, YES)。readOnly=false（官方同参——补片要写回）。
+    // utility 无 bundle：不调 LCPatchAppBundleFixupARM64eSlice（官方单 macho
+    // 形态无此段）。
+    NSString *parseError = LCParseMachO(machoPath.UTF8String, false, ^(const char *path, struct mach_header_64 *header, int fd, void *filePtr) {
+        if (header->cputype != CPU_TYPE_ARM64 ||
+            LCPatchExecSlice(path, header, YES) != 0) {
+            patchError = WanWoGuestRunUnsupportedFormatError();
+        }
+    });
+
+    if (parseError != nil && patchError == nil) {
+        // 官方同语义：解析层错误归一为 unsupported executable format（LCUtils.m:115-118）
+        patchError = WanWoGuestRunUnsupportedFormatError();
+    }
+
+    if (patchError != nil) {
+        if (error != NULL) {
+            *error = patchError;
+        }
+        return NO;
+    }
+
+    return YES;
+}
+
++ (BOOL)signUtilityMachOAtPath:(NSString *)machoPath
+                           prov:(NSData *)prov
+                            key:(NSData *)key
+                           pass:(NSString *)pass
+                          error:(NSError **)error
+{
+    if (machoPath.length == 0 || prov == nil || key == nil || pass == nil) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:2
+                                     userInfo:@{ NSLocalizedDescriptionKey: @"utility 签名入参缺失（macho path / prov / key / pass）" }];
+        }
+        return NO;
+    }
+
+    // 官方同款调用（LCUtils.m:130）：ZSigner.signMachOAtPath(prov:key:pass:)
+    // ——单 macho ZSign 签名（万我双轨制同 app 运行路线：prov=宿主 embedded
+    // profile、私钥=用户导入 p12+密码；wanwo_setHostIdentityOverride 为
+    // bundle 身份覆写开关，单 macho 无 bundle 面，不参与）。
+    BOOL ok = [ZSigner signMachOAtPath:machoPath prov:prov key:key pass:pass];
+    if (!ok && error != NULL) {
+        *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                     code:10
+                                 userInfo:@{ NSLocalizedDescriptionKey: @"signMachOAtPath 失败（单 macho ZSign 签名——官方 LCUtils.signMachOAtURL 签名段等义；核对 p12/密码）" }];
+    }
+    return ok;
 }
 
 @end
