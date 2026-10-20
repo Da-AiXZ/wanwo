@@ -102,7 +102,7 @@ static BOOL wanwoServerActivated = NO;
     }
     NXWindowServer *server = [NXWindowServer shared];
     server.hidden = NO;
-    [server makeKey];
+    [server makeKeyAndVisible];
 }
 
 + (void)hideGuestOverlay
@@ -120,7 +120,7 @@ static BOOL wanwoServerActivated = NO;
     {
         if (![window isKindOfClass:[NXWindowServer class]])
         {
-            [window makeKey];
+            [window makeKeyAndVisible];
             break;
         }
     }
