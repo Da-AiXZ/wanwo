@@ -401,3 +401,15 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 - **根因（直接解包 CI 产物 WanWo-98eed56.ipa 实证）**：宿主 plist 两版本键齐全（CFBundleVersion="3"/CFBundleShortVersionString="0.0.1"），appex `Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist` **两键全缺**。官方 0.10.3 LiveProcess Debug/Release 两 build configuration 均有 `CURRENT_PROJECT_VERSION = $(BUILD_NUMBER)`（pbxproj 1283/1327）与 `MARKETING_VERSION = $(VERSION)`（1301/1345），经 Config.xcconfig（`VERSION=0.10.3`/`BUILD_NUMBER=20260523.26.DEBUG`）构建期合并进最终 plist；万我 appex target（project.yml `WanWoLiveProcess:` settings.base）漏抄两键 + GENERATE_INFOPLIST_FILE=YES 产物补齐不了 → 最终 plist 缺键。CI 免签构建 ValidateEmbeddedBinary 不覆盖此键 → CI 绿装不上。
 - **修法**：project.yml appex settings.base 补 `CURRENT_PROJECT_VERSION: "3"` / `MARKETING_VERSION: "0.0.1"`——官方语义即 appex 版本随宿主版本体系注入（Config.xcconfig 同源），万我无 xcconfig 直取与宿主 info.properties 同值对齐（Apple 亦要求 appex CFBundleShortVersionString 与宿主一致）。
 - **CI 防回归门**：ios.yml Package 步骤 appex cp 进 PlugIns 后用 `plutil -extract CFBundleVersion raw` / `CFBundleShortVersionString raw`（macOS runner 自带）取值 echo 并断言 "3"/"0.0.1"，任一缺失/异常 `exit 1`——教训显式立门：CI 查不出的键必须门。
+
+#### N8 装机复测修·第二轮（2026-10-19 深夜续；上轮版本键修复设备确认生效后 installd 逐关推进到下一关）
+
+- **第二轮报错（设备原文）**：`MissingBundleDisplayNameString`——appex `WanWoLiveProcess.appex`（ID `com.wanwo.juyang.TNHMJ2JNPJ.LiveProcess`）"does not have a CFBundleDisplayName key with a non-zero length string value in its Info.plist"。上轮补的两版本键已被设备确认生效（installd 越过 bundleVersion 关），本轮卡 displayName 关。
+- **对质方法（铁证级）**：解包双成品 ipa 逐键对质——官方 `emexDE-0.10.3-ldid-signed.ipa` 内 `Payload/emexDE.app/PlugIns/LiveProcess.appex/Info.plist` vs 上轮产物 `WanWo-8d79e06.ipa` 内 `Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist`。**键集合差异恰好两个、全为官方有我们没有**：
+  1. `CFBundleDisplayName`（官方值=LiveProcess；官方经 `INFOPLIST_KEY_CFBundleDisplayName` 注入，0.10.3 pbxproj 1292/1336 行）——本次拒装直接原因。
+  2. `UIMainStoryboardFile`（官方值=空字符串；pbxproj 1294/1338 行 `INFOPLIST_KEY_UIMainStoryboardFile=""`）——同批修净，防第三轮。
+  其余同名键值差异（CFBundleExecutable/CFBundleName/CFBundleIdentifier/版本号）均为品牌折算与版本体系合法差异；万我无多出键。网络佐证：CFBundleDisplayName 缺失=Apple 安装校验族已知硬要求（App Store 同族 ITMS-90783、stackoverflow 56807112，修法=补非空值）。
+- **修法①（project.yml）**：appex settings.base 补 `INFOPLIST_KEY_CFBundleDisplayName: WanWoLiveProcess`（官方同构品牌折算 LiveProcess→WanWoLiveProcess；与上轮版本键同族机制，`GENERATE_INFOPLIST_FILE: YES` merge 落键）。
+- **修法②（源 plist 静态落键）**：`UIMainStoryboardFile=""` 无法走构建设置——Xcode 对构建设置空值不落产物（写不进成品），改在 `WanWoLiveProcess/Info.plist` 源文件静态加 `UIMainStoryboardFile` 键（空字符串；该 plist 为官方文件品牌折算版，本改动登记于本节）。目标=成品键集合与官方完全一致（除品牌/版本值），一次修净。
+- **CI 门扩展**：ios.yml Package 步骤版本键门扩展为「appex 必需键族」断言，逐键 `plutil -extract` echo 实值 + 非空/值断言 + `exit 1`：CFBundleVersion="3"、CFBundleShortVersionString="0.0.1"、CFBundleDisplayName 非空且="WanWoLiveProcess"、UIMainStoryboardFile 存在且空串（`-extract` 空串成功返回空输出，显式区分"取到空串"与"键缺失"）、CFBundleName/CFBundleExecutable 存在非空、NSExtension 存在（字典键走 `xml1 -o /dev/null` 子树断言）。
+- **QA 误判登记（如实记录）**：上轮 QA 曾判 CFBundleDisplayName 缺失"不阻断仅观感"——设备否决（installd 硬拒装）。教训：installd 对 appex plist 校验**逐关推进**，"下一关查什么"必须以官方成品逐键对质为准，禁推理豁免、禁抽样——逐键全量对质一次修净 + 门一次建全。

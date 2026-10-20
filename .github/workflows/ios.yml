@@ -123,12 +123,40 @@ jobs:
           # 这两键（CI 绿真机装不上的教训），installd "bundleVersion must be
           # set in placeholder attributes" 拒装根因键必须显式立门。plutil 为
           # macOS runner 自带。门值与 project.yml appex settings.base 两键同源。
-          APPEX_VER=$(plutil -extract CFBundleVersion raw "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist") || { echo "!! appex CFBundleVersion 缺失（installd 拒装根因键）"; exit 1; }
+          # N8 装机复测修·第二轮：门扩展为「appex 必需键族」断言——设备
+          # installd 拒装实证 MissingBundleDisplayNameString（CFBundleDisplayName
+          # 非空缺失即拒）+ 官方 0.10.3 成品逐键对质（键集合差异恰两键全为
+          # 官方有我们没有：CFBundleDisplayName/UIMainStoryboardFile）。教训：
+          # installd 对 appex plist 校验逐关推进，必需键族以官方成品对质为准，
+          # 一次建全：两版本键 + displayName + 空串 UIMainStoryboardFile +
+          # CFBundleName/CFBundleExecutable/NSExtension 存在性。
+          APPEX_PLIST="Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist"
+          APPEX_VER=$(plutil -extract CFBundleVersion raw "${APPEX_PLIST}") || { echo "!! appex CFBundleVersion 缺失（installd 拒装根因键）"; exit 1; }
           echo "appex CFBundleVersion = ${APPEX_VER} (expect 3)"
           test "${APPEX_VER}" = "3" || { echo "!! appex CFBundleVersion 值异常: ${APPEX_VER}"; exit 1; }
-          APPEX_SHORT_VER=$(plutil -extract CFBundleShortVersionString raw "Payload/WanWo.app/PlugIns/WanWoLiveProcess.appex/Info.plist") || { echo "!! appex CFBundleShortVersionString 缺失（同根因键族）"; exit 1; }
+          APPEX_SHORT_VER=$(plutil -extract CFBundleShortVersionString raw "${APPEX_PLIST}") || { echo "!! appex CFBundleShortVersionString 缺失（同根因键族）"; exit 1; }
           echo "appex CFBundleShortVersionString = ${APPEX_SHORT_VER} (expect 0.0.1)"
           test "${APPEX_SHORT_VER}" = "0.0.1" || { echo "!! appex CFBundleShortVersionString 值异常: ${APPEX_SHORT_VER}"; exit 1; }
+          APPEX_DISPLAY=$(plutil -extract CFBundleDisplayName raw "${APPEX_PLIST}") || { echo "!! appex CFBundleDisplayName 缺失（设备 installd MissingBundleDisplayNameString 拒装键）"; exit 1; }
+          echo "appex CFBundleDisplayName = ${APPEX_DISPLAY} (expect WanWoLiveProcess)"
+          test -n "${APPEX_DISPLAY}" || { echo "!! appex CFBundleDisplayName 空串（installd 要求非零长度）"; exit 1; }
+          test "${APPEX_DISPLAY}" = "WanWoLiveProcess" || { echo "!! appex CFBundleDisplayName 值异常: ${APPEX_DISPLAY}"; exit 1; }
+          # UIMainStoryboardFile：官方成品=空字符串（构建设置空值 Xcode 忽略，
+          # 源 plist 静态落键）——存在性 + 空串双断言（plutil -extract 空串
+          # 成功返回空输出，须显式区分"取到空串"与"键缺失"）
+          APPEX_STORYBOARD=$(plutil -extract UIMainStoryboardFile raw "${APPEX_PLIST}") || { echo "!! appex UIMainStoryboardFile 缺失（官方成品有此键）"; exit 1; }
+          echo "appex UIMainStoryboardFile = '${APPEX_STORYBOARD}' (expect 空串)"
+          test -z "${APPEX_STORYBOARD}" || { echo "!! appex UIMainStoryboardFile 应为空串，实值: '${APPEX_STORYBOARD}'"; exit 1; }
+          APPEX_NAME=$(plutil -extract CFBundleName raw "${APPEX_PLIST}") || { echo "!! appex CFBundleName 缺失"; exit 1; }
+          echo "appex CFBundleName = ${APPEX_NAME}"
+          test -n "${APPEX_NAME}" || { echo "!! appex CFBundleName 空串"; exit 1; }
+          APPEX_EXEC=$(plutil -extract CFBundleExecutable raw "${APPEX_PLIST}") || { echo "!! appex CFBundleExecutable 缺失"; exit 1; }
+          echo "appex CFBundleExecutable = ${APPEX_EXEC}"
+          test -n "${APPEX_EXEC}" || { echo "!! appex CFBundleExecutable 空串"; exit 1; }
+          # NSExtension：appex 身份键（字典类型——xml1 子树落 /dev/null 存在性断言）
+          plutil -extract NSExtension xml1 -o /dev/null "${APPEX_PLIST}" || { echo "!! appex NSExtension 缺失（appex 身份键）"; exit 1; }
+          echo "appex NSExtension 存在 ✓"
+          echo "=== N8 appex 必需键族门全通过 ==="
           test -f "Payload/WanWo.app/Shared/LaunchServices/containerd.plist" || { echo "!! containerd.plist 缺失"; exit 1; }
           test -f "Payload/WanWo.app/Shared/LaunchServices/installd.plist" || { echo "!! installd.plist 缺失"; exit 1; }
           ls -lh "Payload/WanWo.app/PlugIns/" "Payload/WanWo.app/Shared/LaunchServices/"

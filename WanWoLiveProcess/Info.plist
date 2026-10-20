@@ -77,6 +77,11 @@
 		<string>remote-notification</string>
 		<string>voip</string>
 	</array>
+	<key>UIMainStoryboardFile</key>
+	<!-- N8 装机复测修·第二轮：官方 0.10.3 经 INFOPLIST_KEY_UIMainStoryboardFile=""
+	     （pbxproj 1294/1338）落键为空字符串；构建设置空值会被 Xcode 忽略
+	     （写不进成品）→ 改在源 plist 静态落键，与官方成品键集合对齐。登记 §N8。 -->
+	<string></string>
 	<key>XPCService</key>
 	<dict>
 		<key>ServiceType</key>

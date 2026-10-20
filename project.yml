@@ -606,6 +606,14 @@ targets:
         # 回归门：ios.yml Package 步骤 plutil 硬门（CI 查不出的键显式立门）。
         CURRENT_PROJECT_VERSION: "3"
         MARKETING_VERSION: "0.0.1"
+        # N8 装机复测修·第二轮（设备 installd 拒装实证：MissingBundleDisplayNameString
+        # "appex does not have a CFBundleDisplayName key with a non-zero length
+        # string value"）：官方 0.10.3 LiveProcess Debug/Release 两段均有
+        # INFOPLIST_KEY_CFBundleDisplayName = LiveProcess（pbxproj 1292/1336），
+        # 经 GENERATE_INFOPLIST_FILE merge 落进最终 plist；万我漏抄 → installd
+        # 逐关校验到 displayName 关再拒装（上轮版本键修已确认生效越过
+        # bundleVersion 关）。取值=品牌折算 LiveProcess→WanWoLiveProcess。
+        INFOPLIST_KEY_CFBundleDisplayName: WanWoLiveProcess
         # 官方 1287-1316 同构（-DCLIENT_ENV / HSEARCH 两根）；万我加两根——
         # 官方同步组对 target 内全部头建 headermap（裸名 quoted include 可解析：
         # Tweaks 的 "UIKitPrivate.h"/"utils.h"），逐文件列法无 headermap 等价物，
