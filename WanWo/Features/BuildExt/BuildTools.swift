@@ -630,7 +630,9 @@ struct BuildAndRunTool: AgentTool {
     let description = "Full guest hosting pipeline (N9): compile the project → LC container signing (host identity mode) → "
         + "NXTR entitlement token → installApplication via installd → spawn the guest process → stream stdout/stderr to the tool card → "
         + "report exit code/signal when the guest exits. App-scheme projects only (utility projects land in N10 — terminal UI). "
-        + "Full output is persisted to run_log.txt (path in the result) for post-hoc reading. Requires user approval (ask once). "
+        + "Full output is persisted to run_log.txt (Cache path) and copied to the workspace (BuildArtifacts/run_log-<HHmmss>.txt, "
+        + "AI-readable) after the run; the result text inlines the last ≤80 output lines (zero output is reported explicitly). "
+        + "Requires user approval (ask once). "
         + "Holds the run gate for its whole lifecycle: builds are rejected while a run is in flight; stop_build terminates the guest."
     let parameters = JSONValue.schemaObject(
         properties: [
@@ -648,6 +650,37 @@ struct BuildAndRunTool: AgentTool {
 
     /// 编译占线程池与缓存目录 + run 全程持门——exclusive 车道串行。
     func isConcurrencySafe(_ args: JSONValue) -> Bool { false }
+
+    // MARK: 观测链补全（N9 spawn 段真机首抵后——AI 可读性收口）
+
+    /// run_log 副本落工作区：源=Cache/<uuid>/run_log.txt（宿主私有路径，
+    /// guest bash 与 AI 的 fs 工具都读不到）→ 副本=workspace/BuildArtifacts/
+    /// run_log-<HHmmss>.txt（AI read 直取）。源路径为空（spawn 前失败，无
+    /// run_log 落盘）或复制失败返回空串——结果文本不带副本路径行。
+    private static func copyRunLogToWorkspace(sourcePath: String,
+                                              workspaceRoot: URL) -> String {
+        guard !sourcePath.isEmpty else { return "" }
+        let fm = FileManager.default
+        let dir = workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true)
+        try? fm.createDirectory(atPath: dir.path, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("run_log-" + Self.runLogStamp() + ".txt")
+        do {
+            if fm.fileExists(atPath: dest.path) {
+                try fm.removeItem(atPath: dest.path)
+            }
+            try fm.copyItem(atPath: sourcePath, toPath: dest.path)
+            return dest.path
+        } catch {
+            return ""
+        }
+    }
+
+    /// 副本文件名时间戳（HHmmss——平铺函数，swiftc 雷区纪律）。
+    private static func runLogStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HHmmss"
+        return f.string(from: Date())
+    }
 
     func presentCall(_ args: JSONValue) -> ToolCardIntent? {
         ToolCardIntent(kind: .terminal,
@@ -820,9 +853,27 @@ struct BuildAndRunTool: AgentTool {
                 raw: outcome.exitRaw, exitCode: outcome.exitCode,
                 signal: outcome.signal, decoded: true, timedOut: outcome.timedOut)
         }
+        // 【N9 观测链补全】run_log 副本落工作区（Cache 路径 guest/AI 皆不可
+        // 读——副本进 BuildArtifacts AI fs 直取；仅 spawn 后才有 run_log，
+        // 源路径空=复制跳过返回空串）。
+        let wsLogPath = BuildAndRunTool.copyRunLogToWorkspace(
+            sourcePath: outcome.runLogPath, workspaceRoot: ctx.workspace.rootURL)
+        var wsLogLine = ""
+        if !wsLogPath.isEmpty {
+            wsLogLine = "\nrun log (workspace copy, AI readable): " + wsLogPath
+        }
+        // 结果内联输出尾段（三态带——超时 terminate 态尤其需要，它是 GUI
+        // 应用的常态终点）。仅 run 实际发生（runLogPath 非空）才出尾段节；
+        // 零输出显式标注（区分「spawn 成功在跑主循环」vs「pre-main 挂起」）。
         var tailLine = ""
-        if !outcome.outputTail.isEmpty {
-            tailLine = "\noutput tail:\n" + outcome.outputTail
+        if !outcome.runLogPath.isEmpty {
+            tailLine = "\n——— guest 输出尾段（最后 ≤80 行）———\n"
+            if outcome.outputTail.isEmpty {
+                tailLine = tailLine
+                    + "（guest 零输出——若非预期，检查 guest 是否 print/是否 pre-main 挂起）"
+            } else {
+                tailLine = tailLine + outcome.outputTail
+            }
         }
         let guestHint = BuildTools.guestPathHint(outcome.runLogPath,
                                                  workspaceRoot: ctx.workspace.rootURL,
@@ -832,14 +883,14 @@ struct BuildAndRunTool: AgentTool {
                 GUEST RUN OK（\(name)）\(exitLine)
                 \(prep.message)
                 \(prep.detail)\(tailLine)
-                run log: \(outcome.runLogPath)\(guestHint)
+                run log: \(outcome.runLogPath)\(guestHint)\(wsLogLine)
                 ——— 依据 stdout/退出码修复源码后重跑 build_and_run 即闭环。
                 """)
         }
         return .failure("""
                 GUEST RUN FAILED（\(name)）
                 \(outcome.message)\(exitLine)\(tailLine)
-                run log: \(outcome.runLogPath)\(guestHint)
+                run log: \(outcome.runLogPath)\(guestHint)\(wsLogLine)
                 ——— 依据 stdout/stderr 修复后重跑；stop_build 可提前终止 guest。
                 """, code: "GUEST_RUN_FAILED", name: "BuildError")
     }

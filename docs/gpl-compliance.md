@@ -582,3 +582,17 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **行为语义**：prepare 步骤序（补片→容器签名→token→install）与 e 段分态语义不变；install 成功后 prepare 正常返回 → build_and_run 链进 spawn 段；交付路线（signAndRepackage）、探针段（保留）、`WANWO_BUILD_RUN`（维持不定义）零变化。**vendored 树本轮零 diff**（上轮 bundle.cpp 一处之外无新增）。
 
 **官方对照**：官方宿主 observer=`ApplicationManagementViewController` UI 路径（LDEApplicationWorkspace.m:361-373 dispatch_async 主队列转 UI 刷新）；万我 no-op 路径=同名协议同形实现、去 UI（万我无应用管理呈现层），连接生命周期（不驻留、每次新建）维持万我诊断包装既有语义。
+
+#### 观测链补全（2026-10-20，N9 spawn 段真机首抵后的 AI 可读性收口——零 vendored）
+
+**背景（N9 spawn 段真机实证）**：prepare 全链通过（install=installed）、guest 进程拉起存活 180s、超时 terminate signal=9（wait4 raw=9 捕获正确）、run_log.txt 落盘成功。**观测盲区**：testapp 为无 print 的 SwiftUI 应用——进程存活但零输出，无法区分「spawn 成功在跑主循环」vs「pre-main 挂起」；且 run_log 落在宿主 Cache 路径（`/private/var/mobile/.../Cache/<uuid>/run_log.txt`），guest bash 与 AI 的 fs 工具都读不到——**观测链缺口：AI 拿不到 guest 输出内容**（N9 完成定义要求「AI 依日志修 bug 重跑」，此缺口必须补）。
+
+**施工项（仅万我工具层，零 vendored diff）**：
+
+| 项 | 内容 |
+|---|---|
+| 结果内联输出尾段 | build_and_run 结果文本（成功/失败/超时三态）追加「——— guest 输出尾段（最后 ≤80 行）———」节——GuestRunService 输出缓冲（与 run_log 同源数据）取用窗口 40→80 行（缓冲上限 200 不变）；输出为空时显式写「（guest 零输出——若非预期，检查 guest 是否 print/是否 pre-main 挂起）」。超时 terminate 态尤其需要——它是 GUI 应用的常态终点；仅 run 实际发生（runLogPath 非空）才出尾段节，build/prepare 段失败不误报零输出 |
+| run_log 副本落工作区 | run 结束后 BuildAndRunTool 将 run_log.txt 复制到工作区 `BuildArtifacts/run_log-<HHmmss>.txt`（AI fs 工具/read 直取）；复制失败静默降级（结果文本不带副本路径行，原 Cache 路径行保留）；结果文本带工作区副本路径（`run log (workspace copy, AI readable): …`）；工具 description 同步更新 |
+| 超时语义细化 | guest 跑满 timeout 被 terminate 的结果 message 标注「guest 存活至超时（进程未自行退出）——GUI 应用属预期形态；CLI 应用应自行退出」——区分「拉起后存活」（GUI 应用常态终点）与「秒退」（非超时路径）两种形态，N9 验收判读关键 |
+
+**边界**：prepareGuestRun / spawn 逻辑（PEProcessManager.spawnProcess 同参）/ 退出码捕获（exitingCallback + wait4 解码）零改动；交付路线（signAndRepackage）零改动；**vendored 树本轮零 diff**。官方对照面不变（0.10.3 Builder.swift:321-349 + PEProcess.m:269-284）——本节纯万我工具层编排自由度（结果文本组装与宿主侧落盘路径，官方无对应面）。

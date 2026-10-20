@@ -21,6 +21,11 @@
 //      追加；0.2s 节流在 UI 侧，Host 不再叠层）；run_log 落盘
 //      Cache/<uuid>/run_log.txt（时间戳+stdout/stderr 全量+退出码——AI 事后
 //      可读，N8c 折叠教训对策）。
+//    · 观测链补全（N9 spawn 段真机首抵后）：输出尾段缓冲 40→80 行供结果
+//      文本内联（BuildTools 组装段消费——三态带尾段）；超时 terminate 态
+//      message 标注「存活至超时」语义（区分 GUI 应用预期形态与 CLI 秒退）；
+//      工作区副本落盘归 BuildTools 结果组装段（Cache 路径 guest/AI 皆不可
+//      读——副本进 workspace/BuildArtifacts AI fs 直取）。
 //
 //  swiftc 雷区纪律：构造器参数位无内嵌复杂表达式、无嵌套函数（全部平铺
 //  private/static func）、多行插值拆单步拼接。
@@ -282,7 +287,9 @@ final class GuestRunService: @unchecked Sendable {
         lock.unlock()
 
         tailLock.lock()
-        let tail = tailLines.suffix(40).joined(separator: "\n")
+        // 观测链补全：尾段缓冲 40→80 行（BuildTools 结果文本内联消费；
+        // 缓冲上限 200 不变——只放宽取用窗口）。
+        let tail = tailLines.suffix(80).joined(separator: "\n")
         tailLock.unlock()
 
         exitBox.lock.lock()
@@ -301,11 +308,12 @@ final class GuestRunService: @unchecked Sendable {
         try? logHandle?.close()
 
         if timedOut {
+            // 观测链补全·超时语义细化：区分「拉起后存活至超时」（GUI 应用
+            // 常态终点，无 print 的 SwiftUI 应用零输出属预期）与「秒退」
+            // （非超时路径——CLI 崩溃/异常退出形态）两种形态。
             var msg = "guest 超时（" + String(Int(timeoutSeconds))
                 + "s）→ 已 terminate；" + exitNote
-            if decoded {
-                msg = msg + "；输出尾段见 run_log"
-            }
+            msg = msg + "；guest 存活至超时（进程未自行退出）——GUI 应用属预期形态；CLI 应用应自行退出"
             return GuestRunOutcome(ok: false, message: msg, exitCode: exitCode,
                                    signal: exitSignal, exitRaw: exitRaw,
                                    timedOut: true, runLogPath: runLogPath,
