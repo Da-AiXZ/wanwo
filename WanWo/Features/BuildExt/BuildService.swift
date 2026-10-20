@@ -639,9 +639,17 @@ final class BuildService: @unchecked Sendable {
     ///   ② 容器模式 ZSign：wanwo_setHostIdentityOverride(true) 显式开 →
     ///      ZSigner.sign → 签名完复位 NO（开关仅 run 路径内在位；标准交付
     ///      signAndRepackage 路径零变化）。容器模式语义（zsign 内部三消费
-    ///      点）：签名 identifier=宿主 id / CodeResources 跳过 / embedded
-    ///      .mobileprovision 不写——prov 仍传用户 profile（TeamId+entitlements
-    ///      提取必需，openssl.cpp InitSimple:732-743 对 prov 的读取不经开关）；
+    ///      点）：签名 identifier=宿主 id（【N9 修】仅 identifier——executable
+    ///      路径恢复 zsign 上游语义，主二进制按 guest folder 内真实可执行
+    ///      文件签名）/ CodeResources 跳过 / embedded.mobileprovision 不写
+    ///      ——prov 传【宿主本体嵌入的 embedded.mobileprovision】（官方
+    ///      LCUtils.m:95-96 原样语义——iLoader 重签宿主时嵌入的开发档
+    ///      profile，TeamId 与宿主 id 同体系；TeamId+entitlements 提取必需，
+    ///      openssl.cpp InitSimple:732-743 对 prov 的读取不经开关）；
+    ///      guest 签名私钥=CertificateStore 的 p12+密码（官方同构：导入
+    ///      p12 出私钥、宿主自带 profile 出身份——私钥与 profile 可不同源，
+    ///      用户 0.10.3 亲测背书）。交付路线（signAndRepackage）仍用用户
+    ///      导入 profile——双轨制互不污染；
     ///   ③ macho_after_sign 追加 NXTR token（entitlement=工程 Entitlements
     ///      .plist 位图映射——vendored NXEntitlementsConfig 无 entitlement
     ///      属性（§N4N5 适配删除），位图映射在 GuestRunSupport 万我层重建）；
@@ -656,8 +664,9 @@ final class BuildService: @unchecked Sendable {
     /// 【N9d 诊断增强版】prepare 细目按 a-e 步骤结构化采集（纯诊断——
     /// 签名方式/身份对齐/标准路径零变化，只把每步结果与浅因如实透出）：
     ///   a 补片成功/失败；
-    ///   b 宿主实际 bundle id（设备上可能为重签后缀形态）vs profile 解析
-    ///     app-id 并列展示（候选①身份链错配直接证据）；
+    ///   b 宿主实际 bundle id（设备上可能为重签后缀形态）vs 宿主 embedded
+    ///     profile 解析 app-id（BuildService.bundleIdFromProfile 现成）并列
+    ///     展示（两 id 同体系=健康——【N9 修】profile 改宿主本体嵌入档）；
     ///   c 容器签名 ZSigner 回调如实透出（signFailedFiles 非空=N7c 二轮
     ///     同族静默失败证据）；
     ///   d token 追加；
@@ -676,14 +685,30 @@ final class BuildService: @unchecked Sendable {
                                        bundleID: bundleID,
                                        detail: "prepare 细目：[b 未达——工程 bundle id 缺失]")
         }
+        // 【N9 修】运行路线签名材料双轨制：私钥=用户导入 p12+密码
+        //（CertificateStore——官方同构：LCUtils 的 certificateData/
+        // certificatePassword 同为用户导入形态）；profile=宿主本体嵌入的
+        // embedded.mobileprovision（官方 LCUtils.m:95-96 原样语义——
+        // iLoader 重签宿主时嵌入的开发档 profile，TeamId 与宿主 id 同
+        // 体系）。用户导入 profile 不再参与运行路线（交付路线零改动）。
         guard let p12 = CertificateStore.loadCertificateData(),
-              let profile = CertificateStore.loadProfileData(),
               let password = CertificateStore.loadPassword() else {
             return GuestRunPreparation(ok: false,
-                                       message: "未配置签名证书——guest 容器签名需要 p12+描述文件+密码（设置→签名证书）",
+                                       message: "未配置签名私钥——guest 容器签名需要 p12+密码（设置→签名证书；运行路线 profile 取宿主本体嵌入档，无需用户描述文件）",
                                        entitlementBits: "-",
                                        bundleID: bundleID,
-                                       detail: "prepare 细目：[b 未达——签名证书未配置]")
+                                       detail: "prepare 细目：[b 未达——签名私钥未配置]")
+        }
+        // 宿主 embedded.mobileprovision 缺失=独立失败态（重签工具未嵌入）
+        guard let embeddedProfileURL = Bundle.main.url(
+                  forResource: "embedded", withExtension: "mobileprovision"),
+              let hostProfile = try? Data(contentsOf: embeddedProfileURL),
+              !hostProfile.isEmpty else {
+            return GuestRunPreparation(ok: false,
+                                       message: "宿主本体未嵌入描述文件（embedded.mobileprovision 缺失或不可读）——运行路线要求宿主带开发档 profile；请用重签工具重装宿主",
+                                       entitlementBits: "-",
+                                       bundleID: bundleID,
+                                       detail: "prepare 细目：[b 未达——宿主 embedded.mobileprovision 缺失]")
         }
 
         var segments: [String] = []
@@ -705,18 +730,19 @@ final class BuildService: @unchecked Sendable {
                 bundleID: bundleID)
         }
 
-        // 步骤 b：宿主实际 bundle id vs profile 解析 app-id 并列（候选①
-        // 直接证据——两身份体系错配时此处一目了然）。
+        // 步骤 b：宿主实际 bundle id vs 宿主 embedded profile 解析 app-id
+        // 并列（【N9 修】profile 改宿主本体嵌入档——两 id 同体系=一致健康；
+        // 候选①身份链错配时此处一目了然）。
         let hostBundleID = Bundle.main.bundleIdentifier ?? "未知"
         var profileAppID = "解析失败（Entitlements.application-identifier 不可得）"
-        if let parsed = Self.bundleIdFromProfile(profile) {
+        if let parsed = Self.bundleIdFromProfile(hostProfile) {
             if parsed.isWildcard {
                 profileAppID = parsed.bundleId + "（通配）"
             } else {
                 profileAppID = parsed.bundleId
             }
         }
-        segments.append("[b 宿主id=" + hostBundleID + " | profile app-id=" + profileAppID + "]")
+        segments.append("[b 宿主id=" + hostBundleID + " | 宿主embedded profile app-id=" + profileAppID + "]")
 
         // ② 容器模式 ZSign（官方 Builder.swift:301 同款 semaphore 形态）——步骤 c
         ZSigner.wanwo_setHostIdentityOverride(true)
@@ -725,7 +751,7 @@ final class BuildService: @unchecked Sendable {
         var signMessage = ""
         var signPartial = false
         _ = ZSigner.sign(withAppPath: project.bundleURL.path,
-                         prov: profile, key: p12, pass: password,
+                         prov: hostProfile, key: p12, pass: password,
                          completionHandler: { success, error in
             if success {
                 if let err = error, !err.localizedDescription.isEmpty {

@@ -39,15 +39,17 @@ bool ZBundle::FindAppFolder(const string& strFolder, string& strAppFolder)
 	return (!strAppFolder.empty());
 }
 
-extern "C" const char *getExecutablePath(void);
-extern "C" const char *getBundleIdentifier(void);
 // 【万我 N7c 修 2026-10-19】容器身份覆写开关——实现于 zsigner.m
 //（wanwo_zsign_host_identity）。语义：YES=LiveContainer 容器模式（覆写
-// CFBundleExecutable/CFBundleIdentifier 为宿主值——guest 代码跑在宿主
-// 进程内，签名身份必须=宿主才能过内核校验，N9 运行链用）；NO=标准签名
-// 交付模式（0.10.3 的无条件覆写对独立 app 交付是三方身份错乱——轻松签
-// 实测「装上后点开无法安装」实锤）。默认 NO；N9 落位时在 LC 运行链调用
-// 签名前经 ZSigner.wanwo_setHostIdentityOverride:YES 显式开启。
+// CFBundleIdentifier 为宿主值——guest 代码跑在宿主进程内，签名身份必须
+// =宿主才能过内核校验，N9 运行链用）；NO=标准签名交付模式（0.10.3 的
+// 无条件覆写对独立 app 交付是三方身份错乱——轻松签实测「装上后点开无法
+// 安装」实锤）。默认 NO；N9 落位时在 LC 运行链调用签名前经
+// ZSigner.wanwo_setHostIdentityOverride:YES 显式开启。
+// 【万我 N9 修】容器模式自本轮起只覆写 identifier（见 GetSignFolderInfo
+// 内注记）——getExecutablePath 在 bundle.cpp 零消费（zsigner.m 定义保留
+// 零改动，官方 0.10.3 同名函数语义不变）。
+extern "C" const char *getBundleIdentifier(void);
 extern "C" bool wanwo_zsign_host_identity(void);
 
 bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bGetName)
@@ -65,8 +67,22 @@ bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bG
 	// 在签名前完成（改写 Info.plist）。此前无条件覆写导致标准模式下签名
 	// identifier=宿主 id+主二进制路径解析失败 → 轻松签实测「装上后点开无
 	// 法安装」。diff 登记 docs/gpl-compliance.md §N7c。
+	// 【万我 N9 修 2026-10-21】容器模式拆分覆写（仅 identifier）——
+	// getExecutablePath 返回宿主可执行【绝对路径】（zsigner.m:60
+	// NSBundle.mainBundle.executablePath），原覆写把它写进 jvInfo 后经
+	// jvNode["bundle_executable"]（:69）流入两个消费点：SignNode 的
+	// strExePath = m_strAppFolder + "/" + strBundleExe（:316——拼成「guest
+	// folder + 宿主绝对路径」怪路径 → 主二进制 Init 失败进 signFailedFiles
+	// 且 folder 级主二进制签名跳过，zsign 对非空仍回 YES）与
+	// GetChangedFiles 的 changed 列表（:236——同族相对+绝对拼接）。N9 真机
+	// 5 连失败实锤（细目 c 段 signFailedFiles=…/Payload/testapp.app//
+	// private/var/.../WanWo.app/WanWo + install=rejected）。修复=容器模式
+	// 只覆写 CFBundleIdentifier（身份部分保留——与宿主 embedded profile
+	// 同体系，用户拍板双轨制），executable 恢复 zsign 上游语义（guest
+	// folder 内真实可执行文件——bundle_executable 变相对名，两消费点同时
+	// 归位；Info.plist SHA 亦回归真实文件值）。CodeResources/prov 条件化段
+	// 零波及。diff 登记 docs/gpl-compliance.md §N9。
 	if (wanwo_zsign_host_identity()) {
-		jvInfo["CFBundleExecutable"] = getExecutablePath();
 		jvInfo["CFBundleIdentifier"] = getBundleIdentifier();
 	}
 	string strBundleId = jvInfo["CFBundleIdentifier"];

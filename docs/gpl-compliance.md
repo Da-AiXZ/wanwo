@@ -501,3 +501,32 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 方法保留处置 | `GuestRunSupport.selfCheckCodeSignatureAtPath` 方法体保留（头注释加粗警告），仅作语义封装；prepareGuestRun 调用点零残留。新调用点引入前必须复核目标文件后续是否还会被同进程修改 |
 
 **本轮 diff 边界**：`BuildService.swift`（S1/S2 调用与细目片段移除、S1/S2 相关注释改为雷区注记、boolText 死代码清除）/ `GuestRunSupport.{h,m}`（方法头警告）/ 本文件本节。b/c/e 诊断、install 六态枚举包装、GuestRunService、BuildAndRunTool 零改动；vendored 树零 diff。
+
+#### 运行路线 prov 语义修正 + 容器态主二进制路径拼接修复（2026-10-20，N9 真机 5 连失败后双轨制拍板轮）
+
+**背景与拍板**：N9 build_and_run 真机 5 连失败（4 次通用失败+1 次 CS_KILL 已修），commit 0503e31 的 a-e 五步诊断细目拿到决定性证据：`[b 宿主id=com.wanwo.juyang.TNHMJ2JNPJ | profile app-id=com.cert.account.t260930000125]`（宿主被 iLoader 用 team=TNHMJ2JNPJ 证书重签，运行路线误用用户导入的购买 ad-hoc profile——两套身份体系错配）；`[c 容器签名 OK(err=…Payload/testapp.app//private/var/.../WanWo.app/WanWo)]`（signFailedFiles 非空且失败文件=主二进制，路径=「guest folder 相对路径+宿主绝对路径」拼接怪路径）；`[e install=rejected]`（installd 对未签主二进制必拒，非超时）。用户拍板**双轨制**：交付路线（用户证书+用户 profile，N7c/N7d 真机已证，零改动）与运行路线（万我本体嵌入 profile+容器覆写）并存。
+
+**修 1 · 运行路线 prov 来源改官方同构（万我层，BuildService.prepareGuestRun）**：
+
+- prov 从 `CertificateStore.loadProfileData()` 改为**宿主本体嵌入的 embedded.mobileprovision**——`[NSBundle.mainBundle URLForResource:@"embedded" withExtension:@"mobileprovision"]`，官方 LCUtils.m:95-96 `signAppBundleWithZSign` 原样语义（0.10.3 快照逐行对照）。缺失/不可读=独立失败态，明确报错「宿主本体未嵌入描述文件（重签工具未嵌入）——请用重签工具重装宿主」。
+- guest 签名私钥维持 CertificateStore 的 p12+密码（官方同构：LCUtils.certificateData/certificatePassword 同为用户导入形态；用户 0.10.3 亲测背书——导入 ad-hoc p12 出私钥+宿主自带 profile 出身份→Run 正常，**私钥与 profile 可不同源**）。
+- 细目 b 段改为：宿主 bundle id（Bundle.main.bundleIdentifier）vs **宿主 embedded profile 解析 app-id**（bundleIdFromProfile 复用）并列——两 id 同体系（一致=健康）。
+- 交付路线（signAndRepackage/BuildIPATool sign 路径）零改动——用户导入 profile 仍服务交付；运行路线不再要求用户描述文件。
+
+**修 2 · 容器态主二进制路径拼接修复（vendored 唯一 diff，bundle.cpp）**：
+
+- **消费链定罪**（bundle.cpp 全文复读）：`GetSignFolderInfo` 容器分支原同时覆写 `CFBundleExecutable = getExecutablePath()`（zsigner.m:60 返回宿主可执行**绝对路径**）与 `CFBundleIdentifier = getBundleIdentifier()`；executable 覆写值经 `jvNode["bundle_executable"]` 流入两个消费点——SignNode 的 `strExePath = m_strAppFolder + "/" + strBundleExe`（主二进制签名路径→「guest folder+宿主绝对路径」怪路径→Init 失败进 signFailedFiles→folder 级主二进制签名（Info.plist SHA+CodeResources 绑定形态）整体跳过，仅剩 files 循环的裸 macho 签名（Info.plist 特殊槽缺失）→installd checkCodeSignature 必拒）与 GetChangedFiles 的 changed 列表（同族拼接）。zsign.mm:121 对 signFailedFiles 非空仍回 YES——静默失败。
+- **修法选择（候选 a）**：容器分支**删除 executable 覆写、保留 identifier 覆写**（净代码 diff=删 2 行：`extern getExecutablePath` 声明 + `jvInfo["CFBundleExecutable"] = getExecutablePath();`）。理由：①`getExecutablePath()` 全 vendored 树仅此一个消费点（grep 实证），删除覆写即根治，无第二处需要单独修（候选 c 不必要）；②覆写返回宿主绝对路径，改相对形态（候选 b）无官方语义依据且需造路径加工——上游语义（folder 内真实可执行文件名）本就是正确的相对形态；③identifier 部分保留=用户拍板的容器身份体系不变（签名 identifier=宿主 id，与宿主 embedded profile 同体系）。修复后 bundle_executable=guest Info.plist 真实 CFBundleExecutable（相对名）→ SignNode/GetChangedFiles 两消费点同时归位，主二进制获得完整 folder 级签名（identifier=宿主 id+真实 Info.plist SHA），Info.plist SHA 回归真实文件值。
+- **零波及声明**：bundle.cpp 同文件 CodeResources 条件化段（:344）与 openssl.cpp prov 条件化段（InitSimple `!开关` 才填 m_strProvData——容器模式仍不把 prov 写入 guest 包，官方 LC 容器行为）零改动；zsigner.m/getExecutablePath 定义保留零改动；标准交付模式（开关 NO）路径零改动。
+- **diff 登记（vs 官方 0.10.3，bundle.cpp 容器态语义矩阵更新）**：
+
+| 消费点 | 官方 0.10.3（无条件） | 标准交付（wanwo=NO） | 容器运行（wanwo=YES，本轮后） |
+|---|---|---|---|
+| CFBundleExecutable 覆写 | getExecutablePath()（宿主绝对路径） | 不覆写（上游语义） | **不覆写（本轮修复——路径恢复上游语义）** |
+| CFBundleIdentifier 覆写 | getBundleIdentifier()（宿主 id） | 不覆写（万我对齐 profile 后的包值） | 覆写（宿主 id——身份保留） |
+| GenerateCodeResources | 注释跳过（LC don't need） | 恢复生成（N7c 四轮） | 跳过（官方同） |
+| InitSimple m_strProvData | 不填 | 补存（zsign 内写 profile） | 不填（容器体系管理） |
+
+**万我层 diff 边界**：`BuildService.swift`（prepareGuestRun prov 来源+细目 b 段+文档注释；signAndRepackage 零改动）/ `BuildTools.swift`（:796 上轮遗留「S1/S2 自查结果跨回合可读」过时注释修正——纯注释）/ 本文件本节。vendored 仅 bundle.cpp 上表所列；pyyaml 不涉及；WANWO_BUILD_RUN 维持不定义。
+
+**遗留观察项**：①BuildAndRunTool 证书前置门仍用 `CertificateStore.isConfigured`（三件齐全）——运行路线虽只需 p12+密码，但要求三件不阻断双轨制（用户按现状导入三件即可），后续按需放宽；②容器模式 prov 不写入 guest 包（官方 LC 行为）——若 installd 信任链要求 guest 包内嵌 profile，下一轮再评估（当前证据指向主二进制未签为 rejected 主因）。

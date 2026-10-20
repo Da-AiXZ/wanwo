@@ -793,8 +793,8 @@ struct BuildAndRunTool: AgentTool {
 
         // ④ guest_run 事件（modelVisible——退出码/失败原因跨回合可读）
         // 【N9d】事件 diagnostics 带 prepare 细目（a-e 结构化诊断——成功
-        // 路径同样透出，S1/S2 自查结果跨回合可读；prepare 失败路径的
-        // diagnostics=prep.message 已含细目，见 ② 段）。
+        // 路径同样透出；prepare 失败路径的 diagnostics=prep.message 已含
+        // 细目，见 ② 段）。
         var runDiagnostics = prep.detail
         if !runDiagnostics.isEmpty {
             runDiagnostics = runDiagnostics + "；"
