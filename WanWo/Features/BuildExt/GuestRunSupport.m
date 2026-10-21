@@ -19,6 +19,20 @@
 #import <string.h>
 #import <sys/stat.h>
 #import <unistd.h>
+// 【N10e 修 C · C1】OpenSSL error queue 诊断（ERR_get_error 循环 +
+// ERR_error_string_n/ERR_GET_LIB/ERR_GET_REASON——gen 失败路径
+// d2i_PrivateKey/EVP_DigestSignInit/EVP_DigestSign（vendored
+// entitlement.c:54-81）只设 error queue 不设 errno，修 B 的 SignErrno=0
+// 已实证失败在 OpenSSL 链内；队列=线程全局态，同线程紧随失败调用读取
+// 可行）。OpenSSL 头路径已在本编译面（vendored entitlement.c:27 同款
+// include，ZSign 依赖同链）——零新增链接配置。
+#import <OpenSSL/err.h>
+// 【N10e 修 C · C2】ksurface extern 声明（surface.h:35）——私钥前缀诊断
+// 只读消费 vendored 全局（ksurface_mapping_t 定义在 mapping.h，surface.h
+// 转引；GuestRunSupport.m 已 import 同目录 trust.h，头搜索路径零新增；
+// surface.m 同为 .m ObjC 编译面——include 链在 plain ObjC 下已实证可编）。
+// ⚠️ 只读禁写：不得写 ksurface 任何字段。
+#import <LindChain/ProcEnvironment/Surface/surface.h>
 
 NSErrorDomain const WanWoGuestRunErrorDomain = @"com.wanwo.guestrun";
 
@@ -197,6 +211,37 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
         machoPath, tokenExistsText, tokenSizeText, tokenModeText,
         tokenReadText, tokenWriteText, tokenStatErrnoText];
 
+    // ── 【N10e 修 C · C2 私钥数据前缀诊断（纯诊断零行为变更·只读）】─────
+    // ksurface->priv_key=Keychain 读回的 DER EC 私钥（vendored key.c:224-305
+    // get_static_kernel_key，kinit 时经 surface.m:81 装载）。合法 DER 私钥
+    // 首字节=0x30（ASN.1 SEQUENCE）——len+前 16 字节 hex 一眼判 Keychain
+    // 读回数据合法性（d2i_PrivateKey 失败候选的直接证据面）。
+    // 三层防护逐态如实标注（ksurface==NULL=kinit 未跑的决定性证据；直接
+    // 解引用 NULL 会崩宿主——防护是硬要求不是风格）。只读：零字段写入。
+    NSString *tokenKeyPrefixText = nil;
+    if (ksurface == NULL) {
+        tokenKeyPrefixText = @"ksurface NULL——kinit 未跑（environment_init dispatch_once 未执行；决定性证据：gen 链必失败，宿主进程态问题）";
+    } else if (ksurface->priv_key == NULL) {
+        tokenKeyPrefixText = @"priv_key NULL——kinfo 私钥装载缺失（决定性证据：d2i_PrivateKey 必失败）";
+    } else if (ksurface->priv_key_len == 0) {
+        tokenKeyPrefixText = @"priv_key len=0——Keychain 读回空数据（决定性证据：d2i_PrivateKey 必失败）";
+    } else {
+        size_t tokenPrivLen = ksurface->priv_key_len;
+        size_t tokenPrefixLen = tokenPrivLen < 16 ? tokenPrivLen : 16;
+        NSMutableString *tokenPrivHex = [NSMutableString string];
+        for (size_t tokenHexIndex = 0; tokenHexIndex < tokenPrefixLen; tokenHexIndex++) {
+            [tokenPrivHex appendFormat:@"%02x", ksurface->priv_key[tokenHexIndex]];
+        }
+        BOOL tokenDerHeadOk = (ksurface->priv_key[0] == 0x30);
+        NSString *tokenDerHeadText = @"YES(0x30 SEQUENCE——DER 形态合法)";
+        if (!tokenDerHeadOk) {
+            tokenDerHeadText = @"NO(首字节非 0x30——非合法 DER EC 私钥，Keychain 数据损坏嫌疑)";
+        }
+        tokenKeyPrefixText = [NSString stringWithFormat:
+            @"len=%zu prefix16=%@ derHead=%@",
+            tokenPrivLen, tokenPrivHex, tokenDerHeadText];
+    }
+
     // 前置探测失败 → fail fast（不调 macho_after_sign——文件此刻不存在或
     // 不可读写时 open(O_RDWR) 必失败，直接带探测数据返回）。调用方失败语义
     // 不变（NO+error，错误码 5=新增探测失败码）；成功路径/调用本身/token
@@ -224,6 +269,34 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
     int rc = macho_after_sign(machoPath.UTF8String, entitlement);
     int tokenSignErrno = errno;
     if (rc != 0) {
+        // ── 【N10e 修 C · C1 OpenSSL error queue dump（纯诊断零行为变更）】
+        // 紧随失败调用、同线程读取（队列=线程全局态，gen 失败路径
+        // entitlement.c:54-81 三候选 d2i_PrivateKey/DigestSignInit/DigestSign
+        // 的错误在调用返回后才可读）。不调 ERR_clear_error（保留队列态），
+        // 循环 ERR_get_error 直到 0，逐条错误码+库+原因+字符串。
+        // 队列为空（0 条）也如实记录——失败可能未走 OpenSSL 报错路径
+        //（如 EVP_MD_CTX_new 分配失败等不入队候选）。
+        NSMutableString *opensslErrorDump = [NSMutableString string];
+        unsigned long opensslErrCode = ERR_get_error();
+        int opensslErrIndex = 0;
+        while (opensslErrCode != 0) {
+            char opensslErrText[256];
+            opensslErrText[0] = '\0';
+            ERR_error_string_n(opensslErrCode, opensslErrText, sizeof(opensslErrText));
+            [opensslErrorDump appendFormat:@"#%d code=0x%08lX lib=%lu reason=%lu %s; ",
+             opensslErrIndex, opensslErrCode,
+             (unsigned long)ERR_GET_LIB(opensslErrCode),
+             (unsigned long)ERR_GET_REASON(opensslErrCode),
+             opensslErrText];
+            opensslErrCode = ERR_get_error();
+            opensslErrIndex++;
+        }
+        NSString *tokenOpenSSLText = nil;
+        if (opensslErrIndex == 0) {
+            tokenOpenSSLText = @"queue empty——OpenSSL error queue 为空（0 条）——失败可能未走 OpenSSL 报错路径（如 EVP_MD_CTX_new 分配失败等不入队候选），或错误已被上游消费";
+        } else {
+            tokenOpenSSLText = opensslErrorDump;
+        }
         if (error != NULL) {
             NSString *tokenErrnoText = [NSString stringWithFormat:@"%d(%s)",
                                         tokenSignErrno, strerror(tokenSignErrno)];
@@ -235,6 +308,9 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
                 @"WanWoTokenProbe": tokenProbeSummary,
                 @"WanWoTokenSignErrno": tokenErrnoText,
                 @"WanWoTokenProbeConclusion": tokenConclusion,
+                // 【N10e 修 C】两新诊断键（仅失败路径新增；既有三键逐字不动）。
+                @"WanWoTokenOpenSSLErrors": tokenOpenSSLText,
+                @"WanWoTokenKeyPrefix": tokenKeyPrefixText,
             }];
         }
         return NO;

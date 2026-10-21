@@ -98,6 +98,16 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// WanWoTokenProbeConclusion 键——errno 级诊断，open vs gen 区分用；
 /// 纯诊断零行为变更：调用本身/成功路径/token 语义不动）。前置探测失败
 ///（文件不存在/不可读写）时 fail fast，错误码 5。
+/// 【N10e 修 C】失败 error userInfo 另附两新诊断键（仅失败路径新增，
+/// 既有三键逐字不动）：WanWoTokenOpenSSLErrors=macho_after_sign 返回
+/// rc!=0 后同线程立即 ERR_get_error 循环 dump 的 OpenSSL error queue
+///（错误码+lib+reason+字符串，分号分隔；队列为空如实记录「queue empty」
+/// ——失败可能未走 OpenSSL 报错路径）；WanWoTokenKeyPrefix=
+/// ksurface->priv_key 的 len+前 16 字节 hex（合法 DER EC 私钥首字节
+/// 0x30 SEQUENCE 判读；ksurface NULL/priv_key NULL/len=0 三态防护逐态
+/// 如实标注——只读 vendored 全局，零字段写入）。修 B 数据 SignErrno=0
+/// 已定罪失败在 gen 的 OpenSSL 消费链（d2i_PrivateKey/DigestSignInit/
+/// DigestSign 三候选黑盒）——C1/C2 让下一轮真机失败一击定罪。
 /// 选择器形态与 patchGuestExecutableAtPath 同构（动词+宾语+AtPath——
 /// Swift 导入器对中缀 ToMachO 的剪枝不可预测，run 39368919449 实证）。
 + (BOOL)appendEntitlementTokenAtPath:(NSString *)machoPath

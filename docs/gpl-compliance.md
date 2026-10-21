@@ -726,4 +726,13 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 失败增强 | rc!=0 路径 NSError userInfo 增三键：WanWoTokenProbe（前置探测平铺字段）/WanWoTokenSignErrno（errno=0 清零后紧随调用捕获——EACCES/EPERM/ENOENT 候选=open 实锤，残留值=gen 嫌疑上升的弱信号）/WanWoTokenProbeConclusion（open vs gen 判读指引）；NSLocalizedDescriptionKey 原文逐字保留 |
 | 零行为变更 | macho_after_sign 调用本身/成功路径/token 语义完全不动（纯诊断；fail fast 仅在 open(O_RDWR) 必失败的前置态短路——调用方 NO+error 失败语义不变）；app 路线 prepareGuestRun 同函数消费零改动 |
 
+**修 C（appendEntitlementTokenAtPath OpenSSL error queue + 私钥前缀诊断增强，2026-10-21；背景=修 B 真机数据 errno=0/probe 全过定罪失败在 gen 的 OpenSSL 消费链，d2i_PrivateKey/DigestSignInit/DigestSign 三候选黑盒）**：
+| 项 | 内容 |
+|---|---|
+| C1 error queue dump | GuestRunSupport.m appendEntitlementTokenAtPath 在 macho_after_sign 返回 rc!=0 后同线程立即 ERR_get_error 循环（include <OpenSSL/err.h>——vendored entitlement.c:27 同款 include，编译面零新增链接配置）直到 0，逐条 ERR_error_string_n + ERR_GET_LIB/ERR_GET_REASON 格式化（#n code=0x… lib=… reason=… 字符串；分号分隔）进 NSError 新键 WanWoTokenOpenSSLErrors；不调 ERR_clear_error（保留队列态）；队列为空如实记录「queue empty——失败可能未走 OpenSSL 报错路径」（0 条也是决定性证据面） |
+| C2 私钥前缀诊断 | 前置探测扩展：import <LindChain/ProcEnvironment/Surface/surface.h>（extern ksurface 声明 surface.h:35——与已 import 的 trust.h 同目录，头搜索路径零新增）只读读 ksurface->priv_key 的 len+前 16 字节 hex 进新键 WanWoTokenKeyPrefix（合法 DER EC 私钥首字节 0x30 SEQUENCE 判读）；ksurface==NULL（kinit 未跑）/priv_key==NULL/len==0 三层防护逐态如实标注（直接解引用 NULL 会崩宿主——防护硬要求）；⚠️ 只读禁写 ksurface 任何字段 |
+| 零行为变更 | macho_after_sign 调用本身/成功路径/token 语义/既有三键（WanWoTokenProbe/WanWoTokenSignErrno/WanWoTokenProbeConclusion 逐字不动）/fail fast 错误码 5 语义完全不动；C1/C2 仅失败路径 NSError userInfo 新增两键；trust_nxt2_sign 边界（§N7:236）未触碰 |
+
+**边界（修 C）**：全部改动 WanWo/ 层（GuestRunSupport.{h,m} 注释与失败路径诊断）+ 本节登记，**vendored 树零 diff**；无新增文件（project.yml 零改动）；macho_after_sign 仍为 token 唯一合法实现。
+
 **边界**：全部改动 WanWo/ 层四文件（BuildService.swift/BuildTools.swift/GuestRunSupport.{h,m}），**vendored 树零 diff**；build_ipa/交付路线/app 路线（prepareGuestRun/GuestRunSession）零改动；utility 签名编排顺序（补片→ZSign→token→fastpath）零改动；stop_build/build_and_run 语义零改动；无新增文件（project.yml 零改动）；trust_nxt2_sign 历史裁决（§N7:236）维持——macho_after_sign 为 token 唯一合法实现，本轮未触碰该边界。
