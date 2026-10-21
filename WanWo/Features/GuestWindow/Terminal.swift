@@ -68,9 +68,10 @@ import UIKit
         set { _pendingTee = newValue }
     }
 
-    /// 本实例认领的 tee（init 时从 pendingTee 取走；只读——readabilityHandler
-    /// 后台线程消费安全）。
-    private let tee: UtilityTeeLog?
+    /// 本实例认领的 tee（init 时从 pendingTee 取走——var 形态：let 属性
+    /// 须在 super.init 前初始化与本认领时点冲突，CI 实证；赋值先于
+    /// readabilityHandler 安装，此后只读无并发面）。
+    private var tee: UtilityTeeLog?
 
     private var _objcDelegateAdapter: ObjCDelegateAdapter?
     @objc public weak var objcDelegate: (any TerminalViewDelegateObjC)? {
