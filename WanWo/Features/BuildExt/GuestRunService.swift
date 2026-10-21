@@ -705,8 +705,11 @@ final class GuestRunService: @unchecked Sendable {
         // 安全——SessionWriter.swift:67-162）。
         // run_log 副本落工作区（Cache 路径 guest/AI 皆不可读——副本进
         // BuildArtifacts AI fs 直取；N9 观测链装备原样保留）。
+        // 【批A · U1/P3-8a】副本命名带工程名（run_log-<name>-<HHmmss>.txt
+        // ——delete/reset 据此清工程名关联副本）。
         let wsLogPath = BuildAndRunTool.copyRunLogToWorkspace(
-            sourcePath: session.runLogPath, workspaceRoot: session.workspaceRoot)
+            sourcePath: session.runLogPath, projectName: session.projectName,
+            workspaceRoot: session.workspaceRoot)
         var runLogField = session.runLogPath
         if !wsLogPath.isEmpty {
             runLogField = runLogField + "（工作区副本：" + wsLogPath + "）"
@@ -751,9 +754,13 @@ final class GuestRunService: @unchecked Sendable {
     /// ①自然退出（exitCode）②超时（timedOut 文案优先）③被终止——
     /// stop_build（stopRequested 标志）与外部终止（排除法：signal 且非
     /// 超时非 stop——浮窗关闭钮=终止进程，官方 closeWindow 语义）。
+    /// 【批A · U4/P3-8d（轻触）】stop/超时/外部终止三态文案尾追加消歧句
+    /// ——result 字段值不变（failure=run 未自然完成，AI 侧解读依赖此语义
+    /// ；零 schema 变化，仅文案消歧防 AI 误判为故障）。
     static func composeExitMessage(timedOut: Bool, stopRequested: Bool,
                                    decoded: Bool, exitCode: Int, signal: Int,
                                    raw: Int, timeoutSeconds: TimeInterval?) -> String {
+        let stopNote = "（主动终止——非故障，需要时直接重新 build_and_run）"
         if timedOut {
             var msg = "guest 超时（" + String(Int(timeoutSeconds ?? 0))
                 + "s）→ 已 terminate；"
@@ -761,6 +768,7 @@ final class GuestRunService: @unchecked Sendable {
                                        signal: signal, decoded: decoded,
                                        timedOut: true)
             msg = msg + "；guest 存活至超时（进程未自行退出）——GUI 应用属预期形态；CLI 应用应自行退出"
+            msg = msg + stopNote
             return msg
         }
         if stopRequested {
@@ -768,6 +776,7 @@ final class GuestRunService: @unchecked Sendable {
             msg = msg + renderExitNote(raw: raw, exitCode: exitCode,
                                        signal: signal, decoded: decoded,
                                        timedOut: false)
+            msg = msg + stopNote
             return msg
         }
         if decoded && signal > 0 {
@@ -775,6 +784,7 @@ final class GuestRunService: @unchecked Sendable {
                 + "，wait4 raw=" + String(raw) + "）"
             msg = msg + "——浮窗关闭钮=终止进程（官方语义：关窗即杀进程，"
                 + "NXWindowSessionApplication closeWindow 内 terminate）"
+            msg = msg + stopNote
             return msg
         }
         if decoded {
@@ -870,20 +880,25 @@ final class GuestRunService: @unchecked Sendable {
     /// 终端窗关闭钮 ④自然退出）——result（success/failure）与消息同返（app
     /// 路线对齐：自然退出（解码成功且无 signal）=success；超时=保护性上限
     /// 非故障但运行目标未达成→failure）。
+    /// 【批A · U4/P3-8d（轻触）】超时/stop/外部终止三态文案尾追加消歧句
+    /// ——result 字段值不变（failure=run 未自然完成；零 schema 变化）。
     static func composeUtilityExitMessage(raw: Int,
                                           stopRequested: Bool,
                                           timedOut: Bool,
                                           timeoutSeconds: TimeInterval?) -> (result: String, message: String) {
+        let stopNote = "（主动终止——非故障，需要时直接重新 build_and_run）"
         if timedOut {
             var msg = "utility 超时（" + String(Int(timeoutSeconds ?? 0))
                 + "s 保护上限）→ 已 terminate；"
             msg = msg + renderUtilityExitNote(raw: raw, timedOut: true)
             msg = msg + "；超时=保护性上限非故障（默认不限时——需要更长运行时提高 timeout_ms 重跑）"
+            msg = msg + stopNote
             return ("failure", msg)
         }
         if stopRequested {
             var msg = "utility 已被 stop_build 终止（SIGKILL）"
             msg = msg + "——终端窗已自动关闭（和 app 路线一致）"
+            msg = msg + stopNote
             return ("failure", msg)
         }
         if raw < 0 {
@@ -894,6 +909,7 @@ final class GuestRunService: @unchecked Sendable {
             var msg = "utility 被外部终止（signal=" + String(sig)
                 + "，wait4 raw=" + String(raw) + "）"
             msg = msg + "——终端窗口关闭钮=终止进程（官方语义），窗口已自动收尾"
+            msg = msg + stopNote
             return ("failure", msg)
         }
         let code = (raw >> 8) & 0xFF

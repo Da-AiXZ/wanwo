@@ -223,8 +223,8 @@ private func gibDynamicColor(light: UIColor, dark: UIColor) -> UIColor {
 // FileHandle 非线程安全；footer 与 append 同队列 FIFO 有序）。本类与
 // pendingTee 认领机制均为万我自有新增（本文件已是万我树内副本非 vendored）。
 
-/// utility 终端 raw 输出落盘盒（BuildArtifacts/run_log-<HHmmss>.txt——AI
-/// fs/read 直取；头部/尾部由 GuestWindowBridge（pid 可及点）与
+/// utility 终端 raw 输出落盘盒（BuildArtifacts/run_log-<工程名>-<HHmmss>.txt
+/// ——AI fs/read 直取；头部/尾部由 GuestWindowBridge（pid 可及点）与
 /// GuestRunService.unregisterUtilityProcess（退出注记点）分别写入）。
 @objc public final class UtilityTeeLog: NSObject {
     /// 落盘文件路径（事件 runLog 字段/结果文本直显用）。
@@ -262,7 +262,19 @@ private func gibDynamicColor(light: UIColor, dark: UIColor) -> UIColor {
 
     /// raw 输出分块（TerminalViewObjC.readabilityHandler 后台线程调用——
     /// 转投串行队列；终端字节流原样落盘，含 ANSI 控制序列）。
+    /// 【批A · U2/P3-8c】NUL 缓解（降级方案——写入端全零块丢弃）：根因
+    /// 考古结论（报告要点）：本类写入链（单串行队列 + 单 FileHandle +
+    /// open 后无截断 + 无 seek 越界）静态证明无法产生 NUL 空洞——NUL 字节
+    /// 来自数据源本身（raw guest PTY 字节流：LC bootstrap/pty 层/guest
+    /// 二进制输出，vendored/运行面，归批 B；SwiftTerm 只是消费端）。
+    /// 降级语义：整块全零分块直接丢弃（PTY 分块粒度下全零块=填充噪声，
+    /// 无信息量）；混合块原样保留（不做字节级清洗——保持 raw 流保真，
+    /// 禁预处理糊弄语义）。
     @objc public func appendRaw(_ data: Data) {
+        let firstNonZero = data.first { $0 != 0 }
+        if firstNonZero == nil {
+            return
+        }
         queue.async { [weak self] in
             guard let self = self, !self.closed, let h = self.handle else { return }
             try? h.write(contentsOf: data)

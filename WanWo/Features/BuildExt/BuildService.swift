@@ -41,6 +41,13 @@ struct BuildResult: Sendable {
     /// 【N7c】签名编排结果注记（sign=true 时：nil=未请求签名；成功=「签名完成」；
     /// 失败=失败原因——构建本体成功、签名独立报告，AI 可重试签名）。
     let signNote: String?
+    /// 【批A · S3】缓存状态提示（冷缓存/全量重建时非空——BUILD OK/FAILED
+    /// 文案追加；增量构建为空串不提示。判据=构建前缓存目录 .o 存在性 +
+    /// args.txt 比对（NXBuilder.init projectDirty 逻辑镜像））。
+    let cacheNote: String
+    /// 【批A · S2/P3-7】诊断摘要截断标志（uniq>50 时 true——工具层据此条件
+    /// 追加「可能未列全」提示，替代旧无条件文案）。
+    let diagnosticsTruncated: Bool
     let elapsedSeconds: Double
 }
 
@@ -230,6 +237,13 @@ final class BuildService: @unchecked Sendable {
                Self.modificationDate(of: $0) > Self.modificationDate(of: $1)
            }).first,
            let reused = NXProject(url: latest) {
+            // 【批A · W/P2-6 老工程策略（拍板=全做）】复用路径也补缺失 bundle
+            // 键：幂等 best effort、只补缺不覆盖（用户自定义不冲）——老工程
+            //（如 BuildProbeApp）在下次 project_create 时自动治好。仅 App 形态
+            //（Utility 无 bundle 面不触碰——与新建路径同守卫）。
+            if reused.projectConfig.schemeKind == NXProjectSchemeKind.app {
+                _ = Self.injectDefaultBundleKeys(project: reused)
+            }
             return (reused, false)
         }
 
@@ -267,6 +281,19 @@ final class BuildService: @unchecked Sendable {
     /// _infoDictionary 装载链实测两键缺失=启动告警）。只补缺失键（已存在
     /// 不覆盖——防冲用户自定义）；幂等 best effort（任何失败返回 false，
     /// 不阻塞创建——语义等价旧行为）。
+    /// 【批A · W/P2-6】补齐三个平台识别键（官方 ipa Info.plist 对质形态）：
+    ///   · CFBundleSupportedPlatforms=[iPhoneOS]（数组形态）；
+    ///   · DTPlatformName=iphoneos；
+    ///   · DTSDKName=iphoneos<deploymentTarget>（字面展开值——NXBundleInfo
+    ///     经 varObjectForKey 递归展开 $(...)，但 NXDeploymentTarget 属 plist
+    ///     顶层键非注册变量，写 "$(NXDeploymentTarget)" 会展开退化为空串，
+    ///     故取 projectConfig.deploymentTarget 写字面量）。
+    /// 注入时机（报告要点）：createOrReuseProject 新建+复用两路径（工程
+    /// 创建/复用必经 project_create 工具）——写盘后 project.reload() 使
+    /// NXBundleInfo 即时生效；NXBuilder.buildProject 首行 reloadData +
+    /// NXBuilder.prepare 的 Info.plist 渲染（vendored NXBuilder.swift:140）
+    /// 均在 build 阶段重读，N9 guest install 消费的 bundle Info.plist 由
+    /// prepare 写出——注入必然先于两者生效。
     static func injectDefaultBundleKeys(project: NXProject) -> Bool {
         let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
         guard let read = NSDictionary(contentsOf: plistURL) else { return false }
@@ -278,6 +305,19 @@ final class BuildService: @unchecked Sendable {
         }
         if bundleInfo["CFBundlePackageType"] == nil {
             bundleInfo["CFBundlePackageType"] = "APPL"
+            changed = true
+        }
+        // 【批A · W/P2-6】三个平台识别键（形态对齐官方成品 ipa Info.plist）。
+        if bundleInfo["CFBundleSupportedPlatforms"] == nil {
+            bundleInfo["CFBundleSupportedPlatforms"] = ["iPhoneOS"]
+            changed = true
+        }
+        if bundleInfo["DTPlatformName"] == nil {
+            bundleInfo["DTPlatformName"] = "iphoneos"
+            changed = true
+        }
+        if bundleInfo["DTSDKName"] == nil {
+            bundleInfo["DTSDKName"] = "iphoneos" + (project.projectConfig.deploymentTarget ?? "25.0")
             changed = true
         }
         if !changed { return true }
@@ -317,9 +357,13 @@ final class BuildService: @unchecked Sendable {
 
     /// 删除工程（D5 缓解：僵尸工程/损坏 plist 0.0s 不可恢复 → 可删可重建）。
     /// 范围 = BuildProjects/<name>/ 整目录 + Cache/<uuid>（每个 UUID 工程目录
-    /// 对应一份编译缓存，NXProject.m:151 构造规则）。刻意不依赖 NXProject
-    /// 可解析——僵尸工程（init 返回 nil）同样可删。返回 (工程目录数, 缓存目录数)。
-    static func deleteProjectDirectories(workspaceRoot: URL, name: String) throws -> (projects: Int, caches: Int) {
+    /// 对应一份编译缓存，NXProject.m:151 构造规则）+【批A · U1/P3-8a】
+    /// BuildArtifacts/<name>.ipa 与 BuildArtifacts/run_log-<name>-*.txt（工程
+    /// 名关联产物；历史无工程名的 run_log-<HHmmss>.txt 无法归属、不误删）。
+    /// 刻意不依赖 NXProject 可解析——僵尸工程（init 返回 nil）同样可删。
+    /// 返回 (工程目录数, 缓存目录数, 产物文件数)；产物删除失败（文件锁/
+    /// 不存在）静默容忍。
+    static func deleteProjectDirectories(workspaceRoot: URL, name: String) throws -> (projects: Int, caches: Int, artifacts: Int) {
         // 名称校验同 resolveProject（防空名/分隔符退化——nameDir==根 fail closed）
         guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
             throw BuildServiceError.projectNotFound(name: name)
@@ -350,7 +394,31 @@ final class BuildService: @unchecked Sendable {
             }
         }
         try fm.removeItem(at: nameDir)
-        return (entries.count, cacheCount)
+        // 【批A · U1/P3-8a】BuildArtifacts 工程名关联产物清理：<name>.ipa +
+        // run_log-<name>-*.txt（副本命名见 BuildAndRunTool.copyRunLogToWorkspace
+        // / utility tee 路径——均含工程名段）。删除失败静默容忍（best effort）。
+        var artifactsRemoved = 0
+        let artDir = workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true)
+        let artifactIpaURL = artDir.appendingPathComponent(name + ".ipa")
+        if fm.fileExists(atPath: artifactIpaURL.path) {
+            if (try? fm.removeItem(at: artifactIpaURL)) != nil {
+                artifactsRemoved += 1
+            }
+        }
+        if let artEntries = try? fm.contentsOfDirectory(
+            at: artDir, includingPropertiesForKeys: nil, options: []) {
+            let logPrefix = "run_log-" + name + "-"
+            for artEntry in artEntries {
+                let fileName = artEntry.lastPathComponent
+                guard fileName.hasPrefix(logPrefix), artEntry.pathExtension == "txt" else {
+                    continue
+                }
+                if (try? fm.removeItem(at: artEntry)) != nil {
+                    artifactsRemoved += 1
+                }
+            }
+        }
+        return (entries.count, cacheCount, artifactsRemoved)
     }
 
     /// D2 出厂模板修正：官方 App 模板 NXOutputPath = `$(CACHEROOT)/Payload/
@@ -1134,13 +1202,177 @@ final class BuildService: @unchecked Sendable {
         return runInFlight
     }
 
+    // MARK: 批A · S1（P2-5 回归根治）统一诊断路径渲染
+
+    /// debug.json 文件桶键（DebugObject.title）→ 短可读路径。**单一渲染源**
+    /// ——build_ipa 摘要与 build_log 两渲染器同源口径（P2-5 回归根治：旧
+    /// 两处一处盲切一处精确剥离、互不一致）。
+    /// title 形态考古结论（报告要点）：DebugDatabase.setFileDebug/
+    /// appendFileDebug 以 `URL(fileURLWithPath:).standardized.path` 落键
+    ///（vendored Project+Debug.swift:157-195）——真实形态=编译器诊断
+    /// fileURL 的**符号链接解析后宿主绝对路径**（/private/var/mobile/...
+    /// 形态）；而 project.url 为 /var/... 形态（standardize 只去 ../ 与 //
+    ///、不解符号链接）——两形态差 /private 前缀 8 字符。旧 build_ipa 侧
+    /// `hasPrefix("/")→dropFirst(rootPrefix.count)` 盲切（对 /private 形态
+    /// 错切出半截 UUID 短形态 [C1E5B58/...]）、build_log 侧
+    /// `hasPrefix(rootPrefix)` 精确剥离不命中（宿主绝对路径直出）。
+    /// 渲染序：①归一 /private 前缀后按工程根精确剥离；②不命中按
+    /// NXBootstrap rootURL（BSROOT——Cache/工具链路径诊断）两形态剥离；
+    /// ③再不命中截 alpine-rootfs/data/ 标记（容器内非工程/非 BSROOT 残余
+    /// 面）；④全不命中原样返回（非路径键如 Internal 亦走 ④）。
+    static func shortDiagnosticPath(title: String, projectRoot: URL) -> String {
+        guard title.hasPrefix("/") else { return title }
+        let privatePrefix = "/private"
+        var titleNorm = title
+        if titleNorm.hasPrefix(privatePrefix + "/") {
+            titleNorm = String(titleNorm.dropFirst(privatePrefix.count))
+        }
+        let rootStd = projectRoot.standardizedFileURL.path
+        var rootNorm = rootStd
+        if rootNorm.hasPrefix(privatePrefix + "/") {
+            rootNorm = String(rootNorm.dropFirst(privatePrefix.count))
+        }
+        if titleNorm.hasPrefix(rootNorm + "/") {
+            return String(titleNorm.dropFirst(rootNorm.count + 1))
+        }
+        let bsStd = NXBootstrap.shared().rootURL.standardizedFileURL.path
+        var bsNorm = bsStd
+        if bsNorm.hasPrefix(privatePrefix + "/") {
+            bsNorm = String(bsNorm.dropFirst(privatePrefix.count))
+        }
+        if titleNorm.hasPrefix(bsNorm + "/") {
+            return String(titleNorm.dropFirst(bsNorm.count + 1))
+        }
+        let hostMarker = "alpine-rootfs/data/"
+        if let markerRange = titleNorm.range(of: hostMarker) {
+            return String(titleNorm[markerRange.upperBound...])
+        }
+        return title
+    }
+
+    // MARK: 批A · V（P1-11）C++ 源自动链接 libc++（构建期注入，零持久化）
+
+    private static let cppHookLock = NSLock()
+    private static var cppHookInstalled = false
+
+    /// NXProjectConfig.linkerFlags getter 钩子（进程内一次性安装）：源文件
+    /// 清单含 .mm/.cpp 时在返回值尾部追加 -L<BSROOT>/lib 与 -lc++（查重：
+    /// 已含 -lc++ 则原样返回——用户手动加过不重复）。
+    /// 注入层选择（报告要点）：NXBuilder.buildProject 首行强制
+    /// projectConfig.reloadData()（文件重读、_linkerFlags ivar 重载），
+    /// NXBuilder.init 内 NXPhaseEngine(project:) 再读 linkerFlags——WanWo
+    /// 层在「reload 之后、读取之前」无时机窗；plist 持久化被拍板排除
+    ///（非工程文件改写）；vendored 改动归批 B。故选 getter 替换
+    ///（method_setImplementation + block IMP）：覆盖 build_ipa/build_and_run
+    /// 全部消费点（NXPhaseEngine.m:73/78 经 projectConfig.linkerFlags）、
+    /// 零持久化、零 vendored diff。NXEntitlementsConfig 为独立类不受影响。
+    /// "$(BSROOT)" 展开时机在 reload 期（varObjectForKey→expandString），
+    /// 钩子追加的路径直接取 NXBootstrap rootURL 绝对路径（=展开后等价
+    /// 形态——linker job args 不做二次展开，写 "$(BSROOT)" 会原样进 lld）。
+    static func ensureCppLinkerHookInstalled() {
+        cppHookLock.lock()
+        if cppHookInstalled {
+            cppHookLock.unlock()
+            return
+        }
+        cppHookInstalled = true
+        cppHookLock.unlock()
+        guard let configClass = NSClassFromString("NXProjectConfig") else { return }
+        let linkerFlagsSel = NSSelectorFromString("linkerFlags")
+        guard let getterMethod = class_getInstanceMethod(configClass, linkerFlagsSel) else { return }
+        let originalIMP = method_getImplementation(getterMethod)
+        let originalFn = unsafeBitCast(originalIMP,
+                                       to: (@convention(c) (AnyObject, Selector) -> NSArray).self)
+        let hookBlock: @convention(block) (AnyObject, Selector) -> NSArray = { configObj, sel in
+            let baseFlags = originalFn(configObj, sel)
+            return Self.cppAugmentedLinkerFlags(base: baseFlags, config: configObj)
+        }
+        method_setImplementation(getterMethod, imp_implementationWithBlock(hookBlock))
+    }
+
+    /// 钩子主体：仅 Project.plist 配置面 + 源码含 .mm/.cpp + 未含 -lc++ 时追加。
+    private static func cppAugmentedLinkerFlags(base: NSArray, config: AnyObject) -> NSArray {
+        guard let projectConfig = config as? NXProjectConfig else { return base }
+        let plistPath = projectConfig.plistPath
+        guard plistPath.hasSuffix("/Config/Project.plist") else { return base }
+        let configDir = (plistPath as NSString).deletingLastPathComponent
+        let projectDir = (configDir as NSString).deletingLastPathComponent
+        guard sourcesContainCpp(projectDir) else { return base }
+        var flags: [String] = base.compactMap { $0 as? String }
+        if flags.contains("-lc++") { return base }
+        let libURL = NXBootstrap.shared().rootURL.appendingPathComponent("lib", isDirectory: true)
+        flags.append("-L" + libURL.path)
+        flags.append("-lc++")
+        return flags as NSArray
+    }
+
+    /// 源文件清单含 .mm/.cpp（排除 Resources/Config——NXPhaseEngine 的
+    /// LDEFilesFinder 排除集对齐）。
+    static func sourcesContainCpp(_ dirPath: String) -> Bool {
+        let fm = FileManager.default
+        let dirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
+        guard let sourceEnum = fm.enumerator(at: dirURL, includingPropertiesForKeys: nil) else {
+            return false
+        }
+        for case let fileURL as URL in sourceEnum {
+            let filePath = fileURL.path
+            if filePath.contains("/Resources") || filePath.contains("/Config") {
+                continue
+            }
+            let ext = fileURL.pathExtension.lowercased()
+            if ext == "mm" || ext == "cpp" {
+                return true
+            }
+        }
+        return false
+    }
+
     /// 官方全链构建（.export）。completion 在 MDK 线程池线程回调。
     /// 【N7c】sign=true 且构建成功 → ZSign 签名 bundle（用户导入证书）+
     /// 重打包 ipa——官方对照：0.10.3 Builder.install(.RunningApp) 签名段
     ///（semaphore 等待 ZSigner 回调形态；不 patch——LCPatchExecSlice 属
     /// LC 容器化运行归 N9）。
     func build(project: NXProject, sign: Bool = false, completion: @escaping (BuildResult) -> Void) {
+        // 【批A · V】C++ 自动链接钩子（进程内一次性安装——build_ipa/
+        // build_and_run 共用本入口，两路线同治；ObjcCLI 类 .mm/.cpp 工程
+        // 此前的满屏 std::__1 undefined 即此因）。
+        Self.ensureCppLinkerHookInstalled()
         let started = Date()
+        // 【批A · S3】缓存状态判据（构建前采集——NXBuilder 构建中会改写
+        // 缓存目录与 args.txt）。镜像 NXBuilder.init 的 projectDirty 逻辑：
+        //   · 缓存目录无 .o → 冷缓存（首次全量编译）；
+        //   · args.txt 与当前 flags 拼串不一致 → 全量重建（配置漂移）；
+        //   · 两者皆非 → 增量（不提示）。
+        // 边界（如实报告）：源文件变更触发的部分重编依赖 MDK 内部扫描，
+        // 静态不可预判——本判据只区分冷/配置漂移/增量三态。
+        let cacheURL = project.cacheURL
+        var hasObjectFiles = false
+        if let cacheEnum = FileManager.default.enumerator(at: cacheURL, includingPropertiesForKeys: nil) {
+            for case let cacheFile as URL in cacheEnum {
+                if cacheFile.pathExtension == "o" {
+                    hasObjectFiles = true
+                    break
+                }
+            }
+        }
+        // 拼串形态与 NXBuilder.init argsString 逐字一致（swiftFlags +
+        // compilerFlags + " " + linkFrameworksAutomatically——中间无空格）。
+        let swiftFlagsText = project.projectConfig.swiftFlags.joined(separator: " ")
+        let clangFlagsText = project.projectConfig.compilerFlags.joined(separator: " ")
+        let autoLinkText = " " + String(project.projectConfig.linkFrameworksAutomatically)
+        let argsString = swiftFlagsText + clangFlagsText + autoLinkText
+        let cachedArgs = try? String(
+            contentsOf: cacheURL.appendingPathComponent("args.txt"), encoding: .utf8)
+        var configDirty = true
+        if let cachedText = cachedArgs {
+            configDirty = cachedText != argsString
+        }
+        var cacheNote = ""
+        if !hasObjectFiles {
+            cacheNote = "冷缓存（首次全量编译——正常耗时 30-60s，非卡死）"
+        } else if configDirty {
+            cacheNote = "全量重建（构建参数/配置变更）"
+        }
         NXBuilder.buildProject(withProject: project, buildType: .export) { [weak self] result, _ in
             let elapsed = Date().timeIntervalSince(started)
             let db = DebugDatabase.getDatabase(
@@ -1154,14 +1386,12 @@ final class BuildService: @unchecked Sendable {
             // 开始仍会重置 Internal，展示层不再二次清洗）。
             // 诊断可定位化（保守形态重做——嵌套函数+正则链
             // 疑触发 swiftc 崩溃 run 39032097279/rerun，见 §三 g）。
-            let rootPrefix = project.url.standardizedFileURL.path + "/"
-            // file 在 DebugObject 的键上（MDKSourceLocation 只有行列）。
+            // 【批A · S1】路径渲染统一走 shortDiagnosticPath（单一渲染源，
+            // 与 build_log 同口径——旧盲切形态根治）。
             struct Rendered { let level: String; let file: String; let line: Int; let col: Int; let message: String }
             var rendered: [Rendered] = []
             for (title, object) in db.debugObjects {
-                // 全部拆单步局部变量（type-check 超时惯犯：构造器内嵌三元/
-                // 下标链/?? 混合——第 5 次实证）。
-                let file = title.hasPrefix("/") ? String(title.dropFirst(rootPrefix.count)) : title
+                let file = Self.shortDiagnosticPath(title: title, projectRoot: project.url)
                 for item in object.debugItems {
                     let levelKey = Int(item.severity.rawValue)
                     let level = Self.levelNames[levelKey] ?? "note"
@@ -1216,6 +1446,8 @@ final class BuildService: @unchecked Sendable {
                     with: "wanwo-build-sandbox/")
                 lines2.append(line)
             }
+            // 【批A · S2/P3-7】截断标志（默认 false——零诊断/未截断态）。
+            var diagnosticsTruncated = false
             let summary: String
             if lines2.isEmpty {
                 if result {
@@ -1233,7 +1465,11 @@ final class BuildService: @unchecked Sendable {
                 }
             } else {
                 var tail = ""
-                if uniq.count > 50 {
+                // 【批A · S2/P3-7】真截断才置标志（工具层据此条件追加提示
+                // ——替代旧的无条件「可能未列全」文案）。
+                let truncated = uniq.count > 50
+                if truncated {
+                    diagnosticsTruncated = true
                     tail = "\n…（仅显示前 50 条，共 " + String(uniq.count) + " 条——修一批再构建看下一批）"
                 }
                 summary = lines2.joined(separator: "\n") + tail + contaminationHint
@@ -1260,6 +1496,8 @@ final class BuildService: @unchecked Sendable {
                 buildLogPath: project.cacheURL.appendingPathComponent("debug.json").path,
                 diagnosticsSummary: summary.isEmpty ? "（无诊断条目）" : summary,
                 signNote: signNote,
+                cacheNote: cacheNote,
+                diagnosticsTruncated: diagnosticsTruncated,
                 elapsedSeconds: elapsed)
             completion(finalResult)
         }

@@ -332,7 +332,11 @@ struct ProjectDeleteTool: AgentTool {
         do {
             let removed = try BuildService.deleteProjectDirectories(
                 workspaceRoot: ctx.workspace.rootURL, name: name)
-            let detail = String(removed.projects) + " project dir(s), " + String(removed.caches) + " cache dir(s)"
+            // 【批A · U1/P3-8a】产物清理结果进结果文本（ipa + 工程名关联
+            // run_log 副本；删除失败静默容忍）。
+            let detail = String(removed.projects) + " project dir(s), " + String(removed.caches)
+                + " cache dir(s), " + String(removed.artifacts)
+                + " artifact file(s) cleaned（BuildArtifacts/<name>.ipa + run_log-<name>-*.txt）"
             return .success("project deleted: " + name + "（" + detail + "）\n"
                 + "Next: project_create with the same name rebuilds from scratch, or pick a new name.")
         } catch let e as BuildServiceError {
@@ -400,8 +404,10 @@ struct ProjectResetTool: AgentTool {
                                                      sessionCwd: sessionCwd)
             // 元组成员插值拆局部变量（type-check 超时雷区对策：多行插值串内
             // 只放简单变量——swiftc 6.4 四次实证形态纪律）。
+            // 【批A · U1/P3-8a】产物清理结果进结果文本（同 project_delete）。
             let removedNote = "removed " + String(removed.projects) + " project dir(s), "
-                + String(removed.caches) + " cache dir(s)"
+                + String(removed.caches) + " cache dir(s), "
+                + String(removed.artifacts) + " artifact file(s) cleaned"
             return .success("""
                 project reset: \(name)（\(removedNote)）
                 project dir: \(project.url.path)\(guestHint)
@@ -604,21 +610,37 @@ struct BuildIPATool: AgentTool {
             if let signNote = result.signNote {
                 signLine = "\nsign: " + signNote
             }
+            // 【批A · S3】缓存状态提示（冷缓存/全量重建时非空——增量不出现）。
+            var cacheLine = ""
+            if !result.cacheNote.isEmpty {
+                cacheLine = "\n缓存状态: " + result.cacheNote
+            }
             return .success("""
-                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)\(signLine)
+                BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)\(signLine)\(cacheLine)
                 ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
                 bundle(.app, N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
                 diagnostics: \(result.diagnosticsSummary)
                 """)
         } else {
-            return .failure("""
-                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）\(optNote)
-                —— 按以下诊断修复源码后重新 build_ipa：
-                \(result.diagnosticsSummary)
-                build log: \(result.buildLogPath)
-                （诊断可能未列全——完整列表见 build_log）
-                """, code: "BUILD_FAILED", name: "BuildError")
+            // 【批A · S2/P3-7】截断提示条件化——BuildResult.diagnosticsTruncated
+            // 为 true（uniq>50 真截断）才追加，5 条全列出时不再出现噪声提示。
+            // 【批A · U3/P3-8b】debug.json 无工作区副本（仅 ipa/run_log 有副本
+            // 语义）——宿主路径如实标注 guest 不可读 + 指路 build_log 工具。
+            // 【批A · S3】缓存状态提示（冷缓存首建 43s 级耗时——AI 误判卡死
+            // 对策，BUILD OK/BUILD FAILED 双态同提示）。
+            var failText = "BUILD FAILED（" + String(format: "%.1fs", result.elapsedSeconds) + "）" + optNote
+            if !result.cacheNote.isEmpty {
+                failText = failText + "\n缓存状态: " + result.cacheNote
+            }
+            failText = failText + "\n—— 按以下诊断修复源码后重新 build_ipa：\n"
+            failText = failText + result.diagnosticsSummary
+            failText = failText + "\nbuild log: " + result.buildLogPath
+                + "（宿主路径——guest 不可读；用 build_log 工具读取）"
+            if result.diagnosticsTruncated {
+                failText = failText + "\n（诊断可能未列全——完整列表见 build_log）"
+            }
+            return .failure(failText, code: "BUILD_FAILED", name: "BuildError")
         }
     }
 }
@@ -661,7 +683,10 @@ struct BuildLogTool: AgentTool {
             // 与 build_ipa 摘要顺序差异的根源=build() 额外做了 level 二次
             // 稳定排序（file→level 双键）——本处保持 file 单键，两输出顺序
             // 不一致为既有设计，不强改序。
-            let rootPrefix = project.url.standardizedFileURL.path + "/"
+            // 【批A · S1/P2-5 回归根治】路径渲染改走
+            // BuildService.shortDiagnosticPath（单一渲染源——旧
+            // hasPrefix(rootPrefix) 精确剥离对 /private/var 形态不命中致宿主
+            // 绝对路径直出；title 真实形态考古与渲染序见该 helper 注记）。
             var titles: [String] = []
             for (title, _) in db.debugObjects {
                 titles.append(title)
@@ -671,10 +696,7 @@ struct BuildLogTool: AgentTool {
             var itemCount = 0
             for title in titles {
                 guard let object = db.debugObjects[title] else { continue }
-                var file = title
-                if title.hasPrefix(rootPrefix) {
-                    file = String(title.dropFirst(rootPrefix.count))
-                }
+                let file = BuildService.shortDiagnosticPath(title: title, projectRoot: project.url)
                 for item in object.debugItems {
                     let levelRaw = Int(item.severity.rawValue)
                     let level = BuildService.levelNames[levelRaw] ?? "note"
@@ -746,12 +768,13 @@ struct BuildAndRunTool: AgentTool {
         + "or via the floating window close button — official semantics: closing the window terminates the process), a guest_run event "
         + "reports the three-state exit (natural exit code / timeout / terminated), the last ≤80 output lines, and the run_log "
         + "workspace copy (AI-readable). Full output is persisted to run_log.txt (Cache path) and copied to the workspace "
-        + "(BuildArtifacts/run_log-<HHmmss>.txt). "
+        + "(BuildArtifacts/run_log-<project name>-<HHmmss>.txt). "
         + "Utility-scheme projects open an interactive terminal window (NXWindowSessionTerminal + SwiftTerm, TTY三映射——官方 .run utility 同款) "
         + "and return immediately. 【N10e 修 H】The utility terminal is raw mode (official terminal emulator semantics: no line buffering / no kernel echo) — "
         + "interactive programs must manage their own echo and line editing (e.g. read byte-by-byte and write back; self-drawn echo is a verified working pattern). "
         + "【N10e 修 F/G/I】On process exit (natural or via stop_build) the terminal window closes automatically (same as the app route) and a guest_run exit event "
-        + "reports the outcome; raw terminal output is teed to the workspace BuildArtifacts/run_log-<HHmmss>.txt (AI-readable, contains ANSI control sequences). "
+        + "reports the outcome; raw terminal output is teed to the workspace "
+        + "BuildArtifacts/run_log-<project name>-<HHmmss>.txt (AI-readable, contains ANSI control sequences). "
         + "Default: no timeout — the guest keeps running until it exits or is stopped; timeout_ms is an optional protective cap. "
         + "One run at a time: a second build_and_run while a run is in flight fails with the active pid (stop_build to terminate, or wait for exit). "
         + "批 3 修 O1: only one utility process at a time as well — a second build_and_run on a Utility project while a utility process is running fails "
@@ -783,17 +806,26 @@ struct BuildAndRunTool: AgentTool {
 
     /// run_log 副本落工作区：源=Cache/<uuid>/run_log.txt（宿主私有路径，
     /// guest bash 与 AI 的 fs 工具都读不到）→ 副本=workspace/BuildArtifacts/
-    /// run_log-<HHmmss>.txt（AI read 直取）。源路径为空（spawn 前失败，无
-    /// run_log 落盘）或复制失败返回空串——结果文本不带副本路径行。
+    /// run_log-<工程名>-<HHmmss>.txt（AI read 直取）。源路径为空（spawn 前
+    /// 失败，无 run_log 落盘）或复制失败返回空串——结果文本不带副本路径行。
+    /// 【批A · U1/P3-8a】副本命名补工程名段——工程删除/重置
+    ///（deleteProjectDirectories）据此清工程名关联的 run_log 副本。
     /// 【C v2】internal：RunSession 常驻收尾段（GuestRunService，工具返回
     /// 后）同样消费——退出事件带工作区副本路径。
     static func copyRunLogToWorkspace(sourcePath: String,
+                                      projectName: String,
                                       workspaceRoot: URL) -> String {
         guard !sourcePath.isEmpty else { return "" }
         let fm = FileManager.default
         let dir = workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true)
         try? fm.createDirectory(atPath: dir.path, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent("run_log-" + Self.runLogStamp() + ".txt")
+        // 工程名仅作文件名段（ASCII 名由 project_create 校验保证——非 ASCII
+        // 名历史工程兜底过滤，防文件系统非法字符）。
+        var safeName = projectName
+        if safeName.isEmpty || !safeName.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) {
+            safeName = "run"
+        }
+        let dest = dir.appendingPathComponent("run_log-" + safeName + "-" + Self.runLogStamp() + ".txt")
         do {
             if fm.fileExists(atPath: dest.path) {
                 try fm.removeItem(atPath: dest.path)
@@ -938,10 +970,16 @@ struct BuildAndRunTool: AgentTool {
                     "runLog": .string(result.buildLogPath),
                     "diagnostics": .string(String(result.diagnosticsSummary.prefix(2000))),
                 ])))
+            // 【批A · S3】缓存状态提示 + 【U3/P3-8b】debug.json 宿主路径注记
+            // （build_ipa 失败文案同款口径）。
+            var cacheLine = ""
+            if !result.cacheNote.isEmpty {
+                cacheLine = "\n缓存状态: " + result.cacheNote
+            }
             return .failure("""
-                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）——按以下诊断修复源码后重新 build_and_run：
+                BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）\(cacheLine)——按以下诊断修复源码后重新 build_and_run：
                 \(result.diagnosticsSummary)
-                build log: \(result.buildLogPath)
+                build log: \(result.buildLogPath)（宿主路径——guest 不可读；用 build_log 工具读取）
                 """, code: "BUILD_FAILED", name: "BuildError")
         }
 
@@ -985,11 +1023,12 @@ struct BuildAndRunTool: AgentTool {
             //    两路径都自动关窗（「和 app 一样」拍板语义）。
             let fastPath = prep.utilityPath
             // 修 I：tee 落盘路径（对齐 app 路线工作区副本语义——BuildArtifacts/
-            // run_log-<HHmmss>.txt 落 workspace 可 AI 直读；fakefs 元数据补
-            // 注册同 ipa 副本缝）。
+            // run_log-<工程名>-<HHmmss>.txt 落 workspace 可 AI 直读；fakefs 元
+            // 数据补注册同 ipa 副本缝；工程名段供 U1 delete/reset 清理关联）。
             let artDir = ctx.workspace.rootURL.appendingPathComponent("BuildArtifacts", isDirectory: true)
             try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
-            let teePath = artDir.appendingPathComponent("run_log-" + Self.runLogStamp() + ".txt").path
+            let teePath = artDir.appendingPathComponent(
+                "run_log-" + name + "-" + Self.runLogStamp() + ".txt").path
             let wsRootStd = ctx.workspace.rootURL.standardizedFileURL.path
             let teeStd = URL(fileURLWithPath: teePath).standardizedFileURL.path
             if teeStd.hasPrefix(wsRootStd + "/"), let cwd = sessionCwd {
