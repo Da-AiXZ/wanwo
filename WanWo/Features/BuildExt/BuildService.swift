@@ -190,9 +190,32 @@ final class BuildService: @unchecked Sendable {
 
     /// 取（或经官方工厂创建）工程。同名已存在 → 复用（AI 增量写码场景）。
     /// 返回 (project, created)。
+    /// 【N10e 修 A】schemeKind 透传：官方工厂全参数本就在位（NXProject.m:169-178，
+    /// 万我此前固定传 .app），本参数只是把工具面的 scheme 选择透传下去。
+    /// App 形态默认值=旧行为零回归。Utility 时 interfaceKind 强制
+    /// NXProjectInterfaceKind.unknown——官方合法性矩阵
+    /// NXProjectConfigurationIsValid（NXType.m:157-199）要求 Utility+Unknown
+    ///（Utility+SwiftUI 不合法，工厂 assert(NXProjectConfigurationIsValid)
+    /// NXProject.m:178 断言会炸宿主进程）；模板寻径 interface=nil 分支按
+    /// scheme/language 两级（NXCodeTemplate.m:26-45），Templates.bundle/
+    /// Templates/Utility/Swift/Main.swift 在位（顶层代码形态）。
+    /// Utility 创建后 D2/出厂 gate 两个 best-effort 覆写仍执行：输出路径覆写
+    /// 对 Utility 是 no-op（guard 只匹配官方 App 默认形态
+    /// "$(CACHEROOT)/Payload/$(NXDisplayName).app/$(NXExecutable)"——官方
+    /// utility 值 "$(CACHEROOT)/$(NXExecutable)" 不命中，NXProject.m:279-283
+    /// 原样保留）；出厂 gate false 对 Utility 同样成立（万我 utility token 步
+    /// prepareUtilityRun 无条件执行，不读该键—— vendored NXBuilder
+    /// WANWO_BUILD_RUN 防撞语义与 scheme 无关）。
     func createOrReuseProject(workspaceRoot: URL,
                               name: String,
+                              schemeKind: NXProjectSchemeKind = NXProjectSchemeKind.app,
                               interfaceKind: NXProjectInterfaceKind) throws -> (NXProject, Bool) {
+        // Utility → interfaceKind=unknown（官方合法性矩阵唯一 Utility 合法形态，
+        // 见上注——不收口会撞 NXProject.m:178 断言炸宿主）。
+        var effectiveInterfaceKind = interfaceKind
+        if schemeKind != NXProjectSchemeKind.app {
+            effectiveInterfaceKind = NXProjectInterfaceKind.unknown
+        }
         let projectsRoot = Self.projectsRoot(inWorkspace: workspaceRoot)
         let nameDir = projectsRoot.appendingPathComponent(name, isDirectory: true)
 
@@ -212,9 +235,9 @@ final class BuildService: @unchecked Sendable {
             withName: name,
             withOrganizationIdentifier: "com.wanwo",
             withBundleIdentifier: "com.wanwo.\(name.lowercased())",
-            withSchemeKind: NXProjectSchemeKind.app,
+            withSchemeKind: schemeKind,
             withLanguageKind: NXProjectLanguageKind.swift,
-            withInterfaceKind: interfaceKind) else {
+            withInterfaceKind: effectiveInterfaceKind) else {
             throw BuildServiceError.createFailed(name: name)
         }
         // 【批 2 · D2 出厂模板修正 2026-10-18】官方 App 模板 NXOutputPath 把

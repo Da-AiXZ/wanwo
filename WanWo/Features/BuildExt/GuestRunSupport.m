@@ -14,6 +14,11 @@
 #import <LindChain/ProcEnvironment/Object/ArchiveObject.h>
 #import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspace.h>
 #import <LindChain/Services/applicationmgmtd/LDEApplicationWorkspaceProtocol.h>
+// 【N10e 修 B】errno 级前置探测（stat/access/strerror/errno/memset——纯诊断）。
+#import <errno.h>
+#import <string.h>
+#import <sys/stat.h>
+#import <unistd.h>
 
 NSErrorDomain const WanWoGuestRunErrorDomain = @"com.wanwo.guestrun";
 
@@ -153,14 +158,84 @@ static BOOL WanWoGuestRunBoolForAliases(NSDictionary *plist, NSArray<NSString *>
         return NO;
     }
 
-    // macho_after_sign（trust.c:212-276）：cdhash→entitlement_token_mach_gen
-    // （ksurface 自签）→EOF 追加（幂等）。rc!=0 = token 未生成/未写入。
-    int rc = macho_after_sign(machoPath.UTF8String, entitlement);
-    if (rc != 0) {
+    // ── 【N10e 修 B · errno 级诊断增强（纯诊断零行为变更）】macho_after_sign
+    // 调用前对 machoPath 做 stat/access 前置探测——macho_after_sign rc=-1 的
+    // 三条失败路（trust.c:212-276：open(O_RDWR) 失败 / entitlement_token_mach_gen
+    // 失败 / write 失败）黑盒不可区分，其中 open 失败的 perror 只进宿主 stderr
+    //（设备侧不可见）。探测数据随失败 NSError userInfo 落盘——下一轮真机
+    // token 失败即可用「调用前一刻文件存在且可读写」钉死 open vs gen。
+    struct stat tokenProbeStat;
+    memset(&tokenProbeStat, 0, sizeof(tokenProbeStat));
+    int tokenStatRc = stat(machoPath.fileSystemRepresentation, &tokenProbeStat);
+    int tokenStatErrno = errno;
+    BOOL tokenProbeExists = (tokenStatRc == 0);
+    BOOL tokenProbeReadable = NO;
+    BOOL tokenProbeWritable = NO;
+    if (tokenProbeExists) {
+        tokenProbeReadable = (access(machoPath.fileSystemRepresentation, R_OK) == 0);
+        tokenProbeWritable = (access(machoPath.fileSystemRepresentation, W_OK) == 0);
+    }
+    // 探测字段平铺（单步局部变量——万我 swiftc/ObjC 形态纪律）。
+    NSString *tokenExistsText = tokenProbeExists ? @"YES" : @"NO";
+    long long tokenSizeValue = -1;
+    if (tokenProbeExists) {
+        tokenSizeValue = (long long)tokenProbeStat.st_size;
+    }
+    NSString *tokenSizeText = [NSString stringWithFormat:@"%lld", tokenSizeValue];
+    NSString *tokenModeText = @"-";
+    if (tokenProbeExists) {
+        tokenModeText = [NSString stringWithFormat:@"0%o", (unsigned)(tokenProbeStat.st_mode & 0777)];
+    }
+    NSString *tokenReadText = tokenProbeReadable ? @"YES" : @"NO";
+    NSString *tokenWriteText = tokenProbeWritable ? @"YES" : @"NO";
+    NSString *tokenStatErrnoText = @"0(OK)";
+    if (tokenStatRc != 0) {
+        tokenStatErrnoText = [NSString stringWithFormat:@"%d(%s)", tokenStatErrno, strerror(tokenStatErrno)];
+    }
+    NSString *tokenProbeSummary = [NSString stringWithFormat:
+        @"path=%@ exists=%@ size=%@ mode=%@ readable=%@ writable=%@ statErrno=%@",
+        machoPath, tokenExistsText, tokenSizeText, tokenModeText,
+        tokenReadText, tokenWriteText, tokenStatErrnoText];
+
+    // 前置探测失败 → fail fast（不调 macho_after_sign——文件此刻不存在或
+    // 不可读写时 open(O_RDWR) 必失败，直接带探测数据返回）。调用方失败语义
+    // 不变（NO+error，错误码 5=新增探测失败码）；成功路径/调用本身/token
+    // 语义零改动。
+    if (!tokenProbeExists || !tokenProbeReadable || !tokenProbeWritable) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
+                                         code:5
+                                     userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                    @"macho 前置探测失败——未调用 macho_after_sign（fail fast；open(O_RDWR) 对该文件此刻必失败）：%@",
+                    tokenProbeSummary],
+                @"WanWoTokenProbe": tokenProbeSummary,
+            }];
+        }
+        return NO;
+    }
+
+    // macho_after_sign（trust.c:212-276）：cdhash→entitlement_token_mach_gen
+    // （ksurface 自签）→EOF 追加（幂等）。rc!=0 = token 未生成/未写入。
+    // 【修 B】errno 紧随调用捕获（调用前 errno=0 清零——open 失败候选
+    // EACCES/EPERM/ENOENT；gen 失败走纯 OpenSSL 返回值路径不设 errno，
+    // afterErrno 为残留值仅作弱信号——结论文案如实标注不可强判）。
+    errno = 0;
+    int rc = macho_after_sign(machoPath.UTF8String, entitlement);
+    int tokenSignErrno = errno;
+    if (rc != 0) {
+        if (error != NULL) {
+            NSString *tokenErrnoText = [NSString stringWithFormat:@"%d(%s)",
+                                        tokenSignErrno, strerror(tokenSignErrno)];
+            NSString *tokenConclusion = @"前置探测已证明调用前一刻文件存在且可读写（stat+R_OK/W_OK 全过）——open 失败 vs gen 失败仍无法直接区分，但 open(O_RDWR) 在探测通过后立刻失败的概率极低；signErrno 若为 EACCES/EPERM/ENOENT 候选=open 失败实锤，其余值（残留信号）则 gen 失败（ksurface 私钥/OpenSSL 链）嫌疑上升";
+            *error = [NSError errorWithDomain:WanWoGuestRunErrorDomain
                                          code:4
-                                     userInfo:@{ NSLocalizedDescriptionKey: [NSString stringWithFormat:@"macho_after_sign 失败（rc=%d）——NXTR token 未追加（guest spawn 链将因无 token 残废：proc_fork entitlement 读取失败）", rc] }];
+                                     userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"macho_after_sign 失败（rc=%d）——NXTR token 未追加（guest spawn 链将因无 token 残废：proc_fork entitlement 读取失败）", rc],
+                @"WanWoTokenProbe": tokenProbeSummary,
+                @"WanWoTokenSignErrno": tokenErrnoText,
+                @"WanWoTokenProbeConclusion": tokenConclusion,
+            }];
         }
         return NO;
     }

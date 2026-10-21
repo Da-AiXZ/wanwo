@@ -93,6 +93,11 @@ typedef NS_ENUM(NSInteger, WanWoGuestInstallResult) {
 /// NXTR entitlement token（ksurface 自签自验）。返回 NO = token 未追加
 ///（此时 guest spawn 链残废——entitlementForExecutableAtPath 读不到
 /// token → proc_fork 无 entitlements → dyld 隐藏钩子族不激活）。
+/// 【N10e 修 B】失败 error userInfo 附带 macho_after_sign 调用前的
+/// stat/access 前置探测数据（WanWoTokenProbe / WanWoTokenSignErrno /
+/// WanWoTokenProbeConclusion 键——errno 级诊断，open vs gen 区分用；
+/// 纯诊断零行为变更：调用本身/成功路径/token 语义不动）。前置探测失败
+///（文件不存在/不可读写）时 fail fast，错误码 5。
 /// 选择器形态与 patchGuestExecutableAtPath 同构（动词+宾语+AtPath——
 /// Swift 导入器对中缀 ToMachO 的剪枝不可预测，run 39368919449 实证）。
 + (BOOL)appendEntitlementTokenAtPath:(NSString *)machoPath

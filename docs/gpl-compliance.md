@@ -706,3 +706,24 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | N9 观测链装备 | prepare 细目 a-e/installd 探针/输出尾段缓冲 80 行/run_log 工作区副本全部保留（副本落盘移由 RunSession 收尾段消费——copyRunLogToWorkspace 改 internal） |
 
 **边界**：**vendored 树本轮零 diff**（A1 为运行时层覆盖，唯一登记例外=本节；GuestWindowBridge.h/.m 为万我自有文件）；交付路线（build_ipa/signAndRepackage）零改动；utility 路线编排零改动（仅补 A2 收尾+endRun 显式化）；N9 管道编排（FDMapObject 三映射+持活 fd 100/101）/退出码捕获（exitingCallback+wait4 解码）/run_log 落盘逻辑逐行保留。
+
+### N10e · utility 终端修复批（2026-10-21，用户拍板修 A+修 B；诊断=analysis/utility-terminal-build-failure-diagnosis.md）
+
+**背景三段定罪**（N10d 装机验收 utility 三工程六配置全灭，源码考古定罪）：①段 1 万我 project_create 只出 App 模板（NXSwiftFlags 带 -parse-as-library，NXCodeTemplate.m:178-182），设备 AI sed 改 NXProjectScheme=Utility 后 flags 未随动 → 官方 Utility Swift 模板顶层代码（Templates.bundle/Templates/Utility/Swift/Main.swift=import Foundation+print）必拒；②段 2 App 模板 NXOutputPath=$(CACHEROOT)/Payload/... 指向管线不为 Utility 创建的 .app 目录（官方 Utility=裸路径 $(CACHEROOT)/$(NXExecutable)，NXProject.m:279-283，且无 Resources 目录/无 NXBundleInfo）→ 链接断；③段 3 token 步 macho_after_sign rc=-1（唯一真管线问题，trust.c:212-276 三路失败黑盒不可区分——open(O_RDWR) 失败的 perror 只进宿主 stderr）。
+
+**修 A（project_create 暴露 scheme，根治段 1/2）**：
+| 项 | 内容 |
+|---|---|
+| BuildService.createOrReuseProject | 新增 `schemeKind` 参数（默认 .app=旧行为零回归）透传官方工厂全参数形态（NXProject.m:169-178 本就在位，万我此前固定 .app）；**Utility 时 interfaceKind 强制 NXProjectInterfaceKind.unknown**——官方合法性矩阵 NXProjectConfigurationIsValid（NXType.m:157-199）要求 Utility+Unknown，Utility+SwiftUI 会撞工厂 assert(NXProject.m:178) 炸宿主进程（本轮施工新钉雷点） |
+| BuildTools.ProjectCreateTool | 工具面新增可选参数 `scheme`（"Application"（默认）/"Utility" 两值白名单，其他值 INVALID_ARGS 不静默纠正）；result 文本如实报告 scheme 形态+NXOutputPath 模板形态（Utility 附顶层代码模板注记+build_and_run 引导；复用路径按工程实际 scheme 报告并带 mismatch 警告） |
+| 创建后覆写兼容 | D2 输出路径覆写对 Utility 为 no-op（guard 只匹配官方 App 默认形态）；出厂 gate false 对 Utility 保持（万我 utility token 步 prepareUtilityRun 无条件执行不读该键；vendored NXBuilder WANWO_BUILD_RUN 防撞语义与 scheme 无关） |
+| 官方模板脚手架 | NXCodeTemplateMakeProjectStructure（NXCodeTemplate.h:28）在 Utility 路径按 Templates.bundle/Templates/Utility/Swift/Main.swift 铺顶层代码形态 main.swift——工具 result sources 行如实呈现 |
+
+**修 B（appendEntitlementTokenAtPath errno 级诊断增强，钉死段 3）**：
+| 项 | 内容 |
+|---|---|
+| 前置探测 | macho_after_sign 调用前 stat/access 探测（exists/size/mode 八进制/R_OK/W_OK——errno.h+sys/stat.h+unistd.h+string.h 新 import）；探测失败（不存在或不可读写）fail fast 错误码 5（新增，全域唯一）直接带探测数据返回、不调 macho_after_sign |
+| 失败增强 | rc!=0 路径 NSError userInfo 增三键：WanWoTokenProbe（前置探测平铺字段）/WanWoTokenSignErrno（errno=0 清零后紧随调用捕获——EACCES/EPERM/ENOENT 候选=open 实锤，残留值=gen 嫌疑上升的弱信号）/WanWoTokenProbeConclusion（open vs gen 判读指引）；NSLocalizedDescriptionKey 原文逐字保留 |
+| 零行为变更 | macho_after_sign 调用本身/成功路径/token 语义完全不动（纯诊断；fail fast 仅在 open(O_RDWR) 必失败的前置态短路——调用方 NO+error 失败语义不变）；app 路线 prepareGuestRun 同函数消费零改动 |
+
+**边界**：全部改动 WanWo/ 层四文件（BuildService.swift/BuildTools.swift/GuestRunSupport.{h,m}），**vendored 树零 diff**；build_ipa/交付路线/app 路线（prepareGuestRun/GuestRunSession）零改动；utility 签名编排顺序（补片→ZSign→token→fastpath）零改动；stop_build/build_and_run 语义零改动；无新增文件（project.yml 零改动）；trust_nxt2_sign 历史裁决（§N7:236）维持——macho_after_sign 为 token 唯一合法实现，本轮未触碰该边界。

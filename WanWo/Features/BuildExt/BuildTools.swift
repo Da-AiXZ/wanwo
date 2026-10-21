@@ -129,11 +129,16 @@ enum BuildToolSupport {
 struct ProjectCreateTool: AgentTool {
     let name = "project_create"
     let description = "Create (or reuse) a build project in the session workspace. "
-        + "Scaffolds Config/Project.plist + Entitlements + SwiftUI template sources via the vendored official factory. "
-        + "Write your source files into the returned project directory with the fs tools, then call build_ipa."
+        + "Scaffolds Config/Project.plist + Entitlements + template sources via the vendored official factory. "
+        + "scheme=\"Application\" (default) scaffolds a SwiftUI window app; scheme=\"Utility\" scaffolds an official native "
+        + "command-line project (no -parse-as-library in NXSwiftFlags, bare NXOutputPath, no bundle keys) — run it in an "
+        + "interactive terminal window via build_and_run. "
+        + "Write your source files into the returned project directory with the fs tools, then call build_ipa (Application) "
+        + "or build_and_run (Utility)."
     let parameters = JSONValue.schemaObject(
         properties: [
             "name": .stringSchema(description: "Project name (alphanumeric; used as directory name and executable name)."),
+            "scheme": .stringSchema(description: "Project scheme: \"Application\" (default, SwiftUI window app) or \"Utility\" (command-line guest run in a terminal window)."),
         ],
         required: ["name"])
 
@@ -154,9 +159,25 @@ struct ProjectCreateTool: AgentTool {
                 + "Chinese display name: edit NXDisplayName in Config/Project.plist after create."
             return .failure("missing/invalid \"name\". " + hint, code: "INVALID_ARGS")
         }
+        // 【N10e 修 A】scheme 参数（可选，默认 Application）：仅两值白名单，
+        // 其他值 INVALID_ARGS 失败、不静默纠正（scheme 决定模板/flags/输出
+        // 路径全表形态——N10d 实锤「App 模板+sed 改 scheme」半改造态三段失败，
+        // fail closed）。
+        var schemeKind: NXProjectSchemeKind = NXProjectSchemeKind.app
+        var schemeName = "Application"
+        if let scheme = args.objectValue?["scheme"]?.stringValue {
+            if scheme == "Utility" {
+                schemeKind = NXProjectSchemeKind.utility
+                schemeName = "Utility"
+            } else if scheme != "Application" {
+                return .failure("invalid \"scheme\": \"\(scheme)\". Allowed values: \"Application\" (default) or \"Utility\" — no other values are accepted.",
+                                code: "INVALID_ARGS")
+            }
+        }
         do {
             let (project, created) = try BuildService.shared.createOrReuseProject(
                 workspaceRoot: ctx.workspace.rootURL, name: name,
+                schemeKind: schemeKind,
                 interfaceKind: NXProjectInterfaceKind.swiftUI)
             // 【D6 根治】新建工程的目录树补注册 fakefs 元数据（host 直写未经
             // meta.db 注册时 guest ls 不可见——装机审计实锤）；复用路径已注册
@@ -171,12 +192,33 @@ struct ProjectCreateTool: AgentTool {
                 .map { $0.map(\.lastPathComponent).sorted().joined(separator: ", ") } ?? "-"
             let guestHint = BuildTools.guestPathHint(project.url.path, workspaceRoot: ctx.workspace.rootURL,
                                                sessionCwd: sessionCwd)
+            // 【N10e 修 A】scheme 形态+NXOutputPath 模板形态如实报告。复用路径
+            // 按工程实际 scheme 报告（同名旧工程 scheme 可能与本次请求不同）。
+            var actualSchemeName = "unknown"
+            if project.projectConfig.schemeKind == NXProjectSchemeKind.utility {
+                actualSchemeName = "Utility"
+            } else if project.projectConfig.schemeKind == NXProjectSchemeKind.app {
+                actualSchemeName = "Application"
+            }
+            var schemeLines = "scheme: " + actualSchemeName + "\n"
+            var schemeNote = ""
+            var nextLine = "Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_ipa(name: \"\(name)\")."
+            if actualSchemeName == "Utility" {
+                schemeLines = schemeLines
+                    + "NXOutputPath: $(CACHEROOT)/$(NXExecutable)（官方 utility 裸路径——无 .app bundle/Payload 目录，编译产物即单 macho）\n"
+                schemeNote = "Note (Utility): the official utility Swift template is top-level code (import Foundation + print(...)); this toolchain does not add -parse-as-library for Utility+Swift, so top-level statements compile. An @main struct also works.\n"
+                nextLine = "Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_and_run(name: \"\(name)\") — it opens an interactive terminal window."
+            }
+            var mismatchNote = ""
+            if !created && actualSchemeName != schemeName {
+                mismatchNote = "Warning: requested scheme=\(schemeName) but the existing project has scheme=\(actualSchemeName) — reused as-is (project_reset to re-scaffold).\n"
+            }
             return .success("""
                 project \(note): \(name)
-                project dir: \(project.url.path)\(guestHint)
+                \(mismatchNote)\(schemeLines)\(schemeNote)project dir: \(project.url.path)\(guestHint)
                 sources: \(sources)
                 Note: external macro plugins are not bundled in this toolchain — #Preview / @Observable / @Model will fail to compile. Use ObservableObject/@Published instead.
-                Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_ipa(name: "\(name)").
+                \(nextLine)
                 """)
         } catch {
             return .failure(String(describing: error), code: "CREATE_FAILED", name: "BuildError")
