@@ -749,3 +749,21 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | 修 I run_log tee（Terminal.swift 万我副本） | 新增 UtilityTeeLog（@objc，串行队列收敛全部写入——readabilityHandler 后台线程触发/FileHandle 非线程安全；footer 写完即 close+closed 标志防已关句柄写异常；queue-confined 状态）；TerminalViewObjC 增 pendingTee 静态认领槽（GuestWindowBridge 开窗前置入→init 认领取走——一窗一 tee）+readabilityHandler 内 appendRaw 分流（feed 渲染链零改动）；头部行（run start+pid——bridge 开窗成功后写入，tee 串行队列 FIFO 有序）/尾部行（run end+退出注记——unregister 写）落 workspace BuildArtifacts/run_log-<HHmmss>.txt（对齐 app 路线工作区副本语义；fakefs 元数据补注册同 ipa 副本缝）；已知微小竞态：进程死亡收尾字节流若晚于 unregister 的 footer 到达则排在 footer 后（观测语义可接受，如实登记） |
 
 **边界（N10e 第二批）**：全部改动 WanWo/ 层四文件（BuildTools.swift/GuestRunService.swift/GuestWindowBridge.{h,m}）+万我树内 Terminal.swift 副本（本就非 vendored——N10a 落位副本，适配登记原样保留）+本节登记，**vendored 树零 diff**（git diff Vendor/ 空）；build_ipa/交付路线/app 路线（prepareGuestRun/GuestRunSession/RunSession 退出事件）零改动；GuestRunSupport.m :552-640 区段未触碰；trust_nxt2_sign 未触碰；无新增文件（UtilityTeeLog 落 Terminal.swift——project.yml 零改动）；app 路线 exitingCallback 链零改动（spawnRun 的 process.exitingCallback 包装原样）。
+
+## N11、实战轮修复批 1 · 修 J（2026-10-21，用户拍板六批修复之批 1；诊断=工作区 analysis/shizhan-crash-timeout-diagnosis.md §一）
+
+**背景（.ips 崩溃定罪链）**：2026-10-21 17:25 宿主 WanWo 进程 SIGBUS（EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE），线程 19（无名义后台线程）撞栈守卫页（vmRegionInfo 明示 544KB 栈区=512KB+guard）；511 帧调用栈为进程内编译前端——CoreCompiler `swift::DiagnosticBridge::getSourceFileSyntax` ×105 递归 → lib_CompilerSwiftParser `parseMemberBlock` 约 93 层嵌套类型解析递归 → demangler（swift_getTypeByMangledName → decodeGenericArgs）写穿守卫页。触发输入=实战 turn 3 `build_and_run RenderCapProbe`（深层泛型 SwiftUI 探针）。
+
+**动机（vendored 上游 bug）**：上游 `MDKPthreadDispatch` 与 `MDKThreadPool` worker 均以 `pthread_create(..., NULL, ...)`（attr=NULL）建线程——iOS 次线程默认 512KB 栈；而消费点把进程内编译前端派到这些线程上跑（见下方考古）。swiftc 官方前端惯例 8-64MB 栈，512KB 上跑递归下降解析器必然边界。
+
+**池 worker 承载编译考古结论（施工前全文读码定案）**：编译**确实进池 worker**——`MDKPhaseEngine.m:48` clang 编译 phase 以 `withMultithreadingSupport:YES` 生成 → `MDKPhaseRunner.m:71-143 runPhase` 把编译 job `dispatchExecution` 派到 `MDKThreadPoolGroup`（继承 `MDKThreadPool`）池 worker → `MDKJob.m:98 executeJobWithOutDiagnostics → CCJobExecuteJob` 进程内编译同步执行在 worker 线程上。因此 `MDKThreadPool.m:156`（现 :192）的 worker `pthread_create` 同样需要大栈。旁证消费面：`NXBuilder+MDKDriver.swift:44-129` 池 worker 只跑依赖扫描轻活（不承载编译）；`NXDocumentManager.m:120` 文档读写（轻活）；Swift 编译 phase（`MDKPhaseEngine.m:52` =NO）串行跑在 MDKPthreadDispatch 派发线程（即 .ips 崩溃线程 19）。
+
+**diff 内容（vendored 唯一改动文件，`git diff Vendor/` 仅此一个）**：
+| 文件:行号 | 内容 |
+|---|---|
+| MobileDevelopmentKit/Support/MDKThreadPool.m:32-45 | `MDK_COMPILE_THREAD_STACK_SIZE` 宏（64MB）+ 定罪注释（崩溃证据/消费链/对齐 swiftc 惯例/惰性物化页说明） |
+| MDKThreadPool.m:47-68 | 新增 static helper `MDKThreadAttrWithLargeStack`：`pthread_attr_init` + `pthread_attr_setstacksize(64MB)`，任一步失败 NSLog 报告（setstacksize 失败先 destroy 半成品 attr）并返回 NO——调用方回退 NULL attr（上游默认语义） |
+| MDKThreadPool.m:79-109 `MDKPthreadDispatch` | pthread_create 前经 helper 构造 attr，创建后立即 `pthread_attr_destroy`；成功路径语义零变化（同签名同派发仅栈变大）；附带硬化：`pthread_create` 失败时释放 retained block 并跳过 `pthread_detach`（上游原实现忽略返回值=block 泄漏+对未初始化 thread detach 为 UB——成功路径不动，登记） |
+| MDKThreadPool.m:185-211 `initWithThreads` | worker 循环共享单个 64MB attr（创建后 destroy）；`pthread_create` 失败逐个 NSLog（上游静默）；池 worker 现跑 clang 编译 job 故同栈扩容 |
+
+**边界**：仅栈尺寸变化（512KB→64MB），函数签名/派发语义/池语义零变化；`MDKThreadPool.h` 零改动（64MB 常量私有于 .m，最小暴露面）；`MDKThreadPoolGroup.m`/`MDKPhaseRunner.m`/`MDKPhaseEngine.m`/`NXBuilder*.swift`/`NXBootstrap.m`/`NXDocumentManager.m` 全部零改动；本仓其余 vendored 路径 `git diff Vendor/` 除上述唯一文件外必须为空。64MB×N worker 为虚拟内存预留（页惰性物化），实测内存代价可忽略。

@@ -14,7 +14,9 @@
 //    · max-tokens 粘滞（后续正常 step 不降级回合结局，dsh sticky 语义）
 //    · cancel 三源融合（user/parent/hook + disposed）；未启动 toolCall 由调度器
 //      补合成错误结果保 replay
-//    · maxTurns 熔断可恢复（blocked 收尾；新回合计数重置）
+//    · maxTurns 熔断可恢复（blocked 收尾；新回合计数重置）——修 Q 后默认
+//      不启用（Config.maxTurns = nil，dsh while(true) 语义对齐）；子代理
+//      one-shot 护栏独立保留（subagentStepGuardLimit）
 //
 
 import Foundation
@@ -67,11 +69,26 @@ actor AgentLoop {
     }
 
     struct Config: Sendable {
-        /// 单回合步数熔断（dsh maxTurns 熔断的 M2 落点：步级防失控；blocked 可恢复）。
-        var maxTurns = 32
+        /// 单回合步数熔断上限（修 Q 2026-10-21 语义改造：`nil` = 不熔断，
+        /// 默认值——dsh 对齐定案：dsh agent-loop 的 turn 循环为 `while(true)`
+        /// 无任何步数熔断（packages/core/agent-loop/src/agent.ts:272，全库
+        /// grep maxTurns/max_steps/steplimit 零命中），此前注释「dsh maxTurns
+        /// 熔断的 M2 落点」为张冠李戴。防失控由 RepeatCallAdviser 软提醒 +
+        /// max-tokens 粘滞 + 用户取消承接（dsh 同款哲学）；旧默认 32 在实战
+        /// 轮大型任务每回合必撞（turn 4-8 连撞），用户被迫反复发「继续」。
+        /// 配置保留可开：显式给 >0 时行为同旧——撞线落 system 注记 + blocked
+        /// 可恢复（新回合计数重置）；nil 或 ≤0 一律不熔断（检查点直接跳过）。
+        /// 子代理 one-shot 护栏独立于此配置（见 subagentStepGuardLimit）。
+        var maxTurns: Int? = nil
         /// 并行工具池上限（dsh maxParallelToolCalls 缺省 10；可热更）。
         var maxParallelToolCalls = 10
     }
+
+    /// 子代理 one-shot 步数护栏上限（修 Q：独立于主会话 Config 的显式常量，
+    /// 不随主会话 maxTurns 浮动——子代理无交互界面，撞线=委派终止不可恢复，
+    /// 硬熔断合理且必须恒在；AppEnvironment.makeAgentStack 对 subagentDepth
+    /// 非 nil 的子栈显式传入本值）。
+    static let subagentStepGuardLimit = 32
 
     /// 一步的结局（dsh step() 返回词汇）。
     enum StepOutcome: Equatable, Sendable {
@@ -753,11 +770,14 @@ actor AgentLoop {
                 try Task.checkCancellation()
 
                 // maxTurns 熔断（blocked：可恢复——新回合计数重置）。
+                // 修 Q 2026-10-21：默认 nil = 不熔断（dsh while(true) 对齐，
+                // 防失控交 RepeatCallAdviser 软提醒 + max-tokens + 用户取消）；
+                // 检查点在 nil/≤0 时直接跳过。配置显式开启（>0）时行为同旧。
                 // 批12+右栏批2 前置：文案中文化+投影器 .system 分支补齐后
                 // 用户可见（此前落盘不显示="对话突然中断"无解释，用户实测）。
-                if stepIndex >= config.maxTurns {
+                if let maxTurns = config.maxTurns, maxTurns > 0, stepIndex >= maxTurns {
                     try? await deps.writer.append(
-                        .system(note: "本回合已达步数上限（\(config.maxTurns) 步防失控护栏），已暂停——回复「继续」接着跑"),
+                        .system(note: "本回合已达步数上限（\(maxTurns) 步防失控护栏），已暂停——回复「继续」接着跑"),
                         ignorable: true)
                     endReason = .blocked
                     break

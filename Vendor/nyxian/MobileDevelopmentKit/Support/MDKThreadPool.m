@@ -29,6 +29,44 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
+/* WanWo J-fix (registration: docs/gpl-compliance.md section N11): compile
+ * thread stack expansion. Upstream created threads with attr == NULL, which
+ * hands out the iOS secondary-thread default 512KB stack. Consumers run the
+ * whole in-process build (including the recursive-descent compiler frontend)
+ * on these threads: NXBuilder.buildProject dispatches via MDKPthreadDispatch
+ * (NXBuilder.swift:303), and multithreaded clang compile phases execute
+ * CCJobExecuteJob on MDKThreadPool worker threads (MDKPhaseEngine.m
+ * withMultithreadingSupport:YES -> MDKPhaseRunner runPhase -> dispatchExecution).
+ * Production crash evidence (.ips, 2026-10-21): SIGBUS on the 544KB stack
+ * region of the dispatch thread inside the Swift parser/demangler recursion.
+ * swiftc frontend convention is 8-64MB stacks, so we align to 64MB. Stack
+ * pages are materialized lazily, so the reservation is cheap. Semantics are
+ * otherwise unchanged (same signature, same dispatch behavior, larger stack). */
+#define MDK_COMPILE_THREAD_STACK_SIZE (64UL * 1024UL * 1024UL)
+
+/* WanWo J-fix helper: build a pthread_attr_t with the 64MB stack size.
+ * Returns YES and leaves *outAttr initialized-and-ready on success; on any
+ * failure it logs the reason, destroys the partial attr if needed, and
+ * returns NO so the caller falls back to NULL attr (upstream default-stack
+ * behavior). Never throws. */
+static BOOL MDKThreadAttrWithLargeStack(pthread_attr_t *outAttr)
+{
+    int initResult = pthread_attr_init(outAttr);
+    if(initResult != 0)
+    {
+        NSLog(@"MDKThreadPool: pthread_attr_init failed (%d), falling back to default stack size", initResult);
+        return NO;
+    }
+    int stackResult = pthread_attr_setstacksize(outAttr, MDK_COMPILE_THREAD_STACK_SIZE);
+    if(stackResult != 0)
+    {
+        NSLog(@"MDKThreadPool: pthread_attr_setstacksize(%lu) failed (%d), falling back to default stack size", (unsigned long)MDK_COMPILE_THREAD_STACK_SIZE, stackResult);
+        pthread_attr_destroy(outAttr);
+        return NO;
+    }
+    return YES;
+}
+
 static inline void *pthreadBlockTrampoline(void *ptr)
 {
     void (^block)(void) = (__bridge_transfer void (^)(void))ptr;
@@ -42,7 +80,31 @@ void MDKPthreadDispatch(void (^code)(void))
 {
     pthread_t thread;
     void *blockPointer = (__bridge_retained void *)code;
-    pthread_create(&thread, NULL, pthreadBlockTrampoline, blockPointer);
+    /* WanWo J-fix: create the thread with a 64MB stack when the attribute
+     * machinery cooperates; fall back to NULL attr (upstream behavior)
+     * otherwise. The attribute is destroyed immediately after creation. */
+    pthread_attr_t dispatchAttr;
+    pthread_attr_t *dispatchAttrPointer = NULL;
+    if(MDKThreadAttrWithLargeStack(&dispatchAttr))
+    {
+        dispatchAttrPointer = &dispatchAttr;
+    }
+    int createResult = pthread_create(&thread, dispatchAttrPointer, pthreadBlockTrampoline, blockPointer);
+    if(dispatchAttrPointer != NULL)
+    {
+        pthread_attr_destroy(&dispatchAttr);
+    }
+    if(createResult != 0)
+    {
+        /* WanWo J-fix hardening: upstream ignored the pthread_create return
+         * value (leaking the retained block and calling pthread_detach on an
+         * uninitialized thread). Release the block and skip the detach; the
+         * success-path semantics are untouched. */
+        NSLog(@"MDKPthreadDispatch: pthread_create failed (%d), block dropped", createResult);
+        void (^droppedBlock)(void) = (__bridge_transfer void (^)(void))blockPointer;
+        (void)droppedBlock;
+        return;
+    }
     pthread_detach(thread);
 }
 
@@ -146,6 +208,16 @@ static void *MDKWorkerThreadMain(void *arg)
         _freeStack[i] = i;
     }
     _freeTop = threads;
+    /* WanWo J-fix: pool workers execute multithreaded clang compile jobs
+     * (MDKPhaseRunner dispatches CCJobExecuteJob onto these threads), so they
+     * need the same 64MB stack as the MDKPthreadDispatch thread. A single
+     * attribute is shared by every worker and destroyed after the loop. */
+    pthread_attr_t workerAttr;
+    pthread_attr_t *workerAttrPointer = NULL;
+    if(MDKThreadAttrWithLargeStack(&workerAttr))
+    {
+        workerAttrPointer = &workerAttr;
+    }
     for(int i = 0; i < threads; i++)
     {
         _workers[i].cpuIndex = i % CCGetMaximumPerformanceCores();
@@ -153,7 +225,15 @@ static void *MDKWorkerThreadMain(void *arg)
         _workers[i].hasWork = false;
         pthread_mutex_init(&_workers[i].mutex, NULL);
         pthread_cond_init(&_workers[i].cond, NULL);
-        pthread_create(&_workers[i].thread, NULL, MDKWorkerThreadMain, &_workers[i]);
+        int createResult = pthread_create(&_workers[i].thread, workerAttrPointer, MDKWorkerThreadMain, &_workers[i]);
+        if(createResult != 0)
+        {
+            NSLog(@"MDKThreadPool: worker pthread_create failed (index %d, result %d)", i, createResult);
+        }
+    }
+    if(workerAttrPointer != NULL)
+    {
+        pthread_attr_destroy(&workerAttr);
     }
     return self;
 }

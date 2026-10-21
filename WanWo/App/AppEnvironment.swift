@@ -1618,7 +1618,17 @@ final class AppEnvironment: ObservableObject {
                         assistantReplyDigest: digest.map { digestPrefix + String($0.prefix(400)) },
                         filesTouched: []))
             })
-        let agentLoop = AgentLoop(deps: deps)
+        // 修 Q 2026-10-21：主会话默认无步数熔断（AgentLoop.Config.maxTurns
+        // 默认 nil——dsh while(true) 语义对齐）。子代理 one-shot 无交互界面，
+        // 硬熔断护栏独立保留：subagentDepth 非 nil 的子栈显式传入
+        // subagentStepGuardLimit（常量 32），不随主会话配置浮动。
+        let loopConfig: AgentLoop.Config
+        if subagentDepth == nil {
+            loopConfig = AgentLoop.Config()
+        } else {
+            loopConfig = AgentLoop.Config(maxTurns: AgentLoop.subagentStepGuardLimit)
+        }
+        let agentLoop = AgentLoop(deps: deps, config: loopConfig)
         // M7 件 L：loop 目录登记（TeamSeams.leadStatus/leadSteer 供值——
         // TeamLoopDirectory NSLock 自保护）。
         teamLoops.register(sessionId, agentLoop)
