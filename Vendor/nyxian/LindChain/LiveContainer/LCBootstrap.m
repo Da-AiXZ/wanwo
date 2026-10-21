@@ -161,33 +161,51 @@ void InsertLibrariesIfNeeded(void)
     }
 }
 
+/* 万我 批B 修 T（diff 登记：docs/gpl-compliance.md §N14）：LCBootstrapMain
+ * 原三个静默 return 1 是官方 launch 失败盲区（纯 ObjC App「exit=1 零输出」
+ * 实测定罪——stderr 已由万我回流，官方没打印非管道丢）。仅失败分支增
+ * fprintf+fflush，成功路径控制流零变化。 */
 int LCBootstrapMain(NSString *executablePath,
                     int argc,
                     char *argv[])
 {
     if(executablePath == nil)
     {
+        /* 修 T 分支①：executablePath 缺失 */
+        fprintf(stderr, "[LCBootstrap] launch failed: nil executablePath\n");
+        fflush(stderr);
         return 1;
     }
-    
+
     /* Preload executable to bypass RT_NOLOAD */
     appMainImageIndex = _dyld_image_count();
     void *appHandle = dlopenBypassingLock(executablePath.fileSystemRepresentation, RTLD_LAZY|RTLD_GLOBAL|RTLD_FIRST);
     appExecutableHandle = appHandle;
+    /* dlerror 一次性消费——先取存变量再判（与官方原序一致），打印复用变量不再调 dlerror */
     const char *dlerr = dlerror();
-    
+
     if(!appHandle || (uint64_t)appHandle > 0xf00000000000 || dlerr)
     {
+        /* 修 T 分支②：dlopen 失败三态（!handle / 句柄越界 / dlerror 非 nil）
+         * ——handle 值打出供 0xf00000000000 判定分析，dlerror 内容原样
+         * （dlopen 失败真因面：签名/依赖解析/重定位/ObjC 类注册不可黑盒
+         * 区分——本行打印即定罪武器）；%s 对 NULL 是 UB，"(nil)" 兜底 */
+        fprintf(stderr, "[LCBootstrap] launch failed: dlopen executable (%s) — handle=%p dlerror=%s\n", executablePath.fileSystemRepresentation, (void *)appHandle, dlerr ? dlerr : "(nil)");
+        fflush(stderr);
         return 1;
     }
-    
+
     /* find main */
     int (*appMain)(int, char**) = getAppEntryPoint(appHandle);
     if(!appMain)
     {
+        /* 修 T 分支③：无 LC_MAIN 入口（防御分支——getAppEntryPoint 尾部
+         * __builtin_unreachable 使 release 构建实际不可达，打印仍保留） */
+        fprintf(stderr, "[LCBootstrap] launch failed: no LC_MAIN entry point in %s\n", executablePath.fileSystemRepresentation);
+        fflush(stderr);
         return 1;
     }
-    
+
     /* perform other hooks */
     NUDGuestHooksInit();
     SecItemGuestHooksInit();
@@ -196,6 +214,10 @@ int LCBootstrapMain(NSString *executablePath,
     initDead10ccFix();
     DyldHooksInit();
     InsertLibrariesIfNeeded();
-    
+
+    /* 修 T 附带：到达 launch 点的成功行（与三分支失败打印互斥定位——
+     * 有此行仍 exit=1 ⇒ 失败在 appMain 内部而非 bootstrap） */
+    fprintf(stderr, "[LCBootstrap] launching %s\n", executablePath.fileSystemRepresentation);
+    fflush(stderr);
     return appMain(argc, argv);
 }

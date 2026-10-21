@@ -814,3 +814,40 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | P5 截断考古+提示 | BuildIPATool BUILD FAILED 文案 | **考古结论**：万我拼接面无静默数量截断（build() 的 uniq.prefix(50) 截断带显式尾注「仅显示前 50 条」；事件 diagnostics prefix(2000) 为字符级截断——均非 3 报 2 的量级）；去重键=file:line:col:message（三类不同错误不命中）。真凶定位在 **vendored DebugDatabase.appendDebug**（Project+Debug.swift:217-229）：按 fileSourceLocation.fileURL 分桶后 `where !absPath.isEmpty`——**无文件位置的诊断被静默丢弃**（swiftc 部分诊断不带 fileSourceLocation→落 "" 桶丢弃）；CC 前端诊断收集为预编译库不可达。vendored 零改动纪律→build_ipa 失败文案追加一行「（诊断可能未列全——完整列表见 build_log）」 |
 
 **边界（批 3）**：全部改动 WanWo 层五文件（GuestRunService.swift/BuildTools.swift/BuildService.swift/GuestWindowBridge.m/docs/gpl-compliance.md 本节），**vendored 树零 diff（git diff Vendor/ 空）**；app 路线（prepareGuestRun/GuestRunSession/spawnRun/waitForAndFinalize/finalizeRunSession/composeExitMessage/renderExitNote）零改动——O3 timer 形态参照实现但 app 代码未触碰；批 2 浓缩/重试链路零改动；GuestRunSupport.m :552-640 签名薄壳区段未触碰；trust_nxt2_sign（§N7:236）未触碰；交付路线 signAndRepackage 零改动；utility 签名编排（prepareUtilityRun 四步）零改动；project.yml 零改动（无新增文件）。
+
+## N14、装机验收轮修复批 B · 修 T+修 X（2026-10-22，用户拍板 T+X 两件；诊断=工作区 analysis/e63-acceptance-and-p19-p10-diagnosis.md §二/§三/§四；vendored diff 仅三文件，WanWo 层仅本节）
+
+### 修 T：LCBootstrap 静默失败诊断（P1-9/P1-10 定罪武器——纯诊断打印）
+
+**动机（官方 launch 失败盲区）**：vendored `LCBootstrapMain`（LiveContainer/LCBootstrap.m）三个静默 `return 1` 零任何输出——纯 ObjC App 实测「exit=1（wait4 raw=256）+ 零输出」的真因：stderr 已由万我回流（GuestRunService.swift STDOUT+STDERR 双映射）仍零输出 ⇒ 官方代码根本没打印，非管道丢数据。dlopen 失败具体真因（签名校验/依赖解析/重定位/ObjC 类注册）黑盒不可区分——必须把 dlerror 打出来，下轮真机 ObjcProbe 一跑即可读出失败真因一击定罪。
+
+**diff 内容（vendored 两文件）**：
+| 文件:行号 | 内容 |
+|---|---|
+| LindChain/LiveContainer/LCBootstrap.m LCBootstrapMain | 三失败分支各加 `fprintf(stderr, "[LCBootstrap] launch failed: <分支标识> ...")` + `fflush(stderr)`（经管道送达保障）：①nil executablePath；②dlopen 失败三态合并分支——打 `handle=%p dlerror=%s`（handle 值供 0xf00000000000 判定分析；dlerror 原码已是「先取存变量再判」，打印复用变量不再二次调 dlerror（一次性消费语义）；%s 对 NULL 是 UB——"(nil)" 兜底）；③无 LC_MAIN（防御分支——getAppEntryPoint 尾部 `__builtin_unreachable` 使 release 实际不可达，打印保留）；另加成功行 `[LCBootstrap] launching <path>`（与失败分支互斥定位——有此行仍 exit=1 ⇒ 失败在 appMain 内部而非 bootstrap） |
+| LindChain/LiveContainer/Tweaks/Dyld.m DyldHooksInit | 原 `if(!initGuestSDKVersionInfo() ‖ !performHookDyldApi("dyld_program_sdk_at_least") ‖ !performHookDyldApi("dyld_get_program_sdk_version")) exit(0);` 三路合并静默死——拆分短路链为三段局部 BOOL（短路求值逐字保持：B 仅 A 成功时执行、C 仅 A&&B 时执行；!(A&&B&&C) ⇔ !A‖!B‖!C 等价），每段失败各打 `[DyldHooks] <函数名> failed` + fflush；exit(0) 语义不动 |
+
+**边界**：成功路径控制流/语义零变化（仅失败分支与 launch 点增打印+fflush）；三分支 return 1/exit(0) 返回值原样；dlerror 消费序不变（原码已先取后判）；InsertLibrariesIfNeeded 既有失败打印（:155-160）未触碰。
+
+### 修 X：$(PROJECTDIR)/$(PROJECTUUID) 路径变量（P2-12 根治——容器无关）
+
+**动机（宿主路径绑容器 UUID）**：bridging header 只认宿主绝对路径（$(CACHEROOT)/guest 路径全不认——测试1 P2-12 实测）；宿主路径内嵌容器 UUID（897CA8C2→D55A9B62 换容器后 MixedProbe bridging 全废）。根治=变量化——设备 AI 从此可写 `-import-objc-header $(PROJECTDIR)/Mixed-Bridging-Header.h`（容器无关）。
+
+**diff 内容（vendored 一文件）**：
+| 文件:行号 | 内容 |
+|---|---|
+| LindChain/IDEFoundation/NXProject.m NXProject.initWithURL | 变量表（withVariables 字典）新增两键：`@"PROJECTDIR": url.path`、`@"PROJECTUUID": [url lastPathComponent]`（工程目录宿主绝对路径 + 工程目录 UUID 段名） |
+
+**形态选择（报告结论）**：`url.path`（/var/... 同源形态）——①与 SRCROOT 同一 url 对象同源；②与编译输入路径一致（NXPhaseEngine 的 LDEFilesFinder 基于 project.url.path 枚举源文件，编译参数面统一 /var 形态无混搭）；③与万我渲染口径一致（rootPrefix/shortDiagnosticPath 均 project.url.standardizedFileURL.path /var 形态；诊断键 /private/var 形态属渲染层已治不外溢）。不采用 /private/var 形态的理由：与既有全部变量（SRCROOT/CACHEROOT/BSROOT）形态不齐且与编译输入形态相悖。
+
+**展开面覆盖（考古结论）**：expandString（NXPlist.m:42-130）查找序=plist 字典根键 → variables 表 → 进程环境 → 空串兜底（:123 `?: @""`——未知名变量既有惯例）；本两键经 variables 表命中。消费点全覆盖核对：NXSwiftFlags/NXClangFlags/NXLinkerFlags（arrayForKey→objectForKey:withDefaultObject:→varObjectForKey→expandObject 递归）与 NXOutputPath/NXBundleInfo（varObjectForKey 同链）全部自动获得——变量表一处注册即达；展开时机=reload 期（NXBuilder.buildProject 首行强制 reloadData / NXBuilder.init reload），批 A V 钩子考古同链。getGuestAppHeader 等 guest 侧零改动。
+
+**边界**：变量表纯增量两键（既有 SRCROOT/SDKROOT/BSROOT/NXROOT/CACHEROOT/SHDROOT 逐字不动）；未注册名的空串兜底惯例不受扰；万我层工程文件零改动（变量为构建期展开、不落 Project.plist——build_ipa 工具指引文案属设备侧使用面不在本批）。
+
+### 批 A 修 V 补记（本批补登——批 A 漏登）
+
+**动机**：源码含 .mm/.cpp 时链接满屏 std::__1 undefined（缺 libc++）——P1-11。
+
+**形态（WanWo 层运行时方法覆盖——与 §N10 A1 同族）**：`BuildService.ensureCppLinkerHookInstalled`（WanWo/Features/BuildExt/BuildService.swift，进程内一次性）对 `NXProjectConfig.linkerFlags` getter 施行 `method_setImplementation` + block IMP 覆盖——源文件清单含 .mm/.cpp（`sourcesContainCpp`，排除 Resources/Config 与 NXPhaseEngine 的 LDEFilesFinder 排除集对齐）且返回值未含 `-lc++` 时（查重防冲用户手动添加）追加 `-L<BSROOT>/lib`（NXBootstrap rootURL 绝对路径=$(BSROOT) 展开后等价形态——linker job args 不二次展开变量）与 `-lc++`。NXEntitlementsConfig 独立类不受影响。
+
+**边界（报告要点）**：注入层选择=WanWo 层 getter 覆盖而非 vendored 改动——NXBuilder.buildProject 首行强制 projectConfig.reloadData()（vendored NXBuilder.swift:297 文件重读清 ivar）致 WanWo 层「reload 后、读取前」无时机窗，且拍板排除 plist 持久化（非工程文件改写）；零 vendored、零持久化、覆盖 build_ipa/build_and_run 全部消费点（NXPhaseEngine.m:73/78）。

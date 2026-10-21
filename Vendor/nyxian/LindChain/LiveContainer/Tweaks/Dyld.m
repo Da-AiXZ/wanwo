@@ -380,9 +380,30 @@ void DyldHooksInit(void)
         }
         
         guestAppSdkVersion = getDyldImageBuildVersion(getGuestAppHeader()).version;
-        if(!initGuestSDKVersionInfo() ||
-           !performHookDyldApi("dyld_program_sdk_at_least", 1, NULL, hook_dyld_program_sdk_at_least) ||
-           !performHookDyldApi("dyld_get_program_sdk_version", 0, NULL, hook_dyld_get_program_sdk_version))
+        /* 万我 批B 修 T（diff 登记：docs/gpl-compliance.md §N14）：原
+         * `if(!A || !B || !C) exit(0)` 三路合并静默死——拆分短路链逐段
+         * 打印函数名（失败分支标识）。短路求值语义逐字保持（B 仅 A 成功
+         * 时执行、C 仅 A&&B 时执行；!（A&&B&&C）⇔ !A||!B||!C 等价），
+         * exit(0) 语义不动（纯诊断打印）。 */
+        BOOL sdkVersionInfoOk = initGuestSDKVersionInfo();
+        if(!sdkVersionInfoOk)
+        {
+            fprintf(stderr, "[DyldHooks] initGuestSDKVersionInfo failed\n");
+            fflush(stderr);
+        }
+        BOOL sdkAtLeastOk = sdkVersionInfoOk && performHookDyldApi("dyld_program_sdk_at_least", 1, NULL, hook_dyld_program_sdk_at_least);
+        if(sdkVersionInfoOk && !sdkAtLeastOk)
+        {
+            fprintf(stderr, "[DyldHooks] performHookDyldApi(\"dyld_program_sdk_at_least\") failed\n");
+            fflush(stderr);
+        }
+        BOOL sdkVersionOk = sdkAtLeastOk && performHookDyldApi("dyld_get_program_sdk_version", 0, NULL, hook_dyld_get_program_sdk_version);
+        if(sdkAtLeastOk && !sdkVersionOk)
+        {
+            fprintf(stderr, "[DyldHooks] performHookDyldApi(\"dyld_get_program_sdk_version\") failed\n");
+            fflush(stderr);
+        }
+        if(!sdkVersionOk)
         {
             exit(0);
         }

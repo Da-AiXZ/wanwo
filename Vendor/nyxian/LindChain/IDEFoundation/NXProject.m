@@ -156,6 +156,21 @@
         @"NXROOT": NXBootstrap.shared.rootfsURL.path,
         @"CACHEROOT": _cacheURL.path,
         @"SHDROOT": [[NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Shared"] path],
+        /* 万我 批B 修 X（diff 登记：docs/gpl-compliance.md §N14）：新增
+         * $(PROJECTDIR)/$(PROJECTUUID) 两变量——bridging header 等编译参数
+         * 从此可写容器无关形态（-import-objc-header
+         * $(PROJECTDIR)/Mixed-Bridging-Header.h），根治宿主绝对路径绑容器
+         * UUID（P2-12：换容器全废）。形态选 url.path（/var/... 同源形态）
+         * ——与 SRCROOT 同一 url 对象、与编译输入路径（LDEFilesFinder 基于
+         * project.url.path）一致、与万我 rootPrefix/shortDiagnosticPath 渲
+         * 染口径一致（诊断键 /private/var 形态属渲染层已治，编译参数面统
+         * 一 /var 形态）。展开面自动覆盖：NXSwiftFlags/NXClangFlags/
+         * NXLinkerFlags/NXOutputPath/NXBundleInfo 全部经 varObjectForKey→
+         * expandString 回退 variables 表读取（NXPlist.m:42-130）——在表注
+         * 册即达全部消费点；未知名变量既有惯例=展开空串（:123 ?? @""），
+         * 本两键注册后不受影响。 */
+        @"PROJECTDIR": url.path,
+        @"PROJECTUUID": [url lastPathComponent],
     }];
     _entitlementsConfig = [[NXEntitlementsConfig alloc] initWithPlistPath:[NSString stringWithFormat:@"%@/Config/Entitlements.plist", self.url.path] withVariables:nil];
     return self;
