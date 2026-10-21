@@ -57,6 +57,8 @@
 
 #import <LindChain/ProcEnvironment/Process/PEProcess.h>
 
+@class UtilityTeeLog;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface GuestWindowBridge : NSObject
@@ -94,10 +96,27 @@ NS_ASSUME_NONNULL_BEGIN
 /// openWindowWithSession（官方 Builder.swift:367-370 同语义；openWindow
 /// 内部 spawn + TTY 三映射 + TerminalViewObjC）。返回 YES 时 processOut
 /// 填终端 spawn 出的 PEProcess（stop_build 接线登记用——BuildTools 挂
-/// exitingCallback 包装注销），noteOut 填注记；NO 时 noteOut 填失败浅因。
+/// exitingCallback 包装注销），windowIdentifierOut 填窗口 id（N10e 修 F：
+/// 进程退出/stop_build 后自动关窗用——closeTerminalWindowWithIdentifier
+/// 消费），teeLog 非空时置入 TerminalViewObjC.pendingTee（N10e 修 I：开窗
+/// 内部 TerminalViewObjC init 认领——输出 raw tee）并在 pid 可及后写
+/// run start 头部行，noteOut 填注记；NO 时 noteOut 填失败浅因。
+/// 【N10e 修 F】签名直改（旧三参形态删除）：全树唯一消费点=BuildAndRunTool
+/// utility 分支（同步改签名——保留旧形态即死代码，二选一取直改）。
 + (BOOL)openUtilityTerminalWithPath:(NSString *)utilityPath
                          processOut:(PEProcess **)processOut
+                windowIdentifierOut:(id_t *)windowIdentifierOut
+                             teeLog:(nullable UtilityTeeLog *)teeLog
                             noteOut:(NSString **)noteOut;
+
+/// 【N10e 修 F】关终端窗（exitingCallback 包装消费——进程退出/stop_build
+/// 后自动关窗，语义=和 app 路线一致：app 路线官方 PEProcess.processDidExit
+/// 内 dispatch_async(main) closeWindowWithIdentifier 原样——PEProcess.m:
+/// 286-294）。模式同 show/hideGuestOverlay：wanwoServerActivated 守卫+
+/// 主队列 dispatch（vendored closeWindowWithIdentifier 自带主线程 assert）。
+/// 幂等安全：NXWindow.closeWindowWithCompletion 内 dispatch_once（NXWindow.m
+/// :155）——与官方 sendWithSource/deactivateWindow 关窗路径竞态双重关闭无害。
++ (void)closeTerminalWindowWithIdentifier:(id_t)windowIdentifier;
 
 @end
 

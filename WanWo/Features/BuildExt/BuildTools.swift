@@ -207,6 +207,7 @@ struct ProjectCreateTool: AgentTool {
                 schemeLines = schemeLines
                     + "NXOutputPath: $(CACHEROOT)/$(NXExecutable)（官方 utility 裸路径——无 .app bundle/Payload 目录，编译产物即单 macho）\n"
                 schemeNote = "Note (Utility): the official utility Swift template is top-level code (import Foundation + print(...)); this toolchain does not add -parse-as-library for Utility+Swift, so top-level statements compile. An @main struct also works.\n"
+                    + "【N10e 修 H】utility 终端为 raw 模式（官方终端模拟器语义：无行缓冲/无内核回显）——交互程序需自管回显与行编辑（或逐字节读+写回，参考设备 AI 已验证的自绘回显模式）。\n"
                 nextLine = "Next: write/overwrite .swift files in this directory with the fs tools (fs 工具用 project dir 宿主路径；bash 用 guest bash path), then call build_and_run(name: \"\(name)\") — it opens an interactive terminal window."
             }
             var mismatchNote = ""
@@ -653,7 +654,8 @@ struct StopBuildTool: AgentTool {
         + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot. "
         + "During a guest run this terminates the guest process (SIGKILL); the run session then finalizes in the background "
         + "(exit event with exit code/output tail/run_log copy reported via guest_run) and releases the run gate. "
-        + "Also terminates a registered utility-terminal process (N10) — its terminal window closes with it (official semantics)."
+        + "Also terminates a registered utility-terminal process (N10) — its terminal window closes automatically with it and a guest_run exit event "
+        + "reports the outcome (N10e 修 F/G — same as the app route)."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
@@ -692,7 +694,10 @@ struct BuildAndRunTool: AgentTool {
         + "workspace copy (AI-readable). Full output is persisted to run_log.txt (Cache path) and copied to the workspace "
         + "(BuildArtifacts/run_log-<HHmmss>.txt). "
         + "Utility-scheme projects open an interactive terminal window (NXWindowSessionTerminal + SwiftTerm, TTY三映射——官方 .run utility 同款) "
-        + "and return immediately. "
+        + "and return immediately. 【N10e 修 H】The utility terminal is raw mode (official terminal emulator semantics: no line buffering / no kernel echo) — "
+        + "interactive programs must manage their own echo and line editing (e.g. read byte-by-byte and write back; self-drawn echo is a verified working pattern). "
+        + "【N10e 修 F/G/I】On process exit (natural or via stop_build) the terminal window closes automatically (same as the app route) and a guest_run exit event "
+        + "reports the outcome; raw terminal output is teed to the workspace BuildArtifacts/run_log-<HHmmss>.txt (AI-readable, contains ANSI control sequences). "
         + "Default: no timeout — the guest keeps running until it exits or is stopped; timeout_ms is an optional protective cap. "
         + "One run at a time: a second build_and_run while a run is in flight fails with the active pid (stop_build to terminate, or wait for exit). "
         + "Requires user approval (ask once)."
@@ -897,27 +902,78 @@ struct BuildAndRunTool: AgentTool {
             //    openWindowWithSession（openWindow 内部：TTY 分配+termios+
             //    三路 SLAVEFD 映射+spawn+tty_attach_proc+TerminalViewObjC——
             //    vendored 官方原样消费）。终端窗口关闭=进程 terminate（官方
-            //    closeWindow 同款）；进程退出→官方 exitingCallback 关窗/落
-            //    [process exited]。万我层仅叠加 stop_build 接缝：登记活跃
-            //    进程 + exitingCallback 包装（官方回调之后注销登记+A2 窗口
-            //    收尾——unregisterUtilityProcess 内）。
+            //    closeWindow 同款）。
+            //    【N10e 修 F/G/I】exitingCallback 包装升级：官方回调之后
+            //    ①采集 wait4 原值（processDidExit :284 触发点退出码可及——
+            //    :275 同函数先读 exitContext）②主队列关窗（closeTerminal-
+            //    WindowWithIdentifier——和 app 路线 processDidExit 关窗形态
+            //    一致：PEProcess.m:286-294）③unregister（tee footer+guest_run
+            //    退出事件+A2 窗口收尾）。stop_build 与自然退出同走此包装=
+            //    两路径都自动关窗（「和 app 一样」拍板语义）。
             let fastPath = prep.utilityPath
+            // 修 I：tee 落盘路径（对齐 app 路线工作区副本语义——BuildArtifacts/
+            // run_log-<HHmmss>.txt 落 workspace 可 AI 直读；fakefs 元数据补
+            // 注册同 ipa 副本缝）。
+            let artDir = ctx.workspace.rootURL.appendingPathComponent("BuildArtifacts", isDirectory: true)
+            try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
+            let teePath = artDir.appendingPathComponent("run_log-" + Self.runLogStamp() + ".txt").path
+            let wsRootStd = ctx.workspace.rootURL.standardizedFileURL.path
+            let teeStd = URL(fileURLWithPath: teePath).standardizedFileURL.path
+            if teeStd.hasPrefix(wsRootStd + "/"), let cwd = sessionCwd {
+                IshExecutorBridge.ensureFakefsMetadata(for: cwd + "/BuildArtifacts", isDirectory: true)
+                let teeRel = String(teeStd.dropFirst(wsRootStd.count))
+                IshExecutorBridge.ensureFakefsMetadata(for: cwd + teeRel, isDirectory: false)
+            }
+            let prepDetailText = prep.detail
             let opened = await MainActor.run { () -> (Bool, String) in
                 var procRef: PEProcess?
+                var winRef: id_t = 0
                 var noteRef: NSString?
+                let tee = UtilityTeeLog(path: teePath)
                 let ok = GuestWindowBridge.openUtilityTerminal(
                     withPath: fastPath,
                     processOut: &procRef,
+                    windowIdentifierOut: &winRef,
+                    teeLog: tee,
                     noteOut: &noteRef)
                 if ok, let process = procRef {
-                    GuestRunService.shared.registerUtilityProcess(process, utilityPath: fastPath)
+                    GuestRunService.shared.registerUtilityProcess(
+                        process,
+                        utilityPath: fastPath,
+                        projectName: name,
+                        windowIdentifier: winRef,
+                        teeLog: tee,
+                        prepDetail: prepDetailText,
+                        writer: writer)
                     let officialCallback = process.exitingCallback
-                    process.exitingCallback = { officialCallback?(); GuestRunService.shared.unregisterUtilityProcess() }
+                    process.exitingCallback = { [weak process] in
+                        officialCallback?()
+                        // 修 G：wait4 原值采集（任意线程——service lock 内写）。
+                        var raw = -1
+                        if let strong = process {
+                            let ctxAny: Any? = strong.process?.exitContext
+                            if let exitCtx = ctxAny as? FBProcessExitContext {
+                                raw = Int(exitCtx.underlyingContext.legacyCode)
+                            }
+                        }
+                        GuestRunService.shared.noteUtilityExitRaw(raw)
+                        // 修 F：主队列关窗+注销（exitingCallback 触发线程不保证
+                        // 主线程——vendored 官方回调内 closeWindow 也走 dispatch
+                        // async main（NXWindowSessionTerminal.m:183 同款前提）；
+                        // unregister 内 tee footer/事件发射线程安全）。
+                        DispatchQueue.main.async {
+                            GuestWindowBridge.closeTerminalWindow(withIdentifier: winRef)
+                            GuestRunService.shared.unregisterUtilityProcess()
+                        }
+                    }
                     var note = "utility=" + (fastPath as NSString).lastPathComponent
                         + " pid=" + String(process.pid)
-                    note = note + "（stop_build 可终止；终端窗口关闭=进程 terminate——官方同款）"
+                    note = note + "（stop_build 可终止；进程退出/stop_build 后终端窗自动关闭——和 app 路线一致）"
                     return (true, note)
                 }
+                // 开窗失败：tee 已创建未消费（pendingTee 未被 init 认领？已置入
+                // 即可能被认领——此处显式 footer 收尾防句柄悬挂）。
+                tee.writeFooter("run end（开窗失败——tee 无输出）\n")
                 let failNote = (noteRef as String?) ?? "openUtilityTerminal 失败（无注记）"
                 return (false, failNote)
             }
@@ -941,8 +997,8 @@ struct BuildAndRunTool: AgentTool {
                     UTILITY TERMINAL OPENED（\(name)）
                     \(opened.1)
                     \(prep.detail)
-                    终端窗口内 stdin/stdout 完整交互（SwiftTerm——官方 .run utility 同款）；窗口关闭=进程 terminate。
-                    运行输出不回流工具卡（TTY 直连终端视图）——诊断可查终端窗口本体。
+                    终端窗口内 stdin/stdout 完整交互（SwiftTerm——官方 .run utility 同款；raw 模式：无行缓冲/无内核回显，交互程序需自管回显）；窗口关闭=进程 terminate；进程退出（含 stop_build）后窗口自动关闭并经 guest_run 事件回报退出形态。
+                    运行输出 tee 工作区副本：\(teePath)（AI read 直取——raw 终端字节流含 ANSI 控制序列）。
                     """)
             }
             BuildService.shared.endRun()

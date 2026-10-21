@@ -58,6 +58,20 @@ import UIKit
 @objc class TerminalViewObjC: TerminalView {
     @objc var ttyHandle: FileHandle?
 
+    // MARK: 【N10e 修 I】utility 输出 tee（万我自有新增——官方原样零语义改动）
+
+    /// 待认领 tee 槽：GuestWindowBridge.openUtilityTerminal 开窗前置入，
+    /// 本类 init 时认领取走（一窗一 tee，多窗互不串流；nil=无落盘）。
+    private static var _pendingTee: UtilityTeeLog?
+    @objc public class var pendingTee: UtilityTeeLog? {
+        get { return _pendingTee }
+        set { _pendingTee = newValue }
+    }
+
+    /// 本实例认领的 tee（init 时从 pendingTee 取走；只读——readabilityHandler
+    /// 后台线程消费安全）。
+    private let tee: UtilityTeeLog?
+
     private var _objcDelegateAdapter: ObjCDelegateAdapter?
     @objc public weak var objcDelegate: (any TerminalViewDelegateObjC)? {
         didSet {
@@ -119,6 +133,12 @@ import UIKit
 
         super.init(frame: frame)
 
+        // 修 I：认领 pendingTee（先于 readabilityHandler 安装——tee 只读后
+        // 消费，无并发面）。
+        let claimed = TerminalViewObjC.pendingTee
+        TerminalViewObjC.pendingTee = nil
+        self.tee = claimed
+
         self.isOpaque = false;
         self.backgroundColor = .secondarySystemBackground
         self.nativeForegroundColor = gibDynamicColor(light: .label, dark: self.nativeForegroundColor)
@@ -129,6 +149,9 @@ import UIKit
             guard let self = self else { return }
             let data = fileHandle.availableData
             guard !data.isEmpty else { return }
+
+            // 修 I：masterFD 输出分流 tee（串行队列落盘——feed 渲染链不动）。
+            self.tee?.appendRaw(data)
 
             DispatchQueue.main.async {
                 self.feed(byteArray: ArraySlice<UInt8>(data))
@@ -186,4 +209,74 @@ private func gibDynamicColor(light: UIColor, dark: UIColor) -> UIColor {
             return light
         }
     })
+}
+
+// MARK: - 【N10e 修 I】utility 终端输出 tee（万我自有——登记 docs/gpl-compliance.md §N10e）
+//
+// 钩子考古结论（修 I 实现依据）：TerminalViewObjC 的 ttyHandle（=masterFD）
+// readabilityHandler 是 SwiftTerm 输出数据的唯一入口（每个输出分块先经
+// availableData 读出再 DispatchQueue.main feed 进终端模拟器）——在此分流
+// tee 即可拿到全部 raw 输出，无需 SwiftTerm 内部钩子（降级条件不成立）。
+//
+// UtilityTeeLog：串行队列收敛全部写入（readabilityHandler 在后台线程触发，
+// FileHandle 非线程安全；footer 与 append 同队列 FIFO 有序）。本类与
+// pendingTee 认领机制均为万我自有新增（本文件已是万我树内副本非 vendored）。
+
+/// utility 终端 raw 输出落盘盒（BuildArtifacts/run_log-<HHmmss>.txt——AI
+/// fs/read 直取；头部/尾部由 GuestWindowBridge（pid 可及点）与
+/// GuestRunService.unregisterUtilityProcess（退出注记点）分别写入）。
+@objc public final class UtilityTeeLog: NSObject {
+    /// 落盘文件路径（事件 runLog 字段/结果文本直显用）。
+    @objc public let path: String
+
+    /// 写入串行队列（handle/closed 只在本队列读写——queue-confined 状态）。
+    private let queue = DispatchQueue(label: "wanwo.utility.teelog")
+    private var handle: FileHandle?
+    private var closed = false
+
+    /// 创建落盘文件并打开追加句柄（open 动作入队——与后续写入同队列 FIFO
+    /// 有序，早于任何 header/append）。
+    @objc public init(path: String) {
+        self.path = path
+        super.init()
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: self.path) {
+                fm.createFile(atPath: self.path, contents: nil)
+            }
+            let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: self.path))
+            try? h?.seekToEnd()
+            self.handle = h
+        }
+    }
+
+    /// 头部行（run start + pid——GuestWindowBridge 开窗成功后主线程写入）。
+    @objc public func writeHeader(_ text: String) {
+        queue.async { [weak self] in
+            guard let self = self, !self.closed else { return }
+            try? self.handle?.write(contentsOf: Data(text.utf8))
+        }
+    }
+
+    /// raw 输出分块（TerminalViewObjC.readabilityHandler 后台线程调用——
+    /// 转投串行队列；终端字节流原样落盘，含 ANSI 控制序列）。
+    @objc public func appendRaw(_ data: Data) {
+        queue.async { [weak self] in
+            guard let self = self, !self.closed, let h = self.handle else { return }
+            try? h.write(contentsOf: data)
+        }
+    }
+
+    /// 尾部行（run end + 退出注记——GuestRunService.unregisterUtilityProcess
+    /// 收尾点写入，写完即 close；此后 appendRaw 静默丢弃防已关句柄异常）。
+    @objc public func writeFooter(_ text: String) {
+        queue.async { [weak self] in
+            guard let self = self, !self.closed else { return }
+            try? self.handle?.write(contentsOf: Data(text.utf8))
+            try? self.handle?.close()
+            self.handle = nil
+            self.closed = true
+        }
+    }
 }

@@ -11,6 +11,8 @@
 #import <LindChain/WindowServer/NXWindowServer.h>
 #import <LindChain/WindowServer/Session/NXWindowSessionTerminal.h>
 
+#import <WanWo-Swift.h>
+
 #import <objc/runtime.h>
 
 // 单例激活态标记（进程内一次——ensureActivated 置位）：NXWindowServer +shared
@@ -194,6 +196,8 @@ static void wanwoInstallWindowServerHitTestOverride(void)
 
 + (BOOL)openUtilityTerminalWithPath:(NSString *)utilityPath
                          processOut:(PEProcess **)processOut
+                windowIdentifierOut:(id_t *)windowIdentifierOut
+                             teeLog:(nullable UtilityTeeLog *)teeLog
                             noteOut:(NSString **)noteOut
 {
     NSAssert([NSThread isMainThread], @"GuestWindowBridge.openUtilityTerminalWithPath 必须在主线程");
@@ -201,6 +205,10 @@ static void wanwoInstallWindowServerHitTestOverride(void)
     if (processOut != NULL)
     {
         *processOut = nil;
+    }
+    if (windowIdentifierOut != NULL)
+    {
+        *windowIdentifierOut = (id_t)-1;
     }
     if (noteOut != NULL)
     {
@@ -240,6 +248,11 @@ static void wanwoInstallWindowServerHitTestOverride(void)
     //   路径) → tty_attach_proc → TerminalViewObjC(MASTERFD)。
     NXWindowSessionTerminal *terminal =
         [[NXWindowSessionTerminal alloc] initWithUtilityPath:utilityPath];
+
+    // 【N10e 修 I】tee 注入：openWindowWithSession 内部 TerminalViewObjC init
+    // 从 pendingTee 认领取走（一窗一 tee——多窗不串流）。nil tee=无落盘。
+    TerminalViewObjC.pendingTee = teeLog;
+
     [[NXWindowServer shared] openWindowWithSession:terminal withCompletion:nil];
 
     PEProcess *process = terminal.process;
@@ -257,14 +270,52 @@ static void wanwoInstallWindowServerHitTestOverride(void)
     {
         *processOut = process;
     }
+    if (windowIdentifierOut != NULL)
+    {
+        *windowIdentifierOut = terminal.windowIdentifier;
+    }
+
+    // 【N10e 修 I】run start 头部行（pid 此点可及——tee 串行队列 FIFO 保证
+    // 排在 open 动作之后、任何输出分块之前/并发有序）。
+    if (teeLog != nil)
+    {
+        NSString *iso = [[NSISO8601DateFormatter alloc] stringFromDate:[NSDate date]];
+        NSString *header = [NSString stringWithFormat:
+            @"run start %@ utility=%@ pid=%d（utility 终端 raw 输出 tee——"
+            @"终端字节流原样落盘，含 ANSI 控制序列）\n",
+            iso, [utilityPath lastPathComponent], process.pid];
+        [teeLog writeHeader:header];
+    }
+
     if (noteOut != NULL)
     {
         *noteOut = [NSString stringWithFormat:@"utility=%@ pid=%d window=%lu（%@；"
-                    @"终端窗口关闭=进程 terminate——官方 closeWindow 同款）",
+                    @"终端窗口关闭=进程 terminate——官方 closeWindow 同款；"
+                    @"进程退出/stop_build 后窗口自动关闭——N10e 修 F）",
                     [utilityPath lastPathComponent], process.pid,
                     (unsigned long)terminal.windowIdentifier, activateNote];
     }
     return YES;
+}
+
+// ── 【N10e 修 F】关终端窗（exitingCallback 包装消费）────────────────────
+// 语义=和 app 路线一致：app 路线官方 PEProcess.processDidExit 内
+// dispatch_async(main) closeWindowWithIdentifier（PEProcess.m:286-294 官方
+// 原样）——utility 路线万我 exitingCallback 包装对齐同款形态（vendored
+// NXWindowSessionTerminal 的 exitingCallback 在 focused 态只写提示不关窗，
+// 万我环境窗口 spawn 后恒 focused → 必留空壳——本方法补齐关窗收口）。
++ (void)closeTerminalWindowWithIdentifier:(id_t)windowIdentifier
+{
+    // wanwoServerActivated 守卫（show/hideGuestOverlay 同款——未激活禁触碰
+    // [NXWindowServer shared]，防无 scene 懒创建死局）。
+    if (!wanwoServerActivated)
+    {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NXWindowServer shared] closeWindowWithIdentifier:windowIdentifier
+                                            withCompletion:nil];
+    });
 }
 
 // ── 【N10d · A2】生命周期收尾：窗口清空时隐藏 + 归还键窗 ───────────────
