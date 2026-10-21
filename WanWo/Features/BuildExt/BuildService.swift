@@ -1345,7 +1345,10 @@ final class BuildService: @unchecked Sendable {
         //   · 两者皆非 → 增量（不提示）。
         // 边界（如实报告）：源文件变更触发的部分重编依赖 MDK 内部扫描，
         // 静态不可预判——本判据只区分冷/配置漂移/增量三态。
-        let cacheURL = project.cacheURL
+        // 显式 URL 类型注记：NXProject.cacheURL 为 ObjC 无空标注 NSURL*
+        //（Swift 导入隐式解包 URL!）——let 推断会退化为 URL?（CI run
+        // 39638623044 实证 :1350/:1365），显式注记在绑定处解包。
+        let cacheURL: URL = project.cacheURL
         var hasObjectFiles = false
         if let cacheEnum = FileManager.default.enumerator(at: cacheURL, includingPropertiesForKeys: nil) {
             for case let cacheFile as URL in cacheEnum {
