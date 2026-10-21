@@ -27,10 +27,19 @@
 
 import Foundation
 
-/// 内置缺省（dsh adapter.ts:140/:142 常量逐值）。
+/// 内置缺省（dsh adapter.ts:140/:142 常量逐值；修 L 收敛项见 contextWindow 注）。
 enum ModelCatalogDefaults {
-    /// 缺省合并上下文窗（dsh DEFAULT_CONTEXT_WINDOW = 1_000_000）。
-    static let contextWindow = 1_000_000
+    /// 缺省合并上下文窗。
+    /// 修 L（实战轮修复批 2，2026-10-21）：1_000_000 → 128_000（保守底线）。
+    /// 定罪链（diagnosis §二.3/§六）：默认 1M 使 HARD 浓缩预算 = 窗口×0.9 =
+    /// 90 万 token，实战工作集 200-400K 永不触发——浓缩零触发的第二根因。
+    /// dsh compaction-basic :297-303 对未配置容量的模型直接抛
+    /// TargetPressureConfigError（不压缩不猜）；万我保留回落链
+    /// （entry.contextWindow ?? endpoint 缺省 ?? 本值）但收敛保守值：
+    /// DeepSeek 端点 /models 返回真实 context_window/context_length 时
+    /// （ModelDiscovery.swift:129 解析）真实窗口优先于本默认，未返回才落
+    /// 128K。解析链顺序（resolvedContextWindow :157-162）不变。
+    static let contextWindow = 128_000
     /// 缺省单次输出上限（dsh DEFAULT_MAX_TOKENS = 256_000）。
     static let maxTokens = 256_000
     /// 缺省请求模态（dsh inputModalities default ['text']，index.ts:172）。
@@ -154,9 +163,11 @@ enum ModelCatalog {
 
     // MARK: 解析链（唯一入口语义；dsh adapter.ts:398-409 modelInfoFor）
 
-    /// 解析后上下文窗 = entry.contextWindow ?? endpoint 缺省窗口 ?? 1_000_000
+    /// 解析后上下文窗 = entry.contextWindow ?? endpoint 缺省窗口 ?? 128_000
     /// （dsh configured?.contextWindow ?? connection.defaultContextWindow；
-    /// 万我 endpoint 缺省窗口 nil = 1_000_000）。
+    /// 万我 endpoint 缺省窗口 nil = 128_000 保守底线——修 L，见
+    /// ModelCatalogDefaults.contextWindow 注；dsh adapter.ts:140 原值
+    /// 1_000_000 偏差登记于修 L）。
     static func resolvedContextWindow(_ entry: ModelCatalogEntry?,
                                       defaultContextWindow: Int?) -> Int {
         entry?.contextWindow ?? defaultContextWindow ?? ModelCatalogDefaults.contextWindow

@@ -11,6 +11,11 @@
 import Foundation
 
 /// 重试策略（dsh ResolvedRetryPolicy 语义；不做跨模型故障转移——09 决策 #2）。
+/// 修 M1（实战轮修复批 2，2026-10-21）：缺省参数对齐 dsh retry-policy.ts
+/// DEFAULT_*（packages/llm/llm/src/retry-policy.ts:14-17）——maxRetries=5 /
+/// initialDelayMs=500 / maxDelayMs=10_000 / jitterRatio=0.1。旧缺省
+/// （4 次 / 1s 起 / 30s 封顶）与 dsh 默认策略偏离，实测大 prefill 超时
+/// -1001 场景重试覆盖不足，统一收敛 dsh 默认值。
 struct RetryPolicy: Equatable, Sendable {
     enum Mode: String, Codable, Sendable {
         /// 有限重试：受 maxRetries 与 retryableCodes 白名单约束。
@@ -26,9 +31,9 @@ struct RetryPolicy: Equatable, Sendable {
     var jitterRatio: Double
 
     init(mode: Mode = .normal,
-         maxRetries: Int = 4,
-         initialDelayMs: Int = 1_000,
-         maxDelayMs: Int = 30_000,
+         maxRetries: Int = 5,
+         initialDelayMs: Int = 500,
+         maxDelayMs: Int = 10_000,
          jitterRatio: Double = 0.1) {
         self.mode = mode
         self.maxRetries = maxRetries
@@ -37,10 +42,15 @@ struct RetryPolicy: Equatable, Sendable {
         self.jitterRatio = jitterRatio
     }
 
-    /// 可重试白名单（交付口径：网络类 / 5xx / 429）。AUTH/INVALID_REQUEST/QUOTA 等不可重试。
+    /// 可重试白名单（修 M1 后与 dsh DEFAULT_RETRYABLE_CODES 对齐核对：超时 /
+    /// 传输类 / 5xx / 429 全覆盖；差异两项如实登记——dsh 含 EMPTY_RESPONSE，
+    /// 万我该错误经 finish(.error) 在 runStep 落点抛出（流已收 [DONE] 后），
+    /// 不在请求错误重试面，不扩面；万我另含 STREAM_CLOSED（SSE 未收 [DONE]
+    /// 即断流——零字节收到的断流属传输类可重试，收到字节后由首 chunk 守卫
+    /// 禁重试，见 AgentLoop.streamWithRetry 修 M1 边界）。
     static let retryableCodes: Set<String> = [
-        "TRANSPORT",      // 连接/请求失败（网络）
-        "TIMEOUT",        // 流空闲超时
+        "TRANSPORT",      // 连接/请求失败（网络）——含 NSURLErrorTimedOut(-1001) 包装
+        "TIMEOUT",        // 流空闲超时（看门狗）
         "STREAM_CLOSED",  // SSE 未收到 [DONE] 即中断（断流）
         "SERVER",         // 5xx
         "RATE_LIMIT",     // 429

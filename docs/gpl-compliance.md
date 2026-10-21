@@ -767,3 +767,28 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 | MDKThreadPool.m:185-211 `initWithThreads` | worker 循环共享单个 64MB attr（创建后 destroy）；`pthread_create` 失败逐个 NSLog（上游静默）；池 worker 现跑 clang 编译 job 故同栈扩容 |
 
 **边界**：仅栈尺寸变化（512KB→64MB），函数签名/派发语义/池语义零变化；`MDKThreadPool.h` 零改动（64MB 常量私有于 .m，最小暴露面）；`MDKThreadPoolGroup.m`/`MDKPhaseRunner.m`/`MDKPhaseEngine.m`/`NXBuilder*.swift`/`NXBootstrap.m`/`NXDocumentManager.m` 全部零改动；本仓其余 vendored 路径 `git diff Vendor/` 除上述唯一文件外必须为空。64MB×N worker 为虚拟内存预留（页惰性物化），实测内存代价可忽略。
+
+## N12、实战轮修复批 2 · 修 K+M+L+R（2026-10-21，用户拍板之批 2；诊断=工作区 analysis/shizhan-crash-timeout-diagnosis.md §二/§五/§六；**vendored 树零 diff**，全部改动 WanWo 层 + 单测）
+
+### 修 R 全表（本节登记主体——压缩管线对齐 dsh 两段式，修 N9c 每步掩码的缓存病根）
+
+**动机（§六 定罪）**：CondensationWorkingSet.masked 每步请求构造时把「倒数第 12 个模型可见事件前」的旧 toolResult 替换占位符——这是 View 变换（不落盘），每步新事件进窗 → cutoff 前移 → 紧贴边界的 toolResult 从全文变占位 → 该位置之后全部内容 DeepSeek 前缀缓存失效（数学：400K 上下文、失效点 ~50K 前 → 命中 ~87%，与实测 80-90% 吻合）。dsh 对照（repos/deepseek-harness-master）：无每步掩码；compaction-basic（index.ts:284-333）两段式 = 触发 → toolResultPruner.pruneSession **一次性落盘裁剪** → 重估 → 仍超限才 LLM 摘要。
+
+| 项 | 内容 |
+|---|---|
+| R1 停用每步掩码 | CondensationWorkingSet.projected 删除 masked() 调用（掩码函数整体删除，git 留痕）；Policy.attentionWindow 字段删除（grep 全树消费点清点=仅掩码函数自身 + 单测构造参数，无独立消费——字段一并删除；窗口口径 12 固化为 CondensationWorkingSet.pruneWindow 常量供一级裁剪沿用）。**N9c 拍板背景知悉**：窗口 5→12 原为解决「上轮工具结果落窗致 AI 重复调用」——停用后旧工具结果保留全文，重复调用防线由 RepeatCallAdviser（已移植 dsh repeat-tool-reminder）承接，token 上涨由修 L 收敛后的 HARD 触发兜底（已拍板权衡） |
+| R2 落盘裁剪记录 | CondensationRecord 扩展 `prunedSeqs: [Int]`（默认 []；语义=这些 seq 的 toolResult 在投影中以占位符呈现——**内容替换不是遗忘**，与 forgottenSeqs 严格区分）；编解码同步：空数组不落载荷（最小 payload），缺席解码=空数组（旧记录兼容），坏元素 fail closed return nil；写侧门 requiredFields 不含本字段（只增不改，旧载荷照常通过）。projected() 按 seq 精确替换 content=maskPlaceholder（turn/step/callId/错误面原样——配对不受扰、审计可溯源）；冻结语义：record 落盘后这些位置恒定，不再随步移动 |
+| R3 两段式编排 | Compactor.runCondensation：触发 → **第一级无 LLM 裁剪**：selectPrunedSeqs（新纯函数：keepFirst 前缀 + 最近 12 个模型可见事件之外的非 error toolResult 全部入选；已遗忘/已裁剪/负 seq 排除；配对保护天然成立——prune 只替换载荷内容不动事件本体）→ minimum_progress 守门适配（裁剪节省 token < 工作集×0.1 跳过一级，避免无谓缓存失效）→ 落盘 prune record（forgottenSeqs=[]、可无 summary、prunedSeqs 为权威载荷面）→ 重估（口径统一结论：Compactor.estimateSession 本就经 DeriveFold 内 projected() 计价（DeriveFold.swift:27），tombstone 过滤+占位替换后与请求构造同一折叠——派单担心的「:193 传原始事件」实为已投影口径，本轮仅补合成事件模拟重估与 tokensAfter 审计）→ 仍超预算（HARD）/事件数仍超（SOFT——裁剪不减事件数，maxSize 计数口径不变，SOFT 恒走摘要）→ 第二级既有 LLM 摘要路径（遗忘集选择/序列化/summarizer/hard reset/熔断全链不动）。一级已消解（token 落回预算 + request 随 tombstone 落地清位）则跳过摘要；onCondensation 观察缝仅对含 summary 的二级 record 触发（prune record 无正文，常驻笔记缝按 summary 重写 activeContext 不消费） |
+| 缓存收益机理 | 压缩之间历史逐字节稳定（占位替换一次落盘、位置冻结）→ DeepSeek 前缀缓存 ~99%（dsh 对照实证）；每步掩码的持续中段改写消除 |
+| R4 兼容与测试 | CondensationTests 同步：Policy 构造去 attentionWindow 参数（4 处）；掩码测试替换为 prunedSeqs 投影/选择面/record 往返+旧载荷兼容测试（5 件）；ModelCatalogTests 默认窗口断言 1_000_000→128_000。compactNow/condensePendingRequest/catch-condense-retry 三消费面回归核对：compactNow 测试（user-only 无 toolResult）一级空转、行为同旧 |
+
+### 修 K/M/L 速览（同批随行，dsh 语义对齐登记）
+
+| 项 | 内容 | dsh 出处 |
+|---|---|---|
+| 修 K | OpenAICompatAdapter 请求超时按 wire body 体量分档：<1MB→120s / <4MB→240s / ≥4MB→300s（旧固定 60s=首 byte 前空闲上限，大 prefill 必超时 -1001；bodyData 构造上移至 urlRequest 之前供分档读取） | — |
+| 修 M1 | RetryPolicy 缺省对齐 dsh（maxRetries 5 / initial 500ms / maxDelay 10s / jitter 0.1）；首 chunk 守卫：已收到任何字节的失败禁重试（防重复生成），仅未收到字节的失败重试；白名单覆盖 TIMEOUT/TRANSPORT/SERVER/RATE_LIMIT（+STREAM_CLOSED 万我既有；EMPTY_RESPONSE 差异如实登记——万我该错误经 finish(.error) 落点不在请求错误面） | packages/llm/llm/src/retry-policy.ts:14-24 |
+| 修 M2 | 瞬态耗尽自愈：M1 重试耗尽仍 TIMEOUT/TRANSPORT → condensation-request(**transientExhausted** 新 reason 值，allowedValues 同步扩展) → HARD 压缩 → 重试一轮一次；每回合限 1 次（transientRecoveryAttempted per-turn 标志，与溢出恢复同款）；未落地则原样抛回原错误。既有溢出 catch-condense-retry 零回归 | compaction-basic index.ts:180-224（overflowRetries per-agent 门同构） |
+| 修 L | ModelCatalogDefaults.contextWindow 1_000_000 → 128_000（保守底线；解析链顺序 entry ?? endpoint 缺省 ?? 默认 不变——/models 返回真实窗口时真实值优先，ModelDiscovery.swift:129 解析链在位）。dsh 对未配置容量直接抛 TargetPressureConfigError（index.ts:297-303）——万我保留回落但收敛保守值，偏差登记 | compaction-basic config.ts |
+
+**边界**：全部改动 WanWo 层（OpenAICompatAdapter/RetryPolicy/AgentLoop/ModelCatalog/LLMTypes 注释/CondensationRecord/CondensationWorkingSet/Compactor/DeriveFold 注释）+ WanWoTests 两文件 + 本节；**vendored 树零 diff（git diff Vendor/ 空）**；事件 kind 词汇零新增（condensation/v1 载荷只增可选键 prunedSeqs、condensation-request/v1 值域只增 transientExhausted——旧版本读侧向前兼容，新版本读旧载荷兼容）；流式重试边界（首 chunk 后禁重试）与每回合自愈限 1 次为硬约束已落码；app 路线 RunSession/build_and_run/build_ipa 工具面零改动。

@@ -388,7 +388,7 @@ extension StreamChunk: Codable {
 /// modelInfoFor 返回形态——万我消费面仅窗口/输出上限/模态三事实；reasoning
 /// 档位表属新能力，派单注明另批登记）。构造唯一入口 = ModelCatalog.resolvedInfo。
 struct ResolvedModelInfo: Equatable, Sendable {
-    /// 解析后上下文窗（entry ?? endpoint 缺省 ?? 1_000_000）。
+    /// 解析后上下文窗（entry ?? endpoint 缺省 ?? 128_000 保守底线——修 L）。
     var contextWindow: Int
     /// 解析后单次输出上限（entry ?? endpoint 缺省 ?? 256_000）。
     var defaultMaxTokens: Int

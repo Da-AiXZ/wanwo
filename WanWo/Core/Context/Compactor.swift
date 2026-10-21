@@ -72,7 +72,8 @@ final class Compactor: @unchecked Sendable {
         /// projectedTokens ?? pressureTokens；无 usage 锚点 → 退回表面估算）。
         var usedTokens: Int
         /// 压缩触发口径：表面估算（M2 估算器；M8 批2 起为工作集口径——
-        /// 投影含 tombstone 过滤 + 掩码变换，与请求构造同一折叠）。
+        /// 投影含 tombstone 过滤 + prunedSeqs 占位替换（修 R2），与请求
+        /// 构造同一折叠）。
         var estimatedTokens: Int
         var thresholdTokens: Int
         /// 模型上下文窗（P1-5：dsh context-occupancy 占比分母——ContextMeter
@@ -143,7 +144,8 @@ final class Compactor: @unchecked Sendable {
     }
 
     /// 派生历史的整体估算（与 DeriveFold 同一折叠：影子范围不重复计价；
-    /// M8 批2 起经 DeriveFold 的工作集投影——tombstone 过滤 + 掩码变换后计价，
+    /// M8 批2 起经 DeriveFold 的工作集投影——tombstone 过滤 + prunedSeqs
+    /// 占位替换后计价（修 R1：每步掩码已停用，占位来自落盘裁剪记录），
     /// 即"工作集 token"，与请求构造同口径）。
     static func estimateSession(_ events: [SessionEvent]) -> Int {
         let fold = DeriveFold(events)
@@ -291,6 +293,13 @@ final class Compactor: @unchecked Sendable {
     }
 
     /// 引擎编排（互斥同旧 compact：同一会话不并发压缩）。
+    /// 修 R3（实战轮修复批 2，2026-10-21）：两段式对齐 dsh compaction-basic
+    /// compactIfNeeded（packages/compaction/compaction-basic/src/index.ts:284-333）——
+    /// 触发后先落**第一级无 LLM 裁剪**（selectPrunedSeqs → 落盘 prune record
+    /// → 重估），仍超预算（HARD 未消）/事件数仍超（SOFT 未消——裁剪不减
+    /// 事件数，maxSize 计数口径不变，SOFT 恒走摘要）才进第二级既有 LLM 摘要
+    /// 路径（遗忘集选择/序列化/summarizer 全链不动）。一级已消解（如 prune
+    /// 后 token 落回预算 + request 已被 tombstone 清位）则跳过摘要。
     private func runCondensation(events: [SessionEvent],
                                  decision: CondensationWorkingSet.TriggerDecision?,
                                  model: String?,
@@ -318,8 +327,87 @@ final class Compactor: @unchecked Sendable {
                 tokenBudget: tokenBudget(for: model))
         }
         guard !resolvedDecision.reasons.isEmpty else { return false }
+
+        // —— 第一级：无 LLM 落盘裁剪（dsh prune.pruneSession 万我等价）——
+        var effectiveEvents = events
+        var pruneLanded = false
+        let pruneSeqs = CondensationWorkingSet.selectPrunedSeqs(events)
+        if !pruneSeqs.isEmpty {
+            // minimum_progress 守门对第一级的适配（sdk :408-439 同族）：裁剪
+            // 节省 token < 工作集×0.1 视为无收益——跳过一级（避免无谓的一次
+            // 前缀缓存失效），直接评估二级。
+            let workingTokens = Self.estimateSession(events)
+            var savings = 0
+            var seqPairs: [(Int, SessionEvent)] = []
+            seqPairs.reserveCapacity(events.count)
+            for event in events {
+                seqPairs.append((event.seq, event))
+            }
+            let bySeq = Dictionary(seqPairs, uniquingKeysWith: { first, _ in first })
+            for seq in pruneSeqs {
+                guard let event = bySeq[seq] else { continue }
+                savings += CondensationWorkingSet.nodeTokens(event)
+                    - 4 - Self.estimateText(CondensationWorkingSet.maskPlaceholder)
+            }
+            if Double(savings)
+                >= Double(workingTokens) * CondensationWorkingSet.Policy.default.minimumProgress {
+                var record = CondensationRecord(
+                    id: "cond-\(UUID().uuidString)",
+                    forgottenSeqs: [],
+                    summary: nil,
+                    summaryOffset: nil,
+                    // 纯无 LLM 裁剪——无摘要无 response id（审计：prunedSeqs
+                    // 为该 record 的权威载荷面）。
+                    llmResponseID: nil,
+                    tokensBefore: workingTokens,
+                    tokensAfter: nil,
+                    createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
+                    prunedSeqs: pruneSeqs)
+                do {
+                    // 重估口径（统一结论）：estimateSession 经 DeriveFold 内
+                    // CondensationWorkingSet.projected()（DeriveFold.swift:27
+                    // 接线）——tombstone 过滤 + prunedSeqs 占位替换后计价，
+                    // 与请求构造同一折叠。此处以合成事件模拟重估（landTombstone
+                    // 同款模式）；tokensAfter 为纯审计字段，不参与估算口径。
+                    let simulated = SessionEvent(
+                        seq: -1, timeMs: record.createdAtMs,
+                        payload: .extensionEvent(
+                            kind: CondensationEvents.condensationKind,
+                            payload: record.payload))
+                    let candidate = events + [simulated]
+                    record.tokensAfter = Self.estimateSession(candidate)
+                    try await append(.extensionEvent(
+                        kind: CondensationEvents.condensationKind,
+                        payload: record.payload), false)
+                    effectiveEvents = candidate
+                    pruneLanded = true
+                    Self.logger.info("stage-1 prune landed: pruned \(pruneSeqs.count) "
+                        + "tool results, tokens \(workingTokens)→\(record.tokensAfter)")
+                } catch {
+                    // prune record 落盘失败：一级视为未发生（fail-safe 进二级
+                    // ——LLM 摘要路径按原口径继续，零回归兜底）。
+                    Self.logger.error("stage-1 prune append failed: \(error)")
+                }
+            } else {
+                Self.logger.info("stage-1 prune skipped: savings \(savings) below "
+                    + "minimum progress (\(workingTokens) × 0.1)")
+            }
+        }
+
+        // —— 重估 + 二级判定（evaluateTrigger 消费 effectiveEvents；request
+        // 位随 prune tombstone 落地自动清位——unhandledRequest 语义）——
+        let restagedDecision = CondensationWorkingSet.evaluateTrigger(
+            events: effectiveEvents,
+            workingSetTokens: Self.estimateSession(effectiveEvents),
+            tokenBudget: tokenBudget(for: model))
+        if restagedDecision.reasons.isEmpty {
+            // 一级已消解（HARD 预算落回 / request 已清位且无其他原因）——
+            // 跳过二级 LLM 摘要。观察缝不触发（无 summary——常驻笔记缝按
+            // summary 重写 activeContext，prune record 无正文不消费）。
+            return pruneLanded
+        }
         let record = try? await engine.condense(
-            events: events, decision: resolvedDecision,
+            events: effectiveEvents, decision: restagedDecision,
             tokenBudget: tokenBudget(for: model),
             policy: CondensationWorkingSet.Policy.default,
             summarizer: summarizer,
@@ -330,6 +418,6 @@ final class Compactor: @unchecked Sendable {
             // （activeContext 全文重写为摘要；消费方 try? 不阻断压缩）。
             onCondensation?(record)
         }
-        return record != nil
+        return pruneLanded || record != nil
     }
 }

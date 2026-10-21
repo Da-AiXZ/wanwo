@@ -25,6 +25,29 @@ struct OpenAICompatAdapter {
     /// 默认流空闲超时（dsh DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000）。
     static let defaultStreamIdleTimeout: TimeInterval = 300
 
+    // MARK: 修 K：请求超时按体量分档（实战轮修复批 2，2026-10-21）
+    //
+    // 定罪链（analysis/shizhan-crash-timeout-diagnosis.md §二）：旧实现
+    // `urlRequest.timeoutInterval = 60` 固定 60 秒——URLSession timeoutInterval
+    // 语义 = 首字节前空闲上限（请求超时，非总时长）；会话上下文巨大（数百 K
+    // token）时服务端 prefill > 60s → NSURLErrorTimedOut(-1001)，每条消息必超时。
+    // 按 wire body 体量分档放宽：body 越大 = 历史 token 越多 = prefill 越长。
+    // 分档点（1MB / 4MB）与实战会话形态对齐：1MB body ≈ 300K+ token 历史
+    // （M2 估算器 /3 密度口径），4MB ≈ 1M+ token（极端态封顶 300s）。
+    /// 小体量请求超时（body < 1MB——常规会话步）。
+    static let requestTimeoutSmall: TimeInterval = 120
+    /// 中体量请求超时（body < 4MB——大历史会话步）。
+    static let requestTimeoutMedium: TimeInterval = 240
+    /// 大体量请求超时（body ≥ 4MB——极端大历史封顶）。
+    static let requestTimeoutLarge: TimeInterval = 300
+
+    /// 按请求体字节量取超时分档（纯函数，供单测对拍）。
+    static func requestTimeout(forBodyBytes count: Int) -> TimeInterval {
+        if count < 1_000_000 { return requestTimeoutSmall }
+        if count < 4_000_000 { return requestTimeoutMedium }
+        return requestTimeoutLarge
+    }
+
     let endpoint: EndpointConfig
     let apiKey: String
     let providerName: String
@@ -325,16 +348,21 @@ struct OpenAICompatAdapter {
         } else {
             url.append(path: "chat/completions")
         }
+        // 修 K：bodyData 构造上移至 urlRequest 之前——timeoutInterval 分档读取点
+        // 需要在请求构造处拿到 body 体量（旧实现 body 在 :337 才构造，超时固定
+        // 60s 与 body 无关；顺序调整零 wire 语义变化，Content-Length 仍由
+        // URLSession 按上传 body 重算）。
+        let bodyData = try JSONEncoder().encode(wire)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = 60
+        // 修 K：首 byte 前空闲上限按体量分档（120/240/300s——定罪链见常量区注释）。
+        urlRequest.timeoutInterval = Self.requestTimeout(forBodyBytes: bodyData.count)
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         // 清理旧 Content-Length —— URLSession 会按实际上传的 body 重算
         // （← OpenMinis OAuthHTTPClient.swift:1405 同款）。
         urlRequest.setValue(nil, forHTTPHeaderField: "Content-Length")
-        let bodyData = try JSONEncoder().encode(wire)
         return (urlRequest, bodyData)
     }
 

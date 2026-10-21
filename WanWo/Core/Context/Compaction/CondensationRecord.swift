@@ -10,7 +10,8 @@
 //      kind: "condensation/v1"        载荷 {id, forgottenSeqs:[Int64], summary?,
 //                                      summaryOffset?, llmResponseID?, tokensBefore?,
 //                                      tokensAfter?, createdAtMs}
-//      kind: "condensation-request/v1" 载荷 {reason:"overflow"|"manual", requestedAtMs}
+//      kind: "condensation-request/v1" 载荷 {reason:"overflow"|"manual"|
+//                                      "transientExhausted", requestedAtMs}
 //      （冻结契约禁改名；事件 kind 一经落盘永不改）
 //    · 注册纪律 = GoalEvents 同款（GoalTypes.swift:200-226）：isRegistered 守卫幂等
 //      + 注册表重名 fatal 门；装配期调用（Compactor.init 承接——AppEnvironment 不可
@@ -71,7 +72,8 @@ enum CondensationEvents {
                 requiredFields: [
                     ExtensionFieldSchema("reason", .string,
                                          allowedValues: [.string("overflow"),
-                                                         .string("manual")]),
+                                                         .string("manual"),
+                                                         .string("transientExhausted")]),
                     ExtensionFieldSchema("requestedAtMs", .int),
                 ],
                 projection: .logOnly))
@@ -101,6 +103,15 @@ struct CondensationRecord: Equatable, Sendable {
     /// 压缩后工作集 token 估算。
     var tokensAfter: Int?
     var createdAtMs: Int64
+    /// 修 R2（实战轮修复批 2，2026-10-21）：一级无 LLM 落盘裁剪的 seq 全集——
+    /// 这些 seq 的 toolResult 载荷在投影中以占位符呈现。语义 = **内容替换不是
+    /// 遗忘**（事件本体保留、配对不受扰），与 forgottenSeqs（投影过滤）严格
+    /// 区分；空数组 = 无裁剪（旧记录无该字段解码兼容为空数组——schema 只增
+    /// 不改，写侧门 requiredFields 不含本字段，旧载荷照常通过）。
+    /// dsh 对照：compaction-tool-result-pruner.pruneSession 的 surface replace
+    /// 万我等价承载（万我事件流 append-only，替换以 tombstone 记录 + 投影变换
+    /// 达成，冻结语义：record 落盘后这些位置恒定，不再随步移动）。
+    var prunedSeqs: [Int] = []
 
     // MARK: 编解码（读写两侧闭环——GoalCodec 同款纪律）
 
@@ -123,6 +134,10 @@ struct CondensationRecord: Equatable, Sendable {
         }
         if let tokensAfter {
             object["tokensAfter"] = .int(tokensAfter)
+        }
+        // 修 R2：prunedSeqs 空数组不落载荷（最小 payload；旧记录无此键）。
+        if !prunedSeqs.isEmpty {
+            object["prunedSeqs"] = .array(prunedSeqs.map { .int($0) })
         }
         object["createdAtMs"] = .int(Int(createdAtMs))
         return .object(object)
@@ -148,13 +163,21 @@ struct CondensationRecord: Equatable, Sendable {
         if case .int(let before) = fields["tokensBefore"] { tokensBefore = before }
         var tokensAfter: Int?
         if case .int(let after) = fields["tokensAfter"] { tokensAfter = after }
+        // 修 R2：prunedSeqs 缺席（旧记录）= 空数组（解码兼容）；坏元素 fail closed。
+        var prunedSeqs: [Int] = []
+        if case .array(let prunedValues) = fields["prunedSeqs"] {
+            for value in prunedValues {
+                guard case .int(let seq) = value else { return nil }
+                prunedSeqs.append(seq)
+            }
+        }
         var createdAtMs: Int64 = 0
         if case .int(let ms) = fields["createdAtMs"] { createdAtMs = Int64(ms) }
         return CondensationRecord(id: id, forgottenSeqs: seqs, summary: summary,
                                   summaryOffset: summaryOffset,
                                   llmResponseID: llmResponseID,
                                   tokensBefore: tokensBefore, tokensAfter: tokensAfter,
-                                  createdAtMs: createdAtMs)
+                                  createdAtMs: createdAtMs, prunedSeqs: prunedSeqs)
     }
 }
 
@@ -168,6 +191,11 @@ struct CondensationRequestMeta: Equatable, Sendable {
         case overflow
         /// 用户手动（/compact）。
         case manual
+        /// 修 M2（实战轮修复批 2）：瞬态重试（超时/传输类）耗尽后的自愈恢复
+        /// ——大历史 prefill 超时与 provider 溢出语义不同，审计如实区分；
+        /// schema allowedValues 同步扩展（旧版本读侧 decode 落 nil 按无请求
+        /// 处理，向前兼容）。
+        case transientExhausted
     }
 
     var reason: Reason

@@ -207,6 +207,10 @@ actor AgentLoop {
     /// 【M8 批2 · B1 件4】本轮是否已做过溢出恢复（catch-condense-retry 每
     /// 回合一次——Cline overflowRecoveryAttempted 语义）；runTurn 开头复位。
     private var overflowRecoveryAttempted = false
+    /// 【修 M2 · 实战轮修复批 2】本轮是否已做过瞬态耗尽自愈（超时/传输类
+    /// 重试耗尽后的 catch-condense-retry，每回合限 1 次防循环——与溢出恢复
+    /// 标志同款 per-turn 模式）；runTurn 开头复位。
+    private var transientRecoveryAttempted = false
     /// runtime context 快照投影状态（F038' ERR-024；dsh RuntimeContextProjection
     /// 语义移植，见 Core/Context/RuntimeContextProjection.swift）。
     private var runtimeProjection = RuntimeContextProjection()
@@ -755,6 +759,7 @@ actor AgentLoop {
     private func runTurn() async throws -> Bool {
         let turn = deps.writer.nextTurn
         overflowRecoveryAttempted = false
+        transientRecoveryAttempted = false
         try await deps.writer.append(.turnStart(turn: turn))
         var endReason: TurnEndReason? = nil
         var sawMaxTokens = false
@@ -985,11 +990,25 @@ actor AgentLoop {
                 do {
                     outcome = try await runStep(turn: turn, step: step)
                 } catch {
-                    guard !overflowRecoveryAttempted,
-                          Self.isContextOverflowLike(error) else { throw error }
-                    overflowRecoveryAttempted = true
-                    outcome = try await recoverFromContextOverflow(
-                        turn: turn, step: step)
+                    // M8 批2 件4：API 上下文溢出 catch-condense-retry（既有路径
+                    // 零回归）。
+                    if !overflowRecoveryAttempted, Self.isContextOverflowLike(error) {
+                        overflowRecoveryAttempted = true
+                        outcome = try await recoverFromContextOverflow(
+                            turn: turn, step: step)
+                    } else if !transientRecoveryAttempted,
+                              Self.isTransientExhaustedLike(error) {
+                        // 修 M2（实战轮修复批 2）：瞬态重试耗尽后的超时自愈——
+                        // M1 重试 5 次仍超时/传输类失败 → 落
+                        // condensation-request(transientExhausted) + HARD 压缩
+                        // + 重试一轮一次；每回合限 1 次（防循环——压缩后重试
+                        // 仍失败的错误直接抛出走回合错误收尾）。
+                        transientRecoveryAttempted = true
+                        outcome = try await recoverFromTransientExhaustion(
+                            turn: turn, step: step, originalError: error)
+                    } else {
+                        throw error
+                    }
                 }
                 // step 收尾配对校验（ERR-021 防御②）：step/end 落盘前补齐缺失
                 // 的 tool/result，结构性保证派生历史的 tool_calls↔tool 配对完整。
@@ -1274,6 +1293,54 @@ actor AgentLoop {
         return false
     }
 
+    // MARK: - 瞬态耗尽自愈（修 M2 · 实战轮修复批 2）
+
+    /// 瞬态耗尽判定：M1 重试耗尽后仍为超时/传输类失败。WanWo 错误码面：
+    /// TIMEOUT（流空闲看门狗）+ TRANSPORT（连接失败/首 byte 前请求超时——
+    /// NSURLErrorTimedOut(-1001) 在 waitForResponse 抛出时包装为 TRANSPORT，
+    /// 见 OpenAICompatAdapter 请求构造注释；诊断定罪链 §二实锤 -1001 走此码）。
+    /// 429/5xx 不在自愈面（退避重试已覆盖，压缩无助于限流/服务端故障）。
+    nonisolated static func isTransientExhaustedLike(_ error: Error) -> Bool {
+        guard let llmError = error as? LLMError else { return false }
+        return llmError.code == "TIMEOUT" || llmError.code == "TRANSPORT"
+    }
+
+    /// 瞬态耗尽自愈（复用既有 catch-condense-retry 骨架——recoverFromContextOverflow
+    /// 同形态；每回合限 1 次由 transientRecoveryAttempted 门保）：
+    /// ① 落 condensation-request/v1(transientExhausted)（HARD 触发载体 + 审计；
+    ///   reason 新增值——大历史 prefill 超时与 provider 溢出语义不同，审计
+    ///   如实区分；schema allowedValues 同步扩展，旧版本读侧 decode 落 nil
+    ///   按无请求处理，向前兼容）；
+    /// ② 立即执行一次 HARD 压缩（condensePendingRequest）；
+    /// ③ 压缩落地（含修 R 第一级无 LLM 裁剪）才重试一轮一次；未落地则原样
+    ///   抛回原错误（保留超时终态语义，不空转）。
+    private func recoverFromTransientExhaustion(turn: Int, step: Int,
+                                                originalError: Error) async throws -> StepOutcome {
+        Self.logger.warning("turn \(turn) step \(step): transient retries exhausted "
+            + "(timeout/transport), starting catch-condense-retry self-heal")
+        let request = CondensationRequestMeta(
+            reason: .transientExhausted,
+            requestedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+        try? await deps.writer.append(.extensionEvent(
+            kind: CondensationEvents.requestKind, payload: request.payload))
+        let appendClosure: (SessionEvent.Payload, Bool) async throws -> Void = {
+            [writer = deps.writer] payload, ignorable in
+            try await writer.append(payload, ignorable: ignorable)
+        }
+        let condensed = await deps.compactor.condensePendingRequest(
+            events: deps.writer.events,
+            model: deps.writer.recordedRequestHeader?.config.model,
+            append: appendClosure)
+        guard condensed else {
+            Self.logger.warning("catch-condense-retry (transient): nothing condensed, "
+                + "rethrowing original error")
+            throw originalError
+        }
+        Self.logger.info("catch-condense-retry (transient): condensation landed, "
+            + "retrying step once")
+        return try await runStep(turn: turn, step: step)
+    }
+
     // MARK: - 一步（dsh step()：模型请求 + 工具执行）
 
     private func runStep(turn: Int, step: Int) async throws -> StepOutcome {
@@ -1419,6 +1486,12 @@ actor AgentLoop {
             var blocks: [ContentBlock] = []
             var usage: TokenUsage?
             var finish: FinishReason = .stop
+            // 修 M1（实战轮修复批 2）：流式重试边界——本 attempt 是否已收到任何
+            // chunk。一旦收到字节即视为生成已开始，此后失败禁重试（防重复生成：
+            // 新 attempt 从头重新生成会与已交付前缀重复；assistantChunk 虽不进
+            // 派生历史，但 UI live 面已渲染的前缀会复写）。仅「未收到任何字节」
+            // 的失败（连接失败/首 byte 前超时/零字节断流）可重试。
+            var receivedAnyChunk = false
             // 批C7：在途前缀账（dsh assembler.interruptedBlocks 语义）——blockEnd
             // 仅在 [DONE] 收尾批发射，中断落在流中段时 blocks 恒空，屏面已渲染
             // 的思考/文字前缀必须由 delta 增量合成落盘。tool-call 在途不合成
@@ -1429,6 +1502,7 @@ actor AgentLoop {
                 let stream = adapter.stream(request)
                 for try await chunk in stream {
                     try Task.checkCancellation()
+                    receivedAnyChunk = true
                     // model-visible=logged：每块先落盘再驱动 UI。
                     try await writer.append(.assistantChunk(turn: turn, step: step, chunk: chunk))
                     deps.callbacks.onLiveChunk(chunk)
@@ -1460,6 +1534,9 @@ actor AgentLoop {
                 }
                 let llmError = (error as? LLMError)
                     ?? LLMError(message: String(describing: error), code: "UNKNOWN")
+                // 修 M1 硬约束：已收到字节的失败禁重试（防重复生成——首 chunk
+                // 后断流按既有错误路径抛出，不扩面）。
+                guard !receivedAnyChunk else { throw llmError }
                 guard retryPolicy.isRetryable(code: llmError.code),
                       retryPolicy.mode == .normal,
                       attempt < retryPolicy.maxRetries else {

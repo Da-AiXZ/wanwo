@@ -23,11 +23,11 @@ final class ModelCatalogTests: XCTestCase {
         // 条目缺窗口 = 继承端点缺省。
         let bare = ModelCatalogEntry(id: "m")
         XCTAssertEqual(ModelCatalog.resolvedContextWindow(bare, defaultContextWindow: 262_144), 262_144)
-        // 端点缺省也缺 = 内置 1_000_000（dsh DEFAULT_CONTEXT_WINDOW）。
-        XCTAssertEqual(ModelCatalog.resolvedContextWindow(bare, defaultContextWindow: nil), 1_000_000)
+        // 端点缺省也缺 = 内置 128_000（修 L 收敛的保守底线）。
+        XCTAssertEqual(ModelCatalog.resolvedContextWindow(bare, defaultContextWindow: nil), 128_000)
         // 无条目（未登记模型）= 端点缺省兜底。
         XCTAssertEqual(ModelCatalog.resolvedContextWindow(nil, defaultContextWindow: 8_192), 8_192)
-        XCTAssertEqual(ModelCatalog.resolvedContextWindow(nil, defaultContextWindow: nil), 1_000_000)
+        XCTAssertEqual(ModelCatalog.resolvedContextWindow(nil, defaultContextWindow: nil), 128_000)
     }
 
     func testResolvedMaxTokensChain() {

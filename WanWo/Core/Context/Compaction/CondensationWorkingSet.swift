@@ -8,8 +8,11 @@
 //      tombstone——过滤 forgottenSeqs + 在 summaryOffset 插入派生摘要条目；派生条目
 //      只在工作集不落盘（sdk CondensationSummaryEvent 不入主事件库，id 确定性派生
 //      :51-76）；tombstone 丢弃即恢复全量（可撤销）+ 随行 llmResponseID（可审计）。
-//    · 掩码（管线第一级零 LLM，sdk observation_masking_condenser.py 语义）：窗口外
-//      旧工具结果替换占位文本——作为 View 变换先行执行，零持久化零 LLM 成本。
+//    · 落盘裁剪（修 R2/R3 · 实战轮修复批 2 · dsh compaction-tool-result-pruner
+//      等价承载）：prunedSeqs 命中的 toolResult 载荷在投影中以占位符呈现——
+//      记录持久化在 tombstone 内（内容替换不是遗忘、位置冻结不随步移动）。
+//      旧「每步 View 掩码」（sdk observation_masking_condenser）已停用删除
+//      （masked() git 留痕）——每步边界前移致历史中段每步改写、前缀缓存失效。
 //    · 原子边界（sdk view/manipulation_indices 的万我等价简化 = 配对区间表，登记
 //      b1-report.md）：遗忘区间不得拆散 tool-call↔tool-result 对 + 受保护前缀
 //      （keepFirst，开头 system 段的万我等价——万我 system 不在事件流）永不忘。
@@ -32,12 +35,6 @@ enum CondensationWorkingSet {
         var keepFirst = 2
         /// 事件数上限（超限触发 SOFT 压缩；sdk max_size 默认 240 = settings 语义）。
         var maxSize = 240
-        /// 掩码注意力窗口（窗口外旧工具结果替换占位；sdk observation_masking
-        /// 原值 5）。【N9c 拍板项 1·方案 A 2026-10-20】5→12：N8c 真机实测
-        /// 窗口 5 过窄——上一轮工具结果频繁落出窗致 AI 重复调用/重复读盘
-        ///（RepeatCallAdviser F020 阈值外的机制性根因）；用户拍板 A 方案。
-        /// token 涨幅实测待真机观察（窗口×2.4，上限受 maxSize=240 约束）。
-        var attentionWindow = 12
         /// 序列化单事件字符串上限（hard reset ×0.8 递减的基数；sdk 老版
         /// max_event_length=10_000 同源）。
         var maxEventChars = 10_000
@@ -69,13 +66,21 @@ enum CondensationWorkingSet {
 
     // MARK: 投影（纯函数）
 
-    /// 按序应用全部 tombstone + 掩码 View 变换，产出工作集（不落盘、不改输入）。
+    /// 按序应用全部 tombstone + 落盘裁剪占位，产出工作集（不落盘、不改输入）。
     /// 投影后数组含合成派生摘要条目（seq 负数标记）——DeriveFold 以
     /// `<compaction-summary>` user 消息呈现。
+    /// 修 R1（实战轮修复批 2，2026-10-21）：停用每步 View 掩码（masked() 已删
+    /// ——每步边界前移致历史中段每步改写，DeepSeek 前缀缓存失效，定罪链
+    /// diagnosis §六）；旧工具结果占位改由修 R2 落盘裁剪承载（prunedSeqs
+    /// 记录在 tombstone 内，投影按 seq 精确替换——冻结语义：record 落盘后
+    /// 这些位置恒定，不再随步移动）。
     static func projected(_ events: [SessionEvent],
                           policy: Policy = .default) -> [SessionEvent] {
         let tombs = tombstones(in: events)
         var workingSet: [SessionEvent]
+        // 修 R2：全部 tombstone 声明的裁剪 seq 并集（内容替换不是遗忘——
+        // 事件本体保留，仅 toolResult 载荷在投影中以占位符呈现）。
+        var pruned = Set<Int>()
         if tombs.isEmpty {
             workingSet = events
         } else {
@@ -84,6 +89,7 @@ enum CondensationWorkingSet {
             var insertions: [(offset: Int, record: CondensationRecord)] = []
             for record in tombs {
                 forgotten.formUnion(record.forgottenSeqs)
+                pruned.formUnion(record.prunedSeqs)
                 if let summary = record.summary, !summary.isEmpty,
                    let offset = record.summaryOffset {
                     insertions.append((offset, record))
@@ -121,7 +127,25 @@ enum CondensationWorkingSet {
                 insertionIndex += 1
             }
         }
-        return masked(workingSet, attentionWindow: policy.attentionWindow)
+        // 修 R2：落盘裁剪应用——prunedSeqs 命中的 toolResult 载荷替换占位文本
+        // （占位沿用掩码文案；seq 精确命中，与步进无关=缓存稳定）。事件本体
+        // 保留（turn/step/callId/错误面原样——配对不受扰，审计可溯源）。
+        if !pruned.isEmpty {
+            for index in workingSet.indices {
+                guard pruned.contains(workingSet[index].seq),
+                      case .toolResult(let turn, let step, let callId, _, let isError,
+                                       let errorName, let errorCode, let meta) =
+                          workingSet[index].payload else { continue }
+                workingSet[index] = SessionEvent(
+                    seq: workingSet[index].seq, timeMs: workingSet[index].timeMs,
+                    payload: .toolResult(turn: turn, step: step, callId: callId,
+                                         content: maskPlaceholder, isError: isError,
+                                         errorName: errorName, errorCode: errorCode,
+                                         meta: meta),
+                    ignorable: workingSet[index].ignorable)
+            }
+        }
+        return workingSet
     }
 
     /// 派生摘要条目（合成 compaction/summary 载荷；seq 负数标记合成、永不落盘；
@@ -180,35 +204,46 @@ enum CondensationWorkingSet {
         tombstones(in: events).compactMap(\.summary).last
     }
 
-    // MARK: 掩码（管线第一级零 LLM）
+    // MARK: 一级落盘裁剪（修 R3 · dsh compaction-basic 两段式第一级）
 
-    /// 窗口外旧工具结果替换占位（View 变换，零持久化）。错误结果保留
-    /// （万我登记：错误小且诊断价值高——observation_masking 全掩码的偏差）。
-    static func masked(_ projected: [SessionEvent], attentionWindow: Int) -> [SessionEvent] {
-        guard attentionWindow > 0 else { return projected }
-        // 仅模型可见位置计窗（sdk view 语义：窗口按视图事件计）。
-        var visibleIndices: [Int] = []
-        visibleIndices.reserveCapacity(projected.count)
-        for (index, event) in projected.enumerated() where isModelVisible(event.payload) {
-            visibleIndices.append(index)
+    /// 裁剪窗口口径（沿旧 attentionWindow=12——模型可见事件保留最近 12 个
+    /// 不 prune；N9c 拍板背景：旧每步掩码窗口 5→12 是为解决「上轮工具结果
+    /// 落窗致 AI 重复调用」，停用每步掩码后该防线由 RepeatCallAdviser 承接
+    /// + token 上涨由 HARD 触发兜底，窗口口径在本常量固化）。
+    static let pruneWindow = 12
+
+    /// 一级裁剪选择（纯函数；dsh toolResultPruner.pruneSession 的选择面万我
+    /// 等价）：keepFirst 前缀与最近 pruneWindow 个模型可见事件之外的非 error
+    /// toolResult 全部入选 prunedSeqs。配对保护天然成立——prune 只替换
+    /// toolResult 载荷内容、不动事件本体（tool-call↔tool-result 对完整）；
+    /// 已遗忘（投影已过滤）与已裁剪（占位已落盘，无二次收益）的 seq 排除。
+    /// 修剪选择永不返回派生摘要条目（负 seq 冻结）。
+    static func selectPrunedSeqs(_ events: [SessionEvent],
+                                 policy: Policy = .default) -> [Int] {
+        var excluded = Set<Int>()
+        for record in tombstones(in: events) {
+            excluded.formUnion(record.forgottenSeqs)
+            excluded.formUnion(record.prunedSeqs)
         }
-        guard visibleIndices.count > attentionWindow else { return projected }
-        let cutoff = visibleIndices[visibleIndices.count - attentionWindow]
-        var result = projected
-        var changed = false
-        for index in 0..<cutoff {
-            guard case .toolResult(let turn, let step, let callId, _, let isError,
-                                   let errorName, let errorCode, let meta) = result[index].payload,
+        let workingSet = projected(events, policy: policy)
+        var visible: [SessionEvent] = []
+        visible.reserveCapacity(workingSet.count)
+        for event in workingSet where isModelVisible(event.payload) {
+            visible.append(event)
+        }
+        guard visible.count > policy.keepFirst else { return [] }
+        // 窗口起点：keepFirst 前缀之后、最近 pruneWindow 个可见事件之前。
+        let windowStart = max(policy.keepFirst, visible.count - pruneWindow)
+        guard windowStart > policy.keepFirst else { return [] }
+        var seqs: [Int] = []
+        for index in policy.keepFirst..<windowStart {
+            let event = visible[index]
+            guard event.seq >= 0, !excluded.contains(event.seq) else { continue }
+            guard case .toolResult(_, _, _, _, let isError, _, _, _) = event.payload,
                   !isError else { continue }
-            result[index] = SessionEvent(
-                seq: result[index].seq, timeMs: result[index].timeMs,
-                payload: .toolResult(turn: turn, step: step, callId: callId,
-                                     content: maskPlaceholder, isError: isError,
-                                     errorName: errorName, errorCode: errorCode, meta: meta),
-                ignorable: result[index].ignorable)
-            changed = true
+            seqs.append(event.seq)
         }
-        return changed ? result : projected
+        return seqs
     }
 
     /// 模型可见载荷判定（投影/计数/掩码共用口径）。

@@ -9,7 +9,8 @@
 //      即恢复全量；派生条目不落盘）
 //    - 原子边界（tool-call↔tool-result 对不拆 + 受保护前缀永不忘）
 //    - 触发三源分级（sdk llm_summarizing_condenser.py:136-203）
-//    - 序列化（seq 标注 + 字符上限）与掩码（窗口外旧工具结果占位）
+//    - 序列化（seq 标注 + 字符上限）与一级落盘裁剪（修 R2/R3：prunedSeqs
+//      投影占位 + selectPrunedSeqs 选择面；每步 View 掩码已停用删除）
 //    - 熔断（连续 3 次失败停自动压缩，成功复位）+ hard reset ×0.8 递减
 //
 
@@ -272,7 +273,7 @@ final class CondensationTests: XCTestCase {
     // MARK: - 件3：触发三源分级
 
     private let smallPolicy = CondensationWorkingSet.Policy(
-        keepFirst: 2, maxSize: 4, attentionWindow: 0, maxEventChars: 10_000,
+        keepFirst: 2, maxSize: 4, maxEventChars: 10_000,
         minimumProgress: 0.1, tokenBudgetRatio: 0.9)
 
     func testTriggerTokensIsHard() {
@@ -340,10 +341,10 @@ final class CondensationTests: XCTestCase {
     func testSelectionMinimumProgressGuard() {
         // 10 个节点、REQUEST 尾留 = 10//2-2-1 = 2 → 候选 6 个 ≥ 10×0.1 —— 通过；
         // 构造收益太小：3 节点 + tailKeep 0 → 候选 1 个 = 3×0.1=0.3 → 1 ≥ 0.3 通过。
-        // 用 attentionWindow=0/keepFirst=2 + 4 节点：尾留 = 4//2-3 = -1 → 0，
+        // 用 keepFirst=2 + 4 节点：尾留 = 4//2-3 = -1 → 0，
         // 候选 2 个 ≥ 0.4 通过。改用 minimumProgress=0.9 挡：候选 2 < 4×0.9 → nil。
         let policy = CondensationWorkingSet.Policy(
-            keepFirst: 2, maxSize: 4, attentionWindow: 0, maxEventChars: 10_000,
+            keepFirst: 2, maxSize: 4, maxEventChars: 10_000,
             minimumProgress: 0.9, tokenBudgetRatio: 0.9)
         let events = (0..<4).map { user($0, "u\($0)") }
         let forgotten = CondensationWorkingSet.selectForgottenSeqs(
@@ -430,49 +431,116 @@ final class CondensationTests: XCTestCase {
                       "旧摘要作 previous summary 语境行（增量折叠），实际 \(all)")
     }
 
-    // MARK: - 掩码（件6：零 LLM 第一级）
+    // MARK: - 一级落盘裁剪（修 R2/R3：prunedSeqs 投影 + 选择面）
 
-    func testMaskReplacesOldToolResultsOutsideWindow() {
+    private func makePruneRecord(_ pruned: [Int]) -> CondensationRecord {
+        var record = CondensationRecord(id: "cond-prune-\(pruned.first ?? 0)",
+                                        forgottenSeqs: [], summary: nil,
+                                        summaryOffset: nil, llmResponseID: nil,
+                                        tokensBefore: nil, tokensAfter: nil,
+                                        createdAtMs: nowMs)
+        record.prunedSeqs = pruned
+        return record
+    }
+
+    func testProjectionAppliesPrunedSeqsStably() {
+        // 修 R2：prunedSeqs 命中的 toolResult 载荷替换占位——事件本体保留
+        // （turn/step/callId/错误面原样），投影跨次调用恒定（冻结语义）。
         let events = [
             result(0, "c0", content: "BIG0"),
             result(1, "c1", content: "BIG1", isError: true),
             result(2, "c2", content: "BIG2"),
-            result(3, "c3", content: "BIG3"),
-            user(4, "u4"),
+            user(3, "u3"),
         ]
-        let policy = CondensationWorkingSet.Policy(
-            keepFirst: 2, maxSize: 240, attentionWindow: 2, maxEventChars: 10_000,
-            minimumProgress: 0.1, tokenBudgetRatio: 0.9)
-        let masked = CondensationWorkingSet.projected(events, policy: policy)
-        func payload(of seq: Int) -> SessionEvent.Payload? {
-            masked.first(where: { $0.seq == seq })?.payload
-        }
+        let withTomb = events + [tombstoneEvent(4, makePruneRecord([0, 2]))]
+        let first = CondensationWorkingSet.projected(withTomb)
+        let second = CondensationWorkingSet.projected(withTomb)
+        XCTAssertEqual(first, second, "落盘裁剪冻结：投影跨次调用恒定")
         func content(_ seq: Int) -> String? {
-            guard case .toolResult(_, _, _, let content, _, _, _, _)? = payload(of: seq)
-            else { return nil }
+            guard case .toolResult(_, _, _, let content, _, _, _, _)? =
+                first.first(where: { $0.seq == seq })?.payload else { return nil }
             return content
         }
-        // 窗口 = 最后 2 个模型可见事件（result3 + user4）→ 窗口外掩码
         XCTAssertEqual(content(0), CondensationWorkingSet.maskPlaceholder)
         XCTAssertEqual(content(2), CondensationWorkingSet.maskPlaceholder)
-        XCTAssertEqual(content(3), "BIG3", "窗口内不掩码")
-        // 错误结果保留（万我登记偏差）
+        // 未裁剪 seq 原样；错误结果未被裁剪集命中即原样（记录权威面）。
         XCTAssertEqual(content(1), "BIG1")
-        // callId/turn/step 保持（配对不受扰）
-        guard case .toolResult(let turn, let step, let callId, _, let isError, _, _, _)? =
-            payload(of: 0) else {
-            return XCTFail("masked toolResult payload shape changed")
-        }
+        // 事件本体保留（配对面）。
+        guard case .toolResult(let turn, let step, let callId, _, let isError,
+                               _, _, _)? = first.first(where: { $0.seq == 0 })?.payload
+        else { return XCTFail("pruned toolResult payload shape changed") }
         XCTAssertEqual(callId, "c0")
         XCTAssertEqual(turn, 1)
         XCTAssertEqual(step, 1)
         XCTAssertFalse(isError)
+        // forgottenSeqs 为空：事件不被过滤。
+        XCTAssertTrue(first.contains { $0.seq == 0 } && first.contains { $0.seq == 1 }
+            && first.contains { $0.seq == 2 })
+    }
+
+    func testSelectPrunedSeqsWindowAndExclusions() {
+        // 选择面：keepFirst 前缀 + 最近 12 个可见事件之外的非 error
+        // toolResult 入选；error / 已裁剪 / 已遗忘排除。
+        var events: [SessionEvent] = []
+        // seq 0-5：keepFirst=2 只保 0-1；0-11 可见事件共 12+；构造 4 个旧结果
+        // （seq 2-5，非 error）+ 1 个 error（seq 6）+ 窗口内结果（尾部）。
+        for index in 0..<6 {
+            events.append(result(index, "c\(index)", content: "R\(index)"))
+        }
+        events.append(result(6, "c6", content: "ERR", isError: true))
+        for index in 7..<20 {
+            events.append(user(index, "u\(index)"))
+        }
+        events.append(result(20, "c20", content: "TAIL"))
+        let selected = CondensationWorkingSet.selectPrunedSeqs(events)
+        // 可见事件 = seq 0..20 全部（21 个）；窗口 = 最近 12 个 = seq 9..20；
+        // keepFirst = 0,1；候选 = seq 2..8 中非 error toolResult = 2,3,4,5。
+        XCTAssertEqual(selected, [2, 3, 4, 5], "实际 \(selected)")
+        // 二次运行幂等（已裁剪排除——同一事件流无新记录时不重复入选逻辑
+        // 由 tombstone 排除面承载：模拟首次裁剪落地后重跑）。
+        let pruned = events + [tombstoneEvent(21, makePruneRecord(selected))]
+        let reselected = CondensationWorkingSet.selectPrunedSeqs(pruned)
+        XCTAssertTrue(reselected.isEmpty, "已裁剪 seq 不得二次入选，实际 \(reselected)")
+    }
+
+    func testSelectPrunedSeqsKeepsPrefixAndWindow() {
+        // 事件不足窗口 + 前缀时：无可裁剪（空集）。
+        let events = [
+            result(0, "c0", content: "R0"),
+            result(1, "c1", content: "R1"),
+            user(2, "u2"),
+        ]
+        XCTAssertTrue(CondensationWorkingSet.selectPrunedSeqs(events).isEmpty)
+    }
+
+    func testCondensationRecordPrunedSeqsRoundtripAndLegacyCompat() {
+        // 修 R2：prunedSeqs 编解码往返 + 旧载荷（无该键）解码兼容 = 空数组。
+        let record = makePruneRecord([3, 5, 9])
+        XCTAssertEqual(CondensationRecord.decode(record.payload), record)
+        let legacy = CondensationRecord(id: "cond-legacy", forgottenSeqs: [1],
+                                        summary: "旧摘要", summaryOffset: 1,
+                                        llmResponseID: nil, tokensBefore: nil,
+                                        tokensAfter: nil, createdAtMs: nowMs)
+        let decoded = CondensationRecord.decode(legacy.payload)
+        XCTAssertEqual(decoded, legacy)
+        XCTAssertEqual(decoded?.prunedSeqs, [], "旧记录无 prunedSeqs 键 → 空数组")
+        // 坏元素 fail closed。
+        XCTAssertNil(CondensationRecord.decode(.object(
+            ["id": .string("x"), "forgottenSeqs": .array([.int(1)]),
+             "prunedSeqs": .array([.string("bad")])])))
+    }
+
+    func testTransientExhaustedReasonRoundtripAndSchema() {
+        // 修 M2：transientExhausted reason 编解码往返 + 写侧 schema 值域放行。
+        let meta = CondensationRequestMeta(reason: .transientExhausted,
+                                           requestedAtMs: nowMs)
+        XCTAssertEqual(CondensationRequestMeta.decode(meta.payload), meta)
     }
 
     // MARK: - 引擎：正常压缩 + 熔断（件7）
 
     private let enginePolicy = CondensationWorkingSet.Policy(
-        keepFirst: 2, maxSize: 240, attentionWindow: 0, maxEventChars: 10_000,
+        keepFirst: 2, maxSize: 240, maxEventChars: 10_000,
         minimumProgress: 0.1, tokenBudgetRatio: 0.9)
 
     private func makeEngineEvents() -> [SessionEvent] {
