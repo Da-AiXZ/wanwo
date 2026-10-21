@@ -51,7 +51,10 @@ final class BuildService: @unchecked Sendable {
     static let shared = BuildService()
 
     /// 诊断级别显示名（压测建议 2：内部枚举 rawValue 不直接喷给用户）。
-    static let levelNames: [Int: String] = [3: "error", 2: "warning", 1: "remark", 0: "note"]
+    /// 【批 3 · P1】补齐 vendored MDKDiagnosticLevel 全枚举（fatal=4/unknown=5
+    /// ——MDKDiagnostic.h:39-45；旧表 0-3 在 build_log 渲染面会漏映射）。
+    static let levelNames: [Int: String] = [0: "note", 1: "remark", 2: "warning",
+                                            3: "error", 4: "fatal", 5: "unknown"]
 
     /// 单飞行门（官方 NXBuilder.builds 同语义：并发构建互踩 MDK 线程池/缓存）。
     private var inFlight = false
@@ -248,7 +251,45 @@ final class BuildService: @unchecked Sendable {
         //（合规 §三 g 实证的官方正确姿势）。
         _ = Self.overwriteOutputPathTemplate(project: project)
         _ = Self.overwriteSigningGateTemplate(project: project)
+        // 【批 3 · P2】新建 App 工程脚手架补键（CFBundleDevelopmentRegion/
+        // CFBundlePackageType——官方模板 NXBundleInfo 不含，guest 启动告警
+        // 实测）。只对新建工程；复用路径不动（避免意外改用户既有工程——
+        // 本行只在 created 分支到达）。Utility 工程无 bundle 面不触碰。
+        if schemeKind == NXProjectSchemeKind.app {
+            _ = Self.injectDefaultBundleKeys(project: project)
+        }
         return (project, true)
+    }
+
+    /// 【批 3 · P2】新建 App 工程脚手架补键：向 Config/Project.plist 的
+    /// NXBundleInfo 注入 CFBundleDevelopmentRegion=en、CFBundlePackageType=
+    /// APPL（guest Info.plist 由 NXBundleInfo 渲染——vendored NXProject.m:90
+    /// _infoDictionary 装载链实测两键缺失=启动告警）。只补缺失键（已存在
+    /// 不覆盖——防冲用户自定义）；幂等 best effort（任何失败返回 false，
+    /// 不阻塞创建——语义等价旧行为）。
+    static func injectDefaultBundleKeys(project: NXProject) -> Bool {
+        let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
+        guard let read = NSDictionary(contentsOf: plistURL) else { return false }
+        var bundleInfo = read["NXBundleInfo"] as? [String: Any] ?? [:]
+        var changed = false
+        if bundleInfo["CFBundleDevelopmentRegion"] == nil {
+            bundleInfo["CFBundleDevelopmentRegion"] = "en"
+            changed = true
+        }
+        if bundleInfo["CFBundlePackageType"] == nil {
+            bundleInfo["CFBundlePackageType"] = "APPL"
+            changed = true
+        }
+        if !changed { return true }
+        let dict = NSMutableDictionary(dictionary: read)
+        dict["NXBundleInfo"] = bundleInfo
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+            try data.write(to: plistURL, options: .atomic)
+        } catch {
+            return false
+        }
+        return project.reload()
     }
 
     /// 列会话桶下全部工程（name → 最新 UUID 工程目录）。

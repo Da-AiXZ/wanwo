@@ -277,13 +277,35 @@ static void wanwoInstallWindowServerHitTestOverride(void)
 
     // 【N10e 修 I】run start 头部行（pid 此点可及——tee 串行队列 FIFO 保证
     // 排在 open 动作之后、任何输出分块之前/并发有序）。
+    // 【批 3 · P4 (null) 修复】旧形态 NSISO8601DateFormatter 在真机上
+    // stringFromDate: 返回 nil（实测 tee 文件头 "run start (null)"）——
+    // %@ 插 nil 即 "(null)" 直落产物。改 NSDateFormatter 固定 en_US_POSIX
+    // locale + 显式 format（ISO8601 同形态 yyyy-MM-dd'T'HH:mm:ssZZZZZ——
+    // 确定性非 nil），utility 名与时间戳均兜底 "-"——禁 "(null)" 出现在
+    // 产物文件头。
     if (teeLog != nil)
     {
-        NSString *iso = [[NSISO8601DateFormatter alloc] stringFromDate:[NSDate date]];
+        static dispatch_once_t stampOnce;
+        static NSDateFormatter *stampFormatter;
+        dispatch_once(&stampOnce, ^{
+            stampFormatter = [[NSDateFormatter alloc] init];
+            stampFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            stampFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+        });
+        NSString *iso = [stampFormatter stringFromDate:[NSDate date]];
+        if (iso.length == 0)
+        {
+            iso = @"-";
+        }
+        NSString *utilName = [utilityPath lastPathComponent];
+        if (utilName.length == 0)
+        {
+            utilName = @"-";
+        }
         NSString *header = [NSString stringWithFormat:
             @"run start %@ utility=%@ pid=%d（utility 终端 raw 输出 tee——"
             @"终端字节流原样落盘，含 ANSI 控制序列）\n",
-            iso, [utilityPath lastPathComponent], process.pid];
+            iso, utilName, process.pid];
         [teeLog writeHeader:header];
     }
 

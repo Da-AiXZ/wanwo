@@ -42,6 +42,17 @@
 //  swiftc 雷区纪律：构造器参数位无内嵌复杂表达式、无嵌套函数（全部平铺
 //  private/static func）、多行插值拆单步拼接。
 //
+//  【批 3 · 修 O（2026-10-21）】utility 运行管理三连：
+//    · O1 并发 gate：utilityActiveInfo() 查询（BuildAndRunTool utility
+//      分支审批前消费——utility-vs-utility 拒绝；utility-vs-app 不拒绝，
+//      域划分依据见 BuildTools.swift gate 注记）。
+//    · O2 全量回收：登记单槽→[UtilityRegistration] 数组（不再覆写 app 槽
+//      activeProcess——孤儿根源消除）；stopActiveRun 遍历全杀（防御性）；
+//      unregister 按窗口 id 定位单条移除（退出事件链单实例语义不变）。
+//    · O3 超时机制：timeoutSeconds 消费（DispatchSourceTimer 到点
+//      terminate→既有退出链；unregister cancel 防泄漏）；退出文案四态
+//      （超时优先——app 路线 composeExitMessage 判定序对齐）。
+//
 
 import Foundation
 
@@ -167,6 +178,51 @@ final class GuestRunSession: @unchecked Sendable {
     }
 }
 
+// MARK: - utility 进程登记盒（批 3 · 修 O2 数组化）
+
+/// 一次 utility 终端运行的登记盒（stop_build 接缝/退出事件链/超时机制的信息
+/// 源）。class 形态：stopRequested/timedOut/exitRaw 需在 GuestRunService.lock
+/// 内跨线程置位读取（stop_build 工具线程、超时定时器队列、exitingCallback
+/// 任意线程）；生命周期=登记入数组至 unregister 移除（writer/tee 强引用随
+/// 之释放——原单槽置 nil 防泄漏语义由「移除即释放」承接）。
+final class UtilityRegistration {
+    let process: PEProcess
+    let utilityPath: String
+    let projectName: String
+    let windowIdentifier: id_t
+    let teeLog: UtilityTeeLog?
+    let prepDetail: String
+    let writer: SessionWriter?
+    /// nil = 不限时（C-a 拍板默认——utility 同款）；非 nil = 保护上限。
+    let timeoutSeconds: TimeInterval?
+    /// wait4 状态原值（exitingCallback 包装采集——-1=未退出/不可得）。
+    var exitRaw = -1
+    /// stop_build 终止标志（stopActiveRun 置位——退出事件 result 区分）。
+    var stopRequested = false
+    /// 超时标志（timeout 定时器队列置位——退出事件三态「超时」判定源）。
+    var timedOut = false
+    /// 保护性超时定时器（修 O3——unregister 时 cancel 防泄漏）。
+    var timeoutTimer: DispatchSourceTimer?
+
+    init(process: PEProcess,
+         utilityPath: String,
+         projectName: String,
+         windowIdentifier: id_t,
+         teeLog: UtilityTeeLog?,
+         prepDetail: String,
+         writer: SessionWriter,
+         timeoutSeconds: TimeInterval?) {
+        self.process = process
+        self.utilityPath = utilityPath
+        self.projectName = projectName
+        self.windowIdentifier = windowIdentifier
+        self.teeLog = teeLog
+        self.prepDetail = prepDetail
+        self.writer = writer
+        self.timeoutSeconds = timeoutSeconds
+    }
+}
+
 // MARK: - GuestRunService
 
 final class GuestRunService: @unchecked Sendable {
@@ -181,54 +237,58 @@ final class GuestRunService: @unchecked Sendable {
     /// utility 路线无会话（开窗即返），登记仅进程）。
     private var activeSession: GuestRunSession?
 
-    // ── 【N10e 修 F/G】utility 终端路线登记扩展（lock 内读写——exiting-
-    // callback 任意线程触发）────────────────────────────────────────────
-    /// 工程名（退出事件 name 字段——登记时存）。
-    private var utilityProjectName = ""
-    /// 终端窗口 id（关窗链——closeTerminalWindowWithIdentifier 消费）。
-    /// （id_t 导入为 UInt32——无效窗 id 用 UInt32.max 哨兵，与官方 (id_t)-1
-    /// 语义一致：closeWindowWithIdentifier 字典查不到即 no-op。）
-    private var utilityWindowIdentifier: id_t = UInt32.max
-    /// raw 输出 tee（unregister 时写 footer——修 I）。
-    private var utilityTeeLog: UtilityTeeLog?
-    /// prepare 细目（退出事件 diagnostics 前缀——登记时存）。
-    private var utilityPrepDetail = ""
-    /// 退出事件发射 writer（unregister 后置 nil 防泄漏——修 G）。
-    private var utilityWriter: SessionWriter?
-    /// wait4 状态原值（exitingCallback 包装采集——-1=未退出/不可得）。
-    private var utilityExitRaw = -1
-    /// stop_build 终止标志（stopActiveRun 置位——退出事件 result 区分）。
-    private var utilityStopRequested = false
+    // ── 【N10e 修 F/G · 批 3 修 O2 数组化】utility 终端路线登记（lock 内
+    // 读写——exitingCallback 任意线程触发）。批 3：单槽字段升级为数组——
+    // 修 O1 gate 后同一时刻至多 1 个活跃 utility，但历史残留（gate 拒绝前
+    // 的旧会话）与极端竞态仍可能多实例，stop_build 遍历全杀（防御性回收，
+    // 一次性到位）。app 路线 activeProcess/activeSession 单槽语义不变
+    //（utility 不再覆写 app 槽——修 O 的孤儿根源在此）。
+    private var utilityRegistrations: [UtilityRegistration] = []
 
     /// 终止活跃 guest（stop_build 在 run 态下的转语义）。返回说明文案。
+    /// 【批 3 · 修 O2】app 会话与 utility 登记两条独立链逐一终止：app 走
+    /// 既有 stopRequested 标志→RunSession 收尾；utility 遍历**全部**登记
+    /// 逐个 terminate（修 O1 gate 后常态至多 1 个——数组登记为历史残留/
+    /// 极端竞态的防御性全量回收）。
     func stopActiveRun() -> String {
         lock.lock()
         let proc = activeProcess
         let bid = activeBundleID
         let session = activeSession
-        var isUtility = false
         if let session = session {
             // B 三态之一：stop_build 终止标志（收尾段据此区分外部终止）。
             session.tailLock.lock()
             session.stopRequested = true
             session.tailLock.unlock()
-        } else if proc != nil {
-            // 【N10e 修 F/G】utility 路线 stop 标志（退出事件 result=failure
-            // +「已被 stop_build 终止」文案的依据）。
-            utilityStopRequested = true
-            isUtility = true
+        }
+        var utilityTargets: [PEProcess] = []
+        var utilityNames: [String] = []
+        for reg in utilityRegistrations {
+            reg.stopRequested = true
+            utilityTargets.append(reg.process)
+            utilityNames.append((reg.utilityPath as NSString).lastPathComponent
+                + " pid=" + String(reg.process.pid))
         }
         lock.unlock()
-        guard let proc = proc else {
+        guard proc != nil || !utilityTargets.isEmpty else {
             return "无活跃 guest 进程登记（run 门在持但进程未注册/已退出）"
         }
-        _ = proc.terminate()
-        var note = "terminate 已发出（SIGKILL——官方 PEProcess.terminate 语义）guest=" + bid
-        if isUtility {
-            note = note + "；utility 进程退出后终端窗自动关闭（和 app 路线一致——修 F），"
-            note = note + "guest_run 退出事件回报退出形态（修 G）"
-        } else {
+        if let proc = proc {
+            _ = proc.terminate()
+        }
+        for target in utilityTargets {
+            _ = target.terminate()
+        }
+        var note = "terminate 已发出（SIGKILL——官方 PEProcess.terminate 语义）"
+        if proc != nil {
+            note = note + " guest=" + bid
             note = note + "；退出后由 RunSession 收尾（run_log footer→A2 窗口收尾→endRun→guest_run 退出事件）"
+        }
+        if !utilityTargets.isEmpty {
+            note = note + "；utility 登记 " + String(utilityTargets.count)
+                + " 个已全部终止（" + utilityNames.joined(separator: "、") + "）"
+            note = note + "；utility 进程退出后终端窗自动关闭（和 app 路线一致——修 F）"
+            note = note + "，guest_run 退出事件回报退出形态（修 G）"
         }
         return note
     }
@@ -240,66 +300,91 @@ final class GuestRunService: @unchecked Sendable {
     /// NXWindowSessionTerminal.m:203-214 官方原样）。
     /// 【N10e 修 F/G/I】登记扩展：窗口 id（关窗链）+工程名/prep 细目/writer
     /// （退出事件——unregister 时发）+raw 输出 tee（unregister 时写 footer）。
+    /// 【批 3 · 修 O2】登记结构数组化（UtilityRegistration 追加——不再覆写
+    /// app 槽 activeProcess，孤儿根源消除）；【批 3 · 修 O3】timeoutSeconds
+    /// 非 nil 时挂保护性超时定时器（到点 terminate→既有退出链收尾）。
     func registerUtilityProcess(_ process: PEProcess,
                                 utilityPath: String,
                                 projectName: String,
                                 windowIdentifier: id_t,
                                 teeLog: UtilityTeeLog?,
                                 prepDetail: String,
-                                writer: SessionWriter) {
+                                writer: SessionWriter,
+                                timeoutSeconds: TimeInterval?) {
+        let reg = UtilityRegistration(process: process,
+                                      utilityPath: utilityPath,
+                                      projectName: projectName,
+                                      windowIdentifier: windowIdentifier,
+                                      teeLog: teeLog,
+                                      prepDetail: prepDetail,
+                                      writer: writer,
+                                      timeoutSeconds: timeoutSeconds)
         lock.lock()
-        activeProcess = process
-        activeBundleID = (utilityPath as NSString).lastPathComponent
-        utilityProjectName = projectName
-        utilityWindowIdentifier = windowIdentifier
-        utilityTeeLog = teeLog
-        utilityPrepDetail = prepDetail
-        utilityWriter = writer
-        utilityExitRaw = -1
-        utilityStopRequested = false
+        utilityRegistrations.append(reg)
         lock.unlock()
+        if let t = timeoutSeconds {
+            armUtilityTimeout(reg, seconds: t)
+        }
     }
 
-    /// 【N10e 修 G】utility 退出状态采集（BuildAndRunTool 挂的 exitingCallback
-    /// 包装在官方回调之后调用——任意线程，lock 内写入）。
-    func noteUtilityExitRaw(_ raw: Int) {
+    /// 【批 3 · 修 O1】活跃 utility 登记查询（utility-vs-utility 并发 gate
+    /// 的信息源——BuildAndRunTool utility 分支在审批/编译前消费）。取最新
+    /// 登记（gate 后常态至多 1 个；数组形态下最后登记=最新）。
+    func utilityActiveInfo() -> (pid: Int, projectName: String)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let reg = utilityRegistrations.last else { return nil }
+        return (Int(reg.process.pid), reg.projectName)
+    }
+
+    /// 【N10e 修 G · 批 3 数组化适配】utility 退出状态采集（BuildAndRunTool
+    /// 挂的 exitingCallback 包装在官方回调之后调用——任意线程，lock 内写入；
+    /// 按窗口 id 定位登记——多实例防御面）。
+    func noteUtilityExitRaw(windowIdentifier: id_t, raw: Int) {
         lock.lock()
-        utilityExitRaw = raw
+        for reg in utilityRegistrations {
+            if reg.windowIdentifier == windowIdentifier {
+                reg.exitRaw = raw
+                break
+            }
+        }
         lock.unlock()
     }
 
     /// 【N10c】utility 进程注销（BuildAndRunTool 挂的 exitingCallback 包装
     /// 在官方回调+关窗 dispatch 之后调用——进程退出即清登记，stop_build 不再
-    /// 打僵尸进程）。
-    /// 【N10e 修 F/G/I】注销序：清登记（含 writer/tee 置 nil 防泄漏）→ tee
-    /// footer（run end + 退出注记）→ guest_run 退出事件（modelVisible——
-    /// app 路线 RunSession finalize 字段对齐）→ A2 窗口清空判定隐藏（关窗链
-    /// 0.25s 动画+字典拆除——1.0s 余量后判定，既有余量语义不变）。
-    func unregisterUtilityProcess() {
+    /// 打僵尸进程）。【批 3 · 修 O2】按窗口 id 定位并移除单条登记（数组化）；
+    /// 查无此登记（重复退出回调/极端竞态）静默返回（幂等）。
+    /// 【N10e 修 F/G/I】注销序：移除登记+取消超时定时器（批 3 修 O3 防泄漏）
+    /// → tee footer（run end + 退出注记）→ guest_run 退出事件（modelVisible
+    /// ——app 路线 RunSession finalize 字段对齐）→ A2 窗口清空判定隐藏（关窗
+    /// 链 0.25s 动画+字典拆除——1.0s 余量后判定，既有余量语义不变）。
+    func unregisterUtilityProcess(windowIdentifier: id_t) {
         lock.lock()
-        let tee = utilityTeeLog
-        let raw = utilityExitRaw
-        let stopRequested = utilityStopRequested
-        let projectName = utilityProjectName
-        let prepDetail = utilityPrepDetail
-        let writer = utilityWriter
-        activeProcess = nil
-        activeBundleID = ""
-        utilityProjectName = ""
-        utilityWindowIdentifier = UInt32.max
-        utilityTeeLog = nil
-        utilityPrepDetail = ""
-        utilityWriter = nil
-        utilityExitRaw = -1
-        utilityStopRequested = false
+        var regIndex = -1
+        for (index, reg) in utilityRegistrations.enumerated() {
+            if reg.windowIdentifier == windowIdentifier {
+                regIndex = index
+                break
+            }
+        }
+        guard regIndex >= 0 else {
+            lock.unlock()
+            return
+        }
+        let reg = utilityRegistrations.remove(at: regIndex)
+        // 修 O3：注销时取消超时定时器（防 timer 泄漏/对已移除登记误杀）。
+        if let timer = reg.timeoutTimer {
+            timer.cancel()
+            reg.timeoutTimer = nil
+        }
         lock.unlock()
 
         // 退出注记（事件 exit 字段/tee footer 同源文案）。
-        let exitNote = Self.renderUtilityExitNote(raw: raw)
+        let exitNote = Self.renderUtilityExitNote(raw: reg.exitRaw, timedOut: reg.timedOut)
 
         // 修 I：tee footer（同队列 FIFO——排在全部输出分块之后；进程死亡的
         // 收尾字节流若晚于 footer 到达为已知微小竞态，观测语义可接受）。
-        if let tee = tee {
+        if let tee = reg.teeLog {
             let footer = "run end " + ISO8601DateFormatter().string(from: Date())
                 + " " + exitNote + "\n"
             tee.writeFooter(footer)
@@ -307,18 +392,21 @@ final class GuestRunService: @unchecked Sendable {
 
         // 修 G：退出事件（app 路线 finalizeRunSession 事件链对齐——modelVisible；
         // writer 在 unregister 后不再持有——Task 局部强引用消费完即释放）。
-        let outcome = Self.composeUtilityExitMessage(raw: raw, stopRequested: stopRequested)
-        var diagnostics = prepDetail
+        let outcome = Self.composeUtilityExitMessage(raw: reg.exitRaw,
+                                                     stopRequested: reg.stopRequested,
+                                                     timedOut: reg.timedOut,
+                                                     timeoutSeconds: reg.timeoutSeconds)
+        var diagnostics = reg.prepDetail
         if !diagnostics.isEmpty {
             diagnostics = diagnostics + "；"
         }
         diagnostics = diagnostics + outcome.message
         var runLogField = "-（TTY 直连无 run_log——输出见终端窗口）"
-        if let tee = tee {
+        if let tee = reg.teeLog {
             runLogField = tee.path + "（utility 终端 raw 输出 tee 工作区副本）"
         }
-        if let writer = writer {
-            let eventName = projectName
+        if let writer = reg.writer {
+            let eventName = reg.projectName
             let eventExit = exitNote
             let eventRunLog = runLogField
             let eventDiagnostics = String(diagnostics.prefix(2000))
@@ -344,7 +432,7 @@ final class GuestRunService: @unchecked Sendable {
     /// 是否有活跃 guest 进程登记（app run 门路径 / utility 终端路径通用）。
     var hasActiveRegisteredProcess: Bool {
         lock.lock(); defer { lock.unlock() }
-        return activeProcess != nil
+        return activeProcess != nil || !utilityRegistrations.isEmpty
     }
 
     /// 【N10d · C-b】活跃运行会话信息（重复运行报错文案与 run 门失败提示：
@@ -715,15 +803,58 @@ final class GuestRunService: @unchecked Sendable {
         return "exit=" + String(exitCode) + "（wait4 raw=" + String(raw) + "）"
     }
 
+    // MARK: utility 超时机制（批 3 · 修 O3——平铺函数，swiftc 雷区纪律）
+
+    /// utility 保护性超时定时器（与 app 路线 RunSession 的 semaphore 超时等义：
+    /// app 常驻等待段用 exitSemaphore.wait(timeout:)，utility 开窗即返回无常驻
+    /// 等待段——改 DispatchSourceTimer 到点 terminate→exitingCallback→既有
+    /// 关窗+unregister 事件链收尾）。timer 句柄存登记（reg.timeoutTimer），
+    /// unregister 侧 cancel——两侧同址管理防泄漏。默认不传=不限时（不挂表）。
+    private func armUtilityTimeout(_ reg: UtilityRegistration, seconds: TimeInterval) {
+        let timer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(label: "wanwo.guestrun.utility.timeout"))
+        timer.schedule(deadline: .now() + seconds)
+        let windowId = reg.windowIdentifier
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.fireUtilityTimeout(windowIdentifier: windowId)
+        }
+        reg.timeoutTimer = timer
+        timer.resume()
+    }
+
+    /// 超时到点：置 timedOut 标志 + terminate。登记已移除（自然退出竞态）
+    /// 则无操作。terminate 触发 exitingCallback → 既有包装链（wait4 采集→
+    /// 主队列关窗→unregister：tee footer+退出事件+A2）自然收尾。
+    private func fireUtilityTimeout(windowIdentifier: id_t) {
+        lock.lock()
+        var target: PEProcess?
+        for reg in utilityRegistrations {
+            if reg.windowIdentifier == windowIdentifier {
+                reg.timedOut = true
+                target = reg.process
+                break
+            }
+        }
+        lock.unlock()
+        if let target = target {
+            _ = target.terminate()
+        }
+    }
+
     // MARK: utility 退出组装辅助（N10e 修 F/G——平铺 static，swiftc 雷区纪律）
 
-    /// 【N10e 修 G】utility 退出注记（事件 exit 字段/tee footer 同源）。
-    /// 退出码可及性（考古结论）：exitingCallback 由 PEProcess.processDidExit
+    /// 【N10e 修 G · 批 3 修 O3】utility 退出注记（事件 exit 字段/tee footer
+    /// 同源）。退出码可及性（考古结论）：exitingCallback 由 PEProcess.processDidExit
     /// 在 :284 触发——同函数 :275 已读 arg1.exitContext.underlyingContext.
     /// legacyCode（wait4 状态原值），故回调时退出码可及（app 路线同点同读）。
-    /// raw<0=采集侧防御态（exitContext 缺失——TTY 直连路线如实标注）。
-    static func renderUtilityExitNote(raw: Int) -> String {
+    /// raw<0=采集侧防御态（exitContext 缺失——TTY 直连路线如实标注；超时态
+    /// terminate 后回调未触发同款标注——app 路线 renderExitNote 对齐）。
+    static func renderUtilityExitNote(raw: Int, timedOut: Bool) -> String {
         if raw < 0 {
+            if timedOut {
+                return "exit state unavailable raw=-1（terminate 后退出回调未在余量内触发——exitContext 缺失，TTY 直连路线）"
+            }
             return "exit state unavailable raw=-1（exitContext 缺失——TTY 直连路线）"
         }
         if (raw & 0x7F) != 0 {
@@ -734,10 +865,22 @@ final class GuestRunService: @unchecked Sendable {
         return "exit=" + String(code) + "（wait4 raw=" + String(raw) + "）"
     }
 
-    /// 【N10e 修 G】utility 退出三态（①stop_build 终止 ②外部终止=终端窗
-    /// 关闭钮 ③自然退出）——result（success/failure）与消息同返（app 路线
-    /// composeExitMessage 对齐：自然退出（解码成功且无 signal）=success）。
-    static func composeUtilityExitMessage(raw: Int, stopRequested: Bool) -> (result: String, message: String) {
+    /// 【N10e 修 G · 批 3 修 O3】utility 退出四态（①超时（timedOut 优先——
+    /// 对齐 app 路线 composeExitMessage 判定序）②stop_build 终止 ③外部终止=
+    /// 终端窗关闭钮 ④自然退出）——result（success/failure）与消息同返（app
+    /// 路线对齐：自然退出（解码成功且无 signal）=success；超时=保护性上限
+    /// 非故障但运行目标未达成→failure）。
+    static func composeUtilityExitMessage(raw: Int,
+                                          stopRequested: Bool,
+                                          timedOut: Bool,
+                                          timeoutSeconds: TimeInterval?) -> (result: String, message: String) {
+        if timedOut {
+            var msg = "utility 超时（" + String(Int(timeoutSeconds ?? 0))
+                + "s 保护上限）→ 已 terminate；"
+            msg = msg + renderUtilityExitNote(raw: raw, timedOut: true)
+            msg = msg + "；超时=保护性上限非故障（默认不限时——需要更长运行时提高 timeout_ms 重跑）"
+            return ("failure", msg)
+        }
         if stopRequested {
             var msg = "utility 已被 stop_build 终止（SIGKILL）"
             msg = msg + "——终端窗已自动关闭（和 app 路线一致）"

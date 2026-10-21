@@ -470,6 +470,18 @@ struct BuildIPATool: AgentTool {
             return .failure(String(describing: error), code: "PROJECT_ERROR")
         }
 
+        // 【批 3 · P3 伪 ipa 拦截】Utility 工程产出=裸 Mach-O（NXOutputPath=
+        // $(CACHEROOT)/$(NXExecutable)，无 Payload/.app 目录结构）——打包出
+        // 的 .ipa 实为改名裸二进制（实测 cffaedfe 头/unzip short read），误导
+        // 性产物。消费形态参照 BuildAndRunTool 的 schemeKind 分叉先例。
+        if project.projectConfig.schemeKind == NXProjectSchemeKind.utility {
+            return .failure(
+                "UTILITY 工程（scheme=Utility）产出为裸可执行文件，不打包 .ipa——"
+                    + "用 build_and_run 直接运行；需要分发时改用 Application scheme 工程"
+                    + "（project_create scheme=\"Application\"）。",
+                code: "UTILITY_NOT_IPA", name: "BuildError")
+        }
+
         // 【lld 污染拦截】上次 duplicate symbol 链接失败后 lld 内部残留
         //（dupSymDiags 无 clear，上游疏漏）——同进程再次链接大概率 UAF 闪退
         //（.ips 实锤）。lld 内部静态无法从外部清理：事前拦截+引导重启。
@@ -605,6 +617,7 @@ struct BuildIPATool: AgentTool {
                 —— 按以下诊断修复源码后重新 build_ipa：
                 \(result.diagnosticsSummary)
                 build log: \(result.buildLogPath)
+                （诊断可能未列全——完整列表见 build_log）
                 """, code: "BUILD_FAILED", name: "BuildError")
         }
     }
@@ -634,9 +647,49 @@ struct BuildLogTool: AgentTool {
             // 0.0s 实证：build_log 永远「无诊断条目」）。删除之——build_log 现在
             // 能看到初始化/运行失败的 Internal 条目（官方 NXBuilder init 每轮
             // 构建开始仍会重置 Internal，历史不跨构建累积）。
-            let items = db.debugObjects.values.flatMap(\.debugItems)
-            if items.isEmpty { return .success("（无诊断条目）") }
-            let lines = items.map { "[\($0.severity)] \($0.message)" }
+            //
+            // 【批 3 · P1 渲染修复】旧形态 "[\($0.severity)] \($0.message)"
+            // 直出枚举描述（实测 "[MDKDiagnosticLevel(rawValue: 3)] cannot
+            // convert..."）且无 file:line。修复（对齐 BuildService.build 渲染
+            // 同源口径）：severity 经 BuildService.levelNames 映射等级名
+            // （error/warning/remark/note/fatal/unknown）；file=debugObjects
+            // 键（DebugObject.title——DebugItem 自身只存行列，MDKSourceLocation
+            // 无文件字段）；message 前附 file:line:col（行号>0 才附——Internal
+            // 桶消息无位置）。
+            // 排序（如实报告）：按文件标题稳定化（Swift 字典遍历序不确定——
+            // 不排序则输出顺序每次漂移）；同文件条目保持落盘序不强改。
+            // 与 build_ipa 摘要顺序差异的根源=build() 额外做了 level 二次
+            // 稳定排序（file→level 双键）——本处保持 file 单键，两输出顺序
+            // 不一致为既有设计，不强改序。
+            let rootPrefix = project.url.standardizedFileURL.path + "/"
+            var titles: [String] = []
+            for (title, _) in db.debugObjects {
+                titles.append(title)
+            }
+            titles.sort()
+            var lines: [String] = []
+            var itemCount = 0
+            for title in titles {
+                guard let object = db.debugObjects[title] else { continue }
+                var file = title
+                if title.hasPrefix(rootPrefix) {
+                    file = String(title.dropFirst(rootPrefix.count))
+                }
+                for item in object.debugItems {
+                    let levelRaw = Int(item.severity.rawValue)
+                    let level = BuildService.levelNames[levelRaw] ?? "note"
+                    var line = "[" + level + "] "
+                    let lineNum = Int(item.sourceLocation.line)
+                    let colNum = Int(item.sourceLocation.column)
+                    if lineNum > 0 {
+                        line = line + file + ":" + String(lineNum) + ":" + String(colNum) + " "
+                    }
+                    line = line + item.message
+                    lines.append(line)
+                    itemCount = itemCount + 1
+                }
+            }
+            if itemCount == 0 { return .success("（无诊断条目）") }
             return .success(lines.joined(separator: "\n"))
         } catch let e as BuildServiceError {
             return .failure(e.description, code: "PROJECT_ERROR", name: "BuildError")
@@ -654,8 +707,9 @@ struct StopBuildTool: AgentTool {
         + "Note: an in-flight build cannot be interrupted (official NXBuilder has no cancel API) — this only clears a stale slot. "
         + "During a guest run this terminates the guest process (SIGKILL); the run session then finalizes in the background "
         + "(exit event with exit code/output tail/run_log copy reported via guest_run) and releases the run gate. "
-        + "Also terminates a registered utility-terminal process (N10) — its terminal window closes automatically with it and a guest_run exit event "
-        + "reports the outcome (N10e 修 F/G — same as the app route)."
+        + "Also terminates ALL registered utility-terminal processes (批 3 修 O2 full sweep — array registration defensively "
+        + "recovers every instance, normally at most one) — each terminal window closes automatically with its process and a "
+        + "guest_run exit event reports the outcome (N10e 修 F/G — same as the app route)."
     let parameters = JSONValue.schemaObject(properties: [:], required: [])
 
     func isConcurrencySafe(_ args: JSONValue) -> Bool { true }
@@ -700,6 +754,8 @@ struct BuildAndRunTool: AgentTool {
         + "reports the outcome; raw terminal output is teed to the workspace BuildArtifacts/run_log-<HHmmss>.txt (AI-readable, contains ANSI control sequences). "
         + "Default: no timeout — the guest keeps running until it exits or is stopped; timeout_ms is an optional protective cap. "
         + "One run at a time: a second build_and_run while a run is in flight fails with the active pid (stop_build to terminate, or wait for exit). "
+        + "批 3 修 O1: only one utility process at a time as well — a second build_and_run on a Utility project while a utility process is running fails "
+        + "with its pid (stop_build to terminate or wait for natural exit); utility and app runs may coexist (independent window domains). "
         + "Requires user approval (ask once)."
     let parameters = JSONValue.schemaObject(
         properties: [
@@ -787,6 +843,23 @@ struct BuildAndRunTool: AgentTool {
         // 分叉点在 ① 编译成功之后（签名编排/开窗形态不同，编译/审批/宏预检/
         // lld 门共用）——见 ① 段后的 isUtilityProject 分支。
         let isUtilityProject = project.projectConfig.schemeKind != NXProjectSchemeKind.app
+
+        // ── 【批 3 · 修 O1】utility-vs-utility 并发 gate ──────────────────
+        // 提前到审批/编译前（不白批一次+不浪费数分钟 CPU 才发现被拒）。
+        // 旧形态缺陷（测试1 P0-1 定罪）：registerUtilityProcess 单槽覆写
+        // activeProcess——第二次 utility run 直接覆盖登记，首个进程失管成
+        // 孤儿。修复语义对齐 app 路线 C-b 拍板：明确失败带活跃 pid，不自动
+        // 停旧起新。
+        // 域划分依据（utility-vs-app 不拒绝）：app 路线 C v2 开窗即返后 run
+        // 门已放行——app 长活会话（浮窗常驻交互面）与 utility 终端各自独立
+        // 窗口域，无 run 门互持；两者登记/回收互相独立（批 3 修 O2 后
+        // utility 走独立数组登记，不再覆写 app 的 activeProcess 槽）。
+        if isUtilityProject, let activeUtility = GuestRunService.shared.utilityActiveInfo() {
+            let gateMsg = "RUN_IN_FLIGHT：utility 进程运行中（pid=" + String(activeUtility.pid)
+                + " 工程=" + activeUtility.projectName
+                + "）——stop_build 终止或等其自然退出"
+            return .failure(gateMsg, code: "RUN_IN_FLIGHT", name: "BuildError")
+        }
 
         // 证书前置快速失败（build_ipa 同缝——不浪费数分钟 CPU 才发现签不了）
         if !CertificateStore.isConfigured {
@@ -937,6 +1010,8 @@ struct BuildAndRunTool: AgentTool {
                     teeLog: tee,
                     noteOut: &noteRef)
                 if ok, let process = procRef {
+                    // 【批 3 · 修 O2/O3】数组登记（孤儿根源消除——不再覆写
+                    // app 槽）+ timeoutSeconds 消费（nil=不限时，C-a 同款）。
                     GuestRunService.shared.registerUtilityProcess(
                         process,
                         utilityPath: fastPath,
@@ -944,11 +1019,14 @@ struct BuildAndRunTool: AgentTool {
                         windowIdentifier: winRef,
                         teeLog: tee,
                         prepDetail: prepDetailText,
-                        writer: writer)
+                        writer: writer,
+                        timeoutSeconds: timeoutSeconds)
                     let officialCallback = process.exitingCallback
+                    let windowId = winRef
                     process.exitingCallback = { [weak process] in
                         officialCallback?()
-                        // 修 G：wait4 原值采集（任意线程——service lock 内写）。
+                        // 修 G：wait4 原值采集（任意线程——service lock 内写；
+                        // 批 3 数组化——按窗口 id 定位登记）。
                         var raw = -1
                         if let strong = process {
                             let ctxAny: Any? = strong.process?.exitContext
@@ -956,14 +1034,15 @@ struct BuildAndRunTool: AgentTool {
                                 raw = Int(exitCtx.underlyingContext.legacyCode)
                             }
                         }
-                        GuestRunService.shared.noteUtilityExitRaw(raw)
+                        GuestRunService.shared.noteUtilityExitRaw(windowIdentifier: windowId, raw: raw)
                         // 修 F：主队列关窗+注销（exitingCallback 触发线程不保证
                         // 主线程——vendored 官方回调内 closeWindow 也走 dispatch
                         // async main（NXWindowSessionTerminal.m:183 同款前提）；
-                        // unregister 内 tee footer/事件发射线程安全）。
+                        // unregister 内 tee footer/事件发射线程安全；批 3 修 O2
+                        // ——按窗口 id 定位单条登记移除+超时定时器 cancel）。
                         DispatchQueue.main.async {
-                            GuestWindowBridge.closeTerminalWindow(withIdentifier: winRef)
-                            GuestRunService.shared.unregisterUtilityProcess()
+                            GuestWindowBridge.closeTerminalWindow(withIdentifier: windowId)
+                            GuestRunService.shared.unregisterUtilityProcess(windowIdentifier: windowId)
                         }
                     }
                     var note = "utility=" + (fastPath as NSString).lastPathComponent
