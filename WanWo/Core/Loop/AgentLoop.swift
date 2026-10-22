@@ -16,7 +16,7 @@
 //      补合成错误结果保 replay
 //    · maxTurns 熔断可恢复（blocked 收尾；新回合计数重置）——修 Q 后默认
 //      不启用（Config.maxTurns = nil，dsh while(true) 语义对齐）；子代理
-//      one-shot 护栏独立保留（subagentStepGuardLimit）
+//      2026-10-22 起同语义（无熔断）
 //
 
 import Foundation
@@ -78,17 +78,20 @@ actor AgentLoop {
         /// 轮大型任务每回合必撞（turn 4-8 连撞），用户被迫反复发「继续」。
         /// 配置保留可开：显式给 >0 时行为同旧——撞线落 system 注记 + blocked
         /// 可恢复（新回合计数重置）；nil 或 ≤0 一律不熔断（检查点直接跳过）。
-        /// 子代理 one-shot 护栏独立于此配置（见 subagentStepGuardLimit）。
+        /// 子代理 2026-10-22 起同语义（AppEnvironment 统一传 nil——见
+        /// 下方移除注）。
         var maxTurns: Int? = nil
         /// 并行工具池上限（dsh maxParallelToolCalls 缺省 10；可热更）。
         var maxParallelToolCalls = 10
     }
 
-    /// 子代理 one-shot 步数护栏上限（修 Q：独立于主会话 Config 的显式常量，
-    /// 不随主会话 maxTurns 浮动——子代理无交互界面，撞线=委派终止不可恢复，
-    /// 硬熔断合理且必须恒在；AppEnvironment.makeAgentStack 对 subagentDepth
-    /// 非 nil 的子栈显式传入本值）。
-    static let subagentStepGuardLimit = 32
+    /// 子代理 one-shot 步数护栏（修 Q 引入、2026-10-22 移除）：设备侧实测
+    /// src-probes 子代理在 step 32 撞线被截断（send_message 未发→父侧误标
+    /// "declined the task"，产物完整落盘方才救回）——硬护栏对长任务子代理
+    /// 是生产事故源。用户拍板：子代理与主会话同语义（maxTurns=nil，
+    /// dsh while(true) 对齐——dsh 全库含子代理路径均无步数熔断）；防失控
+    /// 交由 RepeatCallAdviser 软提醒 + 用户取消承接。常量移除，blocked
+    /// 词汇保留（Config 显式 maxTurns 仍可触发，词汇层 dsh 1:1 不动）。
 
     /// 一步的结局（dsh step() 返回词汇）。
     enum StepOutcome: Equatable, Sendable {

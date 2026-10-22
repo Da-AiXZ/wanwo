@@ -23,6 +23,7 @@
 #import <Foundation/Foundation.h>
 #import <sys/stat.h>
 #import <libgen.h>
+#import <limits.h> /* 万我 补片器硬改软兜底：PATH_MAX（diff 登记：docs/gpl-compliance.md §N15） */
 #import <LindChain/litehook/litehook.h>
 #import <LindChain/LiveContainer/LCUtils.h>
 
@@ -165,7 +166,96 @@ int LCPatchExecSlice(const char *path, struct mach_header_64 *header, bool doInj
         }
         command2 = (struct load_command *)((void *)command2 + command2->cmdsize);
     }
-    
+
+    /* 万我 补片器硬改软兜底（diff 登记：docs/gpl-compliance.md §N15）：
+     * 防御层——产物中 LC_LOAD_DYLIB（0x0c）指向宿主系统不存在的框架/库时
+     * （如 Symbols.framework，iOS 17+ 才有），dlopen 会直接拒载秒退。
+     * 此处把此类 load command 的 cmd 字段原地改写为 LC_LOAD_WEAK_DYLIB
+     * （0x80000018，cmdsize 不变——LOAD 与 WEAK_LOAD 命令结构同构），
+     * 缺失时 dyld 跳过而非拒载。
+     * 只处理 /System/Library/Frameworks/<N>.framework/、/System/Library/
+     * PrivateFrameworks/<N>.framework/、/usr/lib/lib<N>.dylib 三种绝对路径
+     * 形态；@rpath 形态不动。/usr/lib 系统库（libSystem 等）必在，fileExists
+     * 判定通过即原样保留。字节序：本函数在宿主 App 进程内对已 mmap 的
+     * little-endian Mach-O 做改写，沿现有代码惯例（如上方 cmd=0x114515）
+     * 直接经 struct 字段赋值（host 字节序 == Mach-O little-endian），无需
+     * 显式 OSSwapHostToLittleInt32。
+     * 此补片仅作用于 guest run 补片链（GuestRunSupport prepareGuestRun/
+     * prepareUtilityRun 与 LCUtils signMachOAtURL 补片段），不碰标准签名
+     * 交付路径。 */
+    {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        struct load_command *weakCommand = (struct load_command *)imageHeaderPtr;
+        for(int i = 0; i < header->ncmds; i++)
+        {
+            if (weakCommand->cmd == LC_LOAD_DYLIB) {
+                struct dylib_command *dylibCmd = (struct dylib_command *)weakCommand;
+                const char *installName = (void *)dylibCmd + dylibCmd->dylib.name.offset;
+                const char *frameworksPrefix = "/System/Library/Frameworks/";
+                const char *privatePrefix = "/System/Library/PrivateFrameworks/";
+                const char *usrLibPrefix = "/usr/lib/lib";
+                size_t frameworksPrefixLen = strlen(frameworksPrefix);
+                size_t privatePrefixLen = strlen(privatePrefix);
+                size_t usrLibPrefixLen = strlen(usrLibPrefix);
+                BOOL shouldCheck = NO;
+                BOOL isUsrLibForm = NO;
+                const char *nameStart = NULL;
+                char existsPath[PATH_MAX];
+                BOOL pathExists = NO;
+                /* 形态 1：/System/Library/Frameworks/<N>.framework/... */
+                if (!shouldCheck &&
+                    strncmp(installName, frameworksPrefix, frameworksPrefixLen) == 0) {
+                    shouldCheck = YES;
+                    nameStart = installName + frameworksPrefixLen;
+                }
+                /* 形态 2：/System/Library/PrivateFrameworks/<N>.framework/... */
+                if (!shouldCheck &&
+                    strncmp(installName, privatePrefix, privatePrefixLen) == 0) {
+                    shouldCheck = YES;
+                    nameStart = installName + privatePrefixLen;
+                }
+                /* 形态 3：/usr/lib/lib<N>.dylib——install name 即绝对路径 */
+                if (!shouldCheck &&
+                    strncmp(installName, usrLibPrefix, usrLibPrefixLen) == 0) {
+                    shouldCheck = YES;
+                    isUsrLibForm = YES;
+                    nameStart = installName + usrLibPrefixLen;
+                }
+                if (shouldCheck && nameStart != NULL) {
+                    if (isUsrLibForm) {
+                        /* usr lib 形态：install name 本身即待检路径 */
+                        pathExists = [fm fileExistsAtPath:@(installName)];
+                    } else {
+                        /* framework 形态：提取 <N>（install name 中 ".framework"
+                         * 之前的分量），检查公开/私有两条标准路径 */
+                        const char *marker = strstr(nameStart, ".framework");
+                        if (marker != NULL) {
+                            char nameBuf[256];
+                            size_t namePartLen = (size_t)(marker - nameStart);
+                            if (namePartLen > 0 && namePartLen < sizeof(nameBuf)) {
+                                memcpy(nameBuf, nameStart, namePartLen);
+                                nameBuf[namePartLen] = '\0';
+                                snprintf(existsPath, sizeof(existsPath),
+                                         "/System/Library/Frameworks/%s.framework", nameBuf);
+                                pathExists = [fm fileExistsAtPath:@(existsPath)];
+                                if (!pathExists) {
+                                    snprintf(existsPath, sizeof(existsPath),
+                                             "/System/Library/PrivateFrameworks/%s.framework", nameBuf);
+                                    pathExists = [fm fileExistsAtPath:@(existsPath)];
+                                }
+                            }
+                        }
+                    }
+                    if (!pathExists) {
+                        weakCommand->cmd = LC_LOAD_WEAK_DYLIB;
+                        NSLog(@"[WanWo] patch weak: %s", installName);
+                    }
+                }
+            }
+            weakCommand = (struct load_command *)((void *)weakCommand + weakCommand->cmdsize);
+        }
+    }
+
     return ans;
 }
 

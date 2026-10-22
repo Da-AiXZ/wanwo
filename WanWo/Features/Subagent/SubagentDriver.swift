@@ -160,15 +160,15 @@ enum SubagentInProcessDriver {
         // 【批3 A4.3】撞步数护栏如实上报（test seq11687 父侧误报根因）：
         // blocked 此前 diagnostic=nil → SubagentRun.stopReasonError 走
         // .refusal 词汇文案 "subagent declined the task"——真实语义=子代理
-        // 撞步数上限（护栏熔断），非"拒绝任务"。词汇层 dsh 1:1 保持
-        // （toStopReason blocked→.refusal，dsh index.ts:50-67）；文案层
-        // 如实说明并登记 one-shot 不可续（需父会话缩小任务重委派）。
+        // 回合被护栏截断，非"拒绝任务"。词汇层 dsh 1:1 保持（toStopReason
+        // blocked→.refusal，dsh index.ts:50-67）；文案层如实说明并登记
+        // one-shot 不可续（需父会话缩小任务重委派）。
         // withDiagnosticAndPartialText 会把 diagnostic 拼进父侧呈现。
-        // 修 Q 2026-10-21：上限取 AgentLoop.subagentStepGuardLimit（独立于
-        // 主会话 Config.maxTurns 的显式常量 32——主会话默认不熔断后，子代理
-        // one-shot 硬护栏独立保留），文案按实际取值动态化。
+        // 修 Q 2026-10-21：文案按实际取值动态化。2026-10-22：子代理与主
+        // 会话同语义（maxTurns=nil 无熔断），护栏文案退为通用 blocked
+        // 描述——不再提具体步数（仅 Config 显式 maxTurns 时可触发）。
         if lastEnd == .blocked, stopReason == .refusal {
-            diagnostic = "子代理撞步数上限（\(AgentLoop.subagentStepGuardLimit) 步护栏熔断）；本次 one-shot 委派不可继续，请在父会话缩小任务范围后重新委派"
+            diagnostic = "子代理回合被护栏截断（blocked）；本次 one-shot 委派不可继续，请在父会话缩小任务范围后重新委派"
         }
         if let schema, stopReason == .completed {
             if let parsed = Self.parseStructuredText(output) {

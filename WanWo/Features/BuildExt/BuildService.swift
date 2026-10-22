@@ -264,6 +264,14 @@ final class BuildService: @unchecked Sendable {
         // 语义等价旧行为）；NXDisplayName 仍独立服务 CFBundleDisplayName
         //（合规 §三 g 实证的官方正确姿势）。
         _ = Self.overwriteOutputPathTemplate(project: project)
+        // 【O1 出厂开关 2026-10-22】新建工程无条件写 NXSignMachOWithNyxianEntitlements
+        // =false——vendored 出厂模板（NXProject.m:280）写死 @(YES)，下方既有
+        // overwriteSigningGateTemplate 的「键缺失才写」guard 恒 no-op（键总在）。
+        // 此为万我对官方默认值的有意覆盖：开 WANWO_BUILD_RUN 宏时 .export/.run
+        // 分支调 trust_nxt2_sign（main 专属符号，0.10.3 运行层没有）→ 链接失败，
+        // 出厂 false 保证宏开启当天不撞未落位符号。既有 gate 保留不动（对
+        // 键缺失的老工程仍是幂等兜底，语义不冲突）。
+        _ = Self.forceSigningGateOffOnCreate(project: project)
         _ = Self.overwriteSigningGateTemplate(project: project)
         // 【批 3 · P2】新建 App 工程脚手架补键（CFBundleDevelopmentRegion/
         // CFBundlePackageType——官方模板 NXBundleInfo 不含，guest 启动告警
@@ -737,6 +745,29 @@ final class BuildService: @unchecked Sendable {
         guard let read = NSDictionary(contentsOf: plistURL) else { return false }
         // 只在键缺失时写入（幂等：AI 显式改 true 的尊重之——N8/N9 启用 token 时走显式路径）
         guard read["NXSignMachOWithNyxianEntitlements"] == nil else { return true }
+        let dict = NSMutableDictionary(dictionary: read)
+        dict["NXSignMachOWithNyxianEntitlements"] = false
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+            try data.write(to: plistURL, options: .atomic)
+        } catch {
+            return false
+        }
+        return project.reload()
+    }
+
+    /// 【O1 出厂开关 2026-10-22】新建工程无条件写 NXSignMachOWithNyxianEntitlements
+    /// =false（覆盖 vendored 出厂模板 NXProject.m:280 的 @(YES)——模板恒写
+    /// YES 使 overwriteSigningGateTemplate 的「键缺失才写」gate 恒 no-op，
+    /// 故新建时必须无条件覆写）。与既有 gate 的分工：本函数=新建时无条件
+    /// 落地万我默认值；既有 gate=老工程键缺失时的幂等兜底，两者不冲突。
+    /// D2 同款 best effort 幂等（读盘/写盘失败返回 false，不阻塞创建）。
+    /// 注：万我只用 App/Utility 两 scheme；官方 kext 模板刻意移除该键
+    /// （NXProject.m:311），本函数若对 kext 生效会重新加键——不适用，万我
+    /// 不建 kext 工程（schemeKind 白名单 app/utility）。
+    static func forceSigningGateOffOnCreate(project: NXProject) -> Bool {
+        let plistURL = project.url.appendingPathComponent("Config").appendingPathComponent("Project.plist")
+        guard let read = NSDictionary(contentsOf: plistURL) else { return false }
         let dict = NSMutableDictionary(dictionary: read)
         dict["NXSignMachOWithNyxianEntitlements"] = false
         do {
@@ -1378,6 +1409,14 @@ final class BuildService: @unchecked Sendable {
         }
         NXBuilder.buildProject(withProject: project, buildType: .export) { [weak self] result, _ in
             let elapsed = Date().timeIntervalSince(started)
+            // 【C1 冷缓存文案条件化 2026-10-22】cacheNote 判据在构建前采集
+            //（缓存目录无 .o → 冷缓存），但文案属构建结果渲染（事后）——此时
+            // 实际耗时已知：本次 <5 秒时改写为如实耗时形态（0.6 秒温快构建
+            // 带「正常耗时 30-60s」文案自相矛盾的根治）；≥5 秒保留原文案
+            //（长耗时安抚语义只对真慢的构建有意义）。
+            if cacheNote.contains("冷缓存"), elapsed < 5 {
+                cacheNote = String(format: "冷缓存（首次全量编译，本次仅耗时 %.1fs）", elapsed)
+            }
             let db = DebugDatabase.getDatabase(
                 ofPath: project.cacheURL.appendingPathComponent("debug.json").path)
             // 【0.0s 透明化 2026-10-18】此处原调 db.reuseDatabase()——它把 Internal

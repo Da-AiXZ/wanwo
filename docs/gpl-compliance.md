@@ -10,7 +10,9 @@
 | Nyxian 源码（main 侧编译链） | **emexlab/Nyxian @ `0587c302a089219b68983c20be9265c6051e07e5`** | 官方 10-01 绿跑 run 36919965048 的精确 head SHA；本次以官方 codeload tarball 按 SHA 取源（`_n0_src/nyxian.tar.gz`，72,601,438 bytes） |
 | LLVM-On-iOS 子模块（工具链） | `5c2e215`（swift 6.4.0） | 工具链 Release `toolchain-0587c30-20261016`（run 38873142024，SUCCESS，官方配方原样复刻） |
 | 工具链产物 | LLVM.xcframework + CoreCompilerSupportLibs(13 dylib) + SwiftToolchain.zip，1,412,422,533 bytes | 复刻仓 Release tag `toolchain-0587c30-20261016`；CI 下载消费，不进 git |
-| 运行侧（0.10.3，N7–N8 待落位） | Nyxian-0.10.3（本地快照） | 落位时补记精确锚 |
+| 运行侧（0.10.3） | **emexlab/Nyxian tag `0.10.3`（emexDE 0.10.3 "Avis" Beta）= commit `c5ee6398b998f1fc0d42523c1a420efe2179a3b7`**（2026-05-23） | 2026-10-22 全量锚定验证：本地快照 `_nyxian_probe/0.10.3/Nyxian-0.10.3/` 与 GitHub tag tree 逐 blob `git hash-object` 比对 1981/1991 一致，8 处差异均为 OpenSSL.xcframework symlink 表示差异（zip 解压 vs git blob），零内容差异；remote 另有 2 blob 本地未落（非 vendored 范围） |
+
+> **2026-10-22 全量考古复验**（三方逐文件 md5：万我 vendored 2002 文件 vs 0.10.3 vs main 快照）：1973 文件（98.6%）与上游字节原样一致；万我修改面 26 文件（本文件各环登记全覆盖）；万我新建 3 项（LICENSES 副本 / Utils/NXOSVersion.swift 自官方 UI 层字节级提取 / Shared/SDK.zip 资产）。probe main 快照（`_nyxian_probe/Nyxian-main/`）经 N0 原始 blob 比对验证：131 文件中 127 字节一致、4 差异=N0 品牌替换登记文件——该快照可作 N0 基线忠实对照源。工具提示：考古地图 `docs/_audit_vendored_map.md`（逐文件归属）+ `docs/_audit_baseline.md`（基线精判）。
 
 ## 二、N0 vendored 清单（2026-10-16 落位，共 133 源文件 + 1 LICENSE）
 
@@ -851,3 +853,30 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 **形态（WanWo 层运行时方法覆盖——与 §N10 A1 同族）**：`BuildService.ensureCppLinkerHookInstalled`（WanWo/Features/BuildExt/BuildService.swift，进程内一次性）对 `NXProjectConfig.linkerFlags` getter 施行 `method_setImplementation` + block IMP 覆盖——源文件清单含 .mm/.cpp（`sourcesContainCpp`，排除 Resources/Config 与 NXPhaseEngine 的 LDEFilesFinder 排除集对齐）且返回值未含 `-lc++` 时（查重防冲用户手动添加）追加 `-L<BSROOT>/lib`（NXBootstrap rootURL 绝对路径=$(BSROOT) 展开后等价形态——linker job args 不二次展开变量）与 `-lc++`。NXEntitlementsConfig 独立类不受影响。
 
 **边界（报告要点）**：注入层选择=WanWo 层 getter 覆盖而非 vendored 改动——NXBuilder.buildProject 首行强制 projectConfig.reloadData()（vendored NXBuilder.swift:297 文件重读清 ivar）致 WanWo 层「reload 后、读取前」无时机窗，且拍板排除 plist 持久化（非工程文件改写）；零 vendored、零持久化、覆盖 build_ipa/build_and_run 全部消费点（NXPhaseEngine.m:73/78）。
+
+## N15、自动链接兼容批（2026-10-22 晚）
+
+**动机**：P1-10 根治（自动链接强链宿主不存在的系统框架 → dlopen 秒退）+ 防御层（补片器硬改软兜底）+ 32 步护栏收尾（子代理与主会话对齐=无熔断，subagentStepGuardLimit 常量移除尾差）+ O1 出厂开关落地（vendored 模板写死 YES 使既有 gate 恒 no-op）+ C1/D1/D3 三件 AI 可读性修。用户拍板全部 7 项。
+
+### vendored diff（两文件）
+
+| 文件:位置 | 内容 |
+|---|---|
+| LindChain/IDEBuilder/NXBuilder+MDKDriver.swift | ①`linkFrameworksAutomatically` 块内 -framework 追加循环：framework 分支改 `if let frameworkName = dependency.name` 解包（原码 `dependency.name` 为 ObjC 无空标注 IUO 直 append）+ 追加前经新增 `wanwoFrameworkExistsOnHost` 判定宿主存在性（FileManager 检查 /System/Library/Frameworks/<N>.framework 与 /System/Library/PrivateFrameworks/<N>.framework 两路径）——不存在则跳过该框架并 `print("[WanWo] autolink skip missing framework: <name>")`；`-l<lib>` library 分支不动（避免误杀）；UIUtilities 黑名单与循环结构原样。②extension 内新增独立小函数 `wanwoFrameworkExistsOnHost`（平铺、单步局部变量、无嵌套闭包——swiftc 雷区纪律） |
+| LindChain/LiveContainer/LCMachOUtils.m | ①文件头新增 `#import <limits.h>`（PATH_MAX）。②LCPatchExecSlice 内、既有多余 dylib 去重遍历之后新增平铺第三遍 load command 遍历：遇 LC_LOAD_DYLIB（0x0c）解析 install name（dylib.name.offset + 命令地址）；匹配 /System/Library/Frameworks/<N>.framework/、/System/Library/PrivateFrameworks/<N>.framework/ 或 /usr/lib/lib<N>.dylib 三种绝对路径形态时提取 <N> 用 fileExists 判定存在性——不存在则 cmd 原地改写 LC_LOAD_WEAK_DYLIB（0x80000018，cmdsize 不变——LOAD 与 WEAK_LOAD 命令结构同构）并 `NSLog(@"[WanWo] patch weak: <install-name>")`。@rpath 形态与存在的路径不动；LC_REEXPORT/LC_LOAD_UPWARD 不处理（只 0x0c）。字节序：宿主进程内对已 mmap little-endian Mach-O 经 struct 字段赋值（host==little-endian），沿文件既有惯例（如上方 cmd=0x114515）不做显式 OSSwap。调用链核对：LCPatchExecSlice 消费点=GuestRunSupport.m prepareGuestRun/prepareUtilityRun 与 LCUtils.m signAppBundleWithZSign/signMachOAtURL——全部设备内运行/补片链，标准签名交付路径（signAndRepackage，BuildService.swift）不触碰 |
+
+### WanWo 层 diff（四文件）
+
+| 文件:位置 | 内容 |
+|---|---|
+| WanWo/App/AppEnvironment.swift | 子代理栈 maxTurns 分流（原 1621-1630）：删除 `if subagentDepth == nil` 分流——统一 `let loopConfig = AgentLoop.Config()`（maxTurns=nil 无熔断，子代理与主会话同语义；注释登记移除原因） |
+| WanWo/Features/Subagent/SubagentDriver.swift | readResult blocked 诊断文案（原 160-172）：删除 `AgentLoop.subagentStepGuardLimit` 引用与「撞步数上限（32 步护栏熔断）」字样，改通用「子代理回合被护栏截断（blocked）」文案（词汇层 toStopReason blocked→.refusal dsh 1:1 不动） |
+| WanWo/Core/Loop/AgentLoop.swift | 两处历史注释清残留：文件头移植要点与 Config.maxTurns 文档注释中的 subagentStepGuardLimit 提法改为「子代理同语义（无熔断）」表述（代码零命中——本文档自身的历史提及除外） |
+| WanWo/Features/BuildExt/BuildService.swift | ①【O1】createOrReuseProject 新建分支调用链插入 `forceSigningGateOffOnCreate(project:)`（新函数——读 Config/Project.plist 后**无条件**写 NXSignMachOWithNyxianEntitlements=false，覆盖 vendored NXProject.m:280 出厂 @(YES)；既有 overwriteSigningGateTemplate「键缺失才写」gate 保留不动=老工程幂等兜底）。②【C1】build() completion 内 elapsed 已知点：cacheNote 含「冷缓存」且本次耗时 <5s 时改写为「冷缓存（首次全量编译，本次仅耗时 %.1fs）」——≥5s 保留原 30-60s 安抚文案（0.6s 温快构建带慢耗时文案自相矛盾的根治） |
+| WanWo/Features/BuildExt/BuildTools.swift | 【D1】copyRunLogToWorkspace：全量 copyItem 改为先经新增 `writeRunLogLastRunCopy`——读源 run_log.txt 全文，逐行定位最后一个「run start 」行（本轮起点——GuestRunService.swift spawn 段 header 格式「run start <ISO8601> bundle=… pid=…」逐字对齐），从该行截到文件尾，副本头加「# 本副本仅含最近一次运行的日志（完整历史见 Cache/run_log.txt）」；找不到起点行退为全量+「累积快照」注记；改写路径异常再退回原样 copyItem（保底不劣化）。utility 终端 tee 落盘（Terminal.swift UtilityTeeLog）本就每次运行新建文件，无需改动 |
+| WanWo/Tools/Builtin/ShellTool.swift | 【D3】bash 工具 description 末尾追加中文注记：「注意：guest 内 ls/find 对最近的文件增删可能显示滞后（目录缓存），文件存在性与内容请以 fs glob/read 工具为准。」（零逻辑；既有英文 dir-cache 注记保留） |
+| WanWo/Features/BuildExt/N5CompileTrial.swift | 【O1 补挂·QA 审查发现】N5CompileTrial.run 是 createOrReuseProject 之外的第二条新建路径（UI 编译试验按钮可达）——createProject 成功后补调 `BuildService.forceSigningGateOffOnCreate(project:)`，试验工程同样出厂写 false（防 WANWO_BUILD_RUN 开宏撞 trust_nxt2_sign 的同款防护覆盖全部新建路径） |
+
+### 边界
+
+vendored 树仅上述两文件三处（NXBuilder+MDKDriver.swift 循环+新函数、LCMachOUtils.m import+第三遍遍历）；原注释与既有去重遍历/arm64e fixup/insertDylibCommand 逐字不动。32 步护栏收尾仅删引用与改注释——AgentLoop.Config.maxTurns 词汇与 blocked 可恢复语义（显式 >0 仍触发）原样；GuestRunService.swift 本批零改动（D1 判定依据=其 spawn 段既有「run start 」行格式，读取对齐不改写入端）；BuildService.swift 既有 overwriteSigningGateTemplate 函数体逐字不动；构建验证待 macOS CI（本地无编译环境）。

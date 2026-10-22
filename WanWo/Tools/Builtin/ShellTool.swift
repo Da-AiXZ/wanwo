@@ -59,6 +59,9 @@ struct ShellTool: AgentTool {
         // job_output/job_kill 于 J3 装配——文案先行引用，dsh 同形态）。
         + "Set `run_in_background: true` for long-running commands: the call returns a job id immediately; "
         + "read its output with `job_output` and stop it with `job_kill`."
+        // 【D3 2026-10-22】目录缓存滞后注记（中文，追加句——guest 内 ls/find
+        // 对最近文件增删可能显示滞后，存在性/内容以 fs 工具为准）。
+        + "注意：guest 内 ls/find 对最近的文件增删可能显示滞后（目录缓存），文件存在性与内容请以 fs glob/read 工具为准。"
 
     let parameters: JSONValue = {
         // P1-3：提权参数字段（dsh escalation.ts:140 subject='command' 的名词

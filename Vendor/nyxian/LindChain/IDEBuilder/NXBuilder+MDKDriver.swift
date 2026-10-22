@@ -27,6 +27,24 @@ extension NXBuilder: MDKDriverDelegate {
         return "\(self.project.cacheURL.path)/\(NXExpectedObjectFileURLForFileURL(NXRelativeURLFromBaseURLToFullURL(self.project.url, file.fileURL)).path)"
     }
     
+    // 万我 自动链接兼容（diff 登记：docs/gpl-compliance.md §N15）：
+    // 新增独立小函数——判定框架在宿主系统上是否存在。自动链接扫出的框架
+    // 清单可能含宿主 OS 没有的框架（如 Symbols.framework，iOS 17+ 才有），
+    // 强链进产物会导致 dlopen 秒退；构建跑在宿主 App 进程内（=设备本身），
+    // 故以 FileManager 直接检查系统框架两处标准路径。
+    private func wanwoFrameworkExistsOnHost(_ frameworkName: String) -> Bool {
+        let fileManager = FileManager.default
+        let publicPath = "/System/Library/Frameworks/" + frameworkName + ".framework"
+        let privatePath = "/System/Library/PrivateFrameworks/" + frameworkName + ".framework"
+        if fileManager.fileExists(atPath: publicPath) {
+            return true
+        }
+        if fileManager.fileExists(atPath: privatePath) {
+            return true
+        }
+        return false
+    }
+
     func driver(_ driver: MDKDriver, editJobListForJobList jobs: [MDKJob]) -> [MDKJob]? {
         if driver.type != .clang {
             return jobs
@@ -152,8 +170,19 @@ extension NXBuilder: MDKDriverDelegate {
                 for dependency in depsSet {
                     if dependency.name != "UIUtilities" {   // Call it the black sheep framework >:3
                         if dependency.isFramework {
-                            linkerFlgs.append("-framework")
-                            linkerFlgs.append(dependency.name)
+                            // 万我 自动链接兼容（diff 登记：docs/gpl-compliance.md §N15）：
+                            // 追加 -framework 前检查该框架在宿主系统上是否存在
+                            // （构建跑在宿主 App 进程内 = 设备本身）；不存在的
+                            // 框架跳过并打诊断日志，防止强链缺失框架导致 dlopen
+                            // 秒退。-l<lib> library 分支不动（避免误杀）。
+                            if let frameworkName = dependency.name {
+                                if !self.wanwoFrameworkExistsOnHost(frameworkName) {
+                                    print("[WanWo] autolink skip missing framework: \(frameworkName)")
+                                } else {
+                                    linkerFlgs.append("-framework")
+                                    linkerFlgs.append(frameworkName)
+                                }
+                            }
                         } else if let libName = dependency.name {
                             linkerFlgs.append("-l\(libName)")
                         }

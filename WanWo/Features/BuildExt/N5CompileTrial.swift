@@ -36,6 +36,12 @@ enum N5CompileTrial {
             return
         }
 
+        // 【O1 补挂】本试验是 createOrReuseProject 之外的第二条新建路径（UI
+        // 编译试验按钮可达）——出厂签名开关同样显式写 false（覆盖模板 @(YES)），
+        // 防 WANWO_BUILD_RUN 开宏时 trust_nxt2_sign（main 专属符号）链接失败。
+        // 与 BuildService.forceSigningGateOffOnCreate 同语义，详见 §N15。
+        _ = BuildService.forceSigningGateOffOnCreate(project: project)
+
         // ② 源文件由 createProject 内部的 NXCodeTemplateMakeProjectStructure
         //    铺设（官方 SwiftUI 模板：HelloWorldApp.swift+ContentView.swift 到工程根）
 

@@ -1619,15 +1619,11 @@ final class AppEnvironment: ObservableObject {
                         filesTouched: []))
             })
         // 修 Q 2026-10-21：主会话默认无步数熔断（AgentLoop.Config.maxTurns
-        // 默认 nil——dsh while(true) 语义对齐）。子代理 one-shot 无交互界面，
-        // 硬熔断护栏独立保留：subagentDepth 非 nil 的子栈显式传入
-        // subagentStepGuardLimit（常量 32），不随主会话配置浮动。
-        let loopConfig: AgentLoop.Config
-        if subagentDepth == nil {
-            loopConfig = AgentLoop.Config()
-        } else {
-            loopConfig = AgentLoop.Config(maxTurns: AgentLoop.subagentStepGuardLimit)
-        }
+        // 默认 nil——dsh while(true) 语义对齐）。2026-10-22 起子代理同语义：
+        // 子代理栈（subagentDepth 非 nil）同样传 nil（无熔断），对齐 dsh
+        // while(true)——防失控交由 RepeatCallAdviser 软提醒 + 用户取消承接
+        // （移除注见 AgentLoop.swift）。
+        let loopConfig = AgentLoop.Config()
         let agentLoop = AgentLoop(deps: deps, config: loopConfig)
         // M7 件 L：loop 目录登记（TeamSeams.leadStatus/leadSteer 供值——
         // TeamLoopDirectory NSLock 自保护）。

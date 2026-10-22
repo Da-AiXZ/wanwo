@@ -812,6 +812,13 @@ struct BuildAndRunTool: AgentTool {
     ///（deleteProjectDirectories）据此清工程名关联的 run_log 副本。
     /// 【C v2】internal：RunSession 常驻收尾段（GuestRunService，工具返回
     /// 后）同样消费——退出事件带工作区副本路径。
+    /// 【D1 2026-10-22】副本只含最近一次运行：源 run_log.txt 为多轮追加
+    /// 累积（GuestRunService 每次 spawn 追加「run start <ISO> bundle=… pid=…」
+    /// 头行），全量拷贝会让 AI 读到旧轮日志被误导。定位源内容中最后一个
+    /// 「run start 」行（本轮起点——与 GuestRunService.swift spawn 段写入
+    /// 格式逐字对齐），从该行起拷贝到文件尾，副本头加注记行。找不到起点行
+    ///（异常截断/历史格式）退为全量拷贝 + 累积快照注记（如实告知 AI 以
+    /// 最后一段为本次运行）；拷贝实现本身异常再退回原样整文件 copyItem。
     static func copyRunLogToWorkspace(sourcePath: String,
                                       projectName: String,
                                       workspaceRoot: URL) -> String {
@@ -830,10 +837,49 @@ struct BuildAndRunTool: AgentTool {
             if fm.fileExists(atPath: dest.path) {
                 try fm.removeItem(atPath: dest.path)
             }
-            try fm.copyItem(atPath: sourcePath, toPath: dest.path)
+            // 【D1 2026-10-22】优先只拷最近一次运行段；内容改写路径异常时
+            // 退回旧全量 copyItem（保底不劣化）。
+            do {
+                try Self.writeRunLogLastRunCopy(sourcePath: sourcePath, destPath: dest.path)
+            } catch {
+                try fm.copyItem(atPath: sourcePath, toPath: dest.path)
+            }
             return dest.path
         } catch {
             return ""
+        }
+    }
+
+    /// 【D1 2026-10-22】副本改写实现：读源全文 → 定位最后一个「run start 」
+    /// 行 → 从该行截到尾 → 头部注记后写盘。平铺实现、单步局部变量（swiftc
+    /// 雷区纪律：无嵌套函数、无多行插值）。
+    private static func writeRunLogLastRunCopy(sourcePath: String, destPath: String) throws {
+        let header = "# 本副本仅含最近一次运行的日志（完整历史见 Cache/run_log.txt）\n"
+        let fallbackHeader = "# 本副本为累积快照，含多轮运行日志，以最后一段为本次运行（完整历史见 Cache/run_log.txt）\n"
+        let full = try String(contentsOfFile: sourcePath, encoding: .utf8)
+        // 逐行扫描，记录最后一个「run start 」行的起始偏移（单步局部变量）。
+        var lastStartIndex: String.Index? = nil
+        var lineStart = full.startIndex
+        var scanning = true
+        while scanning {
+            let newlineRange = full.range(of: "\n", range: lineStart..<full.endIndex)
+            let lineEnd = newlineRange?.lowerBound ?? full.endIndex
+            let line = full[lineStart..<lineEnd]
+            if line.hasPrefix("run start ") {
+                lastStartIndex = lineStart
+            }
+            if newlineRange == nil {
+                scanning = false
+            } else {
+                lineStart = full.index(after: lineEnd)
+            }
+        }
+        if let start = lastStartIndex {
+            let body = String(full[start...])
+            try (header + body).write(toFile: destPath, atomically: true, encoding: .utf8)
+        } else {
+            // 无起点行（异常/历史格式）——全量内容 + 累积快照注记。
+            try (fallbackHeader + full).write(toFile: destPath, atomically: true, encoding: .utf8)
         }
     }
 
