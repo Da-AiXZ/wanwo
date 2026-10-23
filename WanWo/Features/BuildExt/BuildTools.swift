@@ -635,11 +635,9 @@ struct BuildIPATool: AgentTool {
             if let signNote = result.signNote {
                 signLine = "\nsign: " + signNote
             }
-            // 【批A · S3】缓存状态提示（冷缓存/全量重建时非空——增量不出现）。
-            var cacheLine = ""
-            if !result.cacheNote.isEmpty {
-                cacheLine = "\n缓存状态: " + result.cacheNote
-            }
+            // 【批A · S3 / N1·文案一致批 2026-10-23】缓存状态恒有行（三态
+            // 恒非空——增量也显式呈现，设备验收 O-2）。
+            let cacheLine = "\n缓存状态: " + result.cacheNote
             return .success("""
                 BUILD OK（\(String(format: "%.1fs", result.elapsedSeconds))）· ipa 大小 \(sizeText)\(optNote)\(signLine)\(cacheLine)
                 ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
@@ -655,9 +653,7 @@ struct BuildIPATool: AgentTool {
             // 【批A · S3】缓存状态提示（冷缓存首建 43s 级耗时——AI 误判卡死
             // 对策，BUILD OK/BUILD FAILED 双态同提示）。
             var failText = "BUILD FAILED（" + String(format: "%.1fs", result.elapsedSeconds) + "）" + optNote
-            if !result.cacheNote.isEmpty {
-                failText = failText + "\n缓存状态: " + result.cacheNote
-            }
+            failText = failText + "\n缓存状态: " + result.cacheNote
             failText = failText + "\n—— 按以下诊断修复源码后重新 build_ipa：\n"
             failText = failText + result.diagnosticsSummary
             failText = failText + "\nbuild log: " + result.buildLogPath

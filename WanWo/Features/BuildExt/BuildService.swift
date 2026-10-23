@@ -1558,16 +1558,13 @@ final class BuildService: @unchecked Sendable {
             cacheNote = "冷缓存（首次全量编译——正常耗时 30-60s，非卡死）"
         } else if configDirty {
             cacheNote = "全量重建（构建参数/配置变更）"
+        } else {
+            cacheNote = "增量构建"
         }
-        // 【N1】缓存状态注记落日志（判据同 cacheNote——增量构建落占位行
-        // 保持日志流可读）。
-        if let note = buildLog {
-            if !cacheNote.isEmpty {
-                note.writeLine("缓存状态: " + cacheNote)
-            } else {
-                note.writeLine("缓存状态: 增量构建")
-            }
-        }
+        // 【N1·文案一致批 2026-10-23】缓存状态行移至构建结束段落盘——原在
+        // 此构建前写，C1 改写发生在回调内，日志冷缓存行与结果文本措辞不同
+        // 步（设备验收 O-1 实测在案）；移后两处同源同文。cacheNote 三态恒
+        // 非空：增量构建也有显式行（设备验收 O-2——原结果文本增量时省略）。
         NXBuilder.buildProject(withProject: project, buildType: .export) { [weak self] result, _ in
             let elapsed = Date().timeIntervalSince(started)
             // 【C1 冷缓存文案条件化 2026-10-22】cacheNote 判据在构建前采集
@@ -1692,6 +1689,7 @@ final class BuildService: @unchecked Sendable {
             // 【N1】构建结束（成功/失败两路）收尾落盘：耗时/结果/签名注记/
             // 编译诊断摘要（渲染同源逐行）+build end，随后关闭。
             if let note = buildLog {
+                note.writeLine("缓存状态: " + cacheNote)
                 note.writeLine(String(format: "构建耗时: %.1fs", elapsed))
                 if result {
                     note.writeLine("构建结果: BUILD OK")
@@ -1700,6 +1698,8 @@ final class BuildService: @unchecked Sendable {
                 }
                 if let signText = signNote {
                     note.writeLine("签名: " + signText)
+                } else {
+                    note.writeLine("签名: 未签名")
                 }
                 note.writeLine("——— 编译诊断摘要 ———")
                 if summary.isEmpty {
