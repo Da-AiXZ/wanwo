@@ -93,6 +93,18 @@ public enum WOMotion {
     /// 非交互性变化出场（加速离场 130ms）
     public static let nonInteractiveExit = Animation.easeIn(duration: 0.13)
 
+    // ── Agent 浏览指示器循环动效（来源：用户设计稿 2026-10-23「网页加载动效」逐值规格）──
+    // 循环指示器（加载中闪烁/逐字光波）非转场动画，不属 R2 时长五档、不受
+    // maxDuration(0.6s) 约束（该上限针对转场类动画）；特批登记于此保持全库
+    // 动画参数单源（红线 7）。消费点：BrowserSheetView.AgentBrowsingOverlay
+    // （TimelineView 相位驱动，无 withAnimation，不涉裸动画参数红线）。
+    /// 浏览指示器圆点闪烁周期（opacity 1→0.2→1，ease-in-out 无限循环）
+    public static let browsingDotBlinkPeriod: Double = 1.4
+    /// 浏览指示器逐字光波周期（opacity 1→0→1；第 i 字符延迟 i×browsingCharWaveStep）
+    public static let browsingCharWavePeriod: Double = 2.0
+    /// 浏览指示器逐字光波字符步进延迟
+    public static let browsingCharWaveStep: Double = 0.1
+
     // ── 唯一贝塞尔曲线（拍板：Hero 演示 keySplines / dsh / Material 三方同一条）──
     /// 关键帧类动画专用；弹簧类场景用上方 R3 档位。
     /// 控制点改消费 WORailCurve.controlPoints 单源（行为逐字节不变——

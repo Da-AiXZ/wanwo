@@ -85,7 +85,8 @@ struct BrowserSheetView: View {
                     }
 
                     if isAgentBusy {
-                        AgentBrowsingOverlay(onTakeover: onTakeover)
+                        AgentBrowsingOverlay(onTakeover: onTakeover,
+                                             manager: manager)
                             .transition(.opacity)
                     }
 
@@ -346,55 +347,162 @@ private struct BrowserAddressBarIcon: View {
 
 // MARK: - Agent Browsing Overlay
 
-/// Breathing-light overlay shown when the agent is controlling the browser.
-/// Blocks all user interaction on the webview while providing a visual cue.
+/// Agent 接管浏览器时的指示背板：挡住 webview 全部触摸，居中胶囊显示
+/// 「闪烁圆点 + AI 正在浏览 + 当前域名」逐字光波动效。
+/// 视觉逐值来源：用户设计稿 2026-10-23「网页加载动效」（SwiftUI 原生
+/// TimelineView 相位驱动实现，禁 WebView）。动效实现选型：方案①相位驱动
+///（opacity = 0.5+0.5×cos 相位函数）——确定性、无 autoreverse 时序坑、
+/// ReduceMotion 只需切静态分支，故弃方案②逐字符 repeatForever。
+/// 纪律：周期/步进常量登记于 WOMotion（来源注释见 Motion.swift）；
+/// 背板 0.35 / 胶囊底黑 0.7 保持现状，只换指示器内容与动画。
 private struct AgentBrowsingOverlay: View {
     var onTakeover: (() -> Void)?
-    @State private var breathing = false
+    /// 当前选中 tab 的 manager（parent 经 pool.activeManager 计算属性读取，
+    /// 可能瞬时为 nil——nil 时域名显示 "…" 兜底）
+    let manager: BrowserUseManager?
 
     var body: some View {
         ZStack {
-            // Semi-transparent backdrop that blocks touches
+            // Semi-transparent backdrop that blocks touches（保持现状 0.35）
             Color.black.opacity(0.35)
 
-            // Centered indicator with breathing glow
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 8, height: 8)
-                    .opacity(breathing ? 1.0 : 0.3)
-                    .shadow(color: Color.accentColor.opacity(breathing ? 0.8 : 0), radius: breathing ? 8 : 0)
-
-                Text("WanWo is browsing")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-
-                if let onTakeover {
-                    Divider()
-                        .frame(height: 14)
-                        .overlay(Color.white.opacity(0.3))
-
-                    Button("Takeover") {
-                        onTakeover()
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                }
+            if let manager = manager {
+                AgentBrowsingHostWatcher(onTakeover: onTakeover, manager: manager)
+            } else {
+                AgentBrowsingIndicator(onTakeover: onTakeover, host: "…")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(
-                Capsule()
-                    .fill(Color.black.opacity(0.7))
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle()) // capture all touches
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                breathing = true
+    }
+}
+
+/// 域名订阅层：manager.currentURL 是 @Published，但 parent 经计算属性读取
+/// 并不观察它（同 BrowserLoadErrorOverlay 拆独立 @ObservedObject 的先例），
+/// 域名随导航实时刷新必须靠本层的 @ObservedObject 触发重渲染。
+private struct AgentBrowsingHostWatcher: View {
+    var onTakeover: (() -> Void)?
+    @ObservedObject var manager: BrowserUseManager
+
+    var body: some View {
+        AgentBrowsingIndicator(onTakeover: onTakeover, host: displayHost)
+    }
+
+    /// 当前域名：host 取不到时用 "…" 兜底（禁崩）
+    private var displayHost: String {
+        guard let url = URL(string: manager.currentURL),
+              let host = url.host,
+              !host.isEmpty else {
+            return "…"
+        }
+        return host
+    }
+}
+
+/// 动效指示器本体：闪烁圆点 + 「AI 正在浏览」+ 域名逐字光波（host 由上方订阅层供给）。
+private struct AgentBrowsingIndicator: View {
+    var onTakeover: (() -> Void)?
+    /// 当前浏览页域名（解析失败时上游已给 "…"）
+    let host: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // 设计稿逐值：18pt semibold、白色 #f5f5f5、阴影色 #919191（半透明）、
+    // 字距 0.05em（18pt × 0.05 = 0.9pt）
+    private static let textSize: CGFloat = 18
+    private static let textColor = Color(red: 245 / 255, green: 245 / 255, blue: 245 / 255)
+    private static let shadowColor = Color(red: 145 / 255, green: 145 / 255, blue: 145 / 255)
+    private static let charSpacing: CGFloat = 0.9
+    private static let browsingLabel = "AI 正在浏览"
+
+    var body: some View {
+        if reduceMotion {
+            // 纪律：ReduceMotion 降级 = 静态显示（不闪烁、不逐字）
+            indicatorRow(at: nil)
+        } else {
+            // 30fps 相位采样足够平滑；比 .animation 逐帧省电
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                indicatorRow(at: context.date.timeIntervalSinceReferenceDate)
             }
         }
+    }
+
+    /// 胶囊指示行（胶囊底黑 0.7 与 Takeover 按钮保持现状）。
+    /// time = nil 即静态全亮（ReduceMotion 分支）。
+    private func indicatorRow(at time: TimeInterval?) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: 8, height: 8)
+                .opacity(dotOpacity(at: time))
+
+            waveText(Self.browsingLabel, monospaced: false, startIndex: 0, at: time)
+            // 接力光波：域名字符 index 从 label 尾部续排（从左到右接力）
+            waveText(host, monospaced: true,
+                     startIndex: Self.browsingLabel.count, at: time)
+
+            if let onTakeover {
+                Divider()
+                    .frame(height: 14)
+                    .overlay(Color.white.opacity(0.3))
+
+                Button("Takeover") {
+                    onTakeover()
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.7))
+        )
+    }
+
+    /// 圆点闪烁：周期 1.4s，opacity 1→0.2→1（余弦相位 ≈ ease-in-out 循环）
+    private func dotOpacity(at time: TimeInterval?) -> Double {
+        guard let time = time else { return 1 }
+        let period = WOMotion.browsingDotBlinkPeriod
+        let phase = time.truncatingRemainder(dividingBy: period) / period
+        return 0.6 + 0.4 * cos(2 * Double.pi * phase)
+    }
+
+    /// 逐字光波：周期 2s，opacity 1→0→1，第 i 字符延迟 i×0.1s
+    private func waveOpacity(index: Int, at time: TimeInterval?) -> Double {
+        guard let time = time else { return 1 }
+        let period = WOMotion.browsingCharWavePeriod
+        let shifted = time - Double(index) * WOMotion.browsingCharWaveStep
+        let phase = shifted.truncatingRemainder(dividingBy: period) / period
+        return 0.5 + 0.5 * cos(2 * Double.pi * phase)
+    }
+
+    /// 逐字符拆分渲染：每字符独立 opacity 相位（接力 index 由调用方续排）
+    private func waveText(_ text: String, monospaced: Bool,
+                          startIndex: Int, at time: TimeInterval?) -> some View {
+        let chars = Array(text)
+        return HStack(spacing: Self.charSpacing) {
+            ForEach(chars.indices, id: \.self) { offset in
+                waveChar(String(chars[offset]),
+                         waveIndex: startIndex + offset,
+                         monospaced: monospaced,
+                         at: time)
+            }
+        }
+    }
+
+    /// 单字符：label 用系统字体、域名用等宽（ui-monospace 族），
+    /// 文字 #f5f5f5 + text-shadow(2,2,3 #919191 半透明) 的 SwiftUI shadow 近似
+    private func waveChar(_ char: String, waveIndex: Int,
+                          monospaced: Bool, at time: TimeInterval?) -> some View {
+        Text(char)
+            .font(monospaced
+                  ? .system(size: Self.textSize, weight: .semibold, design: .monospaced)
+                  : .system(size: Self.textSize, weight: .semibold))
+            .foregroundStyle(Self.textColor)
+            .shadow(color: Self.shadowColor.opacity(0.6), radius: 3, x: 2, y: 2)
+            .opacity(waveOpacity(index: waveIndex, at: time))
     }
 }
 
