@@ -470,27 +470,21 @@ struct WOInlineAgentImage: View {
     }
 }
 
-// MARK: - AI 浏览轻提示胶囊（批12+联动B 2026-09-27 用户参考件 1:1）
+// MARK: - AI 浏览轻提示胶囊（批12+联动B 2026-09-27 初版；2026-10-23 动画换版）
 
 /// AI 自主干活时的轻提示（dock 上方一行，不展开右栏不弹卡——两路展开语义的
-/// "不打扰"路）。动画=用户参考件（网页加载动效.txt）1:1：闪烁圆点（1.4s
-/// opacity 呼吸）+ 静态文案 + 域名逐字符波浪（translateY -8px、相邻延迟
-/// 0.13s、单字符周期 1.2s、hold 0.5s、总周期 2.87s、cubic-bezier(0.45,0,
-/// 0.55,1) 近似、等宽字体）。TimelineView 驱动（30fps 足够；字符数=域名长度，
-/// 非热路径）。reduceMotion=静态直出。
+/// "不打扰"路）。动画=用户设计稿 2026-10-23「网页加载动效.html」逐值换版
+///（旧 txt 参考件 translateY 波浪退役）：闪烁圆点（1.4s，opacity 1→0.2→1）
+/// +「AI 正在浏览」与域名整行逐字符 opacity 光波（周期 2s、第 i 字符延迟
+/// i×0.1s、1→0→1——title 从 0 起排、域名自 title 尾续排=从左到右接力，
+/// 与 BrowserSheetView.AgentBrowsingIndicator 同款相位函数、常量单源
+/// WOMotion）。胶囊轻量视觉（12pt/secondary/胶囊底）保持不变——本批换的
+/// 是动画，不是形态。TimelineView 驱动（30fps；字符数=文案+域名长度，非
+/// 热路径）。reduceMotion=静态直出（先例）。
 struct WOAgentHintPill: View {
     let title: String
     let domain: String
 
-    /// 参考件节拍（秒）。
-    private static let charDelay = 0.13
-    private static let charRise = 1.20
-    private static let hold = 0.50
-    /// 总周期 = 9×0.13 + 1.20 + 0.50（域名字符数决定；实例计算——参考件
-    /// 域名 10 字符 ≈ 2.87s）。
-    private var totalCycle: Double {
-        Double(max(0, domain.count - 1)) * Self.charDelay + Self.charRise + Self.hold
-    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -499,16 +493,14 @@ struct WOAgentHintPill: View {
                 Circle().frame(width: 5, height: 5).foregroundStyle(.secondary)
             } else {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                        .truncatingRemainder(dividingBy: 1.4) / 1.4
-                    let opacity = 1.0 - 0.8 * abs(sin(t * .pi))
+                    let now = context.date.timeIntervalSinceReferenceDate
+                    let phase = now.truncatingRemainder(dividingBy: WOMotion.browsingDotBlinkPeriod)
+                        / WOMotion.browsingDotBlinkPeriod
+                    let opacity = 0.6 + 0.4 * cos(2 * .pi * phase)
                     Circle().frame(width: 5, height: 5)
                         .foregroundStyle(WOAlias.labelSecondary.opacity(opacity))
                 }
             }
-            Text(title)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
             waveText
         }
         .padding(.horizontal, 14)
@@ -520,45 +512,39 @@ struct WOAgentHintPill: View {
         .accessibilityLabel("\(title)\(domain)")
     }
 
-    /// 域名逐字符波浪（参考件 keyframes：0→0 / 21%→-8px / 42%→0 / 100%→0；
-    /// 相位 = 全局时间 − i×0.13 对总周期取模）。SwiftUI Text 逐字符独立渲染
-    /// （monospaced 防抖动）。
+    /// 逐字符光波（设计稿：title+域名连续接力——title 从 waveIndex 0 起排，
+    /// 域名自 title.count 续排；opacity = 0.5+0.5×cos（相位 − i×0.1s）→
+    /// 1→0→1，周期 2s）。reduceMotion 分支=静态全亮。
     @ViewBuilder
     private var waveText: some View {
         if reduceMotion {
-            Text(domain)
-                .font(.system(size: 12, design: .monospaced))
+            Text(title + " " + domain)
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                 let now = context.date.timeIntervalSinceReferenceDate
                 HStack(spacing: 1) {
+                    ForEach(Array(title.enumerated()), id: \.offset) { index, ch in
+                        waveChar(String(ch), waveIndex: index, at: now, monospaced: false)
+                    }
                     ForEach(Array(domain.enumerated()), id: \.offset) { index, ch in
-                        let phase = (now - Double(index) * Self.charDelay)
-                            .truncatingRemainder(dividingBy: totalCycle)
-                        let offset = waveOffset(phase: phase < 0 ? phase + totalCycle : phase)
-                        Text(String(ch))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .offset(y: offset)
+                        waveChar(String(ch), waveIndex: title.count + index, at: now, monospaced: true)
                     }
                 }
             }
         }
     }
 
-    /// 参考件单字符位移曲线（秒→px；21% 到顶 -8px，42% 回落，其后保持）。
-    private func waveOffset(phase: Double) -> CGFloat {
-        let p = phase / totalCycle
-        switch p {
-        case 0..<0.21:
-            let k = p / 0.21
-            return CGFloat(-8 * sin(k * .pi / 2))
-        case 0.21..<0.42:
-            let k = (p - 0.21) / 0.21
-            return CGFloat(-8 * cos(k * .pi / 2))
-        default:
-            return 0
-        }
+    /// 单字符（label 系统字体、域名等宽防抖动；secondary 上叠 opacity 光波）。
+    private func waveChar(_ ch: String, waveIndex: Int, at now: TimeInterval, monospaced: Bool) -> some View {
+        let period = WOMotion.browsingCharWavePeriod
+        let shifted = now - Double(waveIndex) * WOMotion.browsingCharWaveStep
+        var phase = shifted.truncatingRemainder(dividingBy: period)
+        if phase < 0 { phase += period }
+        let opacity = 0.5 + 0.5 * cos(2 * .pi * phase / period)
+        return Text(ch)
+            .font(.system(size: 12, design: monospaced ? .monospaced : .default))
+            .foregroundStyle(.secondary.opacity(opacity))
     }
 }
