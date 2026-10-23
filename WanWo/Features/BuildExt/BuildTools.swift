@@ -82,6 +82,23 @@ enum BuildTools {
         let rel = String(host.dropFirst(root.count))
         return "\nguest bash path: \(sessionCwd ?? "/var/wanwo/projects/<session>")\(rel)（guest 内 ls/cat 可见）"
     }
+
+    /// 【N1】build log 路径行（run_log 工作区副本路径行同款文案模式）：
+    /// "build log (workspace copy, AI readable): <路径>"。日志未落盘
+    ///（workspaceBuildLogPath 空——未请求/创建失败静默降级）返回空串，
+    /// 结果文本不出现该行。
+    static func buildLogPathLine(_ result: BuildResult) -> String {
+        if result.workspaceBuildLogPath.isEmpty {
+            return ""
+        }
+        return "\nbuild log (workspace copy, AI readable): " + result.workspaceBuildLogPath
+    }
+
+    /// 【N1】build 调用日志参数（BuildArtifacts 目录 + 工程名——两工具
+    /// 同缝装配，避免调用点重复拼装）。
+    static func buildLogArguments(workspaceRoot: URL, projectName: String) -> (directory: URL, name: String) {
+        return (workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true), projectName)
+    }
 }
 
 // MARK: - 共用执行底座
@@ -549,8 +566,13 @@ struct BuildIPATool: AgentTool {
         }
 
         // 官方全链（MDK 线程池；阻塞本工具车道直到完成）
+        // 【N1】构建日志落盘（BuildArtifacts/build-<名>-<HHmmss>.log——
+        // 开始建、结束关，路径行随结果文本回传 AI）。
+        let logArgs = BuildTools.buildLogArguments(workspaceRoot: ctx.workspace.rootURL, projectName: name)
         let result: BuildResult = await withCheckedContinuation { cont in
-            BuildService.shared.build(project: project, sign: sign) { r in
+            BuildService.shared.build(project: project, sign: sign,
+                                      logDirectory: logArgs.directory,
+                                      logProjectName: logArgs.name) { r in
                 cont.resume(returning: r)
             }
         }
@@ -605,6 +627,9 @@ struct BuildIPATool: AgentTool {
                 }
             }
             let artifactLine = artifactPath.map { "\nworkspace ipa: \($0)（文件 App/读工具可直取）" } ?? ""
+            // 【N1】build log 路径行（插值内函数调用拆局部变量——swiftc
+            // type-check 雷区纪律）。
+            let logLine = BuildTools.buildLogPathLine(result)
             // 【N7c】签名注记（sign=true 时：成功/失败原因；nil=未请求）。
             var signLine = ""
             if let signNote = result.signNote {
@@ -620,7 +645,7 @@ struct BuildIPATool: AgentTool {
                 ipa: \(result.ipaURL.path)\(guestHint)\(artifactLine)
                 bundle(.app, N9 guest 取用): \(result.bundleURL.path)
                 project: \(result.projectURL.path)
-                diagnostics: \(result.diagnosticsSummary)
+                diagnostics: \(result.diagnosticsSummary)\(logLine)
                 """)
         } else {
             // 【批A · S2/P3-7】截断提示条件化——BuildResult.diagnosticsTruncated
@@ -637,6 +662,9 @@ struct BuildIPATool: AgentTool {
             failText = failText + result.diagnosticsSummary
             failText = failText + "\nbuild log: " + result.buildLogPath
                 + "（宿主路径——guest 不可读；用 build_log 工具读取）"
+            // 【N1】构建日志工作区副本路径行（run_log 副本同款文案模式——
+            // AI fs/read 直取，编译全程诊断可回看）。
+            failText = failText + BuildTools.buildLogPathLine(result)
             if result.diagnosticsTruncated {
                 failText = failText + "\n（诊断可能未列全——完整列表见 build_log）"
             }
@@ -826,12 +854,10 @@ struct BuildAndRunTool: AgentTool {
         let fm = FileManager.default
         let dir = workspaceRoot.appendingPathComponent("BuildArtifacts", isDirectory: true)
         try? fm.createDirectory(atPath: dir.path, withIntermediateDirectories: true)
-        // 工程名仅作文件名段（ASCII 名由 project_create 校验保证——非 ASCII
-        // 名历史工程兜底过滤，防文件系统非法字符）。
-        var safeName = projectName
-        if safeName.isEmpty || !safeName.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) {
-            safeName = "run"
-        }
+        // 【N11 · O3】工程名段统一走 BuildService.artifactSafeName（与
+        // project_delete 清理前缀同一命名函数——非 ASCII 工程名两侧口径
+        // 统一，防孤儿副本；原内联 ASCII 兜底语义原样收编进该 helper）。
+        let safeName = BuildService.artifactSafeName(projectName)
         let dest = dir.appendingPathComponent("run_log-" + safeName + "-" + Self.runLogStamp() + ".txt")
         do {
             if fm.fileExists(atPath: dest.path) {
@@ -999,8 +1025,12 @@ struct BuildAndRunTool: AgentTool {
         }
 
         // ① 编译（MDK 线程池；sign=false——容器签名归 prepare 段）
+        // 【N1】构建日志落盘（build_ipa 同缝——两路线同治）。
+        let logArgs = BuildTools.buildLogArguments(workspaceRoot: ctx.workspace.rootURL, projectName: name)
         let result: BuildResult = await withCheckedContinuation { cont in
-            BuildService.shared.build(project: project, sign: false) { r in
+            BuildService.shared.build(project: project, sign: false,
+                                      logDirectory: logArgs.directory,
+                                      logProjectName: logArgs.name) { r in
                 cont.resume(returning: r)
             }
         }
@@ -1022,10 +1052,13 @@ struct BuildAndRunTool: AgentTool {
             if !result.cacheNote.isEmpty {
                 cacheLine = "\n缓存状态: " + result.cacheNote
             }
+            // 【N1】build log 路径行（插值内函数调用拆局部变量——swiftc
+            // type-check 雷区纪律）。
+            let failLogLine = BuildTools.buildLogPathLine(result)
             return .failure("""
                 BUILD FAILED（\(String(format: "%.1fs", result.elapsedSeconds))）\(cacheLine)——按以下诊断修复源码后重新 build_and_run：
                 \(result.diagnosticsSummary)
-                build log: \(result.buildLogPath)（宿主路径——guest 不可读；用 build_log 工具读取）
+                build log: \(result.buildLogPath)（宿主路径——guest 不可读；用 build_log 工具读取）\(failLogLine)
                 """, code: "BUILD_FAILED", name: "BuildError")
         }
 
@@ -1073,8 +1106,11 @@ struct BuildAndRunTool: AgentTool {
             // 数据补注册同 ipa 副本缝；工程名段供 U1 delete/reset 清理关联）。
             let artDir = ctx.workspace.rootURL.appendingPathComponent("BuildArtifacts", isDirectory: true)
             try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
+            // 【N11 · O2】工程名段经 artifactSafeName（与 run_log 副本/
+            // project_delete 清理同一命名函数——非 ASCII 工程名口径统一）。
+            let teeSafeName = BuildService.artifactSafeName(name)
             let teePath = artDir.appendingPathComponent(
-                "run_log-" + name + "-" + Self.runLogStamp() + ".txt").path
+                "run_log-" + teeSafeName + "-" + Self.runLogStamp() + ".txt").path
             let wsRootStd = ctx.workspace.rootURL.standardizedFileURL.path
             let teeStd = URL(fileURLWithPath: teePath).standardizedFileURL.path
             if teeStd.hasPrefix(wsRootStd + "/"), let cwd = sessionCwd {
@@ -1157,12 +1193,14 @@ struct BuildAndRunTool: AgentTool {
                 // 官方 .run utility 开窗即返回语义——run 门在本方法内显式放行
                 //（C v2：无 RunSession 持门，不再走 defer）。
                 BuildService.shared.endRun()
+                // 【N1】build log 路径行（插值内函数调用拆局部变量——雷区纪律）。
+                let utilityLogLine = BuildTools.buildLogPathLine(result)
                 return .success("""
                     UTILITY TERMINAL OPENED（\(name)）
                     \(opened.1)
                     \(prep.detail)
                     终端窗口内 stdin/stdout 完整交互（SwiftTerm——官方 .run utility 同款；raw 模式：无行缓冲/无内核回显，交互程序需自管回显）；窗口关闭=进程 terminate；进程退出（含 stop_build）后窗口自动关闭并经 guest_run 事件回报退出形态。
-                    运行输出 tee 工作区副本：\(teePath)（AI read 直取——raw 终端字节流含 ANSI 控制序列）。
+                    运行输出 tee 工作区副本：\(teePath)（AI read 直取——raw 终端字节流含 ANSI 控制序列）\(utilityLogLine)
                     """)
             }
             BuildService.shared.endRun()
@@ -1249,6 +1287,7 @@ struct BuildAndRunTool: AgentTool {
         return .success("GUEST SPAWNED（" + name + "）\n"
             + spawnNote + "\n"
             + prep.message + "\n"
-            + prep.detail)
+            + prep.detail
+            + BuildTools.buildLogPathLine(result))
     }
 }

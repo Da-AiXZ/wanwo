@@ -880,3 +880,41 @@ main@0587c30 实测原样保留、且官方 CI 全绿背书：
 ### 边界
 
 vendored 树仅上述两文件三处（NXBuilder+MDKDriver.swift 循环+新函数、LCMachOUtils.m import+第三遍遍历）；原注释与既有去重遍历/arm64e fixup/insertDylibCommand 逐字不动。32 步护栏收尾仅删引用与改注释——AgentLoop.Config.maxTurns 词汇与 blocked 可恢复语义（显式 >0 仍触发）原样；GuestRunService.swift 本批零改动（D1 判定依据=其 spawn 段既有「run start 」行格式，读取对齐不改写入端）；BuildService.swift 既有 overwriteSigningGateTemplate 函数体逐字不动；构建验证待 macOS CI（本地无编译环境）。
+
+## N16、构建观测四件批（2026-10-23，主理人派单 N1/N2/N8/N11 五件；vendored 唯一改动件=NXBuilder.swift 一处）
+
+### 件3（N8）编译失败「仍进链接」定罪修正与 Linker 桶每轮清除（vendored 唯一 diff）
+
+**定罪修正（重要——任务书前提与考古结论不符，如实报告）**：e63 实测「main.m 语法错误后 30+ 行 lld 噪声叠加」**并非链接 phase 真的跑了**。考古（全文亲读整条 phase 编排链：NXPhaseEngine.m→MDKPhaseEngine.m→MDKPhaseRunner.m/NXPhaseRunner.m→NXBuilder.swift）实证：**编译失败短路已存在且正确**——MDKPhaseRunner.runPhasesWithPhases 对首个失败 phase 即 `return NO`（多线程编译路径经 thread-pool lockdown → runPhase NO → 链路短路；子引擎递归同理），链接 phase 不会跑。旁证两枚：①e63 事件 #60（Broken.swift 编译失败）诊断=2 条编译错误+"Failed to run project."、零 lld；②e63 事件 #773（ObjcCLI 纯链接失败 30+ 行 lld）与 #812（main.m 语法错误 4 条编译诊断+"30+ 行 lld"）的 lld 输出**逐字节相同**（CppShim.mm.o 的 std::__1 undefined 同文同序）——#812 的 lld 是 debug.json 里 #773 的**陈旧数据**，非本轮真实链接（真实链接若跑，缺 main.o 必报 _main undefined，实际无）。
+
+**真根因**：vendored `NXBuilder.init` 每轮调 `reuseDatabase()`（Project+Debug.swift:236-238）只重置 Internal 桶；"Linker" Message 桶跨构建持久，且仅在链接 job 真跑时被 `runner:finishedRunningJob` 的 `addDiagnosticMessages(clearPrevious: true)` 替换（NXBuilder+MDKPhaseRunner.swift:67）。编译失败短路→链接不跑→上轮 Linker 桶原样存活→万我层 build() 渲染 db.debugObjects 全量汇总→「编译失败后仍继续链接」观感。
+
+| 文件:位置 | 内容 |
+|---|---|
+| LindChain/IDEBuilder/NXBuilder.swift init | `self.database.reuseDatabase()` 之后新增一行 `self.database.addDiagnosticMessages(title: "Linker", items: [], clearPrevious: true)`（items 空 + clearPrevious=true → removeValue——Project+Debug.swift:150-152 既有分支，零新逻辑）+ 定罪注释。语义：Linker 桶与 Internal 桶对齐为每轮语义；编译失败→不进链接（本就成立）且诊断无 lld 噪声（本轮实际修的观测面）；编译成功→链接 job 照跑、clearPrevious 以本轮结果重新填充（成功路径控制流与诊断呈报零变化） |
+
+**边界**：phase 编排链（MDKPhaseEngine/MDKPhaseRunner/NXPhaseRunner/NXBuilder.build/install）零触碰；成功路径零变化（diff 仅 init 内一行清除+注释）；诊断 file:line:col 呈报不变；复用 NXBuilder+MDKPhaseRunner 既有同签名调用，无新符号。
+
+### 件1（N1）构建日志落盘（WanWo 层）
+
+`BuildLogSession`（BuildService.swift 新类）：构建开始建 `workspace/BuildArtifacts/build-<工程名>-<HHmmss>.log`（FileHandle 持有、写侧 NSLock——工具线程建、MDK 完成线程写），结束（成功/失败两路）关闭。内容逐行：build start 头（工程/scheme）、缓存状态注记（cacheNote 判据同源）、构建耗时、BUILD OK/FAILED、签名注记（sign=true）、编译诊断摘要（build() 渲染同源逐行）、build end。BuildResult 增 `workspaceBuildLogPath` 字段（只增不改）；build() 增可选参 `logDirectory/logProjectName`（缺省=nil 静默降级，语义等价旧行为）；BuildIPATool/BuildAndRunTool 全部 BuildResult 消费点追加路径行 `build log (workspace copy, AI readable): <路径>`（run_log 副本同款文案模式）：build_ipa 成功/失败、build_and_run 构建失败/UTILITY TERMINAL OPENED/GUEST SPAWNED 五处。
+
+**覆盖范围如实声明（二选一拍板=稳妥者）**：vendored 层 print/NSLog 直写 stdout/stderr 的行（NXBuilder+MDKDriver 的 `[WanWo] autolink skip missing framework`、`print(linkerJob.arguments)`、MDK 工具链输出）不经本日志——构建窗口 dup2 重定向方案评估后弃用（进程级 fd 污染/多线程交错写入/异常路径句柄残留三重风险），WanWo 层诊断落盘。
+
+### 件2（N2）run_log 写侧换行守护（WanWo 层）
+
+GuestRunService.swift 新增 `RunLogLineGuard`：会话内记录「上一写入块是否以 \n 结尾」（bool，NSLock 保护），新块写入前若上一块未收尾且本块非空补 \n；header/读循环行/EOF 残留/footer 全部写点收敛过 helper（FileHandle 裸写竞态顺带串行化）；GuestRunSession.logHandle 字段替换为 logWriter。零行为变更（正常已带 \n 的流守护零补写）；守护触发场景注释在案（读循环与会话队列交错写入窗口/无尾 \n 块粘连）。
+
+### 件4（N11）观察项五条（WanWo 层）
+
+| 项 | 内容 |
+|---|---|
+| O1 注释论据修正 | BuildService.injectDefaultBundleKeys 的 DTSDKName 注释重写（实现不动）：亲读 NXPlist.m:42-130 expandString 查找序=①plist 根字典键路径直查→②variables 表→③进程环境→④空串兜底；$(NXDeploymentTarget) 属 Project.plist 顶层键会经①命中展开（原「必退化为空串」论据错误）；写字面量的真论据=①deploymentTarget getter 带缺省兜底（NXProject.m:84 withDefaultObject:@"25.0"）——根键缺失时 $(...) 落④空串产出 "iphoneos" 裸值而字面量恒合法②不依赖展开时机 |
+| O2 teePath 过 safeName | BuildAndRunTool utility tee 路径工程名段经 artifactSafeName |
+| O3 清理/写入口径统一 | 新增 `BuildService.artifactSafeName`（纯函数：ASCII 字母数字白名单否则 "run"）为唯一命名函数——写入侧 copyRunLogToWorkspace（原内联兜底收编）/utility tee/构建日志 与 删除侧 deleteProjectDirectories logPrefix 同源；非 ASCII 历史工程副本不再成孤儿 |
+| O4 扫描缓存 | sourcesContainCpp 构建会话级缓存（cppScanCache [路径:Bool] + NSLock）：build() 首步 beginBuildScanSession 清空（跨构建失效）、构建内首次实扫复用——linkerFlags getter 钩子多次消费不再重复全目录枚举；实扫体原样拆 scanSourcesContainCpp |
+| O8 补单测 | WanWoTests/BuildObservabilityN11Tests.swift：shortDiagnosticPath 五断言（/private/var 归一、/var 形态剥离、相对路径直通、非路径键直通、未命中不误切——C1E5B58 盲切回归门）+ artifactSafeName 四断言 |
+
+### 边界（N16 全批）
+
+vendored 树仅 NXBuilder.swift init 一行清除+注释（git diff --stat 实证，diff 最小）；WanWo 层改动=BuildService.swift/BuildTools.swift/GuestRunService.swift+WanWoTests 新测文件；BrowserSheetView.swift 零触碰；project.yml 零改动（WanWoTests target 按目录收录新测文件）；build_ipa/build_and_run 工具语义/审批缝/事件 schema 零变化（BuildResult 只增字段）；run 门/签名编排/prepareGuestRun/prepareUtilityRun 零触碰；NXPlist/NXProject 等其余 vendored 文件零触碰。

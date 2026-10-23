@@ -48,6 +48,17 @@ final class NXBuilder: NSObject {
         
         self.database = DebugDatabase.getDatabase(ofPath: "\(self.project.cacheURL.path)/debug.json")
         self.database.reuseDatabase()
+        /* 万我 N8 修（diff 登记：docs/gpl-compliance.md §N16）：Linker 桶跨
+         * 构建持久（reuseDatabase 只重置 Internal 桶），且仅在链接 job 真跑
+         * 时才被 runner:finishedRunningJob 的 clearPrevious 替换。前次构建
+         * 链接失败、本次构建编译失败时，phase 链本就正确短路
+         * （MDKPhaseRunner.runPhasesWithPhases 首个失败 phase 即 return NO
+         * ——链接不会跑），stale 的 Linker 诊断遂泄入本次 debug.json 与
+         * 工具输出，伪装成「编译失败后仍继续链接」（e63 实测事件 #773 vs
+         * #812：lld 输出逐字节相同=陈旧数据，非真实链接）。每轮构建开始
+         * 清除——与 Internal 桶同款每轮语义；链接成功路径由 clearPrevious
+         * 以本轮结果重新填充（观测零变化）。 */
+        self.database.addDiagnosticMessages(title: "Linker", items: [], clearPrevious: true)
         
         if useRemoteServiceIfAvailable {
             remoteCompiler = NXRemoteCompiler.new()

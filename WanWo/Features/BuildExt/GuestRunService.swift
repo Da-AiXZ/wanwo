@@ -108,6 +108,50 @@ final class GuestExitBox: @unchecked Sendable {
     }
 }
 
+// MARK: - 【N2】run_log 写侧换行守护（QA CONCERN 在案：输出块粘连）
+
+/// run_log 写入的单一收敛 helper：会话内记录「上一写入块是否以 \n 结尾」
+///（bool 状态），新块写入前若上一块未以 \n 结尾且本块非空则先补一个 \n。
+/// 触发场景（守护存在的原因）：①写侧各调用点并非同一队列串行——读循环
+///（wanwo.guestrun.stdout 队列）与收尾段（会话队列）可能对同一 FileHandle
+/// 交错写入，EOF 残留块与 footer 存在时序窗口；②任何写入不带尾 \n 的
+/// 文本块（如无换行的 guest 输出残留、未来新增的进度注记行）时，相邻两
+/// 次写入会粘连成同一行（QA CONCERN）。header/footer 全部走本 helper——
+/// 正常已带尾 \n 的流守护零补写，零行为变更；FileHandle 写入一并收敛为
+/// 串行（句柄非线程安全——既有裸写竞态顺带治）。
+final class RunLogLineGuard: @unchecked Sendable {
+    private let handle: FileHandle?
+    private let lock = NSLock()
+    /// 上一写入块是否以 \n 结尾（初始 true——新开文件头/空文件视为收尾态，
+    /// 首块写入不补 \n）。
+    private var lastEndedWithNewline = true
+
+    init(handle: FileHandle?) {
+        self.handle = handle
+    }
+
+    /// 写入一块文本（串行化；上一块未收尾且本块非空时补 \n）。
+    func write(_ text: String) {
+        guard let handle = handle, !text.isEmpty else { return }
+        lock.lock()
+        var payload = text
+        if !lastEndedWithNewline {
+            payload = "\n" + payload
+        }
+        lastEndedWithNewline = text.hasSuffix("\n")
+        lock.unlock()
+        try? handle.write(contentsOf: Data(payload.utf8))
+    }
+
+    /// 写毕关闭（幂等——close 后再 write 安全 no-op）。
+    func close() {
+        lock.lock()
+        let handle = self.handle
+        lock.unlock()
+        try? handle?.close()
+    }
+}
+
 // MARK: - spawn 结果（C v2：spawn 同步段返回盒）
 
 struct GuestRunSpawnResult {
@@ -143,7 +187,9 @@ final class GuestRunSession: @unchecked Sendable {
     /// nil = 不限时（C-a 拍板默认）；非 nil = 保护上限（到点 terminate→timedOut）。
     let timeoutSeconds: TimeInterval?
     let runLogPath: String
-    let logHandle: FileHandle?
+    /// 【N2】run_log 写入收敛（换行守护+写串行化）——写侧全部调用点
+    ///（header/读循环行/EOF 残留/footer）经此 helper。
+    let logWriter: RunLogLineGuard
     let writer: SessionWriter
     let workspaceRoot: URL
     let prepDetail: String
@@ -159,7 +205,7 @@ final class GuestRunSession: @unchecked Sendable {
          process: PEProcess,
          timeoutSeconds: TimeInterval?,
          runLogPath: String,
-         logHandle: FileHandle?,
+         logWriter: RunLogLineGuard,
          writer: SessionWriter,
          workspaceRoot: URL,
          prepDetail: String,
@@ -170,7 +216,7 @@ final class GuestRunSession: @unchecked Sendable {
         self.process = process
         self.timeoutSeconds = timeoutSeconds
         self.runLogPath = runLogPath
-        self.logHandle = logHandle
+        self.logWriter = logWriter
         self.writer = writer
         self.workspaceRoot = workspaceRoot
         self.prepDetail = prepDetail
@@ -539,7 +585,10 @@ final class GuestRunService: @unchecked Sendable {
         }
         let logHandle = try? FileHandle(forWritingTo: logURL)
         try? logHandle?.seekToEnd()
-        try? logHandle?.write(contentsOf: Data(header.utf8))
+        // 【N2】header 走换行守护 helper（header 自带尾 \n——守护零补写、
+        // 零行为变更；守护状态自此接续本会话后续全部写入块）。
+        let logWriter = RunLogLineGuard(handle: logHandle)
+        logWriter.write(header)
 
         // ── 会话组装 + 活跃登记（stop_build 接缝）─────────────────────
         let session = GuestRunSession(
@@ -549,7 +598,7 @@ final class GuestRunService: @unchecked Sendable {
             process: process,
             timeoutSeconds: timeoutSeconds,
             runLogPath: runLogPath,
-            logHandle: logHandle,
+            logWriter: logWriter,
             writer: writer,
             workspaceRoot: workspaceRoot,
             prepDetail: prepDetail,
@@ -579,7 +628,7 @@ final class GuestRunService: @unchecked Sendable {
         lineFormatter.dateFormat = "HH:mm:ss.SSS"
         let outHandle = outPipe.fileHandleForReading
         let readQueue = DispatchQueue(label: "wanwo.guestrun.stdout")
-        let logHandleRef = logHandle
+        let logWriterRef = logWriter
         readQueue.async {
             var pending = Data()
             // 循环：availableData 阻塞至有数据或全写端关闭（guest 退出→EOF）。
@@ -603,7 +652,7 @@ final class GuestRunService: @unchecked Sendable {
                         session.tailLock.unlock()
                         let lineStamp = lineFormatter.string(from: Date())
                         let logText = "[" + lineStamp + "] " + clean + "\n"
-                        try? logHandleRef?.write(contentsOf: Data(logText.utf8))
+                        logWriterRef.write(logText)
                     }
                 }
             }
@@ -618,7 +667,7 @@ final class GuestRunService: @unchecked Sendable {
                     session.tailLock.unlock()
                     let lineStamp = lineFormatter.string(from: Date())
                     let logText = "[" + lineStamp + "] " + clean + "\n"
-                    try? logHandleRef?.write(contentsOf: Data(logText.utf8))
+                    logWriterRef.write(logText)
                 }
             }
         }
@@ -682,8 +731,11 @@ final class GuestRunService: @unchecked Sendable {
                                            timedOut: session.timedOut)
         let footer = "run end " + ISO8601DateFormatter().string(from: Date())
             + " " + exitNote + "\n"
-        try? session.logHandle?.write(contentsOf: Data(footer.utf8))
-        try? session.logHandle?.close()
+        // 【N2】footer 走同一守护 helper（footer 自带尾 \n——守护零补写；
+        // 若 EOF 残留块与 footer 存在交错窗口且残留块未带尾 \n，此处自动
+        // 补 \n 防粘连——守护触发场景实录）；写毕关闭。
+        session.logWriter.write(footer)
+        session.logWriter.close()
 
         // B：退出三态呈现（①自然退出 ②超时 ③被终止——stop_build/外部细分）。
         let message = Self.composeExitMessage(

@@ -48,7 +48,77 @@ struct BuildResult: Sendable {
     /// 【批A · S2/P3-7】诊断摘要截断标志（uniq>50 时 true——工具层据此条件
     /// 追加「可能未列全」提示，替代旧无条件文案）。
     let diagnosticsTruncated: Bool
+    /// 【N1】构建日志落盘路径（workspace/BuildArtifacts/build-<工程名>-
+    /// <HHmmss>.log——AI fs 直读；未请求日志目录或创建失败时空串，工具层
+    /// 不出现路径行——静默降级语义等价旧行为）。与既有 buildLogPath
+    ///（debug.json 宿主路径）严格区分：本字段=工作区可读副本。
+    let workspaceBuildLogPath: String
     let elapsedSeconds: Double
+}
+
+// MARK: - 【N1】构建日志落盘（BuildArtifacts/build-<工程名>-<HHmmss>.log）
+
+/// 单次构建的日志会话：构建开始创建（FileHandle 持有）、结束（成功/失败
+/// 两路）关闭。命名与 run_log 工作区副本同族（BuildArtifacts/ 目录、工程
+/// 名经 artifactSafeName 收敛、HHmmss 时间戳——run_log-<名>-<HHmmss>.txt
+/// 先例同款模式，BuildTools.copyRunLogToWorkspace）。写侧 NSLock 串行
+///（FileHandle 非线程安全——开始写入在工具线程、完成写入在 MDK 完成线程）。
+/// 覆盖范围（如实声明）：WanWo 层可得诊断——构建头（工程/时间）、缓存
+/// 状态注记（冷缓存/全量重建/增量判据同 cacheNote）、构建结果与耗时、
+/// 编译诊断摘要（debug.json 渲染同源逐行）、签名注记（sign=true 时）。
+/// vendored 层 print/NSLog 直写 stdout/stderr 的行（如 NXBuilder+MDKDriver
+/// 的 "[WanWo] autolink skip missing framework: …" 与 MDK 工具链输出）
+/// **不经本会话**——构建窗口 dup2 重定向方案评估后弃用（进程级 fd 污染/
+/// 多线程交错写入/异常路径句柄残留三重风险边界），择稳妥者=WanWo 层诊断
+/// 落盘（任务书预授权二选一，覆盖范围如实报告）。
+final class BuildLogSession: @unchecked Sendable {
+    /// 日志文件绝对路径（结果文本路径行用）。
+    private(set) var path: String
+    private var handle: FileHandle?
+    private let lock = NSLock()
+
+    init?(directory: URL, projectName: String) {
+        // 类 failable init 纪律：先全量初始化存储属性再允许 return nil。
+        self.path = ""
+        self.handle = nil
+        let fm = FileManager.default
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let safeName = BuildService.artifactSafeName(projectName)
+        let fileURL = directory.appendingPathComponent(
+            "build-" + safeName + "-" + BuildLogSession.stamp() + ".log")
+        guard fm.createFile(atPath: fileURL.path, contents: nil),
+              let opened = try? FileHandle(forWritingTo: fileURL) else {
+            return nil
+        }
+        self.path = fileURL.path
+        self.handle = opened
+    }
+
+    /// 逐行写入（自动补尾 \n；句柄已关/未开时静默 no-op）。
+    func writeLine(_ line: String) {
+        lock.lock()
+        let handle = self.handle
+        lock.unlock()
+        guard let handle = handle else { return }
+        let text = line + "\n"
+        try? handle.write(contentsOf: Data(text.utf8))
+    }
+
+    /// 构建结束关闭（成功/失败两路都调；幂等）。
+    func close() {
+        lock.lock()
+        let handle = self.handle
+        self.handle = nil
+        lock.unlock()
+        try? handle?.close()
+    }
+
+    /// 文件名时间戳（HHmmss——runLogStamp 同款，平铺函数，swiftc 雷区纪律）。
+    private static func stamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HHmmss"
+        return formatter.string(from: Date())
+    }
 }
 
 // MARK: - BuildService
@@ -292,10 +362,19 @@ final class BuildService: @unchecked Sendable {
     /// 【批A · W/P2-6】补齐三个平台识别键（官方 ipa Info.plist 对质形态）：
     ///   · CFBundleSupportedPlatforms=[iPhoneOS]（数组形态）；
     ///   · DTPlatformName=iphoneos；
-    ///   · DTSDKName=iphoneos<deploymentTarget>（字面展开值——NXBundleInfo
-    ///     经 varObjectForKey 递归展开 $(...)，但 NXDeploymentTarget 属 plist
-    ///     顶层键非注册变量，写 "$(NXDeploymentTarget)" 会展开退化为空串，
-    ///     故取 projectConfig.deploymentTarget 写字面量）。
+    ///   · DTSDKName=iphoneos<deploymentTarget>（字面展开值——论据修正
+    ///     【N11·O1 2026-10-23，亲读 NXPlist.m:42-130 expandString 后重写】：
+    ///     $(...) 查找序=①plist 根字典键路径直查（oroot=self，逐段下钻）
+    ///     →②variables 表 →③进程环境 →④空串兜底（:123 `?: @""`）。
+    ///     NXDeploymentTarget 是 Project.plist 顶层键（NXProject.m:84 同键
+    ///     读取、:276 出厂写入），写 "$(NXDeploymentTarget)" 会经①根字典
+    ///     直查命中展开——原注释「属 plist 顶层键非注册变量必退化为空串」
+    ///     论据错误。仍取 projectConfig.deploymentTarget 写字面量的真论据：
+    ///     ①该 getter 带缺省兜底（NXProject.m:84 withDefaultObject:@"25.0"
+    ///     ）——plist 根键被用户删改/缺失时 $(NXDeploymentTarget) 一路落到
+    ///     ④空串兜底产出 "iphoneos" 裸值，字面量形态在任何 plist 态下都
+    ///     产出合法 DTSDKName；②字面值不依赖 NXBundleInfo 渲染链的展开
+    ///     时机，语义零歧义。实现保持写字面量不动。）。
     /// 注入时机（报告要点）：createOrReuseProject 新建+复用两路径（工程
     /// 创建/复用必经 project_create 工具）——写盘后 project.reload() 使
     /// NXBundleInfo 即时生效；NXBuilder.buildProject 首行 reloadData +
@@ -415,7 +494,10 @@ final class BuildService: @unchecked Sendable {
         }
         if let artEntries = try? fm.contentsOfDirectory(
             at: artDir, includingPropertiesForKeys: nil, options: []) {
-            let logPrefix = "run_log-" + name + "-"
+            // 【N11 · O3】清理前缀与写入侧同一命名函数（artifactSafeName
+            // ——非 ASCII/历史工程名写入侧统一落 "run" 段，删除侧用同一
+            // 函数构造前缀，防两侧口径分叉成孤儿副本）。
+            let logPrefix = "run_log-" + Self.artifactSafeName(name) + "-"
             for artEntry in artEntries {
                 let fileName = artEntry.lastPathComponent
                 guard fileName.hasPrefix(logPrefix), artEntry.pathExtension == "txt" else {
@@ -1337,9 +1419,58 @@ final class BuildService: @unchecked Sendable {
         return flags as NSArray
     }
 
+    // MARK: 【N11 · O2/O3】BuildArtifacts 产物文件名安全段（单一命名函数）
+
+    /// 工程名进 BuildArtifacts 文件名段（run_log 工作区副本/utility 终端
+    /// tee/构建日志）与删除侧清理前缀（deleteProjectDirectories）的**唯一
+    /// 命名函数**——O3 口径统一：写入侧与删除侧同源，非 ASCII 工程名
+    ///（中文/空串/符号，历史工程或绕过校验路径）两侧一致落 "run" 兜底，
+    /// 防孤儿文件。ASCII 字母数字原样通过（project_create 校验的正常态
+    /// 零变化）。纯函数（O2 单测面）。
+    static func artifactSafeName(_ name: String) -> String {
+        if !name.isEmpty, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) {
+            return name
+        }
+        return "run"
+    }
+
+    // MARK: 【N11 · O4】sourcesContainCpp 构建会话级缓存
+
+    // linkerFlags getter 钩子（ensureCppLinkerHookInstalled）每次被读都走
+    // cppAugmentedLinkerFlags → sourcesContainCpp 全目录枚举；一次构建编排
+    // 内 NXPhaseEngine.m:73/78 等消费点会多次读 linkerFlags——全目录重复扫。
+    // 缓存语义：每次构建编排开始（build() 首步 beginBuildScanSession）清空
+    // 跨构建失效、构建内首次实扫后复用；构建单飞行门（inFlight）保证同一
+    // 时刻至多一次编排，缓存态不跨编排串味。
+    private static let cppScanLock = NSLock()
+    private static var cppScanCache: [String: Bool] = [:]
+
+    /// 构建编排开始调用：清空上次构建的扫描缓存（O4 跨构建失效）。
+    static func beginBuildScanSession() {
+        cppScanLock.lock()
+        cppScanCache.removeAll()
+        cppScanLock.unlock()
+    }
+
     /// 源文件清单含 .mm/.cpp（排除 Resources/Config——NXPhaseEngine 的
-    /// LDEFilesFinder 排除集对齐）。
+    /// LDEFilesFinder 排除集对齐）。构建会话级缓存：同目录首次实扫、
+    /// 之后复用（O4——构建编排开始由 beginBuildScanSession 失效）。
     static func sourcesContainCpp(_ dirPath: String) -> Bool {
+        cppScanLock.lock()
+        if let cached = cppScanCache[dirPath] {
+            cppScanLock.unlock()
+            return cached
+        }
+        cppScanLock.unlock()
+        let scanned = Self.scanSourcesContainCpp(dirPath)
+        cppScanLock.lock()
+        cppScanCache[dirPath] = scanned
+        cppScanLock.unlock()
+        return scanned
+    }
+
+    /// 实扫实现（原 sourcesContainCpp 函数体原样——缓存层拆出）。
+    private static func scanSourcesContainCpp(_ dirPath: String) -> Bool {
         let fm = FileManager.default
         let dirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
         guard let sourceEnum = fm.enumerator(at: dirURL, includingPropertiesForKeys: nil) else {
@@ -1363,12 +1494,33 @@ final class BuildService: @unchecked Sendable {
     /// 重打包 ipa——官方对照：0.10.3 Builder.install(.RunningApp) 签名段
     ///（semaphore 等待 ZSigner 回调形态；不 patch——LCPatchExecSlice 属
     /// LC 容器化运行归 N9）。
-    func build(project: NXProject, sign: Bool = false, completion: @escaping (BuildResult) -> Void) {
+    /// 【N1】logDirectory+logProjectName 提供时构建日志落盘
+    ///（workspace/BuildArtifacts/build-<工程名>-<HHmmss>.log——开始建、
+    /// 结束关，路径经 BuildResult.workspaceBuildLogPath 回传工具层出
+    /// 结果文本；两参任一缺省=nil 日志——静默降级，语义等价旧行为）。
+    func build(project: NXProject,
+               sign: Bool = false,
+               logDirectory: URL? = nil,
+               logProjectName: String = "",
+               completion: @escaping (BuildResult) -> Void) {
         // 【批A · V】C++ 自动链接钩子（进程内一次性安装——build_ipa/
         // build_and_run 共用本入口，两路线同治；ObjcCLI 类 .mm/.cpp 工程
         // 此前的满屏 std::__1 undefined 即此因）。
         Self.ensureCppLinkerHookInstalled()
+        // 【N11 · O4】构建会话级缓存失效（sourcesContainCpp 扫描缓存——
+        // 构建编排开始清空，构建内复用，跨构建失效）。
+        Self.beginBuildScanSession()
         let started = Date()
+        // 【N1】构建日志会话（目录未提供/创建失败 → nil 全程静默降级——
+        // buildLogPath 空串，结果文本不带路径行）。
+        var logOpt: BuildLogSession? = nil
+        if let dir = logDirectory, !logProjectName.isEmpty {
+            logOpt = BuildLogSession(directory: dir, projectName: logProjectName)
+        }
+        let buildLog = logOpt
+        buildLog?.writeLine("build start " + ISO8601DateFormatter().string(from: Date())
+            + " project=" + logProjectName
+            + " scheme=" + String(describing: project.projectConfig.schemeKind))
         // 【批A · S3】缓存状态判据（构建前采集——NXBuilder 构建中会改写
         // 缓存目录与 args.txt）。镜像 NXBuilder.init 的 projectDirty 逻辑：
         //   · 缓存目录无 .o → 冷缓存（首次全量编译）；
@@ -1406,6 +1558,15 @@ final class BuildService: @unchecked Sendable {
             cacheNote = "冷缓存（首次全量编译——正常耗时 30-60s，非卡死）"
         } else if configDirty {
             cacheNote = "全量重建（构建参数/配置变更）"
+        }
+        // 【N1】缓存状态注记落日志（判据同 cacheNote——增量构建落占位行
+        // 保持日志流可读）。
+        if let note = buildLog {
+            if !cacheNote.isEmpty {
+                note.writeLine("缓存状态: " + cacheNote)
+            } else {
+                note.writeLine("缓存状态: 增量构建")
+            }
         }
         NXBuilder.buildProject(withProject: project, buildType: .export) { [weak self] result, _ in
             let elapsed = Date().timeIntervalSince(started)
@@ -1528,6 +1689,29 @@ final class BuildService: @unchecked Sendable {
                 let outcome = Self.signAndRepackage(project: project)
                 signNote = outcome.message
             }
+            // 【N1】构建结束（成功/失败两路）收尾落盘：耗时/结果/签名注记/
+            // 编译诊断摘要（渲染同源逐行）+build end，随后关闭。
+            if let note = buildLog {
+                note.writeLine(String(format: "构建耗时: %.1fs", elapsed))
+                if result {
+                    note.writeLine("构建结果: BUILD OK")
+                } else {
+                    note.writeLine("构建结果: BUILD FAILED")
+                }
+                if let signText = signNote {
+                    note.writeLine("签名: " + signText)
+                }
+                note.writeLine("——— 编译诊断摘要 ———")
+                if summary.isEmpty {
+                    note.writeLine("（无诊断条目）")
+                } else {
+                    for summaryLine in summary.components(separatedBy: "\n") {
+                        note.writeLine(summaryLine)
+                    }
+                }
+                note.writeLine("build end " + ISO8601DateFormatter().string(from: Date()))
+                note.close()
+            }
             let finalResult = BuildResult(
                 success: result,
                 projectName: project.projectConfig.displayName ?? "Unknown",
@@ -1540,6 +1724,7 @@ final class BuildService: @unchecked Sendable {
                 signNote: signNote,
                 cacheNote: cacheNote,
                 diagnosticsTruncated: diagnosticsTruncated,
+                workspaceBuildLogPath: buildLog?.path ?? "",
                 elapsedSeconds: elapsed)
             completion(finalResult)
         }
